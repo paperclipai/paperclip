@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaseDetail as CaseDetailData, CaseHandoffView } from "@/api/cases";
 import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 import { CaseDetail } from "./CaseDetail";
 
 const cases = vi.hoisted(() => ({
@@ -49,7 +50,7 @@ function detail(): CaseDetailData {
 }
 
 function handoff(overrides: Partial<CaseHandoffView> = {}): CaseHandoffView {
-  return { id: "handoff-1", companyId: "company-1", caseId: "case-1", issueId: "task-1", version: 1, destinationKind: "agent", completedAt: null, fromAgentId: "agent-1", toAgentId: "agent-2", phase: "verification", instructions: "Check the saved draft independently.", commentId: null, actorType: "agent", actorId: "agent-1", sourceRunId: null, responsibleUserId: null, expectedIssueStatusVersion: 1, appliedIssueStatusVersion: null, wakeupRequestId: "wake-1", idempotencyKey: "handoff-key", inputFingerprint: "fingerprint", state: "awaiting_release", attemptCount: 0, nextAttemptAt: "2026-10-19T10:00:00Z", leaseExpiresAt: null, lastErrorCode: null, lastError: null, createdAt: "2026-10-19T10:00:00Z", assignmentAppliedAt: null, deliveredAt: null, cancelledAt: null, updatedAt: "2026-10-19T10:00:00Z", fromAgentName: "Writer", toAgentName: "Verifier", ...overrides };
+  return { id: "handoff-1", companyId: "company-1", caseId: "case-1", issueId: "task-1", version: 1, destinationKind: "agent", completedAt: null, workflowTransition: null, fromAgentId: "agent-1", toAgentId: "agent-2", phase: "verification", instructions: "Check the saved draft independently.", commentId: null, actorType: "agent", actorId: "agent-1", sourceRunId: null, responsibleUserId: null, expectedIssueStatusVersion: 1, appliedIssueStatusVersion: null, wakeupRequestId: "wake-1", idempotencyKey: "handoff-key", inputFingerprint: "fingerprint", state: "awaiting_release", attemptCount: 0, nextAttemptAt: "2026-10-19T10:00:00Z", leaseExpiresAt: null, lastErrorCode: null, lastError: null, createdAt: "2026-10-19T10:00:00Z", assignmentAppliedAt: null, deliveredAt: null, cancelledAt: null, updatedAt: "2026-10-19T10:00:00Z", fromAgentName: "Writer", toAgentName: "Verifier", ...overrides };
 }
 
 async function settle() {
@@ -204,12 +205,17 @@ describe("read-only CaseDetail", () => {
   });
 
   it("shows assignment separately from a waiting successor and reads paginated handoff history", async () => {
-    const pending = handoff();
-    cases.get.mockResolvedValue({ ...detail(), workIssueId: "task-1", phase: "implementation", workIssue: { id: "task-1", identifier: "PAP-123", title: "Implement the launch", status: "in_progress", statusVersion: 1, assigneeAgentId: "agent-1", assigneeAgentName: "Writer" }, pendingHandoff: pending });
+    const pending = handoff({ workflowTransition: { from: { workflowId: "workflow-a", name: "Research before rename", phase: "implementation" },
+      to: { workflowId: "workflow-b", name: "Publish", phase: "verification" }, documentRevisionId: "revision-1" } });
+    cases.get.mockResolvedValue({ ...detail(), workflowId: "workflow-a", workflow: { id: "workflow-a", name: "Research renamed" }, workIssueId: "task-1", phase: "implementation", workIssue: { id: "task-1", identifier: "PAP-123", title: "Implement the launch", status: "in_progress", statusVersion: 1, assigneeAgentId: "agent-1", assigneeAgentName: "Writer" }, pendingHandoff: pending });
     cases.listHandoffs.mockImplementation((_id: string, cursor: string | null) => Promise.resolve(cursor ? { items: [handoff({ id: "handoff-0", phase: "triage", state: "cancelled" })], nextCursor: null } : { items: [pending], nextCursor: "older" }));
     render(); await waitFor(() => expect(container.textContent).toContain("Waiting for Writer to finish."));
     expect(container.querySelector('a[href="/issues/PAP-123"]')).not.toBeNull();
     const handoffs = container.querySelector('[aria-label="Case handoffs"]')!;
+    expect(container.querySelector('[aria-label="Case work"]')?.textContent).toContain("Research renamed");
+    expect(container.querySelector('[aria-label="Case work"]')?.textContent).toContain("Next: Publish · verification");
+    expect(handoffs.textContent).toContain("Research before rename · implementation → Publish · verification");
+    expect(handoffs.textContent).toContain("Pending transfer");
     expect(handoffs.querySelector('a[href="/issues/PAP-123"]')).not.toBeNull();
     click(button("Load older handoffs"));
     await waitFor(() => expect(container.textContent).toContain("Cancelled"));
@@ -255,6 +261,18 @@ describe("read-only CaseDetail", () => {
     expect(container.querySelector('a[href="/activity?entityType=case&entityId=case-1"]')?.textContent).toBe("View in Audit");
   });
 
+  it("keeps a loaded case visible after a transient background refresh fails", async () => {
+    render();
+    await waitFor(() => expect(container.textContent).toContain("Hermes agent launch post"));
+    cases.get.mockRejectedValue(new ApiError("Rate limited", 429, {}));
+    const client = clients.at(-1)!;
+    await client.refetchQueries({ queryKey: queryKeys.cases.detail("PAP-C7"), exact: true });
+    await waitFor(() => expect(client.getQueryState(queryKeys.cases.detail("PAP-C7"))?.status).toBe("error"));
+    await settle();
+    expect(container.textContent).toContain("Hermes agent launch post");
+    expect(container.querySelector('table[aria-label="Case fields"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Case not found");
+  });
   it("uses the same unavailable state for missing and inaccessible cases", async () => {
     cases.get.mockRejectedValue(new ApiError("Denied", 403, {}));
     render(); await waitFor(() => expect(container.textContent).toContain("Case not found"));

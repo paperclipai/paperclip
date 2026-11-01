@@ -1198,11 +1198,15 @@ async function consumeTurn(
         );
       }
       if (sessionGoalObserved) {
+        if (isTurnTerminal(event) && providerFailure && !providerFailure.recoverable) {
+          throw providerFailure;
+        }
         if (sessionGoal && payload.requestId === sessionGoal.requestId) {
           goalControlObserved = true;
         }
         if (
           goalControlObserved &&
+          (providerFailure === null || providerFailure.recoverable) &&
           eventGoal !== undefined &&
           goalStatus(eventGoal) !== "active" &&
           payload.workingNow !== true
@@ -2600,6 +2604,9 @@ export async function executeNativeSession(
           }
           if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && "requestedSkills" in modelEnvelope && options.backend.preparedTaskConstraints) {
             modelEnvelope.constraints = [...options.backend.preparedTaskConstraints];
+          }
+          if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
+            modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
           }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },

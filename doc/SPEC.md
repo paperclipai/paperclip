@@ -2,6 +2,15 @@
 
 Target specification for the Paperclip control plane. Living document — updated incrementally during spec interviews.
 
+Proactive in-app updates let an active standard task or routine publish to its
+agent's persistent conversation with the run's responsible human. The server
+derives the destination, enforces current authority and company-visible chat
+privacy, and persists an attributed, idempotent comment with source-task provenance.
+Unread state belongs to the viewing human. Sending is independent of task
+completion and chat execution; future messages remain possible after `/new`.
+The V1 contract is specified under experimental task-backed agent chat in
+`doc/SPEC-implementation.md`.
+
 Experimental standalone cases provide persistent structured work records that can
 exist independently of execution. Prompt-driven handoffs move their primary
 ordinary task between agents while retaining case data and history. Existing task
@@ -14,7 +23,7 @@ completion of its primary task. Existing completion and review gates remain
 authoritative; an open case alone never creates an execution requirement.
 
 Native agents have dedicated case creation/read/update and handoff tools.
-Native creation requires first-task kickoff and explicit `workflow_document_text`,
+Native creation requires first-task kickoff and either `workflowId` or explicit `workflow_document_text`,
 stored as the primary task's `workflow` Markdown document, with optional additional
 initial documents. Recommend both a Mermaid `stateDiagram-v2` map and prose
 defining every transition's conditions, evidence, destination and wait/retry rules;
@@ -27,6 +36,14 @@ fresh routing information and changed facts, with full context retained for
 new sessions and resume failure.
 
 ---
+
+Reusable workflows stay inside the Cases experiment. A workflow is a company-shared
+name and Markdown prompt; a case may adopt, leave and revisit workflows without
+changing its primary task. The task's workflow document is the effective copy,
+so shared edits affect future adoptions and explicit refreshes. Existing handoffs
+record workflow/phase movement and document revisions, including names as they
+were at the time. Authoring starts with agents/APIs; the case UI reads current
+workflow information and history.
 
 ## 1. Company Model [DRAFT]
 
@@ -856,3 +873,21 @@ Company-managed [Prompt Injection Prevention](prompt-injection-prevention.md)
 optionally classifies existing tool-result boundaries through a shared OpenRouter
 connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
+
+
+### Personal workspace presentation experiments
+
+A person may opt into an experimental workspace in Settings and return to the
+classic workspace. The presentation choice belongs to the person across companies
+on an instance; it does not grant execution capabilities or change shared work.
+The concrete current contract is in `SPEC-implementation.md` under Personal
+experimental workspace preference.
+## Agent connection administration (2026-10-13)
+
+Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.
+
+The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
+
+Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

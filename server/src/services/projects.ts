@@ -1,3 +1,7 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
+import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
+import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
@@ -78,12 +82,11 @@ export async function ensureProjectAccessMember(
     subjectId: string;
   },
 ) {
-  return dbOrTx
-    .insert(projectAccessMembers)
-    .values(input)
-    .onConflictDoNothing()
-    .returning()
-    .then((rows: Array<typeof projectAccessMembers.$inferSelect>) => rows[0] ?? null);
+  return dbOrTx.transaction(async (tx: Db) => {
+    await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
+    return tx.insert(projectAccessMembers).values(input).onConflictDoNothing().returning()
+      .then(rows => rows[0] ?? null);
+  });
 }
 
 /**
@@ -137,6 +140,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   goalIds: string[];
   goals: ProjectGoalRef[];
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  workspaceProvider?: import("@paperclipai/shared").ProjectWorkspaceProviderConfiguration;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
@@ -310,6 +314,7 @@ function pickPrimaryWorkspace(
 async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
   if (rows.length === 0) return [];
 
+  const providerCatalog = await listProjectWorkspaceProviders(db, rows[0]!.companyId);
   const projectIds = rows.map((r) => r.id);
   const workspaceRows = await db
     .select()
@@ -392,6 +397,8 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       workspaces,
       primaryWorkspace,
       managedByPlugin: managedByProjectId.get(row.id) ?? null,
+      workspaceProvider: resolveProjectWorkspaceProvider(row.executionWorkspacePolicy, providerCatalog,
+        workspaces.some(workspace => Boolean(workspace.repoUrl))),
     };
   });
 }
@@ -914,7 +921,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
         const project = await service.create(companyId, data);
         for (const repo of repositories) {
-          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
         }
         return (await service.getById(project.id))!;
       });
@@ -940,15 +947,15 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         for (const repo of repositories) {
           const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === repo.id);
           if (retained) {
-            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName) {
-              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url });
+            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName || retained.metadata?.githubRepositoryPrivate !== repo.private || retained.metadata?.githubRepositoryUrl !== repo.url) {
+              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url, metadata: { ...retained.metadata, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
             }
             continue;
           }
           const legacy = existing.find((workspace) => !workspace.metadata?.githubRepositoryId && workspace.repoUrl?.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase() === repo.url.toLowerCase());
           if (legacy) {
-            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id } });
-          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
+          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
         }
         await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
         await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, projectId);
@@ -966,11 +973,18 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      if (projectData.executionWorkspacePolicy !== undefined &&
+          projectData.executionWorkspacePolicy?.storageProviderPluginId !== existingProject.executionWorkspacePolicy?.storageProviderPluginId) {
+        const providers = await listProjectWorkspaceProviders(db, existingProject.companyId);
+        const previousOwner = resolveProjectWorkspaceProvider(existingProject.executionWorkspacePolicy, providers, false).pluginId;
+        const nextOwner = resolveProjectWorkspaceProvider(projectData.executionWorkspacePolicy, providers, false).pluginId;
+        if (previousOwner !== nextOwner) await retireRemovedPluginWorkspaceDependents(db, id);
+      }
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
       }
@@ -1000,6 +1014,8 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
       const row = await db.transaction(async (tx) => {
         if (updates.visibility !== undefined) {
+          await notifyStatusCardIssueChange(tx, existingProject.companyId);
+          await notifyChatInboundWakeNotices(tx, { companyId: existingProject.companyId });
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
         }
         const [updated] = await tx.update(projects).set(updates).where(eq(projects.id, id)).returning();
@@ -1072,6 +1088,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
       await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+      await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
       return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
     }),
@@ -1201,7 +1218,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
-
       const nextCwd =
         data.cwd !== undefined
           ? normalizeWorkspaceCwd(data.cwd)
@@ -1223,7 +1239,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       } else if (!nextCwd && !nextRepoUrl) {
         return null;
       }
-
       const patch: Partial<typeof projectWorkspaces.$inferInsert> = {
         updatedAt: new Date(),
       };
@@ -1256,6 +1271,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
             : data.metadata;
       }
 
+      if (["repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>
+          key in patch && patch[key as keyof typeof patch] !== existing[key as keyof typeof existing])) {
+        await retireRemovedPluginWorkspaceDependents(db, projectId, workspaceId);
+      }
       const updated = await db.transaction(async (tx) => {
         if (data.isPrimary === true) {
           await tx
@@ -1358,6 +1377,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
+      await retireRemovedPluginWorkspaceDependents(db, projectId, workspaceId);
 
       const removed = await db.transaction(async (tx) => {
         await detachProjectSkillSource(tx as unknown as Db, existing.companyId, workspaceId);

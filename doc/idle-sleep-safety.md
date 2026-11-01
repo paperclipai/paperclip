@@ -46,6 +46,52 @@ without installed handler tracking keeps the same conservative hold. Missing fil
 continue through the normal fallback and error handlers; they do not exempt
 other GET requests or callback-only application work.
 
+## Budget and agent lifecycle work
+
+Budget accounting commits its charge, admission block, and enforcement generation
+before returning to its caller. Cancellation delivery runs separately through the
+delivery coordinator, using the existing policy version pair and committed run
+Stop records. It can finish already-admitted stops during drain, but cannot start
+another paid turn. A provider still stopping, an unacknowledged Stop, a pending
+policy generation, and unresolved accounting remain sleep blockers.
+
+Agent lifecycle uses the same transaction-aware coordinator. Hire approval,
+configuration invalidation, manual commands, and computed agent budget holds
+register work before their transaction writes. Company status transitions register
+inherited-hold projection; changing a company name, description, or logo does not.
+Projection selects only agents whose company pause/archive hold differs from the
+committed company state, in pages of 100 under one company accounting transaction
+per page. Pause/archive transactions also persist pausing operations for agents
+with cancellable runs, reading only those involved agents in batches. Immediate
+reactivation can remove an inherited hold but cannot erase an owed Stop; new
+provider work waits for lifecycle readiness. Archive activity counts describe
+requested pauses and cancellations, not completed provider termination. Agent
+and project budget changes never enumerate company peers.
+
+Startup recovers pending lifecycle operations and inherited-hold mismatches.
+Thereafter notifications and stored retry/lease deadlines drive work. Stable ready,
+paused, rejected, and terminated history does not trigger recurring policy scans.
+Pending phases and inherited-hold mismatches block sleep. Lifecycle execution can
+verify configurations or resume queued work, so it waits while admission is
+draining or the instance is in warm standby; its durable obligation is retained.
+A future in-process retry timer does not grant permission to sleep.
+
+These notifications cover the existing single-active-writer ownership model.
+Independent SQL writers and additional processes need an explicit wake protocol;
+process-local notifications do not provide cross-replica delivery. Worker quiet
+alone is not evidence that the host or database actually suspended.
+
+## Native reply recovery
+
+Committed native replies use the shared delivery coordinator and its persisted
+retry deadlines. One pass checks at most four independent tasks at a time.
+Checks for the same company and task run in candidate order within the batch.
+Other scoped deadline workers remain serial unless their owner enables concurrency.
+Drain retains unstarted checks, and shutdown waits for every admitted check before
+releasing tracked work. Completed history creates no recurring discovery reads;
+new committed work reactivates the existing notification path. Pending reply
+obligations keep their existing sleep blockers.
+
 ## Scheduled routine wake protocol
 
 Historical failed ephemeral leases and terminal custom-image setup sessions can
@@ -65,6 +111,17 @@ also rejects an ambient API endpoint override when no endpoint was recorded.
 The manager permits at most two outstanding inspection RPCs across workers.
 Caller timeouts retain their slots until the actual worker reply or exit;
 timeouts cannot accumulate additional provider reads in later sweeps.
+
+If a failed ephemeral lease has no usable local inspection path, a managed
+Daytona instance can ask Cloud for a cleanup-only absence receipt. Cloud checks
+the stack's historical credential organization and reads the exact allocation
+with its manager credential. Only confirmed absence can produce a signed receipt
+bound to the stack, company, environment, lease, provider handle and nullable run.
+The separate cleanup type and audience cannot authorize run recovery. Older
+Cloud servers, unsupported providers, invalid signatures, changed organizations
+and failed reads leave the lease unresolved. Existing bounded cleanup batches
+and retry deadlines own these reads; no new idle polling is added. An explicit
+local provider observation is retained rather than replaced by this fallback.
 
 Host-owned verification metadata binds the company, environment, resource,
 provider handle, optional run, and exact row version. Concurrent resume,
@@ -410,3 +467,14 @@ timer remains; an empty buffer performs no database work. Existing Muse durable
 sleep blockers, external worker stop evidence, and ingress requirements remain
 unchanged. This change establishes database quiet for inactive Muse, not host
 sleep eligibility for a configured Muse connection.
+
+## Skill package maintenance
+
+The package delivery worker automatically converts legacy snapshots and versions.
+Legacy contents remain authoritative until conversion is verified. Unfinished or
+failed conversions, including rows retained while package storage is disabled,
+may wait for the next ingress wake and do not block idle sleep. Their persisted
+retry dates and package/object/native-asset retention timestamps are earliest
+maintenance eligibility, not promised delivery deadlines. Workers reconstruct persisted rows and filesystem
+access leases on startup, and use the existing coordinator's drain/standby/shutdown
+controls. No external Cloud alarm or provider suspension is established by these tests.

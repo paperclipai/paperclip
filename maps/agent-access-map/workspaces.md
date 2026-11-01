@@ -49,12 +49,38 @@ those APIs with their admitted run token. These paths do not require a project.
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
 
+Ordinary input may reuse the exact currently bound private task directory after
+an explicitly fresh retry. Preparation rechecks company, source task, current
+binding and canonical path; missing directories, symlinks and foreign roots are
+rejected. This preserves files without granting new access or replaying the
+previous turn. An explicitly fresh retry still creates a clean sibling.
+
 Task workspace writes require `issue:mutate`, an active owned task/run for agents,
 and current source visibility. Shared physical roots also require source-project
 workspace write authority. Accepting a new pending choice advances its binding
 revision; superseded retries fail while current-choice retries remain idempotent.
 Binding revisions and request keys fence retries;
 selection applies at the next normal admission without interrupting a live run.
+
+The managed `remoteWorkspaceStorageEnabled` setting defaults on for Cloud and
+self-hosted instances. New native Paperclip Runner sandbox workspaces with
+supported fresh sources reserve company/task-bound remote authority through
+existing admission only when durable Postgres, S3, and a stable key are configured.
+Existing host workspaces and configured local folders stay on the legacy path
+until an explicit import. Stored `false` disables new enrollment unless managed
+configuration overrides it. Enrolled workspaces keep remote authority when new
+enrollment is disabled, and missing persistence prerequisites fail admission
+without a controller checkout fallback. Current authorization and responsible-user
+checks still apply;
+read-only cross-project referenced folders and explicitly concurrent shared
+writers are rejected. Managed mutable same-project repositories are supported.
+Importing an existing local task folder is an operator source-checkout command,
+not an agent API or tool: see the
+[dry-run/apply runbook](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
+It requires deployment storage/key access and blocks unfinished writers/recovery.
+Source: [remote source admission](../../server/src/services/heartbeat/remote-workspace-source.ts)
+and [migration](../../server/src/services/remote-workspace-migration.ts).
+Evidence: `source-only` for these additions; live agent qualification is separate.
 
 Admission checks current task/run authority and the persisted selected configuration.
 It does not inventory physical aliases or authorize historical sources/readers.
@@ -158,6 +184,14 @@ new controller-side Git acquisition. Evidence remains source-only here; focused
 [repository tests](../../server/src/__tests__/task-workspace-repositories-trust.test.ts)
 are separate from live agent qualification.
 
+An admitted native standard task can read a same-agent completion continuation
+for its own pending repository in its current workspace. An explicit yield may
+use that saved continuation; explicit completion remains completion. Existing
+status decisions and wake admission retain Stop and authorization gates. The
+[workspace API regression](../../server/src/__tests__/task-workspace-api.test.ts)
+and [driver regression](../../packages/paperclip-runner/src/drivers/completion-continuation.test.ts)
+cover this contract; live qualification remains separate.
+
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
 
@@ -237,6 +271,17 @@ reader, physical-root, and directory acquisition classifications have no effect.
 Root containment and symlink escape checks remain, and attachments, task records,
 workspace metadata, and operation logs retain their app-data privacy.
 
+For enrolled remote workspaces the same board file-resource endpoints read the
+authorized live allocation or a verified committed saved version. Returned
+`source.kind` is `live` or `saved`, with `savedAt` for a saved copy. An unavailable
+dirty allocation cannot silently fall back to stale saved bytes. Remote paths
+never become controller filesystem authority. Confined path/symlink checks,
+bounded search/preview, download streaming, and cancellation remain enforced by
+[remote file access](../../server/src/services/remote-workspace-files.ts).
+Evidence: `source-only` here; regression suites are not a live agent read proof.
+Verification: `not-run` — exercise allowed live/saved reads and deny another
+company, changed binding, traversal, and unsaved-allocation fallback.
+
 ## `closure`
 
 Capability ID: `workspaces/closure`.
@@ -254,6 +299,8 @@ reconcile-branch requires board.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
+Workspace metadata reads do not perform storage inspection or certify delivery.
+The explicit close-readiness API and destructive cleanup retain live safety checks.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/workspace-runtime-service-authz.ts#L76) at the
@@ -266,3 +313,15 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Closure/readiness exists; not every workspace can be reopened, and branch
 reconciliation has a board boundary.
+
+Remote closure additionally requires a clean committed snapshot and no active
+writer. It releases confirmed remote compute while retaining the saved authority;
+reopen restores from that saved version when the allocation is gone. Custom
+cleanup/teardown commands block remote close. Manual runtime commands, jobs,
+repairs, and services reject remote workspaces before local filesystem access.
+Agent tasks remain the supported execution path. No new agent authority is granted.
+Source: [remote lifecycle](../../server/src/services/remote-workspace-lifecycle.ts)
+and [close readiness](../../server/src/services/execution-workspaces.ts).
+Evidence: `source-only` for the remote extension. Verification: `not-run` —
+reject dirty/unfinished/custom-command close, confirm clean release retains the
+snapshot, then reopen under current task/company authorization.

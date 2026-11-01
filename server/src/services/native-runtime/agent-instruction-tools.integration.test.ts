@@ -5,12 +5,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, issues, agentInstructionRevisions, createDb } from "@paperclipai/db";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { resolveManagedInstructionsRoot } from "../agent-instructions.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 describe("canonical instruction tools through native authority", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
   let home: string;
   const previousHome = process.env.PAPERCLIP_HOME;
@@ -21,7 +21,7 @@ describe("canonical instruction tools through native authority", () => {
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-tool-home-")));
     process.env.PAPERCLIP_HOME = home;
-    database = await startEmbeddedPostgresTestDatabase("instruction-tool-db-");
+    database = await startRecoveryPostgres("instruction-tool-db-");
     db = createDb(database.connectionString);
   }, 90_000);
   afterAll(async () => {
@@ -151,6 +151,7 @@ describe("canonical instruction tools through native authority", () => {
       expect(audit.filter((event) => event.action === "agent.instruction_write_attempted")).toHaveLength(1);
       expect(audit.filter((event) => event.action === "agent.files_updated")).toHaveLength(0);
       authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      expect(await authority.recover(request)).toBeNull();
       await expect(authority.execute(request)).rejects.toMatchObject({ code: "semantic_tool_outcome_unknown" });
       await expect(authority.execute({ ...request, arguments: { ...request.arguments, content: "different" } }))
         .rejects.toThrow("idempotency_conflict");
@@ -166,11 +167,28 @@ describe("canonical instruction tools through native authority", () => {
     }
   });
 
-  it("replays a committed receipt after its database commit acknowledgement is lost", async () => {
+  it.each(["update_agent_instructions", "restore_agent_instructions"])("recovers %s after its database commit acknowledgement is lost without repeating the write", async (tool) => {
     const first = await call("read_agent_instructions");
-    const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
-      targetAgentId, entryFile, content: "committed but acknowledgement lost\n", baseRevisionId: first.revision.id,
+    const content = "committed but acknowledgement lost\n";
+    const revisionId = randomUUID();
+    if (tool === "restore_agent_instructions") {
+      // Legacy revision data remains valid input to the production restore tool.
+      await db.insert(agentInstructionRevisions).values({
+        id: revisionId, companyId, agentId: targetAgentId, entryFile, source: "tool",
+        contentBase64: Buffer.from(content).toString("base64"),
+        contentHash: createHash("sha256").update(content).digest("hex"), byteLength: Buffer.byteLength(content),
+      });
+    }
+    const request = { tool, callId: randomUUID(), arguments: {
+      targetAgentId, entryFile, baseRevisionId: first.revision.id,
+      ...(tool === "restore_agent_instructions" ? { revisionId } : { content }),
     } };
+    const originalRename = fs.rename.bind(fs);
+    let writes = 0;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (destination === path.join(root, entryFile)) writes++;
+      return originalRename(source, destination);
+    });
     const transaction = db.transaction.bind(db);
     let commits = 0;
     const spy = vi.spyOn(db, "transaction").mockImplementation(async (...args) => {
@@ -182,13 +200,46 @@ describe("canonical instruction tools through native authority", () => {
       await expect(authority.execute(request)).rejects.toThrow("injected lost commit acknowledgement");
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       const receipt = (run!.resultJson as any).semanticToolReceipts[`instruction:${request.callId}`].result;
-      expect(receipt).toMatchObject({ changed: true, content: request.arguments.content });
+      expect(receipt).toMatchObject({ changed: true, content });
       authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
-      expect(await authority.execute(request)).toEqual(receipt);
+      expect(await authority.recover(request)).toEqual({ result: receipt });
+      expect(await authority.recover({ ...request, callId: randomUUID() })).toBeNull();
+      await expect(authority.recover({ ...request, arguments: { ...request.arguments, baseRevisionId: randomUUID() } }))
+        .rejects.toThrow("idempotency_conflict");
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+      await expect(authority.recover(request)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));
+      await expect(authority.recover(request)).rejects.toMatchObject({ status: 403 });
       const audit = await db.select().from(activityLog).where(eq(activityLog.runId, runId));
       expect(audit.filter((event) => event.action === "agent.instruction_write_attempted")).toHaveLength(1);
       expect(audit.filter((event) => event.action === "agent.files_updated")).toHaveLength(1);
-      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(request.arguments.content);
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(content);
+      expect(writes).toBe(1);
+    } finally { spy.mockRestore(); renameSpy.mockRestore(); }
+  });
+
+  it("holds recovery if a receipt disappears before its locked replay", async () => {
+    const first = await call("read_agent_instructions");
+    const request = { tool: "update_agent_instructions", callId: randomUUID(), arguments: {
+      targetAgentId, entryFile, content: "saved instructions", baseRevisionId: first.revision.id,
+    } };
+    await authority.execute(request);
+    // Make repeating the effect observable even though the original CAS would pass.
+    await fs.writeFile(path.join(root, entryFile), original);
+    const transaction = db.transaction.bind(db);
+    const spy = vi.spyOn(db, "transaction").mockImplementationOnce(async (...args) => {
+      await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, runId));
+      return transaction(...args);
+    });
+    try {
+      await expect(authority.recover(request)).rejects.toMatchObject({ code: "semantic_tool_outcome_unknown" });
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(original);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run!.resultJson).toEqual({});
+      const audit = await db.select().from(activityLog).where(eq(activityLog.runId, runId));
+      expect(audit.filter((event) => event.action === "agent.instruction_write_attempted")).toHaveLength(1);
+      expect(audit.filter((event) => event.action === "agent.files_updated")).toHaveLength(1);
     } finally { spy.mockRestore(); }
   });
 

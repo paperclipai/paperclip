@@ -79,6 +79,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
   let nativeInstructionReservation: Awaited<ReturnType<typeof reserveWarmNativeInstructionDirectory>> = null;
   let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
   let instructionSave: Record<string, unknown> | null = null;
+  const task = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerTask : undefined;
   const instructionPreparationKey = createHash("sha256").update(JSON.stringify({
     adapterType: agent.adapterType, adapterConfig: agent.adapterConfig, runtimeConfig: agent.runtimeConfig, sessionConfigMetadata,
     duplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(executionTarget),
@@ -127,7 +128,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
     nativeRuntimeResolution: Selection["nativeRuntimeResolution"];
     hasInstructionFilesystem: boolean;
   }) {
-    if (hasInstructionFilesystem) {
+    if (hasInstructionFilesystem && !task) {
       try {
         // Missing contract fields on a restored session mean the deployed
         // legacy format. New sessions opt into whole-directory persistence.

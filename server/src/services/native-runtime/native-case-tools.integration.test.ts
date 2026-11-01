@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, caseAccessSources, caseDocuments, caseEvents, caseHandoffs, caseIssueLinks, cases, documents, heartbeatRuns, issues, pipelineCases, pipelines, pipelineStages } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseAccessSources, caseDocuments, caseEvents, caseHandoffs, caseIssueLinks, cases, documents, heartbeatRuns, issues, pipelineCases, pipelines, pipelineStages, workflows } from "@paperclipai/db";
 import { SYSTEM_ISSUE_DOCUMENT_KEYS } from "@paperclipai/shared";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -83,6 +83,47 @@ describe("native case tools through authenticated production routes", () => {
       page = await f.call("read_case", { ...selector, offsetBytes, snapshot }) as DocumentPage;
     }
   }
+  it.each(["update_case", "create_workflow", "update_workflow"])("recovers a committed %s result without repeating its write", async tool => {
+    const f = await fixture();
+    const key = `lost-${tool}`;
+    let input: Record<string, unknown>;
+    if (tool === "update_case") input = { idempotencyKey: key, title: "Recovered case" };
+    else if (tool === "create_workflow") input = { idempotencyKey: key, name: "Recovered workflow", prompt: "Preserve this procedure." };
+    else {
+      const created = await f.call("create_workflow", { idempotencyKey: "seed", name: "Before", prompt: "Preserve this procedure." }) as { data: { id: string } };
+      input = { idempotencyKey: key, workflowId: created.data.id, name: "Recovered workflow" };
+    }
+    const original = await f.call(tool, input);
+    expect(original).toMatchObject({ ok: true });
+    const snapshot = async () => ({
+      cases: await server.db.select().from(cases).where(eq(cases.id, f.record.id)),
+      events: await server.db.select().from(caseEvents).where(eq(caseEvents.caseId, f.record.id)),
+      workflows: await server.db.select().from(workflows).where(eq(workflows.companyId, f.companyId)),
+    });
+    const before = await snapshot();
+    const replacement = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: true, workMode: "standard" });
+    const recover = (arguments_: unknown = input) => replacement.recover({ tool, callId: "lost-provider-response", arguments: arguments_ });
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Recovery must not dispatch HTTP"));
+    try {
+      expect(await recover()).toEqual({ result: original });
+      expect(await recover({ ...input, idempotencyKey: "no-receipt" })).toBeNull();
+      expect(await recover({ ...input, ...(tool === "update_case" ? { title: "Different" } : { name: "Different" }) })).toBeNull();
+      const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const completed = run!.resultJson!;
+      const receipts = completed.apiToolReceipts as Record<string, Record<string, unknown>>;
+      await server.db.update(heartbeatRuns).set({ resultJson: { ...completed, apiToolReceipts:
+        Object.fromEntries(Object.entries(receipts).map(([id, receipt]) => [id, { ...receipt, state: "pending" }])) } }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await recover()).toBeNull();
+      await server.db.update(heartbeatRuns).set({ resultJson: completed }).where(eq(heartbeatRuns.id, f.runId));
+      const disabled = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: false, workMode: "standard" });
+      await expect(disabled.recover({ tool, callId: "lost-provider-response", arguments: input })).rejects.toThrow("Cases are disabled");
+      await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+      await expect(recover()).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      expect(await snapshot()).toEqual(before);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { fetch.mockRestore(); }
+  });
+
   it("exposes case facts and creation without a second document tool surface", async () => {
     const f = await fixture();
     const names = f.authority.definitions().map(tool => tool.name);
@@ -101,6 +142,55 @@ describe("native case tools through authenticated production routes", () => {
     expect(sources).toEqual(expect.arrayContaining([expect.objectContaining({ sourceKind: "issue", sourceId: f.issueId })]));
     const events = await server.db.select().from(caseEvents).where(eq(caseEvents.caseId, f.record.id));
     expect(events.filter(event => event.kind === "fields_changed")).toHaveLength(1);
+  });
+  it("authors, pages, reuses and protects workflows with generic APIs disabled", async () => {
+    const f = await fixture();
+    expect(f.authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
+      "list_workflows", "read_workflow", "create_workflow", "update_workflow",
+    ]));
+    const prompt = "Reusable 🧾 instructions\n".repeat(2000);
+    const input = { idempotencyKey: "workflow-create", name: "Receipt procedure", prompt };
+    const created = await f.call("create_workflow", input) as { ok: boolean; data: { id: string } };
+    expect(created).toMatchObject({ ok: true, status: 201, data: { name: input.name } });
+    expect(created.data).not.toHaveProperty("prompt");
+    expect(await f.call("create_workflow", input)).toEqual(created);
+    expect(await f.call("list_workflows")).toMatchObject({ ok: true, data: [{ id: created.data.id, name: input.name }] });
+    let offsetBytes = 0, text = "", snapshot: string | undefined;
+    for (let i = 0; ; i++) {
+      expect(i).toBeLessThan(20);
+      const page = await f.call("read_workflow", { workflowId: created.data.id, snapshot, responseText: { offsetBytes, limitBytes: 8192 } }) as {
+        ok: boolean; data: string; snapshot: string; responseText: { nextOffsetBytes: number | null };
+      };
+      expect(page.ok).toBe(true);
+      expect(page.snapshot).toMatch(/^[a-f0-9]{64}$/);
+      snapshot ??= page.snapshot;
+      expect(page.snapshot).toBe(snapshot);
+      expect(Buffer.byteLength(page.data)).toBeLessThanOrEqual(8192);
+      text += page.data;
+      if (page.responseText.nextOffsetBytes === null) break;
+      offsetBytes = page.responseText.nextOffsetBytes;
+    }
+    expect(JSON.parse(text)).toMatchObject({ id: created.data.id, prompt });
+    const receipt = await f.call("create_case", { idempotencyKey: "reusable-kickoff", title: "Reusable receipt", caseType: "loose",
+      workflowId: created.data.id, kickoff: { toAgentId: f.agentId, phase: "custom phase", instructions: "Read workflow" } }) as { taskId: string; caseId: string };
+    expect((await documentService(server.db).getIssueDocumentByKey(receipt.taskId, "workflow"))?.body).toBe(prompt);
+    await expect(f.call("read_workflow", { workflowId: created.data.id, responseText: { offsetBytes: 8192 } })).rejects.toThrow("Invalid workflow arguments");
+    expect(await f.call("update_workflow", { workflowId: created.data.id, idempotencyKey: "workflow-edit", prompt: prompt.replaceAll("Reusable", "Adjusted") })).toMatchObject({ ok: true });
+    expect(await f.call("read_workflow", { workflowId: created.data.id, snapshot, responseText: { offsetBytes: 8192 } })).toMatchObject({ ok: false, status: 409 });
+    const restarted = await f.call("read_workflow", { workflowId: created.data.id, responseText: { limitBytes: 4 } }) as { ok: boolean; data: string; snapshot: string };
+    expect(restarted.ok).toBe(true);
+    expect(restarted.snapshot).toMatch(/^[a-f0-9]{64}$/);
+    expect(restarted.snapshot).not.toBe(snapshot);
+    expect(Buffer.byteLength(restarted.data)).toBeLessThanOrEqual(4);
+    expect((await documentService(server.db).getIssueDocumentByKey(receipt.taskId, "workflow"))?.body).toBe(prompt);
+    const foreign = await fixture();
+    expect(await foreign.call("read_workflow", { workflowId: created.data.id })).toMatchObject({ ok: false, status: 404 });
+    expect(await foreign.call("update_workflow", { workflowId: created.data.id, idempotencyKey: "foreign", name: "No" })).toMatchObject({ ok: false, status: 404 });
+    await server.db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await f.call("update_workflow", { workflowId: created.data.id, idempotencyKey: "stopped-workflow", name: "No" })).toMatchObject({ ok: false, status: 403 });
+    await instanceSettingsService(server.db).updateExperimental({ enableCases: false });
+    try { await expect(foreign.call("list_workflows")).rejects.toThrow("Cases are disabled"); }
+    finally { await instanceSettingsService(server.db).updateExperimental({ enableCases: true }); }
   });
   it("requires kickoff before any case, task, comment, document or wake side effect", async () => {
     const f = await fixture();
@@ -123,6 +213,14 @@ describe("native case tools through authenticated production routes", () => {
       await expect(f.call("create_case", { ...input, kickoff, ...extra })).rejects.toThrow();
     }
     expect(await snapshot()).toEqual(before);
+  });
+  it("does not publish contained run instructions into company workflows", async () => {
+    const f = await fixture();
+    await server.db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: {
+      trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", rootIssueId: f.issueId } },
+    } } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await f.call("create_workflow", { idempotencyKey: "contained", name: "Do not publish", prompt: "Untrusted instructions" }))
+      .toMatchObject({ ok: false, status: 403 });
   });
   it("requires explicit nonblank workflow text before native creation has any side effects", async () => {
     const f = await fixture();
@@ -418,7 +516,7 @@ describe("native case tools through authenticated production routes", () => {
     expect(review.definitions().map(tool => tool.name)).not.toContain("read_case");
     await expect(review.execute({ tool: "update_case", callId: randomUUID(), arguments: { idempotencyKey: "review", title: "No" } })).rejects.toThrow("may only inspect");
     await server.db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, f.issueId));
-    await expect(f.call("read_case")).rejects.toThrow("mode_denied");
+    await expect(f.call("read_case")).rejects.toMatchObject({ status: 403 });
     await server.db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, f.issueId));
     await instanceSettingsService(server.db).updateExperimental({ enableCases: false });
     try { await expect(f.call("read_case")).rejects.toThrow("Cases are disabled"); }

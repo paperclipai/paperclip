@@ -178,6 +178,24 @@ It retains GitHub's destructive classification. Read tools include
 Provider references: [MCP toolset configuration](https://github.com/github/github-mcp-server/blob/main/docs/server-configuration.md)
 and [workflow dispatch permissions](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
 
+GitHub response reconciliation reads run status and request identity without
+loading prompts, runtime profiles, results, or log excerpts. Request ownership
+checks still use current company, agent, task, and accepted message provenance.
+The run context projection retains `issueId`, `taskId`, `wakeCommentId`, and
+`wakeCommentIds`; larger runtime data stays in its owning reads.
+
+## Webhook delivery recovery
+
+The Cloud connector authenticates the outer event batch before it processes
+individual encrypted App deliveries. If an inner delivery cannot be decrypted
+or fails its route binding check, the instance reports a failed delivery and
+leaves it unacknowledged in Cloud. A local warning includes the authenticated
+delivery ID and a fixed failure reason, without event contents or raw errors.
+Other valid events in the batch can still finish and acknowledge independently.
+Failed ciphertext never reaches the
+GitHub webhook handler. The broker retains failed deliveries for retry under
+its normal lease and retention policy; this does not recover a lost old key.
+
 ## Webhooks
 
 For the shared GitHub account connector, Paperclip Cloud verifies
@@ -310,6 +328,36 @@ subscription behavior. Explicitly mentioning this bot admits a request even when
 another recipient is named. The routing rule does not change automatic issue or PR
 event policies. Archived bots and identities from other companies or providers
 are excluded from the routing lookup.
+
+## Retrying a saved request
+
+A normal task Retry can continue a newer saved GitHub message after an earlier
+attempt failed. Execution revalidates the exact admitted successor, its current
+linked principal and repository access, and the durable continuation receipt;
+it does not repeat the admission that already consumed the recovery hold.
+A failed native predecessor still requires its committed failed result and
+exact executor termination proof. Successful results and uncertain delivery do
+not grant a replay. A certified failed-chat Retry retains the exact accepted
+message identity when its predecessor stopped before identity initialization,
+so a published review can expose its authorized passive response wait.
+If an inherited task-resume attempt already recorded a result, ordinary Retry
+explains that exact replay is unavailable and directs the user to send a new
+message to continue from saved work. That new turn still passes normal current
+requester, access and executor-containment checks.
+
+If that successor failed at Retry authorization before runtime or provider
+startup, the next normal Retry follows its canonical source receipt. The exact
+system diagnostic, settlement events, empty execution evidence and absence of
+allocated resources establish that narrow recovery path. A generic setup
+failure or a claimed `providerWorkStarted: false` does not establish it.
+
+The canonical task Retry also recognizes an isolated-directory binding failure
+at the workspace preparation boundary before allocation. Its structured reason
+and task binding, trusted failed settlement, dispatch-only profile and absence
+of execution resources must all agree. Other workspace validation failures do
+not inherit this permission. Current request authorization still runs at both
+admission and execution; a failed unadmitted Retry intent does not replace the
+saved request or prevent a later deliberate Retry.
 
 ## Run projection
 

@@ -1,6 +1,7 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.js";
-import { AGENT_OBSERVABILITY_ENV_KEYS, applyObservabilityEnvironment } from "../agent-observability.js";
+import { codexShellEnvironmentKeys } from "../codex-shell-environment.js";
+import { applyObservabilityEnvironment } from "../agent-observability.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import { emitStartupReuse, environmentStartupReuse, summarizeStartupReuse, type StartupReuseReason } from "../startup-reuse.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
@@ -1545,10 +1546,10 @@ function buildCodexStartupConfig(input: {
   requestedModel: string;
   requestedThinkingEffort: string;
   fastMode: boolean;
-  identityEnvironmentKeys?: string[];
+  shellEnvironmentKeys?: string[];
 }): { value: string | null; invalidExistingConfig: boolean } {
   const hasRuntimeConfig = Boolean(
-    input.requestedModel || input.requestedThinkingEffort || input.fastMode || input.identityEnvironmentKeys,
+    input.requestedModel || input.requestedThinkingEffort || input.fastMode || input.shellEnvironmentKeys,
   );
   if (!hasRuntimeConfig) return { value: null, invalidExistingConfig: false };
 
@@ -1579,10 +1580,10 @@ function buildCodexStartupConfig(input: {
             },
           }
         : {}),
-      ...(input.identityEnvironmentKeys ? {
+      ...(input.shellEnvironmentKeys ? {
         features: { ...parseObject(existing.features), ...(input.fastMode ? { fast_mode: true } : {}), shell_snapshot: false },
         shell_environment_policy: { ...parseObject(existing.shell_environment_policy),
-          inherit: "all", ignore_default_excludes: true, include_only: input.identityEnvironmentKeys },
+          inherit: "all", ignore_default_excludes: true, include_only: input.shellEnvironmentKeys },
       } : {}),
     }),
     invalidExistingConfig,
@@ -2119,15 +2120,10 @@ async function buildRuntime(input: {
     env.GEMINI_MODEL = requestedModel;
   }
   if (acpxAgent === "codex") {
+    const shellEnvironmentKeys = codexShellEnvironmentKeys(env, resolvedAdapterEnv, Boolean(input.ctx.agentIdentity));
     const codexStartupConfig = buildCodexStartupConfig({
       existingConfig: env.CODEX_CONFIG,
-      ...(input.ctx.agentIdentity ? { identityEnvironmentKeys: [...new Set([
-        "PATH", "HOME", "LANG", "TMPDIR", "CODEX_HOME",
-        "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
-        // Preserve Codex's default secret-name exclusions. The short-lived
-        // Paperclip API token is required by the agent skill's Bash/curl calls.
-        ...Object.keys(env).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
-      ])] } : {}),
+      shellEnvironmentKeys,
       requestedModel,
       requestedThinkingEffort,
       fastMode,

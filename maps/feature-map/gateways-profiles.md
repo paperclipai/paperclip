@@ -66,7 +66,7 @@ Manual: Create a bounded profile, choose its offered tools and options, save or 
 ## Gotchas
 
 - A copied endpoint is not proof of client authentication or tool discovery.
-- Gateway access cannot replace underlying connection/action permission checks.
+- Gateway access cannot replace underlying connection/action permission checks. Agent-issued clients retain the issuer and responsible user; issuer and target Block, Ask first and rate policies intersect, including after approval. Revoked or narrowed token authority stops continuation.
 - Advanced tool routes require the appropriate admin gate; legacy tool URLs may redirect.
 
 ### Storybook verification
@@ -79,3 +79,6 @@ Scope: ui
 Storybook: Mount current TokensPanel with issue controls, once-only token reveal, expiry/actions, revocation confirmation and failures. Old GatewaysTab fixtures and assistant OAuth revocation are insufficient.
 Production: Issue bounded token via POST /tool-gateway/gateways/{id}/tokens; call allowed and excluded tools; revoke via /tool-gateway/gateway-tokens/{id}/revoke and verify denial using same client.
 Sources: Source: [TokensPanel.tsx](../../ui/src/pages/apps/gateways/panels/TokensPanel.tsx), [tool-gateway.ts](../../server/src/routes/tool-gateway.ts), [tools.ts](../../ui/src/api/tools.ts). Tests: [TokensPanel.test.tsx](../../ui/src/pages/apps/gateways/panels/TokensPanel.test.tsx), [tool-gateway-service.test.ts](../../server/src/__tests__/tool-gateway-service.test.ts), [tool-gateway.test.ts](../../server/src/__tests__/tool-gateway.test.ts)
+### `delegated-configuration`
+
+See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).

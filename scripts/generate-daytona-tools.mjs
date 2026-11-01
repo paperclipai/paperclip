@@ -12,7 +12,7 @@ const snake = value => value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a
 
 /** Retain only reachable input definitions, rather than copying the whole API
  * schema into every action. Provider response schemas are not tool inputs. */
-function inputSchema(value, schemas) {
+export function inputSchema(value, schemas) {
   const definitions = {};
   function visit(node) {
     if (Array.isArray(node)) return node.map(visit);

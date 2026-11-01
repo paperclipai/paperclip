@@ -9,6 +9,11 @@ setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.
 Chat channels additionally require an endpoint and linked sender identity.
 
+Google runtime setup offers a Gemini API key or a separate local Antigravity
+browser sign-in. The browser redirect requires no pasted code; setup displays
+the verified Google email before Connect. Connection setup does not qualify the
+pending Antigravity execution profile. See [AI connections](../../doc/connections/AI-CONNECTIONS.md#local-subscription-sign-in).
+
 Feature ID: `connection-setup`.
 
 Agent access: [companion](../agent-access-map/connection-setup.md).
@@ -17,6 +22,10 @@ Prompt Injection Prevention reuses shared OpenRouter API-key setup directly from
 Settings → Connections. It adds no Apps provider or transport. Credential ownership
 and audience rules are the existing connection rules; saving a connection alone
 does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
+
+1Password is available from Apps with a service-account token and an official
+service-account creation link. Its vault access is chosen in 1Password; action
+policies use the ordinary Permissions screen. See [connector notes](../../doc/connections/1PASSWORD.md).
 
 ## Sub-features
 
@@ -70,6 +79,17 @@ or open `/apps/chat/connect`. Complete that provider's endpoint setup, then
 open its settings (`/apps/chat/:endpointId/settings`). Follow identity linking
 as the intended sender before messaging the agent externally.
 
+### `delegated-configuration`
+
+Ask a standard agent to configure a disposable app or account from its assigned
+task. The agent uses REST or admitted native `search_api` / `call_api`, reuses
+saved accounts and drafts, and returns the exact saved setup link when human
+authentication, consent, credential entry or identity confirmation is required.
+Open that link as the addressed person. Personal ownership stays with that
+person; audit attribution stays with the acting agent. Existing agents retain
+their explicit grants and restrictions. See the [access companion](../agent-access-map/connection-setup.md)
+and [native admission contract](../agent-access-map/README.md#native-rest-transport).
+
 ## Driving it with Playwright and the Paperclip CLI
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
@@ -99,12 +119,50 @@ saved connection. Run a permitted read-only action with an eligible agent and
 verify its useful result. Try an ineligible agent and confirm denial. Repeat
 with a user who cannot install company-wide; the UI must not imply broad access.
 
+Notebook is internally gated by `enablePaperclipNotebook` (default off, no settings toggle). Disabled instances hide setup/discovery and deny curated Notebook dispatch and publishing; local removal and grant revocation remain available.
+
+Availability is catalog metadata evaluated by shared connector checks. Notebook
+publication and file uploads stay in the Notebook service.
+
+Paperclip Notebook uses the existing personal-account MCP OAuth setup at
+`https://notebook.paperclip.app/mcp`. Sign in through Cloud, assign agents, and
+verify tool discovery. The connection keeps its default catalog name.
+Reconnect must preserve agent assignments and Allowed / Ask first / Off choices.
+Removal disables local use and clears saved credentials. Remote authorization
+can be revoked separately in Notebook's Connected apps screen; automatic remote
+cleanup and custom keyed refresh recovery are deferred. A lost rotating-token
+response may require reconnecting. Notebook tools use the selected connection's
+ordinary action gateway. See [Notebook](../../doc/connections/PAPERCLIP-NOTEBOOK.md)
+for the Notebook-owned uploader and fixture coverage. Live Notebook qualification
+still requires the deployed service and both hosted and self-hosted clients.
+
 Daytona follows this same key/access wizard. Its native method exposes the
 published platform and Toolbox HTTP actions using provider sandbox IDs, without
 a Paperclip task or lease requirement. [Daytona browser setup](../../tests/e2e/daytona-connector.spec.ts)
 checks the catalog, password field, access controls, and optional organization
 pin. It does not submit a key or qualify a real provider account. See
 [Daytona](../../doc/connections/DAYTONA.md) for API-key authority and OAuth limits.
+
+For Braintrust, verify US OAuth (default), US API key, EU OAuth, and EU API key
+from both Apps and `/apps/connect?source=braintrust`. Inspect the exact regional
+endpoint and method after Save & exit, cancellation/resume, and reconnect;
+these operations must retain the saved connection and its access choices.
+Verify the key stays out of browser draft storage and public responses, then
+perform a bounded read and disposable write through an actual eligible run.
+The [Braintrust qualification matrix](../../doc/connections/BRAINTRUST.md#qualification-record)
+records completed US OAuth connect/discovery, bounded read, synthetic write
+through actual process-agent gateway calls, catalog refresh, reconnect, local
+removal, and structural redaction. US API-key and both EU methods still need
+account-bound proof. Live token expiry/refresh, remote OAuth revocation, and
+native CLI automatic capability delivery remain unqualified; public metadata
+and fixtures do not establish those results.
+
+Unikraft follows the same key/access wizard. Setup asks only for the API token;
+the default metro is an optional select under Advanced, and each action can name
+another published metro. [Unikraft browser setup](../../tests/e2e/unikraft-connector.spec.ts)
+checks the catalog, password field, access controls and the advanced metro. It
+does not submit a token or qualify a real provider account. See
+[Unikraft](../../doc/connections/UNIKRAFT.md) for token authority and metros.
 
 ### `mcp-link`
 
@@ -163,11 +221,49 @@ configuration changes, saved retry deadlines, rollback, and parking pending
 repair while an endpoint or connection is inactive. The provider responses are
 fixtures. Settled maintenance leaves no discovery timer or database scans.
 
+GitHub Cloud setup also covers an older empty-queue backoff, concurrent setup and
+background leases, and retry after a Cloud error in the
+[event poller regression](../../server/src/services/github-connection-events.test.ts).
+Channel integration checks that active setup drains its signed ping through the
+normal webhook handler; a forged ping still cannot verify the endpoint. These
+fixtures do not establish live Cloud delivery. For live proof, start a disposable
+App after an idle personal GitHub connection, complete installation, and confirm
+that the same draft advances after authenticating the queued ping.
+
 Manual: complete setup for one named provider, reload endpoint settings, link
 the intended sender, and send a disposable message. Verify one task and a useful
 reply in the originating conversation. Inspect an unlinked sender's denial and
 the endpoint's pause behavior. Repeat independently for each provider at issue;
 Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
+
+### `delegated-configuration`
+
+Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
+uses production agent creation, persistent keys, run JWTs, native tool bindings,
+human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
+setup, ownership, attribution, scope, trust, work modes and revocation. The
+[Google service picker tests](../../ui/src/features/connections/GoogleWorkspaceServices.test.tsx)
+cover pending choices, consent precedence and failed grant loading with API mocks.
+These are separate from live provider setup and model success.
+
+Manual: Have the agent perform authorized setup, then open its saved handoff as
+the addressed person. Reload before completing the required human step; verify
+the same resource, saved access choices, human ownership and acting-agent audit
+remain. Complete the step, verify the exact task continues, and confirm that
+revoked authority or cancelled work prevents continuation. An ordinary bot-token
+repair or an unchanged credential must not complete a signing-key request.
+
+For Google, request a specific service set, leave and reopen setup, and inspect
+the addressed user's pending choices. Another user's or organization grant must
+not supply those choices. A newer actual consent supersedes the saved request;
+a token refresh does not. A failed grant read must not broaden the selection.
+For Vercel personal setup, verify the selected credential belongs to the
+responsible person and new bindings record the configuring human as creator.
+Agent-initiated API changes retain the acting agent in audit; the human callback
+retains its actual human actor.
+Use the [chat endpoint recipe](chat-channels.md#endpoint-management) for GitHub
+field-specific credential entry and saved rotation recovery, and the
+[model-account recipe](runs-adapters.md#managed-account-setup) for AI sign-in.
 
 ## Gotchas
 
@@ -190,3 +286,22 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 ### Documentation scope: App catalog and connection setup
 
 Provider-specific authentication/revocation, credential-only accounts, and aggregator administrative variants still need their own detailed matrices.
+
+Supabase and Vercel deployment connections (2026-10-22): Apps offers Supabase
+browser sign-in, hosted MCP personal access token, and project-scoped Management
+API methods, plus Vercel's team-scoped access token method. Supabase's optional
+MCP project pin leaves project creation available when unset; the native method
+requires a project and offers Edge Function deployment and selected configuration.
+Vercel supports preview/production deployment, build settings, environment
+variables and existing domain attachment. Personal/shared credential ownership,
+action permissions, reconnect and removal use the regular setup flow. See
+[Supabase](../../doc/connections/SUPABASE.md) and
+[Vercel](../../doc/connections/vercel.md) for method boundaries and qualification.
+
+For these native methods, continue past a successful connection test into an
+actual native agent task: readiness, assigned-tool delivery, and task-card reuse
+must all work. The 2026-10-23 walkthrough exposed and repaired omitted REST
+admission at those boundaries. Verify a served deployment and provider settings,
+not only the catalog action count. Vercel preview requires an existing deployment;
+its provider makes the first deployment production, so an empty-project preview
+must fail before submission and explain the explicit production prerequisite.

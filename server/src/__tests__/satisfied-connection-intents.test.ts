@@ -1,8 +1,10 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, companyMemberships, connectionGrants, connectionGrantDelegations,
-  connectionIntentDeliveries, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
+  chatConversations, chatEndpoints, chatPublications, connectionIntentDeliveries, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
   toolCatalogEntries, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfiles, toolPolicies,
 } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
@@ -17,17 +19,19 @@ import { remoteTerminationReceipt } from "../services/remote-execution-terminati
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
+import { reserveRunBudget } from "../services/budget-reservations.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SATISFIED_CONNECTION_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 
 describePostgres("already available connection requests", () => {
   let db!: ReturnType<typeof createDb>;
   let temp!: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
-    db = createDb(temp.connectionString);
-    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+    if (!externalUrl) temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
+    db = createDb(externalUrl ?? temp.connectionString);
+    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
   }, 20_000);
   beforeEach(async () => { await db.execute(sql`truncate table companies cascade`); });
   afterAll(async () => { await db.$client.end({ timeout: 1 }); await temp?.cleanup(); });
@@ -57,6 +61,55 @@ describePostgres("already available connection requests", () => {
       responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId }, resultJson: { conversationContinuation: "continue_conversation_v1" } }).returning();
     return run!;
   }
+
+  it("wakes governed response recovery only when automatic cleanup retires a connection card", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeReviewResponse, notified);
+    try {
+      expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 1 });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+      expect(notified).toHaveBeenCalledOnce();
+      expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 0 });
+      expect(notified).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
+  it("notifies terminal confirmation recovery after existing-access retirement commits", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatTerminalConfirmations, notified);
+    try {
+      await db.transaction(async tx => {
+        expect(await satisfiedConnectionIntentService(tx as unknown as typeof db).sweepPending()).toMatchObject({ satisfied: 1 });
+        expect(notified).not.toHaveBeenCalled();
+        expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("pending");
+      });
+      expect(notified).toHaveBeenCalledOnce();
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+    } finally { unsubscribe(); }
+  });
+
+  it("settles a published Slack card when existing access retires the connection request", async () => {
+    const f = await seed();
+    const endpointId = randomUUID();
+    const [app] = await db.insert(toolApplications).values({ companyId: f.companyId, applicationKey: `chat:slack:${endpointId}`, name: "Slack", type: "chat", status: "active" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: app.id, name: "Slack channel", uid: endpointId, connectionPurpose: "channel", transport: "chat_sdk", status: "active", enabled: true }).returning();
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId: f.companyId, connectionId: connection.id, provider: "slack", publicId: randomUUID(), assignedAgentId: f.agentId, status: "active", capabilities: { threads: true, directMessages: true, nativeStreaming: false, messageEdits: true, messageDeletes: false, reactions: true, files: true, cards: true, actions: true, modals: true, slashCommands: true, ephemeralMessages: true, proactiveDirectMessages: true } });
+    await db.insert(chatConversations).values({ companyId: f.companyId, endpointId, issueId: f.issueId, externalConversationId: "C-CONNECTION", externalThreadId: "slack:C-CONNECTION:123.1", externalLabel: "Connection setup", state: "active" });
+    await db.update(issueThreadInteractions).set({ createdByAgentId: f.agentId }).where(eq(issueThreadInteractions.id, f.intent.id));
+    const interaction = await issueThreadInteractionService(db).getById(f.intent.id);
+    expect(interaction).not.toBeNull();
+    const [original] = await enqueueIssueInteractionChatPublications(db, interaction!);
+    expect(original).toBeDefined();
+    await db.update(chatPublications).set({ state: "published", providerMessageId: "123.2" }).where(eq(chatPublications.id, original.id));
+    expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 1 });
+    const publications = await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpointId));
+    expect(publications).toHaveLength(2);
+    const terminal = publications.find(row => row.id !== original.id);
+    expect(terminal?.payload.card?.body).toBe("Expired in Paperclip");
+    expect(terminal?.payload.card?.actions).toBeUndefined();
+  });
 
   it("ignores an already available connection before the worker retires its card", async () => {
     const f = await seed(); const run = await retry(f);
@@ -290,8 +343,9 @@ describePostgres("already available connection requests", () => {
         expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "issue_waiting_for_response" });
     } else {
       const invoke = vi.fn(async () => null);
+      const reservation = await reserveRunBudget(db, f.companyId, run.id, null);
       expect(await dispatch.dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: run.id,
-        expectedStatus: "running", now: new Date(), dispatch: invoke })).toMatchObject({ dispatched: false,
+        reservationId: reservation.id, expectedStatus: "running", now: new Date(), dispatch: invoke })).toMatchObject({ dispatched: false,
           cancellation: { outcome: "cancelled", errorCode: "issue_waiting_for_response" } });
       expect(invoke).not.toHaveBeenCalled();
     }
@@ -354,7 +408,7 @@ describePostgres("already available connection requests", () => {
 
   it("records a system completion and one durable continuation with a one-connection pool", async () => {
     const f = await seed();
-    const single = createDb(temp.connectionString, { maxConnections: 1 });
+    const single = createDb(externalUrl ?? temp.connectionString, { maxConnections: 1 });
     try {
       const outcomes = await Promise.all([satisfiedConnectionIntentService(single).sweepPending(), satisfiedConnectionIntentService(db).sweepPending()]);
       expect(outcomes.reduce((sum, outcome) => sum + outcome.satisfied, 0)).toBe(1);

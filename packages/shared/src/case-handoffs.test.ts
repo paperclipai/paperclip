@@ -13,6 +13,17 @@ describe("handoff_case input", () => {
   it("accepts kickoff without inventing routing state or attribution", () => {
     expect(handoffCaseSchema.parse(kickoff)).toEqual(kickoff);
   });
+  it("accepts a reusable workflow at kickoff and reserves routing for handoff", () => {
+    const { workflow_document_text: _inline, ...input } = kickoff;
+    const workflowId = randomUUID();
+    expect(handoffCaseSchema.safeParse({ ...input, workflowId }).success).toBe(true);
+    expect(handoffCaseSchema.safeParse({ ...kickoff, workflowId }).success).toBe(false);
+    expect(handoffCaseSchema.safeParse({ ...input, workflowId: null }).success).toBe(false);
+    const existing = { ...input, case: { id: randomUUID() }, expectedHandoffVersion: 2 };
+    for (const selector of [{}, { workflowId }, { workflowId: null }]) {
+      expect(handoffCaseSchema.safeParse({ ...existing, ...selector }).success).toBe(true);
+    }
+  });
   it("requires nonblank workflow text for every new case and preserves the exact document body", () => {
     const { workflow_document_text: _workflow, ...missing } = kickoff;
     expect(handoffCaseSchema.safeParse(missing).success).toBe(false);

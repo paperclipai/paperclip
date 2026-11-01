@@ -264,6 +264,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     presentation: systemNoticePresentation({ tone: seed?.tone ?? "danger", title }),
     metadata: {
       version: 1,
+      recoveryResponsibility: input.recoveryCause === "configuration_incomplete" ||
+        ["provider_quota", "claude_auth_required", "acpx_auth_required"].includes(input.sourceRun?.errorCode ?? "")
+        ? "user" : "system",
       sourceRunId: input.sourceRun?.id ?? null,
       sections,
     },

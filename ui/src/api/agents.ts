@@ -1,6 +1,8 @@
 import type { AgentPublicIdentity } from "@paperclipai/shared";
+import type { AgentProjectAccess } from "@paperclipai/shared";
 import type {
   Agent,
+  EnvironmentProbeResult,
   ConnectionIntentInteraction,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
@@ -110,6 +112,10 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
+  projectAccess: (id: string) => api.get<AgentProjectAccess>(`/agents/${id}/project-access`),
+  addProjectAccess: (id: string, projectIds: string[]) => api.post<AgentProjectAccess>(`/agents/${id}/project-access`, { projectIds }),
+  qualifyRunner: (id: string, expectedEnvironmentId: string, companyId?: string) =>
+    api.post<EnvironmentProbeResult>(agentPath(id, companyId, "/qualify-runner"), { expectedEnvironmentId }),
   setAvatar: (companyId: string, agentId: string, imageBase64: string | null) =>
     api.put<{ agentId: string; appearance: import("@paperclipai/shared").AgentAppearance; avatarUrl: string }>(`/companies/${companyId}/agents/${agentId}/avatar`, { imageBase64 }),
   getIdentity: (id: string, companyId?: string) =>
@@ -148,7 +154,7 @@ export const agentsApi = {
     }
   },
   getConfiguration: (id: string, companyId?: string) =>
-    api.get<Record<string, unknown>>(agentPath(id, companyId, "/configuration")),
+    api.get<import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId, "/configuration")),
   listConfigRevisions: (id: string, companyId?: string) =>
     api.get<AgentConfigRevision[]>(agentPath(id, companyId, "/config-revisions")),
   getConfigRevision: (id: string, revisionId: string, companyId?: string) =>
@@ -159,8 +165,10 @@ export const agentsApi = {
     api.post<Agent>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
+  updateRuntimeSettings: (id: string, runtimeSettings: import("@paperclipai/shared").AgentRuntimeSettingsPatch, companyId: string) =>
+    api.patch<Agent>(agentPath(id, companyId), { runtimeSettings }),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
-    api.patch<Agent>(agentPath(id, companyId), data),
+    api.patch<Agent & import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
     api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
   instructionsBundle: (id: string, companyId?: string) =>

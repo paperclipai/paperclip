@@ -35,13 +35,18 @@ describe("semantic action catalog", () => {
       expect(validate({ ...input, case: { create: { caseType: "work", title: "New case", projectId: "project-id" } }, workflow_document_text: "Implement, then verify." })).toBe(false);
     }
   });
-  it("requires workflow text for new cases and defers existing-case first-task checks to the service", () => {
+  it("requires a workflow source for new cases and defers existing-case first-task checks to the service", () => {
     const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
     for (const schema of [handoffCaseAction.live.descriptor.inputSchema, paperclipSemanticAction("handoff_case")!.inputSchema]) {
       const validate = ajv.compile(schema);
       const input = handoffCaseAction.examples.call.input;
       const create = { ...input, case: { create: { caseType: "work", title: "New work" } } };
       expect(validate(create)).toBe(false);
+      const workflowId = "00000000-0000-4000-8000-000000000004";
+      expect(validate({ ...create, workflowId })).toBe(true);
+      expect(validate({ ...create, workflowId: null })).toBe(false);
+      expect(validate({ ...create, workflowId, workflow_document_text: "Duplicate source" })).toBe(false);
+      expect(validate({ ...input, workflowId: null })).toBe(true);
       expect(validate({ ...create, workflow_document_text: "Triage, implement, verify, done." })).toBe(true);
       expect(validate({ ...create, bindIssueId: "00000000-0000-4000-8000-000000000003", workflow_document_text: "Triage, implement, verify, done." })).toBe(true);
       expect(validate({ ...create, bindIssueId: "00000000-0000-4000-8000-000000000003" })).toBe(false);
@@ -122,8 +127,9 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(45);
+    expect(operationIds).toHaveLength(50);
     expect(operationIds).toContain("set_task_monitor");
+    expect(operationIds).toContain("send_chat_message");
     expect(new Set(operationIds).size).toBe(operationIds.length);
     expect(operationIds).not.toContain("generic_api_request");
     expect(Object.isFrozen(PAPERCLIP_SEMANTIC_ACTION_CATALOG)).toBe(true);

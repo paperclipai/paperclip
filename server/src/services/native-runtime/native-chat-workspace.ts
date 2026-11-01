@@ -11,6 +11,7 @@ export type NativeChatWorkspaceScope = {
   projectId: string | null;
   instanceRoot: string;
   taskRoot: string;
+  freshAttemptId?: string;
 };
 
 function segment(value: string): string {
@@ -31,6 +32,8 @@ export async function findNativeChatWorkspaceScope(
     issueId: string | null;
     instanceRoot?: string;
     admittedCwd?: string | null;
+    /** Supplied only after validating a committed fresh-attempt receipt. */
+    freshAttemptId?: string;
   },
 ): Promise<NativeChatWorkspaceScope | null> {
   if (
@@ -76,15 +79,21 @@ export async function findNativeChatWorkspaceScope(
   const instanceRoot = await realpath(
     input.instanceRoot ?? resolvePaperclipInstanceRoot(),
   );
+  const projectId = issue.boundWorkspaceId ? issue.boundProjectId : issue.selection?.selection.kind === "task_directory"
+    ? null : issue.configuredProjectId ?? (issue.hasConfiguredDefault ? issue.projectId : null);
   return {
     companyId: input.companyId,
     agentId: input.agentId,
     issueId: issue.id,
-    projectId: issue.boundWorkspaceId ? issue.boundProjectId : issue.selection?.selection.kind === "task_directory" ? null : issue.configuredProjectId ?? (issue.hasConfiguredDefault ? issue.projectId : null),
+    projectId,
+    ...(input.freshAttemptId ? { freshAttemptId: input.freshAttemptId } : {}),
     instanceRoot,
     // This must be a sibling of agent homes, not a child readable by an old
     // provider thread whose immutable permission root is the entire agent home.
-    taskRoot: issue.boundSourceIssueId === issue.id && issue.boundCwd
+    taskRoot: input.freshAttemptId
+      ? path.join(instanceRoot, "isolated-workspace-attempts", segment(input.companyId), segment(issue.id),
+        segment(input.freshAttemptId), ...(projectId ? ["workspace"] : []))
+      : issue.boundSourceIssueId === issue.id && issue.boundCwd
       ? issue.boundCwd : input.admittedCwd ?? path.join(instanceRoot, "isolated-workspaces", segment(input.companyId), segment(issue.id)),
   };
 }
@@ -104,7 +113,11 @@ function isNativeChatTaskRoot(scope: NativeChatWorkspaceScope): boolean {
   const relative = path.relative(scope.instanceRoot, scope.taskRoot);
   const allowedTask = path.join("isolated-workspaces", segment(scope.companyId), segment(scope.issueId));
   const legacyParts = relative.split(path.sep);
-  return relative === allowedTask || (
+  const attempt = relative.split(path.sep);
+  const isolatedAttempt = (attempt.length === 4 || (attempt.length === 5 && attempt[4] === "workspace")) &&
+    attempt[0] === "isolated-workspace-attempts" && attempt[1] === scope.companyId &&
+    attempt[2] === scope.issueId && /^[0-9a-f-]{36}$/i.test(attempt[3]!);
+  return relative === allowedTask || isolatedAttempt || (
     legacyParts.length === 4 && legacyParts[0] === "chat-workspaces" &&
     legacyParts[1] === scope.companyId && /^[a-zA-Z0-9_-]+$/.test(legacyParts[2]!) && legacyParts[3] === scope.issueId
   );
@@ -116,6 +129,7 @@ export function nativeChatWorkspaceCwd(
   workspace: NativeChatProjectWorkspace | null,
   reuseExisting: boolean,
 ): string | null {
+  if (scope.freshAttemptId && workspace === null && isNativeChatTaskRoot(scope)) return scope.taskRoot;
   if (!scope.projectId) return isNativeChatTaskRoot(scope) && (workspace === null || (
     workspace.companyId === scope.companyId && workspace.sourceIssueId === scope.issueId &&
     workspace.projectId === null && workspace.cwd === scope.taskRoot && ["active", "idle"].includes(workspace.status)
@@ -127,7 +141,8 @@ export function nativeChatWorkspaceCwd(
     workspace.projectId !== scope.projectId ||
     workspace.sourceIssueId !== scope.issueId ||
     workspace.mode !== "isolated_workspace" ||
-    workspace.strategyType !== "git_worktree" ||
+    !(workspace.strategyType === "git_worktree" ||
+      (workspace.strategyType === "project_primary" && workspace.cwd === scope.taskRoot && isNativeChatTaskRoot(scope))) ||
     !["active", "idle"].includes(workspace.status) ||
     !workspace.cwd ||
     !path.isAbsolute(workspace.cwd) ||

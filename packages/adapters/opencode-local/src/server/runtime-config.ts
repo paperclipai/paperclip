@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { installSandboxToolMemoryPreference } from "./sandbox-tool-memory.js";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -107,6 +108,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  sandboxToolOomPreference?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
 
@@ -228,6 +230,14 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+  if (input.sandboxToolOomPreference) {
+    try {
+      await installSandboxToolMemoryPreference(runtimeConfigDir);
+      notes.push("Prepared sandbox Bash tool memory preference; shell commands are preferred OOM victims over OpenCode.");
+    } catch {
+      notes.push("Could not prepare sandbox Bash tool memory preference; continuing with the existing shell behavior.");
+    }
+  }
 
   return {
     env: {

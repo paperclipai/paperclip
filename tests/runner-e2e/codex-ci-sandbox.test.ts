@@ -34,7 +34,7 @@ describe("Codex CI sandbox trust boundary", () => {
       /- name: Provision Codex sandbox on the disposable trusted runner\n\s+if: ([^\n]+)/,
     )?.[1];
     expect(condition).toMatch(
-      /^matrix\.environmentId == 'local' && \(matrix\.profileId == '[^']+'(?: \|\| matrix\.profileId == '[^']+')*\)$/,
+      /^matrix\.environmentId == 'local' && \(needs\.catalog\.outputs\.operations_cadence == 'weekly' \|\| matrix\.profileId == '[^']+'(?: \|\| matrix\.profileId == '[^']+')*\)$/,
     );
     const provisionedProfiles = new Set(
       [...condition!.matchAll(/matrix\.profileId == '([^']+)'/g)].map((match) => match[1]),
@@ -77,7 +77,7 @@ describe("Codex CI sandbox trust boundary", () => {
     const setup = workflow.indexOf(
       "- name: Provision Codex sandbox on the disposable trusted runner",
     );
-    const paid = workflow.indexOf("- name: Run paid cell");
+    const paid = workflow.indexOf("- name: Run bounded campaign and retain feedback review");
     expect(setup).toBeGreaterThan(
       workflow.indexOf(
         "- name: Reauthorize paid execution before provider access",

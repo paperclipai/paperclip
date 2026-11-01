@@ -5,6 +5,7 @@ import {
   PRP_BLOCK_RESULT_OUTPUT_SCHEMA,
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA,
   PRP_COMPLETION_RESULT_OUTPUT_SCHEMA,
   PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
   PRP_COMPLETION_TOOL_DESCRIPTION,
@@ -57,6 +58,21 @@ describe("provider-neutral completion result schema", () => {
     const providerValidate = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
     expect(providerValidate(report)).toBe(true);
     expect(validate(report)).toBe(false);
+  });
+
+  it("carries a normalized workspace continuation only on the internal bridge", () => {
+    const bridge = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA);
+    const provider = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const report = { ...baseResult, reportedWorkDisposition: "yielded", continuation: {
+      kind: "same_agent", summary: "Use the staged task checkout.", idempotencyKey: "repository:task:receipt:run" } };
+    expect(bridge(report)).toBe(true);
+    expect(provider(report)).toBe(false);
+    for (const invalid of [
+      { ...report, reportedWorkDisposition: "done" },
+      { ...report, continuation: { ...report.continuation, kind: "retry" } },
+      { ...report, continuation: { ...report.continuation, idempotencyKey: "" } },
+    ]) expect(bridge(invalid)).toBe(false);
+    expect(bridge(baseResult)).toBe(true);
   });
 
   it("allows done with no verification and no actionable attention", () => {
@@ -115,6 +131,9 @@ describe("provider-neutral completion result schema", () => {
     expect(finish.inputSchema).toEqual(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
     expect(block.inputSchema).toEqual(PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA);
     expect(finish.description).toBe(PRP_COMPLETION_TOOL_DESCRIPTION);
+    expect(finish.description).toContain("saved repository-preparation continuation");
+    expect(finish.inputSchema.properties.continuation.description).toContain("repository-preparation continuation");
+    expect(block.description).toContain("Routine repository preparation is not a blocker");
     expect(block.description).toBe(PRP_BLOCK_TOOL_DESCRIPTION);
   });
 

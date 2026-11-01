@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-const mocks = vi.hoisted(() => ({ metadata: vi.fn(), command: vi.fn(), environment: vi.fn(), bindings: vi.fn(), acquire: vi.fn(), realize: vi.fn(), release: vi.fn(), resolve: vi.fn(), general: vi.fn(), experimental: vi.fn(), defaults: vi.fn(), kubernetes: vi.fn(), managed: vi.fn() }));
+const mocks = vi.hoisted(() => ({ metadata: vi.fn(), command: vi.fn(), environment: vi.fn(), bindings: vi.fn(), acquire: vi.fn(), realize: vi.fn(), release: vi.fn(), resolve: vi.fn(), general: vi.fn(), experimental: vi.fn(), defaults: vi.fn(), kubernetes: vi.fn(), managed: vi.fn(), supportsTasks: vi.fn(), updateLeaseMetadata: vi.fn() }));
 vi.mock("../vendor/paperclip-runner/live/index.js", async importOriginal => ({ ...await importOriginal<object>(), probeCopilotMetadata: mocks.metadata }));
 vi.mock("@paperclipai/adapter-utils/execution-target", () => ({ runAdapterExecutionTargetShellCommand: mocks.command }));
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: vi.fn() } }));
-vi.mock("../services/environments.js", () => ({ environmentService: () => ({ getById: mocks.environment, listBoundCompanyIds: mocks.bindings, findKubernetesEnvironment: mocks.kubernetes, findManagedSandboxEnvironment: mocks.managed }) }));
+vi.mock("../services/environments.js", () => ({ environmentService: () => ({ getById: mocks.environment, listBoundCompanyIds: mocks.bindings, findKubernetesEnvironment: mocks.kubernetes, findManagedSandboxEnvironment: mocks.managed, updateLeaseMetadata: mocks.updateLeaseMetadata }) }));
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({ get: mocks.defaults, getGeneral: mocks.general, getExperimental: mocks.experimental }) }));
-vi.mock("../services/environment-runtime.js", () => ({ environmentRuntimeService: vi.fn(() => ({ acquireRunLease: mocks.acquire, realizeWorkspace: mocks.realize, getDriver: () => ({ releaseRunLease: mocks.release }) })) }));
+vi.mock("../services/environment-runtime.js", () => ({ environmentRuntimeService: vi.fn(() => ({ acquireRunLease: mocks.acquire, supportsTasks: mocks.supportsTasks, realizeWorkspace: mocks.realize, getDriver: () => ({ releaseRunLease: mocks.release }) })) }));
 vi.mock("../services/environment-execution-target.js", () => ({ resolveEnvironmentExecutionTarget: mocks.resolve }));
 import { logger } from "../middleware/logger.js";
 import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
@@ -19,6 +19,8 @@ const remote = { kind: "remote", remoteCwd: "/workspace" } as AdapterExecutionTa
 beforeEach(() => {
   vi.clearAllMocks(); mocks.command.mockReset(); mocks.general.mockResolvedValue({ executionMode: "local" }); mocks.experimental.mockResolvedValue({}); mocks.defaults.mockResolvedValue({ defaultEnvironmentId: null });
   mocks.environment.mockResolvedValue({ id: "selected", driver: "sandbox", status: "active", config: { provider: "daytona" } }); mocks.bindings.mockResolvedValue(["company"]);
+  mocks.supportsTasks.mockResolvedValue(false);
+  mocks.updateLeaseMetadata.mockImplementation(async (id, metadata) => ({ id, metadata }));
   mocks.acquire.mockResolvedValue({ lease: { id: "lease", metadata: {} } }); mocks.realize.mockResolvedValue({}); mocks.release.mockResolvedValue(undefined); mocks.resolve.mockResolvedValue(remote);
   mocks.command.mockResolvedValue({ timedOut: false, stdout: JSON.stringify(verified), exitCode: 0 }); mocks.metadata.mockResolvedValue(verified);
 });
@@ -59,6 +61,21 @@ describe("Copilot connection verification", () => {
     expect(mocks.command.mock.calls[0]![3]).toMatchObject({ env: { COPILOT_GITHUB_TOKEN: "private-token", PAPERCLIP_COPILOT_PROBE_MODEL: "gpt-5.6-luna" }, timeoutSec: 35 });
     expect(mocks.command.mock.calls[0]![2]).not.toContain("private-token");
     expect(mocks.release).toHaveBeenCalledWith(expect.objectContaining({ status: "released" }));
+  });
+  it("uses a private task probe for Copilot metadata without a shell or model prompt", async () => {
+    mocks.environment.mockResolvedValue({ id: "selected", driver: "plugin", status: "active", config: {} });
+    mocks.supportsTasks.mockResolvedValue(true);
+    const runnerTask = vi.fn(async () => ({ kind: "copilot_metadata", taskId: "task", metadata: verified, executionStopped: true }));
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: ".", runnerTask } as const;
+    mocks.resolve.mockResolvedValue(target);
+    expect(await probeCopilotConnection({} as Db, "company", "private-token", "selected", "gpt-5.6-luna", { targetAgentId: "saved-agent" })).toEqual(verified);
+    expect(mocks.acquire).toHaveBeenCalledWith(expect.objectContaining({ agentId: "saved-agent" }));
+    expect(runnerTask).toHaveBeenCalledWith({ kind: "copilot_metadata", token: "private-token", model: "gpt-5.6-luna" });
+    expect(mocks.updateLeaseMetadata).toHaveBeenCalledWith("lease", expect.objectContaining({ runnerTaskProbe: expect.objectContaining({ runId: expect.any(String) }) }));
+    expect(mocks.realize).not.toHaveBeenCalled(); expect(mocks.command).not.toHaveBeenCalled(); expect(mocks.metadata).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalledWith(expect.objectContaining({ status: "released" }));
+    runnerTask.mockResolvedValueOnce({ kind: "copilot_metadata", taskId: "task", metadata: { ...verified, profileDigest: "stale" }, executionStopped: true });
+    await expect(probeCopilotExecutionTarget("private-token", target, "gpt-5.6-luna")).rejects.toThrow();
   });
   it("rejects a foreign company before creating a lease or transmitting the token", async () => {
     mocks.bindings.mockResolvedValue(["other-company"]);

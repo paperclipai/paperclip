@@ -14,6 +14,13 @@ import { buildNativeExecutionInput } from "../native-runtime/native-execution-in
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "./environment-selection.js";
 
+const restoration = vi.hoisted(() => ({ removed: false }));
+vi.mock("../git-workspace-restoration.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../git-workspace-restoration.js")>();
+  return { ...actual, readGitCacheExpiration: (workspace: Parameters<typeof actual.readGitCacheExpiration>[0]) =>
+    restoration.removed ? { workspaceRemoved: true } as ReturnType<typeof actual.readGitCacheExpiration> : actual.readGitCacheExpiration(workspace) };
+});
+
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("heartbeat environment selection boundary", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -128,6 +135,56 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.requestedShouldReuseExisting).toBe(true);
     expect(result.reusableExistingExecutionWorkspace).toBeNull();
     expect(result.requestedReusableExecutionWorkspaceConfig).toBeNull();
+  });
+
+  describe("workspaces removed by git cache expiration", () => {
+    async function expired() {
+      const f = await fixture();
+      const saved = await f.workspace();
+      await executionWorkspaceService(db).update(saved.id, { status: "archived" });
+      f.input.task.issueRef!.executionWorkspaceId = saved.id;
+      f.input.task.issueRef!.executionWorkspacePreference = "reuse_existing";
+      await db.update(issues).set({ executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, f.issue.id));
+      restoration.removed = true;
+      const svc = executionWorkspaceService(db);
+      f.input.services.executionWorkspacesSvc = svc;
+      return { ...f, saved, svc };
+    }
+
+    it("reopens the issue's expired workspace before the run binds it", async () => {
+      const { input, issue, saved, svc } = await expired();
+      const reopen = vi.spyOn(svc, "reopenClosedIsolatedExecutionWorkspaceForIssue").mockImplementation(async () => {
+        await executionWorkspaceService(db).update(saved.id, { status: "active" });
+        return { ok: true, reopened: true, workspace: (await svc.getStoredById(issue.companyId, saved.id))!, generation: 4 };
+      });
+      const clear = vi.spyOn(svc, "clearReopenPendingConsumptionForUnconsumedReopen").mockResolvedValue({ cleared: true });
+      try {
+        const result = await selectHeartbeatEnvironment(db, input);
+        expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: saved.id,
+          issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId },
+          authorizationActor: expect.objectContaining({ type: "agent", agentId: input.agent.id, runId: input.run.id }) }));
+        expect(clear).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: saved.id, expectedGeneration: 4 }));
+        expect(result.reusableExistingExecutionWorkspace).toMatchObject({ id: saved.id, status: "active" });
+      } finally { restoration.removed = false; }
+    });
+
+    it("fails the run instead of binding a new workspace when the restore fails", async () => {
+      const { input, svc } = await expired();
+      vi.spyOn(svc, "reopenClosedIsolatedExecutionWorkspaceForIssue")
+        .mockResolvedValue({ ok: false, code: "rebuild_failed", message: "Workspace restore failed" });
+      try {
+        await expect(selectHeartbeatEnvironment(db, input)).rejects.toThrow("Workspace restore failed");
+      } finally { restoration.removed = false; }
+    });
+
+    it("leaves a workspace archived for other reasons alone", async () => {
+      const { input, svc } = await expired();
+      restoration.removed = false;
+      const reopen = vi.spyOn(svc, "reopenClosedIsolatedExecutionWorkspaceForIssue");
+      const result = await selectHeartbeatEnvironment(db, input);
+      expect(reopen).not.toHaveBeenCalled();
+      expect(result.reusableExistingExecutionWorkspace).toBeNull();
+    });
   });
 
   it.each(["muse", "openai_dot", "grok_bot"] as const)("keeps %s managed placement without adopting the task's selected workspace", async provider => {

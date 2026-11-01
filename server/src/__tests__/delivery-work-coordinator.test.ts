@@ -59,6 +59,58 @@ describe("delivery work coordinator", () => {
       expect(s.onError).not.toHaveBeenCalled();
     } finally { clock.mockRestore(); }
   });
+  it("honors a future backlog deadline after failure while preserving the fallback retry", async () => {
+    const s = setup(), t = task();
+    let next: number | null = Date.now() + 1000;
+    t.run.mockRejectedValueOnce(new Error("One item failed"));
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => next }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(next);
+    expect(s.onError).toHaveBeenCalledOnce();
+    next = null;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("dispatches another due item after a worker records scoped failure backoffs", async () => {
+    const s = setup(), t = task(), now = Date.now();
+    t.run.mockRejectedValueOnce(new Error("One scoped item failed"));
+    const nextRunAtOnError = vi.fn(() => now);
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAtOnError }).ready;
+    expect(nextRunAtOnError).toHaveBeenCalledOnce();
+    expect(s.coordinator.nextWakeAt()).toBe(now);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+  it.each(["reconcile", "pending"])("does not consume scoped retry deadlines for a %s failure", async mode => {
+    const s = setup(), t = task(), now = Date.now();
+    if (mode === "reconcile") {
+      s.failCommit();
+      await expect(s.enqueue()).rejects.toThrow("lost commit reply");
+      s.execute.mockRejectedValueOnce(new Error("Database unavailable"));
+    } else t.hasPending.mockRejectedValueOnce(new Error("Pending state unavailable"));
+    const nextRunAtOnError = vi.fn(() => now);
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAtOnError }).ready;
+    expect(nextRunAtOnError).not.toHaveBeenCalled();
+    expect(s.coordinator.nextWakeAt()).toBe(now + 5000);
+    expect(s.onError).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(s.onError).toHaveBeenCalledOnce();
+  });
+  it.each(["overdue", "later", "unreadable", "draining"])("keeps failure backoff for a %s deadline", async mode => {
+    const s = setup(), t = task(), now = Date.now();
+    t.run.mockImplementation(async () => {
+      if (mode === "draining") { s.canRun.mockReturnValue(false); s.canReconcile.mockReturnValue(true); }
+      throw new Error("Unavailable");
+    });
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => {
+      if (mode === "unreadable") throw new Error("Deadline unavailable");
+      return mode === "overdue" ? now : now + (mode === "later" ? 60_000 : 1000);
+    } }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(now + 5000);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(t.run).toHaveBeenCalledOnce();
+  });
   it("schedules maintenance without holding idle intent, and lets new work preempt it", async () => {
     const s = setup(), t = task();
     let next: number | null = Date.now() + 60_000;
@@ -212,6 +264,24 @@ describe("delivery work coordinator", () => {
     t.hasPending.mockResolvedValue(false);
     await vi.advanceTimersByTimeAsync(5001);
     expect(t.run).toHaveBeenCalledTimes(2);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+  it("delivers already-admitted stop work during drain while respecting warm standby", async () => {
+    const s = setup(), t = task();
+    await s.coordinator.register(DELIVERY_QUEUES.budgetEnforcement, { ...t, runDuringDrain: true }).ready;
+    s.canRun.mockReturnValue(false);
+    s.canReconcile.mockReturnValue(true);
+    await s.enqueue(DELIVERY_QUEUES.budgetEnforcement);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+    s.canReconcile.mockReturnValue(false);
+    await s.enqueue(DELIVERY_QUEUES.budgetEnforcement);
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    s.canReconcile.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.run).toHaveBeenCalledTimes(3);
     expect(idleWorkSnapshot().active).toBe(0);
   });
   it("bounds an expired deadline retry during idle reconciliation and resumes after drain", async () => {

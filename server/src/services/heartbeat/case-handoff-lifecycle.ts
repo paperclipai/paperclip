@@ -153,10 +153,10 @@ export async function cancelCaseHandoffsForIssue(db: Db, input: {
   )).returning();
   for (const row of rows) {
     await db.insert(caseEvents).values({ companyId: row.companyId, caseId: row.caseId, kind: "handoff_cancelled", actorType: "system",
-      runId: row.sourceRunId, payload: { handoffId: row.id, issueId: row.issueId, phase: row.phase, version: row.version, reason: input.reason } });
+      runId: row.sourceRunId, payload: { handoffId: row.id, issueId: row.issueId, phase: row.phase, version: row.version, reason: input.reason, workflowTransition: row.workflowTransition } });
     const event = await persistActivity(db, { companyId: row.companyId, actorType: "system", actorId: "case-handoff",
       runId: row.sourceRunId, issueId: row.issueId, action: "case.handoff_cancelled", entityType: "case", entityId: row.caseId,
-      details: { handoffId: row.id, issueId: row.issueId, phase: row.phase, version: row.version, reason: input.reason } });
+      details: { handoffId: row.id, issueId: row.issueId, phase: row.phase, version: row.version, reason: input.reason, workflowTransition: row.workflowTransition } });
     input.publications?.push(event.publication);
   }
   if (rows.length) await notifyDeliveryWork(db, DELIVERY_QUEUES.caseHandoffs, input.companyId);
@@ -218,7 +218,7 @@ export async function completeTerminalCaseHandoffsForIssue(db: Db, input: {
   await db.update(caseHandoffs).set({ state: "completed", completedAt: at, updatedAt: at,
     leaseExpiresAt: null, lastErrorCode: null, lastError: null }).where(eq(caseHandoffs.id, row.id));
   const details = { handoffId: row.id, issueId: issue.id, phase: "done", version: row.version,
-    destinationKind: "done", state: "completed", issueStatusVersion: issue.statusVersion };
+    destinationKind: "done", state: "completed", issueStatusVersion: issue.statusVersion, workflowTransition: row.workflowTransition };
   await db.insert(caseEvents).values({ companyId: row.companyId, caseId: row.caseId, kind: "handoff_completed", actorType: "system",
     runId: row.sourceRunId, payload: details });
   const event = await persistActivity(db, { companyId: row.companyId, actorType: "system", actorId: "case-handoff",

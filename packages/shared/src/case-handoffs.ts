@@ -49,6 +49,7 @@ export const agentCaseHandoffSchema = z.object({
   bindIssueId: z.string().guid().optional(),
   initialDocuments: caseInitialDocumentsSchema.optional(),
   workflow_document_text: caseWorkflowDocumentTextSchema.optional(),
+  workflowId: z.string().guid().nullable().optional(),
 }).strict().superRefine((input, ctx) => {
   if ("id" in input.case && input.expectedHandoffVersion === undefined) {
     ctx.addIssue({ code: "custom", path: ["expectedHandoffVersion"], message: "Required for an existing case" });
@@ -59,7 +60,10 @@ export const agentCaseHandoffSchema = z.object({
   if (input.bindIssueId && input.initialDocuments?.length) {
     ctx.addIssue({ code: "custom", path: ["initialDocuments"], message: "Initial documents require a newly created primary task" });
   }
-  if ("create" in input.case && input.workflow_document_text === undefined) {
+  if (input.workflowId !== undefined && input.workflow_document_text !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["workflowId"], message: "Provide workflowId or workflow_document_text, not both" });
+  }
+  if ("create" in input.case && input.workflow_document_text === undefined && !input.workflowId) {
     ctx.addIssue({ code: "custom", path: ["workflow_document_text"], message: "Required when creating a case" });
   }
   if ("id" in input.case && input.bindIssueId && input.workflow_document_text !== undefined) {
@@ -97,6 +101,7 @@ export type HandoffCaseResult = {
   replayed: boolean;
 };
 export interface CaseHandoff {
+  workflowTransition: CaseWorkflowTransition | null;
   id: string;
   companyId: string;
   caseId: string;
@@ -129,4 +134,10 @@ export interface CaseHandoff {
   completedAt: Date | string | null;
   cancelledAt: Date | string | null;
   updatedAt: Date | string;
+}
+
+export interface CaseWorkflowTransition {
+  from: { workflowId: string | null; name: string | null; phase: string | null };
+  to: { workflowId: string | null; name: string | null; phase: string };
+  documentRevisionId: string | null;
 }

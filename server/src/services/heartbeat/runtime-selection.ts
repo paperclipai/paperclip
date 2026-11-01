@@ -1,4 +1,5 @@
 import { museRunnerBroker } from "../muse-runner-broker.js";
+import { readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import {
@@ -118,7 +119,7 @@ export interface HeartbeatRuntimeSelectionInput {
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
   workspace: {
-    persistedExecutionWorkspace: { id: string } | null;
+    persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
     activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease">;
@@ -137,7 +138,7 @@ export interface HeartbeatRuntimeSelectionInput {
     resolvedConfig: Record<string, unknown>;
     managedAiRuntime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
   };
-  recovery: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim };
+  recovery: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim; onNativeExecutionLeaseAcquired?: () => Promise<void> };
   trace: { providerTraceRequested: boolean; providerTraceCapture: { metadata: { id: string } } | null };
   issuesSvc: Pick<ReturnType<typeof issueService>, "addComment">;
   runtimeEnv: Record<string, string | undefined>;
@@ -506,11 +507,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       executionTarget.transport === "sandbox"
         ? (executionTarget.runnerLifecyclePolicy ?? null)
         : null;
-    // Codex refreshes its durable auth home; Copilot owns a fenced home
-    // and an explicitly bound token. Both retire on credential generation
-    // changes. Other managed harnesses require per-turn cleanup.
+    // Task providers own credential lifetime; process-backed managed homes retain their provider-specific cleanup policy.
     const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
-      supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution);
+      ((executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && !!executionTarget.runnerTask) ||
+        supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution));
     const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
       (["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
         ? { mode: "per_turn" as const, idleTimeoutMs: null }
@@ -718,7 +718,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       });
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
       const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "codex_app_server"
-        || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig)) === "claude_local")
+        || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && ["claude_local", "grok_local"].includes(agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig))))
         || nativeRuntimeResolution.profile.backend === "opencode_server"
         || (nativeRuntimeResolution.profile.backend === "acpx_runtime"
           && parseObject(agent.adapterConfig).acpxAgent === "copilot")
@@ -730,6 +730,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           )
         : agent.adapterConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
+        companyId: agent.companyId,
         backend: nativeRuntimeResolution.profile.backend,
         adapterConfig: nativeProviderConfig, managedProfile, agentCoreProfile, dotBinding, museBinding,
       });
@@ -742,6 +743,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           }) : null;
       const nativeProvider = codexCliVersion
         ? resolvePaperclipRunnerNativeProviderInput({
+            companyId: agent.companyId,
             backend: nativeRuntimeResolution.profile.backend,
             adapterConfig: nativeProviderConfig, codexCliVersion, managedProfile, agentCoreProfile, dotBinding, museBinding,
           }) : requestedNativeProvider;
@@ -866,6 +868,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       }
       nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
     }
+    if (nativeResumeCheckpoint && nativeExecution.provider.kind === "acpx"
+      && nativeExecution.provider.agent === "antigravity") {
+      nativeResumeCheckpoint = { ...nativeResumeCheckpoint, providerRecoveryPolicy: "same_session_only" };
+    }
     const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
       adapterType: agent.adapterType,
       lifecyclePolicy: nativeExecution.session.lifecyclePolicy,
@@ -941,6 +947,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
+          controllerBootId: null,
+          controllerLeaseExpiresAt: null,
+          executionStage: null,
           runtimeModeResolverVersion:
             lockedRun.runtimeModeResolverVersion ??
             nativeRuntimeResolution.resolverVersion,
@@ -968,9 +977,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : {}),
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
+            nativeResourceDisposition: providerResourceDispositionForRun,
             nativeToolContractFingerprint:
               nativeToolContractFingerprintForTarget(
                 executionTarget?.kind ?? "local",
+                nativeExecution!.provider.kind,
               ),
             ...(lockedProfile.sessionCheckpoint != null
               ? { sessionCheckpoint: lockedProfile.sessionCheckpoint }
@@ -1037,7 +1048,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     });
     if (!nativeSelected) return { selected: false };
     stopControllerLease();
-    nativeWorkspaceSync = await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
+    nativeWorkspaceSync = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata) ? null
+      : await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
       db,
       runId: run.id,
       companyId: agent.companyId,
@@ -1048,6 +1060,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,
+      workspaceGitIndexRefresh: nativeExecution?.provider.kind === "opencode",
       onCheckpoint: input.workspace.onCheckpoint,
       onPhase: input.workspace.onPhase,
       onEvent: onAdapterEvent,

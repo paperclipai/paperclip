@@ -1049,6 +1049,59 @@ describe("claude execute", () => {
     }
   }, 10_000);
 
+  it.each(["compatible", "network-error"])("prepares the selected Claude command before probing effort and logs the %s outcome", async state => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-prepared-effort-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeHelpWithoutEffortClaudeCommand,
+    });
+    const remoteWorkspace = path.join(root, "sandbox-workspace");
+    const preparedCommand = path.join(remoteWorkspace, ".paperclip-runtime/claude-cli/2.1.280/bin/claude");
+    const logs: string[] = [];
+    const commands: string[] = [];
+    const loggedCommands: string[] = [];
+    try {
+      await fs.writeFile(commandPath, (await fs.readFile(commandPath, "utf8")).replace("2.1.286", "2.1.263"));
+      await fs.mkdir(remoteWorkspace, { recursive: true });
+      if (state === "compatible") {
+        await fs.mkdir(path.dirname(preparedCommand), { recursive: true });
+        await writeHelpWithEffortClaudeCommand(preparedCommand);
+      }
+      const runner = createLocalSandboxRunner();
+      const result = await execute({
+        runId: `run-prepared-effort-${state}`,
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", command: "claude", cwd: workspace, model: "claude-opus-5-5", effort: "high",
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "Keep the selected reasoning effort." },
+        context: {},
+        executionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId: "env-1", leaseId: "lease-1", remoteCwd: remoteWorkspace,
+          runner: { execute: async input => {
+            if (input.args?.some(arg => arg.includes("npm install"))) return { exitCode: 1, signal: null, timedOut: false,
+              stdout: "", stderr: "npm error code ENOTFOUND https://registry-secret@example.test/private", pid: null, startedAt: new Date().toISOString() };
+            return runner.execute(input);
+          } } },
+        authToken: "run-jwt-token", onLog: async (_stream, chunk) => { logs.push(chunk); },
+        onMeta: async meta => { commands.push(meta.command); loggedCommands.push(meta.env.PAPERCLIP_RESOLVED_COMMAND); },
+      });
+      if (state === "compatible") {
+        expect(result.exitCode).toBe(0);
+        const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+        expect(capture.argv).toEqual(expect.arrayContaining(["--effort", "high"]));
+        expect(commands).toContain(preparedCommand);
+        expect(loggedCommands).toEqual(commands);
+        expect(logs.join("")).not.toContain("omitting configured effort");
+      } else {
+        expect(result.errorCode).toBe("claude_cli_version_incompatible");
+        expect(logs.join("")).toContain("The package installation could not reach the registry.");
+        expect(logs.join("")).not.toContain("registry-secret");
+        await expect(fs.readFile(capturePath)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("passes through --effort and reuses the sandbox capability probe across sandbox leases when the installed Claude CLI advertises it", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-effort-supported-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {

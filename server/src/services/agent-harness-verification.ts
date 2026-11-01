@@ -6,6 +6,7 @@ import { isForbiddenConfigEnvKey, parseObject } from "@paperclipai/adapter-utils
 import { requireServerAdapter } from "../adapters/index.js";
 import { agentEnvironmentTestService } from "./agent-environment-test.js";
 import { aiConnectionRouterService } from "./ai-connection-router.js";
+import { aiConnectionService } from "./ai-connections.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
 import { environmentService } from "./environments.js";
 import { secretService } from "./secrets.js";
@@ -22,7 +23,8 @@ export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
   const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
   if (result.status === "fail" || authenticationFailed || incomplete) {
     const has = (suffix: string) => result.checks.some(check => check.code.endsWith(suffix));
-    const code = authenticationFailed ? "harness_auth_failed"
+    const code = result.checks.some(check => check.level === "error" && check.retryable === true) ? "test_environment_unavailable"
+      : authenticationFailed ? "harness_auth_failed"
       : has("_hello_probe_model_unavailable") || has("_model_invalid") ? "harness_model_unavailable"
       : has("_command_unresolvable") ? "harness_command_unavailable"
       : has("_cwd_invalid") ? "harness_cwd_invalid"
@@ -65,7 +67,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     config = (await secrets.resolveAdapterConfigForRuntime(agent.companyId, config, context, { adapterType: agent.adapterType })).config;
     const environmentId = await tests.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId, agent.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "copilot");
     if (environmentId) {
-      await tests.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId);
+      await tests.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId, agent.adapterType);
       const environment = await environments.getById(environmentId);
       const env = Object.fromEntries(Object.entries(binding ? stripAiAuthBindings(environment?.envVars) : parseObject(environment?.envVars))
         .filter(([key]) => !isForbiddenConfigEnvKey(key)));
@@ -73,6 +75,11 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
         { ...context, consumerType: "environment", consumerId: environmentId });
       config = { ...config, env: { ...resolved.env, ...parseObject(config.env) } };
     }
+    if (binding) await aiConnectionService(db).select({
+      companyId: agent.companyId, userId: responsibleUserId, agentId: agent.id,
+      adapterType: agent.adapterType, model: config.model, runnerProvider: config.provider,
+      acpxAgent: config.acpxAgent, binding,
+    });
     const target = await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
     try {

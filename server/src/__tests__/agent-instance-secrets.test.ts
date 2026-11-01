@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { agents, companies, companySecrets, companySecretVersions, activityLog, plugins, toolApplications, toolConnections, createDb, type Db } from "@paperclipai/db";
 import type { AgentLifecycleRequest } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { pluginAgentRuntimeIdentity } from "../services/plugin-agent-runtime-state.js";
 import { agentInstanceSecretService } from "../services/agent-instance-secrets.js";
 import { secretService } from "../services/secrets.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -29,7 +30,7 @@ const support = await getEmbeddedPostgresTestSupport();
     companyId = randomUUID(); pluginId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Secret fixture", issuePrefix: "SCR" });
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-lifecycle", version: "1.0.0", status: "ready",
-      manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage"] } as never });
+      manifestJson: { agentLifecycle: true, resourceLifecycle: ["agent_runtime"], capabilities: ["agents.lifecycle.manage"] } as never });
   }, 90_000);
   afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); });
   async function fixture(ownerPluginId = pluginId, agentId = randomUUID()) {
@@ -56,11 +57,13 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(JSON.stringify(versions)).not.toContain("e".repeat(64));
     expect(JSON.stringify(versions)).not.toContain("runtime.example.test");
     expect(await agentInstanceSecretService(createDb(database.connectionString)).read(f.scope)).toEqual({ runtime });
+    expect((await pluginAgentRuntimeIdentity(db, pluginId, companyId, f.agent.id))!.instanceSecrets).toEqual({ runtime });
     for (const scope of [{ ...f.scope, companyId: randomUUID() }, { ...f.scope, agentId: randomUUID() }, { ...f.scope, pluginId: randomUUID() }]) {
       expect(await f.service.read(scope)).toEqual({});
     }
     const replacement = runtime.replace("e".repeat(64), "f".repeat(64));
     await f.service.apply(f.request, pluginId, { runtime: replacement });
+    expect((await pluginAgentRuntimeIdentity(db, pluginId, companyId, f.agent.id))!.instanceSecrets).toEqual({ runtime: replacement });
     expect(await f.service.read(f.scope)).toEqual({ runtime: replacement });
     expect((await secretService(db).getById(stored.id))!.latestVersion).toBe(2);
     expect(JSON.stringify(await db.select().from(activityLog).where(eq(activityLog.entityId, f.agent.id)))).not.toContain(replacement);

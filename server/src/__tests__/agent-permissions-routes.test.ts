@@ -129,6 +129,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockRunSshCommand = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../lib/agent-runner-platform.js", () => ({
+    localAgentRunnerTarget: () => ({ driver: "local", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" }),
+    localPaperclipRunnerSupported: () => true,
+  }));
   vi.doMock("@paperclipai/adapter-utils/ssh", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>()),
     runSshCommand: mockRunSshCommand,
@@ -1461,7 +1465,7 @@ describe("agent permission routes", () => {
     );
   });
 
-  it("seeds opencode agent creation with the static default model without live discovery", async () => {
+  it("seeds explicit legacy opencode creation with the static default model without live discovery", async () => {
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockRejectedValue(
       new Error("`opencode models` should not be called during creation"),
     );
@@ -1480,6 +1484,7 @@ describe("agent permission routes", () => {
         name: "OpenCode Builder",
         role: "engineer",
         adapterType: "opencode_local",
+        runner: "legacy",
         adapterConfig: {},
       }));
 
@@ -1526,8 +1531,9 @@ describe("agent permission routes", () => {
     expect(mockAgentService.create).toHaveBeenCalledWith(
       companyId,
       expect.objectContaining({
-        adapterType: "opencode_local",
+        adapterType: "paperclip_runner",
         adapterConfig: expect.objectContaining({
+          provider: "opencode",
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
@@ -1831,7 +1837,7 @@ describe("agent permission routes", () => {
 
   for (const adapterCase of sshCapableAdapterCases) {
     it(`allows creating a ${adapterCase.adapterType} agent with an SSH default environment`, async () => {
-      const expectedAdapterType = ["codex_local", "claude_local"].includes(adapterCase.adapterType) ? "paperclip_runner" : adapterCase.adapterType;
+      const expectedAdapterType = ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterCase.adapterType) ? "paperclip_runner" : adapterCase.adapterType;
       const environmentId = "33333333-3333-4333-8333-333333333333";
       mockEnvironmentService.getById.mockResolvedValue({
         id: environmentId,
@@ -1873,8 +1879,10 @@ describe("agent permission routes", () => {
         }),
         { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
       );
-      if (["codex_local", "claude_local"].includes(adapterCase.adapterType)) {
+      if (["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterCase.adapterType)) {
         if (adapterCase.adapterType === "codex_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "codex" });
+        else if (adapterCase.adapterType === "opencode_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "opencode", model: adapterCase.adapterConfig.model });
+        else if (adapterCase.adapterType === "pi_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: adapterCase.adapterConfig.model });
         else expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" });
         const { AGENT_RUNNER_SSH_PLATFORM_COMMAND } = await import("../services/agent-runner-selection.js");
         expect(mockRunSshCommand).toHaveBeenCalledWith(expect.objectContaining({ host: "qa.example.invalid" }), AGENT_RUNNER_SSH_PLATFORM_COMMAND, { timeoutMs: 10_000 });

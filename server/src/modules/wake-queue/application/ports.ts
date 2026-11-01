@@ -123,6 +123,7 @@ export interface WakeQueueTransaction {
   cancelDeferredWake(input: {
     companyId: string;
     wakeId: string;
+    agentId: string;
     reason: string;
     now: Date;
   }): Promise<boolean>;
@@ -135,7 +136,7 @@ export interface WakeQueueTransaction {
     now: Date;
   }): Promise<DeferredWakeCandidate | null>;
   /** Sets `status = 'failed'` guarded by the current `deferred_issue_execution` status. */
-  failDeferredWake(input: { companyId: string; wakeId: string; now: Date }): Promise<boolean>;
+  failDeferredWake(input: { companyId: string; wakeId: string; agentId: string; now: Date }): Promise<boolean>;
   getPauseHoldFacts(input: {
     companyId: string;
     issueId: string;
@@ -322,7 +323,9 @@ export type DurableWakeAdmissionReceipt = {
   requestedAt: Date;
 };
 
-export type CoalescedDeferredAdmissionReceipt = DurableWakeAdmissionReceipt & {
+export type CoalescedDeferredAdmissionReceipt =
+  Omit<DurableWakeAdmissionReceipt, "id" | "requestedAt"> &
+  Partial<Pick<DurableWakeAdmissionReceipt, "id" | "requestedAt">> & {
   agentId: string;
   source: string;
   triggerDetail: string | null;
@@ -407,6 +410,8 @@ export interface WakeAdmissionReader {
       companyId: string;
       agentId: string;
       issueId: string;
+      /** Matches only deferred wakes for this chat conversation or for no conversation. */
+      chatConversationId?: string | null;
       durableActor?: { type: string | null; id: string | null };
     },
   ): Promise<ExistingDeferredWake | null>;

@@ -96,3 +96,17 @@ export interface ExecutionReconciliation {
     interveningExecutions?: Array<{ runId: string; recoveryActionId: string; evidenceSha256: string }>;
   };
 }
+/** A task-level view of one interruption. Diagnostics keep the underlying runs
+ * and recovery records; ordinary product surfaces render this projection. */
+export interface TaskInterruptionPresentation {
+  intentId: string | null;
+  responsibility: "system" | "user";
+  state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
+  nextRetryAt: string | null;
+  canRetry: boolean;
+  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access" | null;
+  /** Only the task's own project id is exposed. Other source projects stay unnamed. */
+  projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
+  sourceRunIds: string[];
+  observedRunId: string | null;
+}

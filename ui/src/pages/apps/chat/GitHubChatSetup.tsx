@@ -22,7 +22,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useNavigate, useSearchParams, Link } from "@/lib/router";
 import { buildPermissionsForTrustPreset } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
-import { GitHubAppRecovery } from "./GitHubConnectionRecovery";
+import { GITHUB_APP_CREDENTIAL_FIELDS, GitHubAppRecovery } from "./GitHubConnectionRecovery";
 import type { GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
 
 /** Restrict native manifest submission to GitHub registration endpoints. */
@@ -80,7 +80,11 @@ export function GitHubChatSetup() {
   const queryClient = useQueryClient();
   const resume = params.get("resume");
   const identityOnly = params.get("stage") === "identity";
-  const reconnect = params.get("reconnect") === "1";
+  const rotateWebhookSecret = params.get("rotateSecret") === "1";
+  const reconnect = params.get("reconnect") === "1" || rotateWebhookSecret;
+  const credentialFields = reconnect && !rotateWebhookSecret && params.get("stage") === "credentials"
+    ? GITHUB_APP_CREDENTIAL_FIELDS.filter(field => !params.has("credentialFields") || params.get("credentialFields")!.split(",").includes(field))
+    : undefined;
   const [agentId, setAgentId] = useState(params.get("agentId") ?? "");
   const [ownerType, setOwnerType] = useState<"personal" | "organization">(
     "personal",
@@ -91,7 +95,7 @@ export function GitHubChatSetup() {
   const [busy, setBusy] = useState(false);
   const [submitManifest, setSubmitManifest] = useState(false);
   const [error, setError] = useState("");
-  const [existing, setExisting] = useState(params.get("reconnect") === "1");
+  const [existing, setExisting] = useState(reconnect || params.get("stage") === "credentials");
   const [appNotCreated, setAppNotCreated] = useState(false);
   const [legacyAccount, setLegacyAccount] = useState("");
   const [identityLinked, setIdentityLinked] = useState(false);
@@ -375,15 +379,21 @@ export function GitHubChatSetup() {
         </>
       ) : existing ? (
         <GitHubAppRecovery
-          key={bot.id}
+          key={`${bot.id}:${rotateWebhookSecret ? params.get("afterRotationId") ?? "unspecified" : credentialFields?.join(",") ?? "credentials"}`}
           endpoint={bot}
           reconnect={reconnect}
+          credentialFields={credentialFields}
+          requireAllCredentialFields={params.get("credentialMode") === "all"}
+          rotateWebhookSecret={rotateWebhookSecret}
+          rotationAlreadyCommitted={params.has("afterRotationId") && !!bot.setup?.credentialRotationId && bot.setup.credentialRotationId !== params.get("afterRotationId")}
           onExit={exit}
           onConnect={async (credentials) => {
             if (reconnect || ["active", "paused", "revoked"].includes(bot.status)) {
               await chatEndpointsApi.setup(bot.id, {
                 action: "reconnect",
-                ...(credentials ? { credentials: { appId: credentials.appId.trim(), privateKey: credentials.privateKey } } : {}),
+                ...(credentials ? { credentials: Object.fromEntries(Object.entries(credentials).filter(([field, value]) =>
+                  value?.trim() && (!credentialFields || credentialFields.some(requested => requested === field) || (field === "appId" && !!credentials.privateKey.trim() && credentialFields.includes("privateKey"))),
+                ).map(([field, value]) => [field, field === "appId" ? value!.trim() : value])) } : {}),
               });
             } else if (credentials) {
               await githubChatApi.connectApp(bot.id, credentials);

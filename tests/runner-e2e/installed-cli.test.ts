@@ -32,7 +32,7 @@ it("admits all26 current Pi cases through pinned installed public CLI/server wit
 });
 it("admits existing Codex onboarding, useful-file revision and restart journeys without broadening other cells", async () => {
   const { env, server } = await fixture();
-  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart"]) {
+  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart", "everyday-workflows.runner-codex.daytona.recover-controller", "daytona-restart-continuity.runner-codex.daytona.recover-controller"]) {
     const cell = runnerMatrix.find(e => e.id === id)!;
     expect(cell).toBeDefined();
     expect(await verifyInstalledCli(env, [cell])).toMatchObject({ serverRoot: server, defaultRuntimeResolution: true, qualificationOverride: false });
@@ -60,11 +60,11 @@ it("admits only the 20 agreed Copilot cells through normal installed resolution 
     expect(() => assertInstalledCliSelection(env, [{ ...cell, id: `${cell.id}-unreviewed` }])).toThrow("explicit supported");
   }
 });
-it("qualified providers drop ambient admission while pending Copilot retains its exact gate", () => {
+it("qualified providers drop ambient admission without granting custom model overrides", () => {
   for (const cell of cells) expect(buildRunnerE2EProcessEnvironment({ PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" }, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
   for (const agent of ["copilot"]) {
     const cell = runnerMatrix.find(e => e.profile.qualificationCandidate === agent)!;
-    expect(JSON.parse(buildRunnerE2EProcessEnvironment({ PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" }, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent, model: cell.profile.model }]);
+    expect(buildRunnerE2EProcessEnvironment({ PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" }, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
   }
   const changed = { ...cells[0]!, profile: { ...cells[0]!.profile, model: "custom/explicit-model" } };
   expect(buildRunnerE2EProcessEnvironment({}, [changed]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
@@ -108,10 +108,9 @@ it("uses the direct public Playwright JS bin without bin-shim Node injection", a
   const f = await fixture(); const cli = join(f.root,"node_modules/@playwright/test/cli.js");
   await mkdir(join(f.root,"node_modules/@playwright/test"),{recursive:true});
   await writeFile(cli,"console.log(JSON.stringify({nodePath:process.env.NODE_PATH??null,nodeOptions:process.env.NODE_OPTIONS??null,args:process.argv.slice(2)}))");
-  const invocation = runnerE2EPlaywrightInvocation(f.root,["--version"],true);
+  const invocation = runnerE2EPlaywrightInvocation(f.root,["--version"]);
   expect(invocation.command).toBe(process.execPath);
   expect(JSON.parse(execFileSync(invocation.command,invocation.args,{env:{},timeout:5000,encoding:"utf8"}))).toEqual({nodePath:null,nodeOptions:null,args:["--version"]});
-  expect(runnerE2EPlaywrightInvocation(f.root,["--version"],false)).toEqual({command:"pnpm",args:["exec","playwright","--version"]});
   for (const key of ["NODE_PATH","NODE_OPTIONS"]) expect(()=>assertInstalledCliSelection({...f.env,[key]:""},[cells[0]!])).toThrow("ambient Node injection");
 });
 

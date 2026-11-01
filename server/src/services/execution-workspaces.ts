@@ -1,9 +1,26 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { effectiveProjectWorkspacePolicy } from "./project-workspace-provider.js";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { cleanupRemoteWorkspaceAllocation, inspectRemoteWorkspacePersistence, type DestroyRemoteWorkspaceLease } from "./remote-workspace-lifecycle.js";
+import { inspectPluginWorkspace, removePluginWorkspace, restorePluginWorkspace, pluginWorkspaceSupportsMergeAncestry, type WorkspaceWorkers } from "./plugin-workspaces.js";
+import { acquireExecutionWorkspaceLifecycleLock, withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
-import { expireReconstructableGitWorkspace, hasPendingGitExpiration } from "./git-workspace-expiration.js";
-import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
+import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration, listIssuesUsingGitWorkspace } from "./git-workspace-expiration.js";
+import { expireIsolatedTaskDirectory, hasPendingTaskDirectoryRetention, isIsolatedTaskDirectoryWorkspace, isRetryableTaskDirectorySkip,
+  mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, restoreIsolatedTaskDirectory, supersedeTaskDirectoryRestorePoint,
+  sweepIsolatedTaskDirectories, inspectIsolatedTaskDirectoryFolders, taskDirectoryFoldersForHints, taskDirectoryCandidateFilter, TASK_DIRECTORY_RESTORE_POINT_EXPIRED_WARNING, TASK_DIRECTORY_RETENTION_KEY,
+  TASK_DIRECTORY_RETRY_MS } from "./isolated-task-directory-retention.js";
+import { hasPendingIsolatedRepositoryRehomeCleanup, isIsolatedRepositoryRehomeCandidate, rehomeExpiredIsolatedRestoration, rehomeIsolatedRepositoryWorkspace, sweepOrphanedIsolatedRepositorySources } from "./isolated-repository-rehome.js";
+import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, nextNestedCloneMigrationBatch, pendingNestedCloneMigrationNames, listNestedCloneMigrationNames, migrateNestedRepositoryClone,
+  NESTED_CLONE_MIGRATION_RETRY_REASONS, type NestedCloneMigrationRotation } from "./nested-clone-migration.js";
+import type { StorageService } from "../storage/types.js";
+import { getStorageService } from "../storage/index.js";
+import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired } from "./git-workspace-restoration.js";
+
+export const GIT_RESTORE_POINT_EXPIRED_WARNING = "The saved state of this workspace expired, so it was reopened as a fresh workspace on its branch. Unpushed and uncommitted work from before it was cleaned up is no longer available.";
 import { parseObject } from "../adapters/utils.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "./workspace-host-provision.js";
@@ -16,8 +33,9 @@ import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import type { SQL } from "drizzle-orm";
-import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
-import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./terminal-workspace-work.js";
 import {
   deleteWorkspaceCompactionTrash,
   findRegenerableWorkspaceDirs,
@@ -31,7 +49,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
@@ -84,7 +102,7 @@ import {
   type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { createGitRemoteAuthProvider } from "./git-credentials.js";
+import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
@@ -172,6 +190,11 @@ export function bumpExecutionWorkspaceLifecycleGeneration(
   };
 }
 
+function reopenableWorkspaceMode() {
+  return or(eq(executionWorkspaces.mode, "isolated_workspace"),
+    sql<boolean>`(${executionWorkspaces.metadata}->${TASK_DIRECTORY_RETENTION_KEY}) IS NOT NULL`);
+}
+
 function isClosedExecutionWorkspaceStatus(status: string | null | undefined): boolean {
   return status === "archived" || status === "cleanup_failed";
 }
@@ -237,26 +260,45 @@ export function clearMetadataReopenPendingConsumption(
   return next;
 }
 
-// Acquire the per-workspace, transaction-scoped Postgres advisory lock. Postgres
-// releases the lock when the transaction that holds `tx` commits or rolls back.
-// Both the reopen path and the destructive cleanup path acquire the same lock,
-// so they never run against the same workspace at the same time, even on
-// different server processes.
-async function acquireExecutionWorkspaceLifecycleLock(
-  tx: DbTransaction,
-  workspaceId: string,
-): Promise<void> {
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspaceId}`}, 0))`,
-  );
-}
-
-const workspaceSourceKeys = ["cwd", "projectId", "projectWorkspaceId", "sourceIssueId"] as const;
+const workspaceSourceKeys = ["providerType", "cwd", "providerRef", "projectId", "projectWorkspaceId", "sourceIssueId", "mode", "strategyType", "branchName", "repoUrl", "baseRef"] as const;
 
 function preserveWorkspaceMetadataForPatch(
   current: typeof executionWorkspaces.$inferSelect, patch: Partial<typeof executionWorkspaces.$inferInsert>,
 ) {
   const nextPatch = { ...patch };
+  if (readRemoteWorkspaceAuthority(current.metadata)) {
+    for (const key of workspaceSourceKeys) {
+      if (patch[key] !== undefined && patch[key] !== current[key]) throw conflict("Remote workspace coordinates belong to its sandbox storage");
+    }
+  }
+  const remoteAuthorityKeys = ["remoteWorkspace", "remoteWorkspaceMigration", "remoteWorkspaceRecoverySourceRunIds", "remoteWorkspaceRecoveredFiles"] as const;
+  if (patch.metadata !== undefined && remoteAuthorityKeys.some(key => current.metadata?.[key] !== undefined || patch.metadata?.[key] !== undefined)) {
+    nextPatch.metadata = { ...patch.metadata };
+    for (const key of remoteAuthorityKeys) {
+      if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
+      else delete nextPatch.metadata[key];
+    }
+  }
+  if (current.providerType === "plugin") {
+    for (const key of workspaceSourceKeys) {
+      if (patch[key] !== undefined && patch[key] !== current[key]) throw conflict("Managed workspace coordinates belong to its storage plugin");
+    }
+    if (patch.metadata !== undefined) {
+      nextPatch.metadata = { ...nextPatch.metadata };
+      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
+        if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
+        else delete nextPatch.metadata[key];
+      }
+    }
+  }
+  const freshIntentKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner"] as const;
+  if (patch.metadata !== undefined && (patch.metadata !== null || freshIntentKeys.some(key => current.metadata?.[key] !== undefined))) {
+    nextPatch.metadata = { ...(nextPatch.metadata ?? patch.metadata) };
+    for (const key of freshIntentKeys) {
+      if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
+      else delete nextPatch.metadata[key];
+    }
+  }
   const retainedSources = {
     ...parseObject(parseObject(patch.metadata)._issuePrivacySources),
     ...parseObject(current.metadata?._issuePrivacySources),
@@ -266,7 +308,7 @@ function preserveWorkspaceMetadataForPatch(
   }
   if (Object.keys(retainedSources).length > 0) {
     nextPatch.metadata = {
-      ...(patch.metadata !== undefined ? patch.metadata ?? {} : current.metadata ?? {}),
+      ...(nextPatch.metadata !== undefined ? nextPatch.metadata ?? {} : current.metadata ?? {}),
       _issuePrivacySources: retainedSources,
     };
   }
@@ -280,14 +322,22 @@ export type ReopenClosedIsolatedExecutionWorkspaceResult =
   // `generation` is the lifecycle generation the reopen published the active row
   // at. It owns the reopen-pending flag. A later clear must present this same
   // generation, so a stale actor never clears a newer reopen's fence.
-  | { ok: true; workspace: ExecutionWorkspace; reopened: true; generation: number }
+  | { ok: true; workspace: ExecutionWorkspace; reopened: true; generation: number; warning?: string }
   | { ok: true; workspace: ExecutionWorkspace; reopened: false; generation: number }
   | { ok: false; code: "not_reopenable" | "rebuild_failed"; message: string };
 
 export type ExecutionWorkspaceServiceOptions = {
+  pluginWorkerManager?: WorkspaceWorkers;
+  destroyRemoteWorkspaceLease?: DestroyRemoteWorkspaceLease;
   gitCacheExpirationEnabled?: boolean;
   gitBaseExpirationEnabled?: boolean;
   gitCacheExpirationDryRun?: boolean;
+  isolatedSourceRehomeEnabled?: boolean;
+  isolatedSourceRehomeDryRun?: boolean;
+  nestedCloneMigrationEnabled?: boolean;
+  nestedCloneMigrationDryRun?: boolean;
+  gitRestorePoints?: { storage: StorageService; terminalDelayMs: number; keyDurable: boolean; idleMs?: number | null };
+  taskDirectoryRetention?: { dryRun: boolean; terminalDelayMs: number; orphanGraceMs: number; perSweep?: number; trackedLimit?: number };
   terminalWorkspaceInspectionBackoffMs?: number;
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   now?: () => Date;
@@ -305,10 +355,7 @@ export type ExecutionWorkspaceServiceOptions = {
   // Test hook. Runs after compaction moves directories out of the worktree and
   // before it re-checks the guard under the lifecycle lock.
   afterWorkspaceCompactionMove?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
-  inspectGitCloseReadiness?: (workspace: ExecutionWorkspace) => Promise<{
-    git: ExecutionWorkspaceCloseGitReadiness | null;
-    warnings: string[];
-  }>;
+  inspectGitCloseReadiness?: typeof inspectGitCloseReadiness;
 };
 
 function parseGitHubRepository(repoUrl: string | null) {
@@ -1335,8 +1382,6 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
   executionWorkspaceId: string;
 };
 
-const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseReadiness);
-
 async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   companyId: string; issueId: string; excludeRunId?: string;
 }) {
@@ -1369,9 +1414,22 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   for (const operation of operations) {
     if (operation.runId && !latest.has(operation.runId)) latest.set(operation.runId, operation.status);
   }
+  const bootstrapRunIds = rows.filter(({ finalization, run }) => {
+    const recovery = parseObject(run.resultJson?.executionRecovery);
+    return run.runtimeMode === "native" && run.status === "failed" && run.finishedAt !== null
+      && finalization.phase === "terminal_failure" && finalization.resultId === null
+      && run.processPid === null && run.processGroupId === null
+      && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false
+      && !hasWorkspaceRestoreFailure(run.resultJson)
+      && run.runnerProfileJson?.nativeWorkspaceSync == null
+      && run.runnerProfileJson?.nativeWorkspaceFinalizationOwner == null
+      && latest.get(run.id) === "failed";
+  }).map(({ run }) => run.id);
+  const providerEvidence = await nativeSessionProviderEvidence(tx, bootstrapRunIds);
+  const noWorkFailures = new Set(bootstrapRunIds.filter(id => !providerEvidence.has(id)));
   return rows.some(({ finalization, run }) => {
     const status = latest.get(run.id);
-    if (status !== undefined) return status !== "succeeded";
+    if (status !== undefined) return status !== "succeeded" && !noWorkFailures.has(run.id);
     return finalization.phase === "terminal_failure" && finalization.resultId !== null;
   });
 }
@@ -1382,10 +1440,35 @@ const WORKSPACE_COMPACTION_TRASH_STALE_MS = 60 * 60 * 1000;
 const WORKSPACE_COMPACTION_TRASH_PURGE_INTERVAL_MS = 30 * 60 * 1000;
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
+  const destroyRemoteLease: DestroyRemoteWorkspaceLease = input => opts.destroyRemoteWorkspaceLease
+    ? opts.destroyRemoteWorkspaceLease(input)
+    : import("./environment-runtime.js").then(({ environmentRuntimeService }) => environmentRuntimeService(db).destroyRemoteWorkspaceLease(input));
+  async function inspectWorkspace(workspace: ExecutionWorkspace) {
+    if (readRemoteWorkspaceAuthority(workspace.metadata)) {
+      const state = await inspectRemoteWorkspacePersistence(db, workspace);
+      return { statusInspectionSucceeded: state.ready, warnings: state.reason ? [state.reason] : [], git: null };
+    }
+    if (workspace.providerType !== "plugin") return (opts.inspectGitCloseReadiness ?? inspectGitCloseReadiness)(workspace);
+    const [row] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspace.id), eq(executionWorkspaces.companyId, workspace.companyId)));
+    if (!row) throw notFound("Workspace is unavailable");
+    let state;
+    try { state = await inspectPluginWorkspace(db, opts.pluginWorkerManager, row); }
+    catch { return { statusInspectionSucceeded: false, warnings: ["Workspace storage inspection is unavailable; data was retained."], git: null }; }
+    return { statusInspectionSucceeded: true, warnings: [], git: {
+      repoRoot: `/workspaces/${workspace.id}`, workspacePath: `/workspaces/${workspace.id}`,
+      branchName: state.branchName, baseRef: workspace.baseRef,
+      hasDirtyTrackedFiles: state.hasDirtyTrackedFiles || state.hasLocalOnlyData,
+      hasUntrackedFiles: state.hasUntrackedFiles, dirtyEntryCount: state.hasDirtyTrackedFiles ? 1 : 0,
+      untrackedEntryCount: state.hasUntrackedFiles ? 1 : 0, aheadCount: null, behindCount: null,
+      isMergedIntoBase: state.isMergedIntoBase, createdByRuntime: workspace.metadata?.createdByRuntime === true,
+      headSha: state.headSha,
+    } };
+  }
   async function resolveSourceWorkspaceConfiguration(input: {
     companyId: string; issueId?: string | null; assigneeAgentId?: string | null;
     assigneeAdapterOverrides?: unknown; executionWorkspaceSettings?: unknown;
     executionWorkspacePolicy: unknown; typedSelection?: boolean; projectId?: string | null; executionPolicy?: unknown;
+    sourceWorkspaceId?: string | null; inheritProviderDefaults?: boolean;
   }, reader: Db | DbTransaction = db) {
     const [task] = input.issueId ? await reader.select().from(issues).where(and(
       eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
@@ -1395,12 +1478,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, input.companyId))) : [];
     const overrides = assigneeAgentId ? parseIssueAssigneeAdapterOverrides(task ? task.assigneeAdapterOverrides : input.assigneeAdapterOverrides) : null;
     const experimental = await instanceSettingsService(db).getExperimental();
+    const sourceId = input.sourceWorkspaceId ?? task?.projectWorkspaceId;
+    const sourceProjectId = input.projectId ?? task?.projectId;
+    const [source] = sourceId || sourceProjectId ? await reader.select({ repoUrl: projectWorkspaces.repoUrl }).from(projectWorkspaces).where(and(
+      eq(projectWorkspaces.companyId, input.companyId),
+      sourceId ? eq(projectWorkspaces.id, sourceId) : eq(projectWorkspaces.projectId, sourceProjectId!),
+    )).orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)).limit(1) : [];
+    const effectivePolicy = input.inheritProviderDefaults === false
+      ? parseProjectExecutionWorkspacePolicy(input.executionWorkspacePolicy)
+      : await effectiveProjectWorkspacePolicy(reader, input.companyId, input.executionWorkspacePolicy, Boolean(source?.repoUrl));
     const projectPolicy = applyDefaultIsolatedExecutionWorkspacePolicy({
-      projectPolicy: gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(input.executionWorkspacePolicy), experimental.enableIsolatedWorkspaces),
+      projectPolicy: gateProjectExecutionWorkspacePolicy(effectivePolicy, experimental.enableIsolatedWorkspaces || Boolean(effectivePolicy?.storageProviderPluginId)),
       defaultIsolatedWorkspacesEnabled: experimental.enableIsolatedWorkspaces && experimental.enableIsolatedWorkspacesByDefault,
       hasProjectWorkspace: true,
     });
-    const settingsEnabled = experimental.enableIsolatedWorkspaces || input.typedSelection || task?.workspaceSelection || task?.executionWorkspaceId;
+    const settingsEnabled = experimental.enableIsolatedWorkspaces || Boolean(effectivePolicy?.storageProviderPluginId) || input.typedSelection || task?.workspaceSelection || task?.executionWorkspaceId;
     const issueSettings = settingsEnabled ? parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings) : null;
     const projectId = task ? task.projectId : input.projectId;
     const [organization] = projectId ? await reader.select({ companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
@@ -1457,7 +1549,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         executionWorkspaceSettings = { ...parseObject(task.settings), mode };
       }
       await resolveSourceWorkspaceStrategy({ ...input, typedSelection: true,
-        executionWorkspaceSettings, executionWorkspacePolicy: source.executionWorkspacePolicy }, reader);
+        executionWorkspaceSettings, executionWorkspacePolicy: source.executionWorkspacePolicy, sourceWorkspaceId: source.id }, reader);
       await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId);
       return { executionWorkspaceId: null, projectWorkspaceId: source.id, executionWorkspacePreference: null,
         executionWorkspaceSettings };
@@ -1516,6 +1608,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await validateSelection(input, tx);
       const intent: TaskWorkspaceIntent = { version: 1, request: { key: input.requestKey, expectedBindingRevision: input.expectedBindingRevision }, selection: input.selection, source: input.source ?? "explicit" };
       const nextRevision = task.workspaceBindingRevision + 1;
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx.update(issues).set({ workspaceBindingRevision: nextRevision,
         workspacePendingSelection: { version: 1, requestKey: input.requestKey,
           expectedBindingRevision: nextRevision, intent }, updatedAt: new Date() }).where(eq(issues.id, task.id));
@@ -1547,7 +1640,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             eq(projectWorkspaces.companyId, input.companyId), eq(projectWorkspaces.id, patch.projectWorkspaceId!),
           ));
         const { strategy, config } = await resolveSourceWorkspaceConfiguration({ ...input, typedSelection: true,
-          executionWorkspacePolicy: source?.policy, executionWorkspaceSettings: patch.executionWorkspaceSettings }, tx);
+          executionWorkspacePolicy: source?.policy, executionWorkspaceSettings: patch.executionWorkspaceSettings, sourceWorkspaceId: patch.projectWorkspaceId }, tx);
         if (strategy === "git_worktree") {
           const workspaceStrategy = { ...parseObject(config.workspaceStrategy), type: "git_worktree",
             existingBranch: null, branchTemplate: "retry-{{issue.id}}" };
@@ -1559,6 +1652,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
         }
       }
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx.update(issues).set({ ...patch, assigneeAdapterOverrides, workspaceSelection: pending.intent, workspacePendingSelection: null,
         workspaceBindingRevision: task.workspaceBindingRevision + 1, updatedAt: new Date() }).where(eq(issues.id, task.id));
       return true;
@@ -1577,6 +1671,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const pendingAfterFirstBinding = !task.executionWorkspaceId && pending?.expectedBindingRevision === task.workspaceBindingRevision
         ? { ...pending, expectedBindingRevision: nextRevision }
         : pending;
+      await notifyStatusCardIssueChange(tx, companyId);
       const [bound] = await tx.update(issues).set({ ...patch, executionWorkspaceId: workspaceId,
         workspaceBindingRevision: nextRevision, workspacePendingSelection: pendingAfterFirstBinding, updatedAt: new Date() })
         .where(eq(issues.id, issueId)).returning();
@@ -1616,7 +1711,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     if (!sourceProject) throw notFound("Workspace source is unavailable or inaccessible");
     await resolveSourceWorkspaceStrategy({ companyId: task.companyId, issueId: task.id,
       executionWorkspaceSettings: task.executionWorkspaceSettings,
-      executionWorkspacePolicy: sourceProject.executionWorkspacePolicy }, tx);
+      executionWorkspacePolicy: sourceProject.executionWorkspacePolicy, sourceWorkspaceId: sourceId, inheritProviderDefaults: !workspace }, tx);
   }
 
   async function prepareTaskWorkspaceUpdate(input: {
@@ -1651,9 +1746,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ...(selectedWorkspace ? { projectWorkspaceId: selectedWorkspace.projectWorkspaceId } : {}) };
   }
 
-  const inspectDisplay = opts.inspectGitCloseReadiness
-    ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
-    : inspectGitForDisplay;
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
@@ -1694,9 +1786,94 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // required: without it the query re-selects the oldest ineligible rows every
   // sweep and starves eligible rows behind them. The cursor resets to the start
   // when a sweep reaches the end of the candidate set.
-  let terminalSweepCursor: { updatedAt: Date; id: string } | null = null;
+  let terminalSweepCursor: { updatedAt: string; id: string } | null = null;
   const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number }>();
   const terminalWorkspaceDeadlines = new Map<string, number>();
+  const isolatedRehomeDeadlines = new Map<string, number>();
+  const isolatedRehomeNotBefore = new Map<string, number>();
+  const ISOLATED_REHOME_RETRY_MS = 60 * 60 * 1000;
+  const nestedCloneMigrationDeadlines = new Map<string, number>();
+  const nestedCloneMigrationNotBefore = new Map<string, number>();
+  const nestedCloneMigrationRetryAt = new Map<string, number>();
+  const nestedCloneMigrationRotations = new Map<string, NestedCloneMigrationRotation>();
+  const ISOLATED_ORPHAN_RETRY_MS = 24 * 60 * 60 * 1000;
+  let isolatedOrphanSweepDueAt = 0;
+  let isolatedOrphanCursor: string | null = null;
+  let isolatedOrphanKept = false;
+  const taskDirectoryDeadlines = new Map<string, number>();
+  let taskDirectoryWalkDueAt = 0;
+  let taskDirectoryWalkCursor: string | null = null;
+  let taskDirectoryWalkRetryAt: number | null = null;
+  const taskDirectoryFolderDue = new Map<string, number>();
+  const taskDirectoryHints = new Set<string>();
+  const taskDirectoryRowSkips = new Map<string, { updatedAt: number; retryAt: number | null; issueId: string | null }>();
+  const TASK_DIRECTORY_FOLDERS_PER_SWEEP = 8;
+  const TASK_DIRECTORY_HINTS_PER_SWEEP = 64;
+  const remember = <K, V>(map: Map<K, V>, key: K, value: V) => {
+    if (!map.has(key) && map.size >= 4096) map.delete(map.keys().next().value!);
+    map.set(key, value);
+  };
+  const TASK_DIRECTORY_TRACKED_LIMIT = opts.taskDirectoryRetention?.trackedLimit ?? 4096;
+  const rememberFolder = (key: string, dueAt: number) => {
+    if (!taskDirectoryFolderDue.has(key) && taskDirectoryFolderDue.size >= TASK_DIRECTORY_TRACKED_LIMIT) {
+      taskDirectoryWalkDueAt = Math.min(taskDirectoryWalkDueAt, dueAt);
+      return;
+    }
+    taskDirectoryFolderDue.set(key, dueAt);
+  };
+  async function runTaskDirectoryFolderWork(signal?: AbortSignal) {
+    const settings = opts.taskDirectoryRetention!;
+    const options = { dryRun: settings.dryRun, now: now(), orphanGraceMs: settings.orphanGraceMs, terminalDelayMs: settings.terminalDelayMs,
+      signal, beforeDelete: opts.beforeTerminalWorkspaceCleanup,
+      restorePoint: opts.gitRestorePoints ? { storage: opts.gitRestorePoints.storage, keyDurable: opts.gitRestorePoints.keyDurable } : undefined };
+    const nowMs = options.now.getTime();
+    let results: Awaited<ReturnType<typeof inspectIsolatedTaskDirectoryFolders>> = [];
+    try {
+      if (taskDirectoryWalkDueAt <= nowMs) {
+        const batch = await sweepIsolatedTaskDirectories(db, { ...options, after: taskDirectoryWalkCursor, limit: TASK_DIRECTORY_FOLDERS_PER_SWEEP });
+        results = batch.results;
+        if (batch.retryAt !== null) taskDirectoryWalkRetryAt = Math.min(taskDirectoryWalkRetryAt ?? Infinity, batch.retryAt);
+        taskDirectoryWalkCursor = batch.next;
+        if (taskDirectoryWalkCursor) taskDirectoryWalkDueAt = nowMs;
+        else {
+          taskDirectoryWalkDueAt = taskDirectoryWalkRetryAt ?? Number.POSITIVE_INFINITY;
+          taskDirectoryWalkRetryAt = null;
+        }
+      } else {
+        const hints = [...taskDirectoryHints].slice(0, TASK_DIRECTORY_HINTS_PER_SWEEP);
+        for (const hint of hints) taskDirectoryHints.delete(hint);
+        const hinted = hints.length === 0 ? [] : await taskDirectoryFoldersForHints(db, {
+          workspaceIds: hints.filter(hint => hint.startsWith("workspace:")).map(hint => hint.slice("workspace:".length)),
+          issueIds: hints.filter(hint => hint.startsWith("issue:")).map(hint => hint.slice("issue:".length)),
+        });
+        const folders = new Map(hinted.map(folder => [`${folder.companyId}/${folder.issueId}`, folder]));
+        for (const [key, dueAt] of taskDirectoryFolderDue) {
+          if (dueAt > nowMs) continue;
+          const [companyId, issueId] = key.split("/");
+          folders.set(key, { companyId: companyId!, issueId: issueId! });
+        }
+        const batch = [...folders.entries()].slice(0, TASK_DIRECTORY_FOLDERS_PER_SWEEP);
+        for (const [key] of batch) taskDirectoryFolderDue.delete(key);
+        for (const [key] of [...folders.entries()].slice(TASK_DIRECTORY_FOLDERS_PER_SWEEP)) rememberFolder(key, nowMs);
+        results = await inspectIsolatedTaskDirectoryFolders(db, batch.map(([, folder]) => folder), options);
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      logger.warn({ err: error }, "isolated task directory sweep failed; it retries later");
+      taskDirectoryWalkDueAt = Math.min(taskDirectoryWalkDueAt, nowMs + TASK_DIRECTORY_RETRY_MS);
+    }
+    for (const folder of results) {
+      const key = `${folder.companyId}/${folder.issueId}`;
+      if (folder.walkRetryAt !== undefined) taskDirectoryWalkDueAt = Math.min(taskDirectoryWalkDueAt, folder.walkRetryAt);
+      if (folder.retryAt !== undefined) rememberFolder(key, folder.retryAt);
+      else taskDirectoryFolderDue.delete(key);
+      logger.info({ event: "execution_workspace.task_directory_cleanup", dryRun: settings.dryRun, ...folder }, "Isolated task directory inspected");
+    }
+    taskDirectoryDeadlines.clear();
+    if (Number.isFinite(taskDirectoryWalkDueAt)) taskDirectoryDeadlines.set("walk", taskDirectoryWalkDueAt);
+    if (taskDirectoryHints.size > 0) taskDirectoryDeadlines.set("hints", now().getTime());
+    if (taskDirectoryFolderDue.size > 0) taskDirectoryDeadlines.set("folders", Math.min(...taskDirectoryFolderDue.values()));
+  }
   let terminalSweepRescanRequested = false;
   // The reaper freezes an upper bound on updatedAt at the start of each
   // rotation. The scan only reads candidates at or below the bound, so a steady
@@ -1748,14 +1925,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       )));
   }
 
-  async function listDeliveryPullRequestProducts(
-    workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">,
+  async function listDeliveryPullRequestReferences(
+    workspace: ExecutionWorkspaceRow,
   ) {
     const sourceIssueId = workspace.sourceIssueId;
     if (!sourceIssueId) return [];
 
     // A read-only lookup: rebuild it after a transient pooled disconnect.
-    return retryIdempotentDatabaseOperation(() => db
+    const products = await retryIdempotentDatabaseOperation(() => db
       .select({
         id: issueWorkProducts.id,
         url: issueWorkProducts.url,
@@ -1772,6 +1949,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ))
       .orderBy(desc(issueWorkProducts.updatedAt))
       .limit(100));
+    return products.flatMap(product => extractGitHubPullRequestReferences([
+      product.url, product.externalId, product.title, product.summary,
+      product.metadata ? JSON.stringify(product.metadata) : null,
+    ])).filter(reference => pullRequestMatchesWorkspaceRepository(reference, workspace));
+  }
+
+  async function cachedDeliveryPullRequestDetails(workspace: ExecutionWorkspaceRow, reference: GitHubPullRequestReference) {
+    const key = `${workspace.companyId}:${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
+    const cached = pullRequestStateCache.get(key);
+    if (cached && now().getTime() - cached.checkedAtMs < pullRequestStateCacheTtlMs) return cached.details;
+    const details = await resolvePullRequestDetails(workspace.companyId, reference);
+    setBoundedPullRequestCacheEntry(pullRequestStateCache, key, { details, checkedAtMs: now().getTime() });
+    return details;
+  }
+
+  async function hasMergedDeliveryPullRequest(workspace: ExecutionWorkspaceRow, references: GitHubPullRequestReference[]) {
+    for (const reference of references) {
+      const details = await cachedDeliveryPullRequestDetails(workspace, reference);
+      if (details.state === "merged" && details.headRef === workspace.branchName && details.headSha) return true;
+    }
+    return false;
   }
 
   async function assessDelivery(
@@ -1796,55 +1994,30 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
-    const workspaceHeadSha = sourceIssueTerminal && git?.repoRoot && git.workspacePath
+    const workspaceHeadSha = workspace.providerType === "plugin" ? git?.headSha ?? null : sourceIssueTerminal && git?.repoRoot && git.workspacePath
       ? await runGit(["rev-parse", "HEAD"], git.workspacePath)
         .then((result) => result.stdout.trim() || null)
         .catch(() => null)
       : null;
 
     if (sourceIssueTerminal) {
-      const products = await listDeliveryPullRequestProducts(workspace);
-      for (const product of products) {
-        const references = extractGitHubPullRequestReferences([
-          product.url,
-          product.externalId,
-          product.title,
-          product.summary,
-          product.metadata ? JSON.stringify(product.metadata) : null,
-        ]);
-        if (references.length === 0) continue;
-        for (const reference of references) {
-          if (!pullRequestMatchesWorkspaceRepository(reference, workspace)) continue;
-          const key = `${workspace.companyId}:${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
-          const cached = pullRequestStateCache.get(key);
-          let details;
-          if (cached && now().getTime() - cached.checkedAtMs < pullRequestStateCacheTtlMs) {
-            details = cached.details;
-          } else {
-            details = await resolvePullRequestDetails(workspace.companyId, reference);
-            setBoundedPullRequestCacheEntry(
-              pullRequestStateCache,
-              key,
-              { details, checkedAtMs: now().getTime() },
-            );
-          }
-          if (
-            details.state === "merged"
-            && details.headRef === workspace.branchName
-            && details.headSha === workspaceHeadSha
-            && workspaceHeadSha !== null
-          ) {
-            mergedPullRequest = true;
-            break;
-          }
-          if (
-            details.state === "unknown"
-            || (details.state === "merged" && (!details.headRef || !details.headSha || !workspaceHeadSha))
-          ) {
-            pullRequestStateUnknown = true;
-          }
+      for (const reference of await listDeliveryPullRequestReferences(workspace)) {
+        const details = await cachedDeliveryPullRequestDetails(workspace, reference);
+        if (
+          details.state === "merged"
+          && details.headRef === workspace.branchName
+          && details.headSha === workspaceHeadSha
+          && workspaceHeadSha !== null
+        ) {
+          mergedPullRequest = true;
+          break;
         }
-        if (mergedPullRequest) break;
+        if (
+          details.state === "unknown"
+          || (details.state === "merged" && (!details.headRef || !details.headSha || !workspaceHeadSha))
+        ) {
+          pullRequestStateUnknown = true;
+        }
       }
     }
 
@@ -1874,7 +2047,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
 
     const [current, currentHeadSha, currentBranchName] = await Promise.all([
-      inspectGitCloseReadiness(toExecutionWorkspace(workspace)),
+      inspectWorkspace(toExecutionWorkspace(workspace)),
       readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
       readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
     ]);
@@ -1890,13 +2063,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     ) {
       throw new Error("Refusing terminal workspace cleanup because the git worktree changed after delivery was verified");
     }
-  }
-
-  async function hydrateWorkspace(row: ExecutionWorkspaceRow, runtimeServices: WorkspaceRuntimeService[] = []) {
-    const workspace = toExecutionWorkspace(row, runtimeServices);
-    const { git } = await inspectDisplay(workspace);
-    const assessment = await assessDelivery(row, git);
-    return toExecutionWorkspace(row, runtimeServices, assessment.deliveryState);
   }
 
   async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
@@ -1952,8 +2118,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     skipLog?: { event: string; message: string };
     write: (context: { tx: DbTransaction; fresh: FenceableWorkspaceRow }) => Promise<T>;
   }): Promise<T> {
-    return db.transaction(async (tx) => {
-      await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+    return withExecutionWorkspaceLifecycleLock(db, input.workspaceId, async (tx) => {
       const row = await tx
         .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
         .from(executionWorkspaces)
@@ -2297,6 +2462,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+    if (readRemoteWorkspaceAuthority(workspace.metadata)) {
+      if (await workspaceHasActiveRun(workspace)) throw conflict("Workspace still has active execution");
+      return cleanupRemoteWorkspaceAllocation({ db, workspace, destroyLease: destroyRemoteLease });
+    }
+    if (workspace.providerType === "plugin") {
+      if (await workspaceHasActiveRun(workspace)) throw conflict("Workspace still has active execution");
+      await removePluginWorkspace(db, opts.pluginWorkerManager, workspace, expectedHeadSha);
+      return { cleaned: true, warnings: [] };
+    }
     const [
       {
         acquireGitWorktreeCleanupLock,
@@ -2359,13 +2533,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         forceWorktreeRemoval: false,
       });
       if (cleanup.cleaned && workspace.mode === "shared_workspace") {
-        await db
+        await db.transaction(async tx => {
+          await notifyStatusCardIssueChange(tx, workspace.companyId);
+          await tx
           .update(issues)
           .set({ executionWorkspaceId: null, updatedAt: now() })
           .where(and(
             eq(issues.companyId, workspace.companyId),
             eq(issues.executionWorkspaceId, workspace.id),
           ));
+        });
       }
       const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
       if (!cleanup.cleaned || cleanup.warnings.length > 0) {
@@ -2861,11 +3038,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       return null;
     },
 
-    getStoredById: async (companyId: string, id: string) => {
+    getStoredById: async (companyId: string, id: string, options?: { includeRuntimeServices: boolean }) => {
       const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id));
       if (row && row.companyId !== companyId) throw forbidden("Task workspace access is no longer available");
-      return row ? toExecutionWorkspace(row) : null;
+      if (!row) return null;
+      const runtimeServices = options?.includeRuntimeServices
+        ? await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, [row]) : null;
+      return toExecutionWorkspace(row, (runtimeServices?.get(row.id) ?? []).map(toRuntimeService));
     },
+
+    cleanupRemoteStorage: async (workspace: ExecutionWorkspace) => cleanupRemoteWorkspaceAllocation({
+      db, workspace, destroyLease: destroyRemoteLease,
+    }),
 
     getById: async (id: string) => {
       const row = await db
@@ -2882,7 +3066,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         projectWorkspaceId: row.projectWorkspaceId,
       });
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
-      return hydrateWorkspace(
+      return toExecutionWorkspace(
         row,
         (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
       );
@@ -2959,12 +3143,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         git,
         warnings: gitWarnings,
         statusInspectionSucceeded,
-      } = await inspectGitCloseReadiness(executionWorkspace);
+      } = await inspectWorkspace(executionWorkspace);
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      const remoteWorkspace = readRemoteWorkspaceAuthority(workspace.metadata);
       if (!statusInspectionSucceeded) {
-        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+        blockingReasons.push(remoteWorkspace ? gitWarnings[0] ?? "The remote workspace save is incomplete."
+          : "Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
       }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
@@ -2995,7 +3181,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
       }
 
-      if (isSharedWorkspace) {
+      if (isSharedWorkspace && !remoteWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
       }
 
@@ -3077,18 +3263,30 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         },
       ];
       for (const action of configuredCleanupCommands) {
-        if (!action.command) continue;
+        if (!action.command || executionWorkspace.providerType === "plugin" || remoteWorkspace) continue;
         plannedActions.push(action);
       }
 
       const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
-      if (teardownCommand) {
+      if (teardownCommand && executionWorkspace.providerType !== "plugin" && !remoteWorkspace) {
         plannedActions.push({
           kind: "teardown_command",
           label: "Run teardown command",
           description: "Teardown runs after cleanup commands during workspace close.",
           command: teardownCommand,
         });
+      }
+
+      if (executionWorkspace.providerType === "plugin") {
+        plannedActions.push({ kind: "remove_provider_workspace", label: "Remove provider workspace",
+          description: "The storage plugin will verify remote recovery and remove the workspace.", command: null });
+      }
+      if (remoteWorkspace) {
+        plannedActions.push({ kind: "remove_provider_workspace", label: "Release remote workspace compute",
+          description: "Release the sandbox and keep the saved workspace files.", command: null });
+        if (configuredCleanupCommands.some(action => action.command) || teardownCommand) {
+          blockingReasons.push("Remote workspace close does not support custom cleanup or teardown commands.");
+        }
       }
 
       if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
@@ -3100,7 +3298,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
       }
 
-      if (git?.createdByRuntime && executionWorkspace.branchName) {
+      if (executionWorkspace.providerType !== "plugin" && !remoteWorkspace && git?.createdByRuntime && executionWorkspace.branchName) {
         plannedActions.push({
           kind: "git_branch_delete",
           label: "Delete runtime-created branch",
@@ -3183,11 +3381,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       terminalSweepInProgress = true;
       try {
       if (options.compact !== false) await purgeDeferredCompactionTrash(signal);
+      if (opts.taskDirectoryRetention) await runTaskDirectoryFolderWork(signal);
       const baseCandidateFilter = and(
         sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
         or(and(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]), isNull(executionWorkspaces.closedAt)),
+          and(eq(executionWorkspaces.providerType, "plugin"), inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`(${executionWorkspaces.metadata}->>'workspaceProviderRemoved') IS DISTINCT FROM 'true'`),
+          and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`${executionWorkspaces.metadata}->'remoteWorkspace'->>'schema' = 'paperclip.remote-workspace.v1'`,
+            sql`jsonb_typeof(${executionWorkspaces.metadata}->'remoteWorkspace'->'location') = 'object'`),
           opts.gitCacheExpirationEnabled ? and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
-            sql`${executionWorkspaces.metadata}->'gitCacheExpiration'->>'completed' = 'false'`) : undefined),
+            sql`${executionWorkspaces.metadata}->'gitCacheExpiration'->>'completed' = 'false'`) : undefined,
+          opts.nestedCloneMigrationEnabled ? and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`(${executionWorkspaces.metadata}->'nestedCloneMigrationPending') IS NOT NULL`) : undefined,
+          opts.gitCacheExpirationEnabled && opts.isolatedSourceRehomeEnabled ? and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`(${executionWorkspaces.metadata}->'isolatedRepositoryRehome') IS NOT NULL`,
+            sql`(${executionWorkspaces.metadata}->'isolatedRepositoryRehome'->>'cleanedAt') IS NULL`) : undefined,
+          opts.taskDirectoryRetention ? taskDirectoryCandidateFilter() : undefined),
       );
       // Continue the scan after the previous sweep's last row. The keyset
       // predicate uses the same (updatedAt, id) order as the query, so each
@@ -3202,24 +3412,39 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (!cursor) {
         terminalSweepBoundary = now();
         terminalWorkspaceDeadlines.clear();
+        isolatedRehomeDeadlines.clear();
+        nestedCloneMigrationDeadlines.clear();
         terminalSweepRescanRequested = false;
+        if (opts.gitCacheExpirationEnabled && opts.isolatedSourceRehomeEnabled && isolatedOrphanSweepDueAt <= now().getTime()) {
+          const dryRun = opts.isolatedSourceRehomeDryRun ?? false;
+          const batch = await sweepOrphanedIsolatedRepositorySources(db, { dryRun, signal, after: isolatedOrphanCursor }).catch((error: unknown) => {
+            signal?.throwIfAborted();
+            logger.warn({ err: error }, "isolated repository source orphan sweep failed; it retries later");
+            return null;
+          });
+          for (const orphan of batch?.results ?? []) {
+            logger.info({ event: "execution_workspace.isolated_source_orphan_cleanup", dryRun, ...orphan }, "Orphaned isolated repository source inspected");
+          }
+          isolatedOrphanKept ||= !batch || batch.results.some(orphan => !orphan.removed);
+          isolatedOrphanCursor = batch?.next ?? null;
+          if (isolatedOrphanCursor) isolatedOrphanSweepDueAt = now().getTime();
+          else {
+            isolatedOrphanSweepDueAt = isolatedOrphanKept ? now().getTime() + ISOLATED_ORPHAN_RETRY_MS : Number.POSITIVE_INFINITY;
+            isolatedOrphanKept = false;
+          }
+        }
+        if (Number.isFinite(isolatedOrphanSweepDueAt) && isolatedOrphanSweepDueAt > 0) isolatedRehomeDeadlines.set("isolated-source-orphans", isolatedOrphanSweepDueAt);
       }
       const boundary = terminalSweepBoundary;
       const boundaryFilter = boundary
         ? lte(executionWorkspaces.updatedAt, boundary)
         : undefined;
       const cursorFilter = cursor
-        ? or(
-            gt(executionWorkspaces.updatedAt, cursor.updatedAt),
-            and(
-              eq(executionWorkspaces.updatedAt, cursor.updatedAt),
-              gt(executionWorkspaces.id, cursor.id),
-            ),
-          )
+        ? sql`(${executionWorkspaces.updatedAt}, ${executionWorkspaces.id}) > (${cursor.updatedAt}::timestamptz, ${cursor.id}::uuid)`
         : undefined;
       const scanFilter = and(baseCandidateFilter, boundaryFilter, cursorFilter);
       const candidates = await db
-        .select()
+        .select({ workspace: executionWorkspaces, cursorAt: sql<string>`${executionWorkspaces.updatedAt}::text` })
         .from(executionWorkspaces)
         .where(scanFilter)
         .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
@@ -3232,7 +3457,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         terminalSweepBoundary = null;
       } else {
         const lastCandidate = candidates[candidates.length - 1]!;
-        terminalSweepCursor = { updatedAt: lastCandidate.updatedAt, id: lastCandidate.id };
+        terminalSweepCursor = { updatedAt: lastCandidate.cursorAt, id: lastCandidate.workspace.id };
       }
       const result = {
         checked: candidates.length,
@@ -3251,20 +3476,132 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compactionFailed: 0,
       };
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectGitCloseReadiness>>();
+      let taskDirectoryBudget = opts.taskDirectoryRetention?.perSweep ?? 8;
+      const expireTaskDirectory = async (workspace: ExecutionWorkspaceRow, notBefore: Date) => {
+        const settings = opts.taskDirectoryRetention!;
+        const skipped = taskDirectoryRowSkips.get(workspace.id);
+        if (skipped && skipped.updatedAt === workspace.updatedAt.getTime() && (skipped.retryAt === null || skipped.retryAt > now().getTime())) {
+          if (skipped.retryAt !== null) terminalWorkspaceDeadlines.set(workspace.id, skipped.retryAt);
+          return;
+        }
+        if (taskDirectoryBudget <= 0) {
+          terminalWorkspaceDeadlines.set(workspace.id, now().getTime());
+          return;
+        }
+        taskDirectoryBudget -= 1;
+        const expiration = await expireIsolatedTaskDirectory(db, workspace, { dryRun: settings.dryRun, now: now(), notBefore, signal,
+          beforeDelete: opts.beforeTerminalWorkspaceCleanup,
+          restorePoint: opts.gitRestorePoints ? { storage: opts.gitRestorePoints.storage, keyDurable: opts.gitRestorePoints.keyDurable } : undefined });
+        if (expiration.candidate) result.eligible += 1;
+        if (expiration.expired) result.archived += 1;
+        const retryAt = !expiration.expired && isRetryableTaskDirectorySkip(expiration.skipReason) ? now().getTime() + TASK_DIRECTORY_RETRY_MS : null;
+        if (retryAt !== null) terminalWorkspaceDeadlines.set(workspace.id, retryAt);
+        else terminalWorkspaceDeadlines.delete(workspace.id);
+        if (expiration.expired) taskDirectoryRowSkips.delete(workspace.id);
+        else remember(taskDirectoryRowSkips, workspace.id, { updatedAt: workspace.updatedAt.getTime(), retryAt, issueId: workspace.sourceIssueId });
+        logger.info({ event: "execution_workspace.task_directory_retention", executionWorkspaceId: workspace.id,
+          companyId: workspace.companyId, sourceIssueId: workspace.sourceIssueId, dryRun: settings.dryRun,
+          outcome: expiration.expired ? "removed" : settings.dryRun && expiration.candidate ? "dry_run" : "skipped", ...expiration },
+        "Isolated task directory retention inspected");
+      };
 
-      for (const workspace of candidates) {
+      for (const candidate of candidates) {
+        let workspace = candidate.workspace;
         signal?.throwIfAborted();
         // Trash deletion is part of compaction, so a sweep that skips compaction
         // also leaves leftover trash for a later sweep.
         if (options.compact !== false) await purgeCompactionTrashIfDue(workspace);
         else deferCompactionTrashPurge(workspace);
+        if (opts.gitCacheExpirationEnabled && opts.isolatedSourceRehomeEnabled
+          && (isIsolatedRepositoryRehomeCandidate(workspace) || hasPendingIsolatedRepositoryRehomeCleanup(workspace))) {
+          const dueAt = isolatedRehomeNotBefore.get(workspace.id) ?? 0;
+          if (dueAt > now().getTime()) isolatedRehomeDeadlines.set(workspace.id, dueAt);
+          else {
+            const dryRun = opts.isolatedSourceRehomeDryRun ?? false;
+            const rehome = await rehomeIsolatedRepositoryWorkspace(db, workspace, { dryRun, now: now(), signal });
+            logger.info({ event: "execution_workspace.isolated_source_rehome", executionWorkspaceId: workspace.id,
+              companyId: workspace.companyId, dryRun, ...rehome }, "Isolated repository source re-home inspected");
+            const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+            if (after && (isIsolatedRepositoryRehomeCandidate(after) || hasPendingIsolatedRepositoryRehomeCleanup(after))) {
+              if (isolatedRehomeNotBefore.size >= 4096) isolatedRehomeNotBefore.delete(isolatedRehomeNotBefore.keys().next().value!);
+              const retryAt = now().getTime() + ISOLATED_REHOME_RETRY_MS;
+              isolatedRehomeNotBefore.set(workspace.id, retryAt);
+              isolatedRehomeDeadlines.set(workspace.id, retryAt);
+            } else {
+              isolatedRehomeNotBefore.delete(workspace.id);
+              isolatedRehomeDeadlines.delete(workspace.id);
+            }
+            if (!after) continue;
+            workspace = after;
+          }
+          if (isClosedExecutionWorkspaceStatus(workspace.status) && !hasPendingGitExpiration(workspace)) continue;
+        }
+        if (opts.nestedCloneMigrationEnabled && workspace.providerType !== "plugin" && !readRemoteWorkspaceAuthority(workspace.metadata)
+          && (isNestedCloneMigrationCandidate(workspace) || hasPendingNestedCloneMigration(workspace))) {
+          const nestedOnly = isClosedExecutionWorkspaceStatus(workspace.status) && !hasPendingGitExpiration(workspace)
+            && !hasPendingIsolatedRepositoryRehomeCleanup(workspace);
+          const notBefore = nestedCloneMigrationNotBefore.get(workspace.id) ?? 0;
+          if (notBefore > now().getTime()) {
+            const retryAt = nestedCloneMigrationRetryAt.get(workspace.id);
+            if (retryAt !== undefined) nestedCloneMigrationDeadlines.set(workspace.id, retryAt);
+          } else {
+            const listed = await listNestedCloneMigrationNames(db, workspace).catch(() => [] as string[]);
+            const batch = nextNestedCloneMigrationBatch(listed, pendingNestedCloneMigrationNames(workspace),
+              nestedCloneMigrationRotations.get(workspace.id));
+            const names = batch.names;
+            if (nestedCloneMigrationRotations.size >= 4096) nestedCloneMigrationRotations.delete(nestedCloneMigrationRotations.keys().next().value!);
+            nestedCloneMigrationRotations.set(workspace.id, batch.rotation);
+            const dryRun = opts.nestedCloneMigrationDryRun ?? false;
+            let remaining = batch.overflow, retry = batch.retryOverflow && !dryRun;
+            for (const name of names) {
+              const migration = await migrateNestedRepositoryClone(db, workspace, name, { dryRun, signal });
+              logger.info({ event: "execution_workspace.nested_clone_migration", executionWorkspaceId: workspace.id,
+                companyId: workspace.companyId, dryRun, ...migration }, "Nested repository clone migration inspected");
+              if (migration.outcome !== "migrated" && migration.outcome !== "recovered") remaining = true;
+              else nestedCloneMigrationRotations.set(workspace.id, { ...batch.rotation, exhausted: null });
+              if (!dryRun && migration.reason && NESTED_CLONE_MIGRATION_RETRY_REASONS.has(migration.reason)) retry = true;
+            }
+            const [after] = names.length > 0 ? await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)) : [workspace];
+            if (!dryRun && after && hasPendingNestedCloneMigration(after)) retry = true;
+            // The retry gate and advertised deadline describe one obligation.
+            // An early inspection must not move it by reading the clock again.
+            const retryAt = now().getTime() + ISOLATED_REHOME_RETRY_MS;
+            if (remaining) {
+              if (nestedCloneMigrationNotBefore.size >= 4096) nestedCloneMigrationNotBefore.delete(nestedCloneMigrationNotBefore.keys().next().value!);
+              nestedCloneMigrationNotBefore.set(workspace.id, retryAt);
+            } else nestedCloneMigrationNotBefore.delete(workspace.id);
+            if (retry) {
+              if (nestedCloneMigrationRetryAt.size >= 4096) nestedCloneMigrationRetryAt.delete(nestedCloneMigrationRetryAt.keys().next().value!);
+              nestedCloneMigrationRetryAt.set(workspace.id, retryAt);
+              nestedCloneMigrationDeadlines.set(workspace.id, retryAt);
+            } else {
+              nestedCloneMigrationRetryAt.delete(workspace.id);
+              nestedCloneMigrationDeadlines.delete(workspace.id);
+            }
+            if (!after) continue;
+            workspace = after;
+          }
+          if (nestedOnly) continue;
+        }
+        if (opts.taskDirectoryRetention && hasPendingTaskDirectoryRetention(workspace)) {
+          await expireTaskDirectory(workspace, now());
+          continue;
+        }
         const issueTree = await listWorkspaceIssueTree(workspace);
         const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId);
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
         );
         if (reopenPending) terminalWorkspaceDeadlines.set(workspace.id, now().getTime());
-        if (!sourceIssue || issueTree.some(issue => !TERMINAL_ISSUE_STATUSES.has(issue.status))) {
+        const treeOpen = issueTree.some(issue => !TERMINAL_ISSUE_STATUSES.has(issue.status));
+        const remoteWorkspace = readRemoteWorkspaceAuthority(workspace.metadata);
+        const gitExpirationCandidate = workspace.providerType !== "plugin" && !remoteWorkspace && Boolean(opts.gitCacheExpirationEnabled)
+          && (hasPendingGitExpiration(workspace) || (workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree"));
+        const usingIssueIds = sourceIssue && gitExpirationCandidate && !reopenPending
+          && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status)
+          ? await listIssuesUsingGitWorkspace(db, workspace, issueTree.map(issue => issue.id)) : null;
+        const expirationTree = usingIssueIds ? issueTree.filter(issue => usingIssueIds.has(issue.id)) : issueTree;
+        if (!sourceIssue || expirationTree.some(issue => !TERMINAL_ISSUE_STATUSES.has(issue.status))) {
           if (reopenPending) {
             await clearReopenPendingConsumptionUnderLock(workspace.id, {
               expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
@@ -3272,14 +3609,53 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               ),
             });
           }
+          const idleMs = opts.gitRestorePoints?.idleMs;
+          const pendingExpiration = opts.gitCacheExpirationEnabled && workspace.providerType !== "plugin" && !remoteWorkspace && hasPendingGitExpiration(workspace);
+          if (pendingExpiration || (sourceIssue && idleMs && !reopenPending && opts.gitCacheExpirationEnabled && workspace.providerType !== "plugin" && !remoteWorkspace
+            && !isClosedExecutionWorkspaceStatus(workspace.status)
+            && workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree")) {
+            const lastActivityAt = pendingExpiration ? null : await gitWorkspaceLastActivityAt(db, workspace);
+            const idleDueAt = pendingExpiration ? now().getTime() : (lastActivityAt?.getTime() ?? 0) + idleMs!;
+            if (idleDueAt <= now().getTime()) {
+              const expiration = await expireReconstructableGitWorkspace(db, workspace, {
+                dryRun: opts.gitCacheExpirationDryRun ?? false, expireBase: opts.gitBaseExpirationEnabled ?? false,
+                now: now(), signal, beforeDelete: opts.beforeTerminalWorkspaceCleanup,
+                idleCutoff: idleMs ? new Date(now().getTime() - idleMs) : undefined,
+                restorePoint: opts.gitRestorePoints ? { storage: opts.gitRestorePoints.storage, notBefore: new Date(idleDueAt),
+                  keyDurable: opts.gitRestorePoints.keyDurable } : undefined,
+              });
+              if (expiration.candidate) result.eligible += 1;
+              if (expiration.expired) result.archived += 1;
+              const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+              if (!expiration.expired || (after && hasPendingGitExpiration(after))) {
+                terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + 60 * 60 * 1000);
+              }
+              logger.info({ event: "execution_workspace.git_cache_expiration", executionWorkspaceId: workspace.id,
+                companyId: workspace.companyId, dryRun: opts.gitCacheExpirationDryRun ?? false, idle: true, ...expiration },
+              "Git workspace cache expiration inspected");
+              continue;
+            }
+            terminalWorkspaceDeadlines.set(workspace.id, idleDueAt);
+          }
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        const latestTerminalAt = Math.max(...issueTree.map(issue => issueTerminalTimestamp(issue)!.getTime()));
+        const expirationTerminalAt = Math.max(...expirationTree.map(issue => issueTerminalTimestamp(issue)!.getTime()));
+        const latestTerminalAt = treeOpen ? expirationTerminalAt : Math.max(...issueTree.map(issue => issueTerminalTimestamp(issue)!.getTime()));
+        if (opts.taskDirectoryRetention && !treeOpen && !reopenPending && !isClosedExecutionWorkspaceStatus(workspace.status)
+          && mayBeIsolatedTaskDirectoryWorkspace(workspace) && await isIsolatedTaskDirectoryWorkspace(workspace)) {
+          const dueAt = latestTerminalAt + opts.taskDirectoryRetention.terminalDelayMs;
+          if (dueAt > now().getTime()) {
+            terminalWorkspaceDeadlines.set(workspace.id, dueAt);
+            result.skippedCooldown += 1;
+          } else await expireTaskDirectory(workspace, new Date(dueAt));
+          continue;
+        }
         // Compaction runs once per terminal cycle, after its own delay and
         // before the archive cooldown, so a workspace the reaper cannot archive
         // yet (or ever) stops holding regenerable files.
         const compactionPending = workspaceCompactionDelayMs !== null
+          && !treeOpen
           && !isClosedExecutionWorkspaceStatus(workspace.status)
           && !reopenPending
           && compactedTerminalAt.get(workspace.id) !== latestTerminalAt;
@@ -3305,11 +3681,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             );
           }
         }
-        if (opts.gitCacheExpirationEnabled && (hasPendingGitExpiration(workspace)
-          || (workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree"))) {
+        if (gitExpirationCandidate) {
           const expiration = await expireReconstructableGitWorkspace(db, workspace, {
             dryRun: opts.gitCacheExpirationDryRun ?? false, expireBase: opts.gitBaseExpirationEnabled ?? false,
             now: now(), signal, beforeDelete: opts.beforeTerminalWorkspaceCleanup,
+            restorePoint: opts.gitRestorePoints ? {
+              storage: opts.gitRestorePoints.storage,
+              notBefore: new Date(expirationTerminalAt + opts.gitRestorePoints.terminalDelayMs),
+              keyDurable: opts.gitRestorePoints.keyDurable,
+            } : undefined,
           });
           const expirationDueAt = now().getTime() + 60 * 60 * 1000;
           terminalWorkspaceDeadlines.set(workspace.id,
@@ -3331,6 +3711,40 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else result.skippedActiveRun += 1;
           continue;
         }
+        if (remoteWorkspace && isClosedExecutionWorkspaceStatus(workspace.status)) {
+          const generation = readExecutionWorkspaceLifecycleGeneration(workspace.metadata);
+          try {
+            const cleanup = await cleanupTerminalWorkspace(workspace, null, generation);
+            if (cleanup.skippedReopened) result.skippedReopened += 1;
+            else if (!cleanup.cleaned) result.cleanupFailed += 1;
+            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
+          } catch (error) {
+            result.cleanupFailed += 1;
+            terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+            await markTerminalCleanupFailedFenced({ workspaceId: workspace.id, capturedGeneration: generation,
+              cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${error instanceof Error ? error.message : String(error)}` });
+          }
+          continue;
+        }
+        let deliveryReferences: GitHubPullRequestReference[] | null = null;
+        if (workspace.providerType === "plugin" && !isClosedExecutionWorkspaceStatus(workspace.status)
+          && !reopenPending && !workspace.metadata?.workspaceProviderRemoval && !workspace.metadata?.workspaceProviderRestoration) {
+          try {
+            if (!(await pluginWorkspaceSupportsMergeAncestry(db, opts.pluginWorkerManager, workspace))) {
+              deliveryReferences = await listDeliveryPullRequestReferences(workspace);
+              if (deliveryReferences.length === 0) {
+                result.skippedUndelivered += 1;
+                if (compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt)
+                  terminalWorkspaceDeadlines.set(workspace.id, compactionDueAt);
+                else terminalWorkspaceDeadlines.delete(workspace.id);
+                continue;
+              }
+            }
+          } catch {
+            result.skippedUndelivered += 1;
+            continue;
+          }
+        }
         if (opts.terminalWorkspaceInspectionBackoffMs) {
           const revision = createHash("sha256").update(JSON.stringify([
             workspace.updatedAt, workspace.metadata,
@@ -3347,20 +3761,32 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             nextAt: now().getTime() + opts.terminalWorkspaceInspectionBackoffMs,
           });
         }
+        if (deliveryReferences !== null) {
+          try {
+            if (!(await hasMergedDeliveryPullRequest(workspace, deliveryReferences))) {
+              result.skippedUndelivered += 1;
+              continue;
+            }
+          } catch {
+            result.skippedUndelivered += 1;
+            continue;
+          }
+        }
         const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
         const createdByRuntime = workspace.providerType === "git_worktree"
           ? isRuntimeOwnedGitBranch(workspace.metadata)
           : workspace.metadata?.createdByRuntime === true;
-        const readinessKey = workspacePath
+        const readinessKey = workspace.providerType === "plugin" ? `plugin:${workspace.id}:${readExecutionWorkspaceLifecycleGeneration(workspace.metadata)}` : workspacePath
           ? JSON.stringify([workspace.companyId, workspacePath, workspace.baseRef, workspace.branchName, createdByRuntime])
           : `workspace:${workspace.id}`;
         let inspection = readinessByWorkingTree.get(readinessKey);
         if (!inspection) {
-          inspection = inspectGitCloseReadiness(toExecutionWorkspace(workspace));
+          inspection = inspectWorkspace(toExecutionWorkspace(workspace));
           readinessByWorkingTree.set(readinessKey, inspection);
         }
         const { git, statusInspectionSucceeded } = await inspection;
         if (!statusInspectionSucceeded) {
+          if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
           result.skippedUndelivered += 1;
           continue;
         }
@@ -3389,6 +3815,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
+          if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
           result.skippedUndelivered += 1;
           continue;
         }
@@ -3469,6 +3896,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           continue;
         }
         result.eligible += 1;
+        if (workspace.providerType === "plugin" && isClosedExecutionWorkspaceStatus(workspace.status)) {
+          const generation = readExecutionWorkspaceLifecycleGeneration(workspace.metadata);
+          try {
+            const cleanup = await cleanupTerminalWorkspace(workspace, assessment.workspaceHeadSha, generation);
+            if (cleanup.skippedReopened) result.skippedReopened += 1;
+            else if (!cleanup.cleaned) result.cleanupFailed += 1;
+            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
+          } catch (error) {
+            result.cleanupFailed += 1;
+            terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+            await markTerminalCleanupFailedFenced({ workspaceId: workspace.id, capturedGeneration: generation,
+              cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${error instanceof Error ? error.message : String(error)}` });
+            logger.warn({ err: error, executionWorkspaceId: workspace.id }, "workspace storage cleanup remains pending");
+          }
+          continue;
+        }
         const closedAt = now();
         // Raise the lifecycle generation on archive. The cleanup below captures
         // this generation and re-checks it before it deletes the worktree, so a
@@ -3481,8 +3924,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // checks and the archive write. The archive statement re-checks the
         // status, the terminal predicates, and the reopen-pending flag under the
         // lock, so it never archives a workspace that a reopen just restored.
-        const archived = await db.transaction(async (tx) => {
-          await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+        const archived = await withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
           return tx
             .update(executionWorkspaces)
             .set({
@@ -3597,6 +4039,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else result.archived += 1;
         } catch (error) {
           result.cleanupFailed += 1;
+          if (archived.providerType === "plugin" || remoteWorkspace) terminalWorkspaceDeadlines.set(archived.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
           const failure = error instanceof Error ? error.message : String(error);
           // Mark cleanup_failed only while the row is still closed at the
           // generation this sweep captured. A reopen that raced after the failure
@@ -3635,6 +4078,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     terminalWorkspaceWorkSettled: (hints?: ReadonlySet<string>) => {
       if (terminalSweepInProgress || terminalSweepCursor !== null) terminalSweepRescanRequested = true;
       pullRequestStateCache.clear();
+      if (opts.taskDirectoryRetention) {
+        if (!hints) taskDirectoryRowSkips.clear();
+        for (const hint of hints ?? []) {
+          if (!hint.startsWith("workspace:") && !hint.startsWith("issue:")) continue;
+          if (taskDirectoryHints.size < TASK_DIRECTORY_TRACKED_LIMIT) taskDirectoryHints.add(hint);
+          else taskDirectoryWalkDueAt = Math.min(taskDirectoryWalkDueAt, now().getTime());
+          taskDirectoryDeadlines.set("hints", now().getTime());
+          if (hint.startsWith("workspace:")) taskDirectoryRowSkips.delete(hint.slice("workspace:".length));
+          else for (const [id, skip] of taskDirectoryRowSkips) if (`issue:${skip.issueId}` === hint) taskDirectoryRowSkips.delete(id);
+        }
+      }
       if (!hints) { terminalInspections.clear(); return; }
       for (const [id, inspection] of terminalInspections) {
         if (hints.has(`workspace:${id}`) || [...inspection.issueIds].some(issueId => hints.has(`issue:${issueId}`))) {
@@ -3644,8 +4098,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     nextTerminalWorkspaceSweepAt: async () => {
-      if (terminalWorkspaceDeadlines.size === 0) return null;
-      const next = [...terminalWorkspaceDeadlines.values()].reduce((earliest, deadline) => Math.min(earliest, deadline), Infinity);
+      if (terminalWorkspaceDeadlines.size === 0 && isolatedRehomeDeadlines.size === 0 && nestedCloneMigrationDeadlines.size === 0
+        && taskDirectoryDeadlines.size === 0) return null;
+      const next = [...terminalWorkspaceDeadlines.values(), ...isolatedRehomeDeadlines.values(), ...nestedCloneMigrationDeadlines.values(),
+        ...taskDirectoryDeadlines.values()].reduce((earliest, deadline) => Math.min(earliest, deadline), Infinity);
       const nowMs = now().getTime();
       if (next <= nowMs && opts.terminalWorkspaceInspectionBackoffMs) {
         return Math.min(nowMs + opts.terminalWorkspaceInspectionBackoffMs,
@@ -3704,7 +4160,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ));
       const authorizedSnapshot = boundSnapshot ? await db.select().from(executionWorkspaces).where(and(
         eq(executionWorkspaces.id, input.workspaceId), eq(executionWorkspaces.companyId, issue.companyId),
-        eq(executionWorkspaces.mode, "isolated_workspace"),
+        reopenableWorkspaceMode(),
       )).then(rows => rows[0] ?? null) : null;
       if (!authorizedSnapshot) return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
       await assertTaskWorkspaceExecutionAccess(db, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: authorizedSnapshot.id });
@@ -3712,17 +4168,58 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const reopen = async (): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
       const freshSnapshot = await db.select().from(executionWorkspaces).where(and(
         eq(executionWorkspaces.id, input.workspaceId), eq(executionWorkspaces.companyId, issue.companyId),
-        eq(executionWorkspaces.mode, "isolated_workspace"),
+        reopenableWorkspaceMode(),
       )).then(rows => rows[0] ?? null);
       if (!freshSnapshot || freshSnapshot.sourceIssueId !== sourceIssueId) {
         return { ok: false, code: "not_reopenable", message: "Execution workspace source changed during reopen" };
       }
-      const snapshot = freshSnapshot;
+      if (readRemoteWorkspaceAuthority(freshSnapshot.metadata)) {
+        return withExecutionWorkspaceLifecycleLock(db, freshSnapshot.id, async tx => {
+          const [row] = await tx.select().from(executionWorkspaces).where(and(
+            eq(executionWorkspaces.companyId, issue.companyId), eq(executionWorkspaces.id, freshSnapshot.id)));
+          if (!row || row.sourceIssueId !== sourceIssueId) return { ok: false, code: "not_reopenable", message: "Workspace source changed" };
+          await assertTaskWorkspaceExecutionAccess(tx, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: row.id });
+          const persistence = await inspectRemoteWorkspacePersistence(tx, row);
+          if (!persistence.ready) return { ok: false, code: "rebuild_failed", message: persistence.reason ?? "Saved workspace is unavailable" };
+          const generation = readExecutionWorkspaceLifecycleGeneration(row.metadata);
+          if (!isClosedExecutionWorkspaceStatus(row.status)) return { ok: true, reopened: false, workspace: toExecutionWorkspace(row), generation };
+          const [active] = await tx.update(executionWorkspaces).set({ status: "active", closedAt: null,
+            cleanupReason: null, cleanupEligibleAt: null, lastUsedAt: now(), updatedAt: now(),
+            metadata: setMetadataReopenPendingConsumption(bumpExecutionWorkspaceLifecycleGeneration(row.metadata), now()),
+          }).where(eq(executionWorkspaces.id, row.id)).returning();
+          await notifyTerminalWorkspaceWork(tx, `workspace:${row.id}`);
+          return { ok: true, reopened: true, workspace: toExecutionWorkspace(active!), generation: generation + 1 };
+        });
+      }
+      const snapshot = freshSnapshot.providerType === "plugin" ? freshSnapshot : await rehomeExpiredIsolatedRestoration(db, freshSnapshot);
+      if (snapshot.providerType === "plugin") {
+        return withExecutionWorkspaceLifecycleLock(db, snapshot.id, async tx => {
+          const [row] = await tx.select().from(executionWorkspaces).where(and(
+            eq(executionWorkspaces.id, snapshot.id), eq(executionWorkspaces.companyId, issue.companyId)));
+          if (!row || row.sourceIssueId !== sourceIssueId || row.metadata?.workspaceProviderRetired === true) return { ok: false, code: "not_reopenable", message: "Workspace source changed" };
+          await assertTaskWorkspaceExecutionAccess(tx, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: row.id });
+          const generation = readExecutionWorkspaceLifecycleGeneration(row.metadata);
+          if (!isClosedExecutionWorkspaceStatus(row.status)) return { ok: true, reopened: false, workspace: toExecutionWorkspace(row), generation };
+          try {
+            const metadata = await restorePluginWorkspace(db, opts.pluginWorkerManager, row);
+            const [active] = await tx.update(executionWorkspaces).set({ status: "active", closedAt: null,
+              providerRef: metadata.workspaceProvider.workspaceRef,
+              cleanupReason: null, cleanupEligibleAt: null, lastUsedAt: now(), updatedAt: now(),
+              metadata: setMetadataReopenPendingConsumption(bumpExecutionWorkspaceLifecycleGeneration(metadata), now()),
+            }).where(eq(executionWorkspaces.id, row.id)).returning();
+            await notifyTerminalWorkspaceWork(tx, `workspace:${row.id}`);
+            return { ok: true, reopened: true, workspace: toExecutionWorkspace(active!), generation: generation + 1 };
+          } catch {
+            return { ok: false, code: "rebuild_failed", message: "Workspace storage restoration is incomplete; retry reopening" };
+          }
+        });
+      }
       await assertTaskWorkspaceExecutionAccess(db, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: snapshot.id });
       let recipe: ReturnType<typeof readGitCacheRestoration>;
       try { recipe = readGitCacheRestoration(snapshot); }
       catch { return { ok: false, code: "rebuild_failed", message: new GitCacheRestorationFailure().message }; }
-      const gitAuth = createGitRemoteAuthProvider(db, snapshot.companyId, { issueId: issue.id });
+      const freshStart = recipe !== null && isClosedExecutionWorkspaceStatus(snapshot.status) && gitRestorePointExpired(recipe);
+      const gitAuth = createIssueGitRemoteAuthProvider(db, snapshot.companyId, issue.id);
       const [
         { ensurePersistedExecutionWorkspaceAvailable },
         { workspaceOperationService },
@@ -3752,7 +4249,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       let resolvedBaseCwd: string | null;
       try {
         resolvedBaseCwd = recipe && isClosedExecutionWorkspaceStatus(snapshot.status)
-          ? await restoreGitCacheBase(snapshot, recipe, gitAuth)
+          ? await restoreGitCacheBase(snapshot, recipe, gitAuth, undefined, { freshStart })
           : await verifiedRecordedIsolatedRemoteSource(snapshot) ?? projectWorkspace?.cwd ?? null;
       } catch {
         return { ok: false, code: "rebuild_failed", message: recipe
@@ -3777,9 +4274,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                 });
               };
             },
-            resolveGitAuth: createGitRemoteAuthProvider(db, snapshot.companyId, {
-              issueId: issue.id,
-            }),
+            resolveGitAuth: createIssueGitRemoteAuthProvider(db, snapshot.companyId, issue.id),
           });
           resolvedBaseCwd = managedWorkspace.cwd;
         } catch {
@@ -3818,7 +4313,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           .where(and(
             eq(executionWorkspaces.id, input.workspaceId),
             eq(executionWorkspaces.companyId, issue.companyId),
-            eq(executionWorkspaces.mode, "isolated_workspace"),
+            reopenableWorkspaceMode(),
           ))
           .then((rows) => rows[0] ?? null);
         if (!row) {
@@ -3871,13 +4366,42 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           row.metadata as Record<string, unknown> | null,
         );
         delete nextMetadata.gitCacheExpiration;
+        const rebuildMetadata = { ...(row.metadata as Record<string, unknown> | null ?? {}) };
+        if (freshStart) {
+          delete rebuildMetadata.gitCacheRestoration;
+          delete rebuildMetadata.gitCacheExpiration;
+        }
+        const freshCheckouts = freshStart && Boolean(row.projectId) && (recipe?.contents?.checkouts.length ?? 0) > 0;
+        const prepareFreshProjectRepositories = async (targetCwd: string) => {
+          const { prepareProjectRepositoryWorkspaces } = await import("./heartbeat/workspaces.js");
+          const repositoryRows = await tx.select().from(projectWorkspaces).where(and(
+            eq(projectWorkspaces.companyId, row.companyId), eq(projectWorkspaces.projectId, row.projectId!),
+          )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+          await prepareProjectRepositoryWorkspaces({ cwd: targetCwd, anchorRepoUrl: row.repoUrl, workspaces: repositoryRows,
+            sharedBase: { companyId: row.companyId, projectId: row.projectId! }, resolveGitAuth: gitAuth,
+            prepareLocalSource: async sourceCwd => {
+              const sourceIdentity = await fs.realpath(sourceCwd);
+              return async () => {
+                if (await fs.realpath(sourceCwd) !== sourceIdentity) throw forbidden("Execution workspace copy identity changed during reopen");
+                await assertTaskWorkspaceExecutionAccess(tx, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: row.id });
+              };
+            } });
+        };
         const recorder = workspaceOperationService(db).createRecorder({
           companyId: row.companyId,
           executionWorkspaceId: row.id,
         });
 
         let rebuildError: string | null = null;
+        let taskDirectoryWarning: string | null = null;
+        const taskDirectoryState = readTaskDirectoryRetention(row);
         try {
+          if (taskDirectoryState) {
+            const restored = await restoreIsolatedTaskDirectory({ storage: opts.gitRestorePoints?.storage ?? getStorageService(), workspace: row });
+            if (restored.expired) taskDirectoryWarning = TASK_DIRECTORY_RESTORE_POINT_EXPIRED_WARNING;
+            logger.info({ event: "execution_workspace.task_directory_restore", executionWorkspaceId: row.id, companyId: row.companyId,
+              issueId: issue.id, ...restored }, "Isolated task directory restored for reopen");
+          }
           const [assignee, organization, sourceProject] = await Promise.all([
             boundTask.assigneeAgentId ? tx.select({ companyId: agents.companyId, permissions: agents.permissions }).from(agents)
               .where(and(eq(agents.id, boundTask.assigneeAgentId), eq(agents.companyId, row.companyId)))
@@ -3918,6 +4442,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               if (updated.length !== 1) throw new GitCacheRestorationFailure();
               nextMetadata.gitCacheRestoration = { ...currentRecipe as Record<string, unknown>, contentsRestoredAt: at };
             },
+            persistRestorePointAppliedAt: async at => {
+              const currentRecipe = nextMetadata.gitCacheRestoration as Record<string, unknown>;
+              const appliedRecipe = { ...currentRecipe, restorePoint: { ...currentRecipe.restorePoint as Record<string, unknown>, appliedAt: at } };
+              const updated = await db.update(executionWorkspaces).set({
+                metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{gitCacheRestoration}', ${JSON.stringify(appliedRecipe)}::jsonb)`,
+              }).where(and(eq(executionWorkspaces.id, row.id), eq(executionWorkspaces.companyId, row.companyId),
+                sql`${executionWorkspaces.metadata}->'gitCacheRestoration' = ${JSON.stringify(currentRecipe)}::jsonb`))
+                .returning({ id: executionWorkspaces.id });
+              if (updated.length !== 1) throw new GitCacheRestorationFailure();
+              nextMetadata.gitCacheRestoration = appliedRecipe;
+            },
             prepareRestoredLocalSource: async sourceCwd => {
               const sourceIdentity = await fs.realpath(sourceCwd);
               const targetIdentity = await canonicalRepositoryRoot(row.cwd!);
@@ -3933,7 +4468,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             },
             skipHostProvision: trust.kind === "low_trust_review" || copyOnlyProvisioning,
             beforeSourceCopy: verifyCopyIdentity,
-            afterSourceCopy: verifyCopyIdentity,
+            afterSourceCopy: freshCheckouts ? async (sourceCwd: string, targetCwd: string) => {
+              await verifyCopyIdentity?.(sourceCwd, targetCwd);
+              await prepareFreshProjectRepositories(targetCwd);
+            } : verifyCopyIdentity,
             base: {
               baseCwd: resolvedBaseCwd ?? row.cwd ?? "",
               source: "task_session",
@@ -3953,7 +4491,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               repoUrl: row.repoUrl,
               baseRef: row.baseRef,
               branchName: row.branchName,
-              metadata: row.metadata as Record<string, unknown> | null,
+              metadata: freshStart ? rebuildMetadata : row.metadata as Record<string, unknown> | null,
               config: {
                 ...config,
                 provisionCommand:
@@ -4037,7 +4575,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // Keep the refresh guard after reopening so normal preparation cannot
         // advance the saved checkout to upstream HEAD. Its intact branch may now
         // receive newer task commits; the next expiration records a fresh recipe.
-        if (recipe) nextMetadata.gitCacheRestoration = { ...nextMetadata.gitCacheRestoration as Record<string, unknown>, restoredAt: now().toISOString() };
+        if (freshStart) delete nextMetadata.gitCacheRestoration;
+        else if (recipe) nextMetadata.gitCacheRestoration = { ...nextMetadata.gitCacheRestoration as Record<string, unknown>, restoredAt: now().toISOString() };
+        if (taskDirectoryState) {
+          delete nextMetadata[TASK_DIRECTORY_RETENTION_KEY];
+          await supersedeTaskDirectoryRestorePoint(tx, row);
+        }
         const activeMetadata = setMetadataReopenPendingConsumption(nextMetadata, now());
         await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, `workspace:${row.id}`));
         const activeRow = await tx
@@ -4082,9 +4625,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             issueId: issue.id,
             outcome: "reopened",
             generation: nextGeneration,
+            ...(freshStart ? { restorePointExpired: true, warning: GIT_RESTORE_POINT_EXPIRED_WARNING } : {}),
+            ...(taskDirectoryWarning ? { restorePointExpired: true, warning: taskDirectoryWarning } : {}),
           },
         });
-        return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow), generation: nextGeneration };
+        const reopenWarning = freshStart ? GIT_RESTORE_POINT_EXPIRED_WARNING : taskDirectoryWarning;
+        if (reopenWarning) {
+          const { issueService } = await import("./issues.js");
+          await issueService(db).addComment(issue.id, reopenWarning, {}, { authorType: "system" }, tx);
+        }
+        return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow), generation: nextGeneration,
+          ...(reopenWarning ? { warning: reopenWarning } : {}) };
       }).catch((error): ReopenClosedIsolatedExecutionWorkspaceResult => {
         logger.warn({ error, executionWorkspaceId: snapshot.id }, "Execution workspace reopen failed");
         return { ok: false, code: "rebuild_failed", message: recipe ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
@@ -4193,8 +4744,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const [identity] = await db.select({ companyId: executionWorkspaces.companyId }).from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, input.id));
       if (!identity) return null;
-      return db.transaction(async (tx) => {
-        await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
+      return withExecutionWorkspaceLifecycleLock(db, input.id, async (tx) => {
         const fresh = await measureRunPhase("workspace.row_lock", () => tx
           .select()
           .from(executionWorkspaces)
@@ -4343,6 +4893,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       if (!existingRow) throw notFound("Execution workspace not found");
+      if (existingRow.providerType === "plugin") throw conflict("Branch repair belongs to the workspace storage plugin");
 
       const existing = toExecutionWorkspace(existingRow);
       if (!existing.sourceIssueId) {

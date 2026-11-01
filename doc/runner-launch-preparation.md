@@ -32,6 +32,34 @@ descriptor. The transport checks Core's selected profile and policy before
 registration and launch. Core still supplies authorized tools and completion
 criteria through PRP. A failed preparation does not enable a fallback launch.
 
+### Codex probe policy
+
+Core can select `settings.disableCodexProjectInstructions` for a hello probe.
+Preparation must preserve it as `project_doc_max_bytes=0` before `app-server`,
+after any environment-supplied overrides. Core validates this setting alongside
+`disableCodexWebSearch`. Ordinary tasks retain project instructions when the
+setting is absent or false. This does not change the selected filesystem policy.
+
+### Working directory
+
+In this mode the environment chooses the provider working directory. Core does
+not supply one. The backend uses `workingDirectoryAuthority:
+"runner_prepared_launch"`, and its controller environment stays empty.
+
+- Core authorizes the agent, task, projects, and workspace binding.
+- The environment resolves that assignment into mounts and the descriptor's
+  `cwd`. For a projectless task it selects its own default directory.
+- The transport accepts only a normalized absolute `cwd` that is not a
+  filesystem root. Runnerd validates the directory on its own filesystem.
+- The transport reports that `cwd` to the driver. The driver records it in
+  session context, snapshots, and recovery, and ignores the caller's directory.
+- Recovery and run attachment must keep the same `cwd`. A runner snapshot or
+  recovered thread that reports another directory fails recovery. Core does not
+  substitute a controller-local or temporary directory.
+
+`remote_runner` remains the mode in which Core assigns the remote directory
+through `PAPERCLIP_WORKSPACE_CWD`.
+
 The transport saves the exact requirements and prepared configuration in its
 private `launch-preparation.json` file. The file holds at most two records.
 A new attachment keeps the active run's record. Runner commands contain the
@@ -48,6 +76,14 @@ unsettled checkpoint and prevents reuse.
 ## Plugin task protocol
 
 The [environment task API](plugins/PLUGIN_ENVIRONMENT_TASKS.md#launch-preparation)
-defines the plugin preparation exchange. This callback does not implement a
-plugin task process owner or a Launcher endpoint. Those integrations are
-separate changes.
+defines the plugin preparation exchange. The [native plugin integration](plugins/PLUGIN_RUNNER_EXECUTION.md)
+connects the callback to task execution. A Launcher implementation remains the
+execution owner's responsibility.
+
+## Managed Git helper interpreter
+
+`githubLauncherSource({ interpreterPath })` can select an absolute Node interpreter
+owned by the execution environment. Without this option, generated helpers retain
+`#!/usr/bin/env node`. The option changes only the shebang; it does not change PATH,
+command discovery, credential handling, or helper behavior. Interpreter paths must
+be absolute and contain no whitespace or NUL bytes.

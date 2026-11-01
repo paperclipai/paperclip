@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -333,20 +333,60 @@ fn finish_turn_with_send(
             "text": "Codex completed the fake turn."
         }}
     }))?;
+    let cumulative_accounting = std::env::args().any(|arg| arg == "--cumulative-accounting-usage");
+    let warm_tail_accounting = std::env::args().any(|arg| arg == "--warm-tail-accounting");
+    let total_input = if warm_tail_accounting {
+        if state.next_turn == 1 {
+            100
+        } else {
+            150
+        }
+    } else if cumulative_accounting {
+        100 + state.next_turn * 100
+    } else {
+        12
+    };
+    let total_output = if warm_tail_accounting {
+        if state.next_turn == 1 {
+            10
+        } else {
+            15
+        }
+    } else if cumulative_accounting {
+        20 + state.next_turn * 10
+    } else {
+        3
+    };
+    if cumulative_accounting {
+        send(
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":state.thread_id,"turnId":turn_id,
+            "tokenUsage":{"total":{"inputTokens":total_input-40,"outputTokens":total_output-4},"last":{"inputTokens":10,"outputTokens":1}}}}),
+        )?;
+    }
     send(json!({
         "method": "thread/tokenUsage/updated",
         "params": {
             "threadId": state.thread_id,
             "tokenUsage": {
-                "total": {"inputTokens": 12, "outputTokens": 3},
-                "last": {"inputTokens": 12, "outputTokens": 3, "requests": 1}
+                "total": {"inputTokens": total_input, "outputTokens": total_output},
+                "last": {"inputTokens": if cumulative_accounting {40} else {12}, "outputTokens": if cumulative_accounting {4} else {3}, "requests": 1}
             }
         }
     }))?;
+    if state.next_turn > 1 && std::env::args().any(|arg| arg == "--hold-second-accounting-terminal")
+    {
+        return Ok(());
+    }
     send(json!({
         "method": "turn/completed",
         "params": {"turn": {"id": turn_id, "status": status}}
     }))?;
+    if std::env::args().any(|arg| arg == "--accounting-tail-after-terminal") {
+        send(
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":state.thread_id,"turnId":turn_id,
+            "tokenUsage":{"total":{"inputTokens":120,"outputTokens":12},"last":{"inputTokens":20,"outputTokens":2}}}}),
+        )?;
+    }
     Ok(())
 }
 
@@ -651,6 +691,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let require_codex_home_auth = args
         .iter()
         .any(|value| value == "--require-codex-home-auth");
+    if args
+        .iter()
+        .any(|value| value == "--require-otel-environment")
+    {
+        for (name, expected) in [
+            (
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "authorization=Bearer%20logs-fixture",
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "authorization=Bearer%20traces-fixture",
+            ),
+        ] {
+            assert_eq!(std::env::var(name).as_deref(), Ok(expected));
+        }
+        assert!(std::env::var_os("OTEL_EXPORTER_OTLP_HEADERS").is_none());
+        assert!(std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none());
+    }
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
     let hold_first_durable_turn = args
         .iter()
@@ -659,6 +718,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
+    let terminal_result = argument(&args, "--terminal-result-file")
+        .map(|path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+        })
+        .transpose()?;
     let replay_completed_tool_call = args
         .iter()
         .any(|value| value == "--replay-completed-tool-call");
@@ -685,6 +749,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let repair_assigned_discovery = args
         .iter()
         .any(|value| value == "--repair-assigned-discovery");
+    let repair_first_task_confirmation = args
+        .iter()
+        .any(|value| value == "--repair-first-task-confirmation");
     let require_completion_contract = args
         .iter()
         .any(|value| value == "--require-completion-contract");
@@ -698,6 +765,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--linger-after-turn-start");
     let hold_turn = args.iter().any(|value| value == "--hold-turn") || linger_after_turn_start;
+    let held_output_count = argument(&args, "--held-output-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(64);
+    if !(1..=8192).contains(&held_output_count) {
+        return Err("--held-output-count must be between 1 and 8192".into());
+    }
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let exit_after_turn_completion = args
         .iter()
@@ -976,6 +1050,76 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             continue;
         }
+        if repair_first_task_confirmation
+            && message.get("method").is_none()
+            && message.get("id") == Some(&json!("first-task-confirmation-request"))
+        {
+            let text = message
+                .pointer("/result/contentItems/0/text")
+                .and_then(Value::as_str)
+                .ok_or("confirmation response omitted content")?;
+            let result: Value = serde_json::from_str(text)?;
+            if message.pointer("/result/success") == Some(&json!(false)) {
+                let hint = result
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .ok_or("confirmation rejection omitted guidance")?;
+                if !hint.contains("payload.version")
+                    || !hint.contains("payload.supersedeOnUserComment")
+                    || !hint.contains("Keep approval")
+                    || !hint.contains("confirmation or checkbox")
+                    || hint.contains("payload.questionSet")
+                    || !hint.contains("/additionalProperties")
+                    || hint.contains("PRIVATE_CONFIRMATION_SCOPE")
+                {
+                    return Err("confirmation rejection lacks metadata placement and approval-preserving guidance".into());
+                }
+                log_call(call_log.as_deref(), "first-task:repair-guidance")?;
+                send(
+                    json!({"id":"first-task-confirmation-request", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"first-task-confirmation", "tool":"request_human_input",
+                        "arguments": {"idempotencyKey":"first-task-proposal-confirmation", "interactionKind":"confirmation",
+                            "title":"Approve child task", "prompt":"Approve PRIVATE_CONFIRMATION_SCOPE?",
+                            "continuationPolicy":"wake_assignee", "payload":{"version":1,"supersedeOnUserComment":false,
+                                "acceptLabel":"Approve","rejectLabel":"Revise","rejectRequiresReason":true}}
+                    }}),
+                )?;
+            } else {
+                if message.pointer("/result/success") != Some(&json!(true))
+                    || result.pointer("/interaction/kind") != Some(&json!("request_confirmation"))
+                    || result.pointer("/interaction/status") != Some(&json!("pending"))
+                {
+                    return Err("corrected proposal did not return a pending confirmation".into());
+                }
+                log_call(call_log.as_deref(), "first-task:confirmation-pending")?;
+                finish_turn(&state_path, &mut state, "completed")?;
+            }
+            continue;
+        }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("terminal-result-request"))
+        {
+            let success = message.pointer("/result/success") == Some(&json!(true));
+            log_call(
+                call_log.as_deref(),
+                if success {
+                    "terminal-result:accepted"
+                } else {
+                    "terminal-result:rejected"
+                },
+            )?;
+            finish_turn(
+                &state_path,
+                &mut state,
+                if success || complete_after_tool_call {
+                    "completed"
+                } else {
+                    "failed"
+                },
+            )?;
+            continue;
+        }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
             if message.pointer("/result/success") == Some(&json!(false)) {
                 log_call(call_log.as_deref(), "tool-response:failure")?;
@@ -1181,7 +1325,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     for _ in 0..2 {
                         send(json!({"method": "thread/tokenUsage/updated", "params": {
                             "threadId": state.thread_id, "turnId": format!("provider-turn-{}", state.next_turn),
-                            "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                            "tokenUsage": {"total": {"inputTokens": if args.iter().any(|arg| arg == "--cumulative-accounting-usage") {100 + state.next_turn * 100} else {100}, "outputTokens": if args.iter().any(|arg| arg == "--cumulative-accounting-usage") {20 + state.next_turn * 10} else {20}}, "last": {"inputTokens": 50, "outputTokens": 10}}
                         }}))?;
                     }
                 }
@@ -1706,6 +1850,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "arguments":{"query":{"PRIVATE_QUERY":"private search"}}
                         }}),
                     )?;
+                } else if repair_first_task_confirmation {
+                    send(
+                        json!({"id":"first-task-confirmation-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "callId":"first-task-confirmation", "tool":"request_human_input",
+                            "arguments": {"idempotencyKey":"first-task-proposal-confirmation", "interactionKind":"confirmation",
+                                "title":"Approve child task", "prompt":"Approve PRIVATE_CONFIRMATION_SCOPE?",
+                                "continuationPolicy":"wake_assignee", "payload":{"acceptLabel":"Approve","rejectLabel":"Revise","rejectRequiresReason":true},
+                                "version":1,"supersedeOnUserComment":false}
+                        }}),
+                    )?;
+                } else if let Some(result) = &terminal_result {
+                    send(json!({
+                        "id": "terminal-result-request", "method": "item/tool/call",
+                        "params": { "threadId": state.thread_id, "turnId": provider_turn_id,
+                            "callId": "terminal-result-call", "tool": "paperclip_finish", "arguments": result }
+                    }))?;
                 } else if emit_tool_call {
                     send(json!({
                         "id": "tool-request-1",
@@ -1735,6 +1896,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
                     send_split_event_burst(&state, split_event_prefix_count)?;
+                } else if hold_turn && args.iter().any(|arg| arg == "--held-output") {
+                    if let Some(release_file) = argument(&args, "--held-output-release-file") {
+                        let deadline = Instant::now() + Duration::from_secs(60);
+                        while !Path::new(&release_file).exists() {
+                            if Instant::now() >= deadline {
+                                return Err("held output was not released within 60 seconds".into());
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                    for index in 0..held_output_count {
+                        send(json!({"method": "item/agentMessage/delta", "params": {
+                            "threadId": state.thread_id, "turnId": provider_turn_id,
+                            "itemId": "held-output", "delta": format!("still computing {index} ")
+                        }}))?;
+                    }
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {
@@ -1752,6 +1929,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }))?;
                     }
+                    if state.next_turn == 1 {
+                        if let Some(gate) =
+                            argument(&args, "--late-accounting-tail-gate").map(PathBuf::from)
+                        {
+                            let thread_id = state.thread_id.clone();
+                            let turn_id = provider_turn_id.clone();
+                            let unsafe_tail =
+                                args.iter().any(|arg| arg == "--unsafe-after-late-usage");
+                            let duplicate_burst = args
+                                .iter()
+                                .any(|arg| arg == "--late-accounting-duplicate-burst");
+                            thread::spawn(move || {
+                                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                                while !gate.is_file() && std::time::Instant::now() < deadline {
+                                    thread::sleep(Duration::from_millis(1));
+                                }
+                                if gate.is_file() {
+                                    if duplicate_burst {
+                                        for _ in 0..33 {
+                                            let _ = send(
+                                                json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread_id,"turnId":turn_id,"tokenUsage":{"total":{"inputTokens":100,"outputTokens":10}}}}),
+                                            );
+                                        }
+                                    }
+                                    let _ = send(
+                                        json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread_id,"turnId":turn_id,
+                                    "tokenUsage":{"total":{"inputTokens":120,"outputTokens":12},"last":{"inputTokens":20,"outputTokens":2}}}}),
+                                    );
+                                    if unsafe_tail {
+                                        let _ = send(
+                                            json!({"method":"turn/started","params":{"threadId":thread_id,"turn":{"id":"unsafe-next-turn"}}}),
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    }
                     if emit_post_completion_warning {
                         send(json!({
                             "method": "warning",
@@ -1763,7 +1977,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             json!({
                                 "method": "thread/tokenUsage/updated",
                                 "params": {"threadId": state.thread_id, "turnId": provider_turn_id,
-                                    "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12},
+                                    "tokenUsage": {"total": {"inputTokens": if args.iter().any(|arg| arg == "--warm-tail-accounting") && state.next_turn > 1 {150} else {120}, "outputTokens": if args.iter().any(|arg| arg == "--warm-tail-accounting") && state.next_turn > 1 {15} else {12}},
                                         "last": {"inputTokens": 20, "outputTokens": 2}}}
                             }),
                             json!({

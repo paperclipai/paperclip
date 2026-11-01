@@ -120,6 +120,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  resumeTaskRetry: vi.fn(async () => undefined),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
   projection: vi.fn(async () => null),
@@ -163,9 +164,27 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
+const mockRequestTaskRetry = vi.hoisted(() => vi.fn());
+const mockOnboardingFirstTaskDependenciesAllowed = vi.hoisted(() => vi.fn(async () => undefined));
+const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 
 function registerRouteMocks() {
+  vi.doMock("../services/instance-settings.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/instance-settings.js")>("../services/instance-settings.js");
+    return { ...actual, instanceSettingsService: (...args: Parameters<typeof actual.instanceSettingsService>) => ({
+      ...actual.instanceSettingsService(...args), getExperimental: mockGetExperimental,
+    }) };
+  });
+  vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
+  vi.doMock("../services/onboarding-first-task-admission.js", async () => ({
+    ...await vi.importActual<typeof import("../services/onboarding-first-task-admission.js")>("../services/onboarding-first-task-admission.js"),
+    assertOnboardingFirstTaskDependenciesAllowed: mockOnboardingFirstTaskDependenciesAllowed,
+  }));
+  vi.doMock("../services/task-interruption-presentation.js", () => ({
+    taskInterruptionPresentation: vi.fn(async () => null),
+    taskInterruptionPresentations: vi.fn(async () => new Map()),
+  }));
   vi.doMock("../services/native-runtime/native-workspace-owner-recovery.js", () => ({ resumeNativeWorkspaceAfterOwnerStop: mockResumeWorkspaceFinalization }));
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));
   vi.doMock("../services/workspace-recovery.js", () => ({ requestWorkspaceRecovery: mockRequestWorkspaceRecovery }));
@@ -254,6 +273,7 @@ function registerRouteMocks() {
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => ({
+      getExperimental: mockGetExperimental,
       get: vi.fn(async () => ({
         id: "instance-settings-1",
         general: {
@@ -481,6 +501,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset().mockResolvedValue(null);
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
+    mockRequestTaskRetry.mockReset().mockResolvedValue({ requestId: recoveryActionId, accepted: true, stale: false });
+    mockGetExperimental.mockReset().mockResolvedValue({ enableAgentChat: true });
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
@@ -853,6 +875,50 @@ describe("agent issue mutation checkout ownership", () => {
     }));
   });
 
+  it("admits ordinary Retry only for a board actor with task mutation permission", async () => {
+    const body = { idempotencyKey: recoveryActionId, observedRunId: ownerRunId };
+    const deniedAgent = await request(createApp(peerActor())).post(`/api/issues/${issueId}/retry`).send(body);
+    expect(deniedAgent.status).toBe(403);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:mutate", action: input.action, reason: "test_gate", explanation: "Task is read-only.",
+    }));
+    const deniedReader = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send(body);
+    expect(deniedReader.status).toBe(403);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow_test", explanation: "Allowed." });
+    const accepted = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send(body);
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(202);
+    expect(mockRequestTaskRetry).toHaveBeenCalledWith(expect.objectContaining({
+      companyId, issueId, actorId: "board-user", actorSource: "local_implicit", ...body,
+    }));
+  });
+
+  it("rejects client-selected workspace strategy and certifications on ordinary Retry", async () => {
+    const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
+      idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
+      forceFreshSession: true, workspaceRepairEvidence: { verified: true },
+    });
+    expect(response.status).toBe(400);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { owner: "another-user", enabled: true, status: 403 },
+    { owner: "board-user", enabled: false, status: 404 },
+    { owner: "board-user", enabled: true, status: 202 },
+  ])("gates Agent Chat task Retry by owner and feature ($owner, $enabled)", async ({ owner, enabled, status }) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      conversationAgentId: ownerAgentId, conversationUserId: owner,
+    }));
+    mockGetExperimental.mockResolvedValue({ enableAgentChat: enabled });
+    const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
+      idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(status);
+    expect(mockRequestTaskRetry).toHaveBeenCalledTimes(status === 202 ? 1 : 0);
+  });
+
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
     ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
@@ -1029,6 +1095,7 @@ describe("agent issue mutation checkout ownership", () => {
     ]);
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueService.listComments).toHaveBeenCalledWith(issueId, {
+      companyId,
       afterCommentId: null,
       order: "desc",
       limit: null,
@@ -2915,6 +2982,155 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
       expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
         .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+  });
+
+  describe("native run changing its own task status", () => {
+    const nativeRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "native",
+      status: "running",
+      contextSnapshot: { issueId },
+    };
+    const runActor = () => ({ ...ownerActor(), source: "agent_jwt" });
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue(nativeRun);
+    });
+
+    it.each([
+      ["in_review", {}],
+      ["in_review", { assigneeAgentId: ownerAgentId }],
+      ["done", {}],
+      ["blocked", {}],
+      ["todo", { blockedByIssueIds: [] }],
+      ["blocked", { blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }],
+    ])("rejects %s before it releases the run's own execution lock (%j)", async (status, extra) => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status, ...extra });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: status });
+      expect(res.body.error).toContain("paperclip_finish");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
+    it("still lets the run edit other fields of its task", async () => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ title: "Renamed by its run" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["in_review", "done"])("rejects recovery resolution changing its own task to %s", async status => {
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        ownerAgentId,
+        evidence: { runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      });
+
+      const app = createApp(runActor());
+      const res = await request(app).post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: status });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: status });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+
+      const edit = await request(app).patch(`/api/issues/${issueId}`).send({ title: "Continue authorized work" });
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+    });
+
+    it.each(["native", "legacy", "board"])("preserves permitted %s recovery resolution", async kind => {
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({ id: recoveryActionId, ownerAgentId });
+      if (kind === "legacy") mockHeartbeatService.getRun.mockResolvedValue({ ...nativeRun, runtimeMode: "legacy" });
+      if (kind === "native") mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "in_review", executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+      }));
+
+      const res = await request(createApp(kind === "board" ? boardActor() : runActor()))
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(kind === "native" ? 0 : 1);
+    });
+
+    it.each([
+      ["a legacy run", { runtimeMode: "legacy" }, {}],
+      ["a native run that no longer owns execution", {}, { executionRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", checkoutRunId: null }],
+      ["a native run that is no longer running", { status: "failed" }, {}],
+    ])("leaves the status change to the existing rules for %s", async (_label, runOverrides, issueOverrides) => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...nativeRun, ...runOverrides });
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId, ...issueOverrides }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("does not intercept a native run handing its task to a human", async () => {
+      // A native handoff still stops the outgoing run first; confirm that stop
+      // so the request reaches the update instead of the stop-unconfirmed 409.
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "cancelled" });
+      const handoff = { assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" };
+
+      const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject(handoff);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, expect.anything(), expect.anything());
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(handoff);
+    });
+
+    it("does not intercept a native conversation reply moving to review", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+        conversationAgentId: ownerAgentId, conversationUserId: "board-user" }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("keeps the dependency rule's error for a blocker it rejects", async () => {
+      const { HttpError: CurrentHttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockOnboardingFirstTaskDependenciesAllowed.mockRejectedValueOnce(
+        new CurrentHttpError(400, "Remove the onboarding task from blockedByIssueIds.", { code: "onboarding_first_task_parent_blocker" }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked", blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.details).toMatchObject({ code: "onboarding_first_task_parent_blocker" });
+      expect(mockOnboardingFirstTaskDependenciesAllowed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        companyId, actorAgentId: ownerAgentId, actorRunId: ownerRunId, blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+      }));
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("does not intercept a board user changing the status", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
     });
   });
 

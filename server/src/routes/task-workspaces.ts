@@ -33,7 +33,7 @@ export function taskWorkspaceRoutes(db: Db) {
   router.get("/issues/:id/workspace", async (req, res) => {
     const issue = await task(req);
     const view = await workspaces.inspectTaskWorkspace(issue.companyId, issue.id, req.actor);
-    res.json({ ...view, repositories: issue.executionWorkspaceId ? await workspaces.listTaskRepositories(issue.companyId, issue.executionWorkspaceId) : [], capabilities: { prepareRepository: "next_normal_admission", selectWorkspace: "next_normal_admission" }, fileLocations: { taskFiles: "workspace", personalInstructionsAndMemory: "AGENT_HOME", providerHome: "runtime_managed" } });
+    res.json({ ...view, repositories: issue.executionWorkspaceId ? await workspaces.listTaskRepositories(issue.companyId, issue.executionWorkspaceId) : [], capabilities: { prepareRepository: view.workspace?.providerType === "adapter_managed" ? "unsupported" : "next_normal_admission", selectWorkspace: "next_normal_admission" }, fileLocations: { taskFiles: "workspace", personalInstructionsAndMemory: "AGENT_HOME", providerHome: "runtime_managed" } });
   });
   router.put("/issues/:id/workspace", validate(selectTaskWorkspaceSchema), async (req, res) => {
     const issue = await task(req, true);

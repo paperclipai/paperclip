@@ -4,6 +4,7 @@ import { forbidden } from "../errors.js";
 import { isDeepStrictEqual } from "node:util";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH, resolveCoreTrustPreset } from "./trust-preset-resolver.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -17,6 +18,10 @@ export const taskRepositoryRunColumns = {
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId', 'taskId', ${heartbeatRuns.contextSnapshot}->'taskId', 'executionPolicy', ${heartbeatRuns.contextSnapshot}->'executionPolicy')`,
 };
 type TaskRepositoryRunIdentity = Pick<typeof heartbeatRuns.$inferSelect, "nativeIssueId" | "issueId" | "contextSnapshot">;
+
+export function taskRepositoryResponsibleUserMatches(actorUserId: string | null | undefined, runUserId: string | null) {
+  return (actorUserId ?? null) === runUserId || (runUserId === "local-board" && actorUserId == null);
+}
 
 // A wake for another task can coalesce into a running run and replace its context
 // task after admission. The immutable task binding still identifies the admitted work.
@@ -56,9 +61,9 @@ export async function assertSelectedWorkspaceTrust(db: Db | DbTransaction, input
   issueId?: string | null; sourceWorkspaceId?: string | null; assigneeAgentId?: string | null; taskCreation?: TaskWorkspaceCreationTrustContext;
 }) {
   if (!input.sourceProjectId) return;
-  const [selectedSource] = await db.select({ id: projects.id, companyId: projects.companyId,
+  const [selectedSource] = await measureRunPhase("workspace.access.trust.project_read", async () => db.select({ id: projects.id, companyId: projects.companyId,
     executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects).where(and(
-      eq(projects.companyId, input.companyId), eq(projects.id, input.sourceProjectId)));
+      eq(projects.companyId, input.companyId), eq(projects.id, input.sourceProjectId!))));
   if (!selectedSource) throw forbidden("Selected workspace source project is unavailable");
   if (resolveCoreTrustPreset({ companyId: input.companyId, workspaceSourceProject: selectedSource }).kind === "standard") return;
   const incompatible = () => forbidden("Selected workspace source trust is incompatible with the task's execution policy");
@@ -84,8 +89,7 @@ export async function assertSelectedWorkspaceTrust(db: Db | DbTransaction, input
   if (selected.kind !== "low_trust_review" || current.kind !== "low_trust_review"
     || !isDeepStrictEqual(selected.boundary, current.boundary)) throw incompatible();
   if (creation) {
-    const sponsor = run!.responsibleUserId === "local-board" ? null : run!.responsibleUserId;
-    if ((input.actor.onBehalfOfUserId ?? null) !== sponsor) throw incompatible();
+    if (!taskRepositoryResponsibleUserMatches(input.actor.onBehalfOfUserId, run!.responsibleUserId)) throw incompatible();
     let parentId = creation.parentIssueId;
     const ancestors: Array<typeof issues.$inferSelect> = [];
     for (let depth = 0; parentId && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH; depth++) {

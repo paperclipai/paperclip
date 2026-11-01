@@ -162,12 +162,23 @@ export async function materializeManagedProjectWorkspace(
 }
 
 
-export async function ensureManagedRepositoriesIgnored(cwd: string): Promise<void> {
+export async function ensureManagedRepositoriesIgnored(cwd: string, options: { plainTaskDirectory?: boolean } = {}): Promise<void> {
   const gitEntry = await fs.lstat(path.join(cwd, ".git")).catch(() => null);
   if (!gitEntry) return;
   if (gitEntry.isSymbolicLink()) throw new Error("Workspace Git metadata must not be a symlink");
-  const excludePath = await execFile("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], { timeout: 10_000 })
-    .then((result) => path.resolve(cwd, result.stdout.trim()));
+  let excludePath: string;
+  try {
+    const result = await execFile("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], {
+      timeout: 10_000, env: { ...process.env, LC_ALL: "C" },
+    });
+    excludePath = path.resolve(cwd, result.stdout.trim());
+  } catch (error) {
+    const failure = error as { code?: unknown; signal?: unknown; stderr?: unknown };
+    if (options.plainTaskDirectory && failure.code === 128 && failure.signal == null &&
+        failure.stderr === "fatal: not a git repository (or any of the parent directories): .git\n" &&
+        !process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !process.env.GIT_COMMON_DIR) return;
+    throw error;
+  }
   const exclude = await fs.readFile(excludePath, "utf8").catch(() => "");
   if (!exclude.split(/\r?\n/).includes(`/${PROJECT_REPOSITORIES_DIR}/`)) {
     await fs.mkdir(path.dirname(excludePath), { recursive: true });

@@ -1,3 +1,4 @@
+import { useCoordinatorWorkspaceEnabled } from "./hooks/useCoordinatorWorkspaceEnabled";
 import { AgentChats } from "./pages/AgentChats";
 import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
@@ -18,6 +19,7 @@ import {
 import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { ConnectionStatusBanner } from "./components/ConnectionStatusBanner";
 import { ShellConfigurationGate } from "./components/ShellConfigurationGate";
 import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 import { AGENT_FILTER_TABS } from "./lib/agent-filter-tabs";
@@ -53,12 +55,16 @@ const AssistantConnectionsPage = lazy(() => import("./pages/McpConnect").then((m
 const ProductionLayout = lazy(() => import("./components/Layout.production").then((module) => ({ default: module.Layout })));
 
 const TaskChatLab = lazy(() => import("./pages/TaskChatLab").then((module) => ({ default: module.TaskChatLab })));
-const Issues = lazy(() => import("./pages/Issues").then((module) => ({ default: module.Issues })));
-const loadIssueDetail = () => import("./pages/IssueDetail").then((module) => ({ default: module.IssueDetail }));
+const loadIssues = () => import("./pages/Issues").then((module) => ({ default: module.Issues }));
+const Issues = lazy(loadIssues);
+let issueDetailLoad: Promise<{ default: typeof import("./pages/IssueDetail").IssueDetail }> | undefined;
+const loadIssueDetail = () =>
+  (issueDetailLoad ??= import("./pages/IssueDetail").then((module) => ({ default: module.IssueDetail })));
 const IssueDetail = lazy(loadIssueDetail);
 const AgentChat = lazy(() => import("./pages/AgentChat").then((module) => ({ default: module.AgentChat })));
 const IssueChatLongThreadPerf = lazy(() => import("./pages/IssueChatLongThreadPerf").then((module) => ({ default: module.IssueChatLongThreadPerf })));
-const Inbox = lazy(() => import("./pages/Inbox").then((module) => ({ default: module.Inbox })));
+const loadInbox = () => import("./pages/Inbox").then((module) => ({ default: module.Inbox }));
+const Inbox = lazy(loadInbox);
 const BootstrapSetupUxLab = lazy(() => import("./pages/BootstrapSetupUxLab").then((module) => ({ default: module.BootstrapSetupUxLab })));
 const ResponsibleUserDenialUxLab = lazy(() => import("./pages/ResponsibleUserDenialUxLab").then((module) => ({ default: module.ResponsibleUserDenialUxLab })));
 const CrossIssueCollaborationUxLab = lazy(() => import("./pages/CrossIssueCollaborationUxLab").then((module) => ({ default: module.CrossIssueCollaborationUxLab })));
@@ -69,7 +75,7 @@ const Dashboard = lazy(() => import("./pages/Dashboard").then((module) => ({ def
 const DashboardLive = lazy(() => import("./pages/DashboardLive").then((module) => ({ default: module.DashboardLive })));
 const Timeline = lazy(() => import("./pages/Timeline").then((module) => ({ default: module.Timeline })));
 const Companies = lazy(() => import("./pages/Companies").then((module) => ({ default: module.Companies })));
-const AgentDetail = lazy(() => import("./pages/AgentDetail").then((module) => ({ default: module.AgentDetail })));
+const AgentDetail = lazy(() => import("./pages/AgentDetailPage").then((module) => ({ default: module.AgentDetailPage })));
 const Projects = lazy(() => import("./pages/Projects").then((module) => ({ default: module.Projects })));
 const ProjectDetail = lazy(() => import("./pages/ProjectDetail").then((module) => ({ default: module.ProjectDetail })));
 const ProjectWorkspaceDetail = lazy(() => import("./pages/ProjectWorkspaceDetail").then((module) => ({ default: module.ProjectWorkspaceDetail })));
@@ -758,16 +764,21 @@ function NoCompaniesStartPage() {
 
 export function App() {
   const { pathname } = useLocation();
-  const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } = useStreamlinedUiEnabled();
+  const { enabled: classicStreamlinedUiEnabled, loaded: classicStreamlinedUiLoaded } = useStreamlinedUiEnabled();
+  const { enabled: coordinatorWorkspaceEnabled, loaded: coordinatorWorkspaceLoaded } = useCoordinatorWorkspaceEnabled();
+  const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
+  const streamlinedUiLoaded = classicStreamlinedUiLoaded && coordinatorWorkspaceLoaded;
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   useEffect(() => {
-    if (/^\/[^/]+\/(issues|tasks|inbox)(?:\/|$)/.test(pathname)) {
-      void loadIssueDetail().catch(() => undefined);
-    }
+    // Download the requested collection while access/company checks run. Detail
+    // code is already prefetched by row intent; don't compete with the cold list.
+    if (/^\/[^/]+\/inbox(?:\/|$)/.test(pathname)) void loadInbox().catch(() => undefined);
+    else if (/^\/[^/]+\/(issues|tasks)\/?$/.test(pathname)) void loadIssues().catch(() => undefined);
   }, [pathname]);
 
   return (
     <>
+      <ConnectionStatusBanner />
       <Suspense fallback={<PaperclipLoading />}><Routes>
         <Route path="oauth-handoff" element={<PaperclipCloudOAuthHandoffPage />} />
         <Route path="auth" element={<AuthPage />} />
@@ -791,7 +802,7 @@ export function App() {
         <Route path="ux-lab/cross-issue-collaboration" element={<CrossIssueCollaborationUxLab />} />
 
         <Route element={<CloudAccessGate />}>
-          <Route element={<ShellConfigurationGate loaded={streamlinedUiLoaded} />}>
+          <Route element={<ShellConfigurationGate loaded={streamlinedUiLoaded} allowPendingTaskDetail={classicStreamlinedUiLoaded && !coordinatorWorkspaceLoaded} />}>
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
           <Route path="instance" element={<LegacySettingsRedirect />} />

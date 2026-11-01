@@ -14,6 +14,7 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("https://workspace.google.com/")?.slug).toBe("google-workspace");
     expect(getAppDefinitionForUrl("https://mcp.neon.tech/mcp")?.slug).toBe("neon");
     expect(getAppDefinitionForUrl("https://app.withgauge.com/mcp")?.slug).toBe("gauge");
+    expect(getAppDefinitionForUrl("https://api.dittowords.com/v2/mcp")?.slug).toBe("ditto");
     expect(getAppDefinitionForUrl("https://www.superagent.sh/mcp")?.slug).toBe("superagent");
   });
 
@@ -51,6 +52,13 @@ describe("tool app gallery URL matching", () => {
       expect(example, `${app.slug} has a pattern`).toBeTruthy();
       expect(getAppDefinitionForUrl(example!)?.slug).toBe(app.slug);
     }
+  });
+
+  it("uses Notebook's canonical endpoint without per-instance configuration", () => {
+    const notebook = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "paperclip-notebook");
+    expect(notebook?.availability?.available).toBe(true);
+    expect(notebook?.methods[0]?.defaults?.serverUrl).toBe("https://notebook.paperclip.app/mcp");
+    expect(getAppDefinitionForUrl("https://notebook.paperclip.app/p/page-id")?.slug).toBe("paperclip-notebook");
   });
 
   it("offers region and custom model connections without claiming arbitrary URLs", () => {

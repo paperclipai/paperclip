@@ -5,7 +5,7 @@ import type { LifecycleAgent, LifecycleStore, LifecycleDriver } from "../applica
 import { startAgentLifecycle } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { logger } from "../../../middleware/logger.js";
-import { lifecycleFailureMessage } from "../application/failure.js";
+import { lifecycleFailureMessage, lifecycleVerificationNeedsRetry } from "../application/failure.js";
 
 const agent: LifecycleAgent = { id: "agent", companyId: "company", lifecycleState: "verifying", lifecycleVersion: 3,
   lifecycleRequiredPluginIds: null, lifecycleError: null,
@@ -67,6 +67,20 @@ describe("lifecycle readiness handoff", () => {
 });
 
 describe("lifecycle failure diagnostics", () => {
+  it.each(["harness_auth_failed", "harness_model_unavailable", "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output"])("waits for repair only for a host verification failure: %s", code => {
+    const error = { code };
+    expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "verifying" }, error)).toBe(true);
+    expect(lifecycleVerificationNeedsRetry({ stage: "plugin", phase: "verifying" }, error)).toBe(false);
+    expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "cleaning_up" }, error)).toBe(false);
+  });
+
+  it("allows two automatic retries of a generic failed test before waiting for repair", () => {
+    for (const verificationFailures of [1, 2, 3, 8_000]) {
+      const context = { stage: "host" as const, phase: "verifying" as const, attempts: 8_000, verificationFailures };
+      expect(lifecycleVerificationNeedsRetry(context, { code: "harness_test_failed" })).toBe(verificationFailures >= 3);
+    }
+  });
+
   it.each([
     ["host", "harness_model_unavailable", "Execution configuration check failed. The selected model is unavailable."],
     ["plugin", "required_plugin_unavailable", "Execution configuration check: required plugin step failed. A required plugin is unavailable."],
@@ -80,7 +94,8 @@ describe("lifecycle failure diagnostics", () => {
     if (stage === "select_plugins") driver.requiredPluginIds.mockRejectedValue(error);
     if (stage === "transition") store.change.mockRejectedValue(error);
     await worker.process(agent.id);
-    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), expect.stringContaining(expected), expect.any(Date));
+    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), expect.stringContaining(expected), expect.any(Date),
+      ...(stage === "host" ? [{ retryRequired: true }] : []));
     expect(JSON.stringify(store.defer.mock.calls)).not.toContain("secret provider output");
     expect(JSON.stringify(store.defer.mock.calls)).not.toContain("unknown private code");
     await worker.stop();
@@ -110,14 +125,30 @@ describe("lifecycle failure diagnostics", () => {
     await worker.stop();
   });
 
-  it("reports periodic policy scan failures", async () => {
-    vi.useFakeTimers();
+  it("bounds retries for due work while plugins are unavailable and stops reading after shutdown", async () => {
+    const where = vi.fn().mockResolvedValue([{ due: 0 }]);
+    const select = vi.fn(() => ({ from: () => ({ where }) }));
+    const db = { select } as unknown as Db;
+    const work = startAgentLifecycle(db, createAgentLifecycleEffects(), fixture().driver, () => false);
+    try {
+      expect(await work.hasPending()).toBe(true);
+      expect(work.nextRunAt()).toBeNull();
+      await work.sweep();
+      expect(select).toHaveBeenCalledTimes(1);
+      await work.stop();
+      expect(await work.hasPending()).toBe(false);
+      expect(work.nextRunAt()).toBeNull();
+      expect(select).toHaveBeenCalledTimes(1);
+    } finally { await work.stop(); }
+  });
+
+  it("reports inherited company projection failures", async () => {
     const error = new Error("private database detail");
     const db = { select: () => { throw error; } } as unknown as Db;
     const effects = { ...createAgentLifecycleEffects(), reportFailure: vi.fn() };
     const work = startAgentLifecycle(db, effects, fixture().driver, () => true);
     try {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(work.sweep()).rejects.toThrow(error);
       expect(effects.reportFailure).toHaveBeenCalledWith({ stage: "policy_scan" }, error);
     } finally { await work.stop(); }
   });

@@ -2,7 +2,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, CaseWorkflowTransition } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -25,6 +25,7 @@ import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { useToastActions } from "@/context/ToastContext";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -209,10 +210,12 @@ function AuditRow({
   record,
   agentMap,
   userProfileMap,
+  casesEnabled,
 }: {
   record: AuditActionRecord;
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
+  casesEnabled: boolean;
 }) {
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
@@ -225,6 +228,8 @@ function AuditRow({
   const excerpt = record.entity.comment?.excerpt?.trim();
   // Show the document key only when it isn't already the linked entity node.
   const documentKey = record.entity.issue && record.entity.document ? record.entity.document.key : null;
+  const workflowTransition = casesEnabled && record.action.startsWith("case.handoff_")
+    ? record.details?.workflowTransition as CaseWorkflowTransition | null | undefined : null;
 
   return (
     <li className="px-4 py-3 text-sm">
@@ -240,6 +245,10 @@ function AuditRow({
               “{excerpt}”
             </p>
           ) : null}
+          {workflowTransition?.from && workflowTransition?.to ? <p className="text-xs text-muted-foreground">
+            {workflowTransition.from.name ?? "Case instructions"}{workflowTransition.from.phase ? ` · ${workflowTransition.from.phase}` : ""}
+            {" → "}{workflowTransition.to.name ?? "Case instructions"} · {workflowTransition.to.phase}
+          </p> : null}
           {documentKey ? (
             <p className="text-xs text-muted-foreground">
               Document <span className="font-mono text-(length:--text-micro)">{documentKey}</span>
@@ -422,6 +431,11 @@ export function AuditFeed({
     const visible = hasBasicPage ? pages.filter((page) => page.accessTier !== "full") : pages;
     return visible.flatMap((page) => page.items);
   }, [feed.data, hasBasicPage]);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: items.some(item => Boolean(item.details?.workflowTransition)),
+  });
   // Access may be revoked between cursor requests. Treat the least-privileged
   // page as authoritative until every cached page has been fetched again.
   const accessTier = hasBasicPage ? "basic" : feed.data?.pages[0]?.accessTier;
@@ -770,6 +784,7 @@ export function AuditFeed({
                 record={record}
                 agentMap={agentMap}
                 userProfileMap={userProfileMap}
+                casesEnabled={experimentalSettings?.enableCases === true}
               />
             ))}
           </ul>

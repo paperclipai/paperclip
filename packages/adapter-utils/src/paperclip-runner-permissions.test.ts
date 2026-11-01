@@ -12,6 +12,10 @@ import {
 } from "./paperclip-runner-permissions.js";
 
 describe("Paperclip Runner permission defaults", () => {
+  it("exposes qualified Kimi Code with an explicit runtime credential", () => {
+    expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "kimi"))
+      .toMatchObject({ qualified: true, credentialEnvironment: ["KIMI_API_KEY"] });
+  });
   it("marks Pi and Copilot qualified with their provider credential bindings", () => {
     expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "pi"))
       .toMatchObject({ qualified: true, credentialEnvironment: expect.arrayContaining(["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]) });
@@ -43,8 +47,24 @@ describe("Paperclip Runner permission defaults", () => {
     ["claude_local", "acpxPermissionMode", "approve-all"],
     ["codex_local", "codexPermissionMode", "never"],
     ["opencode_local", "opencodePermissionMode", "allow"],
+    ["pi_local", "acpxPermissionMode", "approve-all"],
+    ["grok_local", "acpxPermissionMode", "approve-all"],
   ])("uses full auto when converting %s to the new runner", (adapter, key, value) => {
     expect(paperclipRunnerTransitionConfig(adapter, undefined)).toMatchObject({ [key]: value });
+  });
+
+  it("keeps Pi models explicit during conversion", () => {
+    expect(paperclipRunnerTransitionConfig("pi_local", undefined)).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
+    expect(paperclipRunnerTransitionConfig("pi_local", "openrouter/provider/model")).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "openrouter/provider/model" });
+  });
+
+  it("keeps Grok's harness and model when converting its adapter", () => {
+    expect(paperclipRunnerTransitionConfig("grok_local", "grok-4.7"))
+      .toMatchObject({ provider: "acpx", acpxAgent: "grok", model: "grok-4.7" });
+  });
+
+  it.each([undefined, "", "grok-build"])("resolves Grok's legacy default %s to the native model", model => {
+    expect(paperclipRunnerTransitionConfig("grok_local", model)).toMatchObject({ model: "grok-4.7" });
   });
 
   it("recognizes only exact provider identifiers", () => {

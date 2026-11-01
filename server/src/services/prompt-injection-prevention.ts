@@ -1,6 +1,7 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, lt, sql } from "drizzle-orm";
-import { agents, budgetPolicies, budgetReservations, companies, companyPromptInjectionPrevention,
+import { agents, budgetReservations, companies, companyPromptInjectionPrevention,
   promptInjectionInvocations, companySecrets, heartbeatRuns, runIdentityContexts, issues, projects, type Db } from "@paperclipai/db";
 import { PROMPT_INJECTION_DEFAULT_MODEL, PROMPT_INJECTION_POLICY_VERSION, decisionProviderForConnection,
   updatePromptInjectionPreventionSchema, centsToUnits, unitsToCents,
@@ -9,7 +10,8 @@ import { PROMPT_INJECTION_DEFAULT_MODEL, PROMPT_INJECTION_POLICY_VERSION, decisi
 import { HttpError, forbidden } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
-import { budgetPoliciesForRun, budgetService, budgetServiceInTransaction, computeObservedSpend, type BudgetServiceHooks } from "./budgets.js";
+import { withBudgetSpan } from "./budget-tracing.js";
+import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { logActivity } from "./activity-log.js";
 import { runPromptInjectionProvider, promptInjectionInput, promptInjectionRequestFits, type PromptInjectionProviderOutcome } from "./prompt-injection-provider.js";
@@ -102,7 +104,7 @@ export function promptInjectionPreventionService(db: Db, options: {
     return { config, connection, userId, agentId, runId, identityContextId, issueId, projectId, actorType: context.actorType, actorId: context.actorId };
   }
   async function settle(invocation: typeof promptInjectionInvocations.$inferSelect, outcome: PromptInjectionProviderOutcome) {
-    await withAccountingTransaction(db, invocation.companyId, async (tx, publications) => {
+    await withBudgetSpan("budget.accounting.settlement", () => withAccountingTransaction(db, invocation.companyId, async (tx, publications) => {
       const [current] = await tx.select().from(promptInjectionInvocations).where(and(eq(promptInjectionInvocations.companyId, invocation.companyId), eq(promptInjectionInvocations.id, invocation.id))).for("update");
       if (!current || current.status !== "running") return;
       const receipt = outcome.receipt;
@@ -125,6 +127,7 @@ export function promptInjectionPreventionService(db: Db, options: {
         providerRequestId: receipt.providerRequestId, pricingProvenance: receipt.pricingProvenance, occurredAt: invocation.startedAt,
       }, publications, { actorType: invocation.actorType as "system" | "user" | "agent", actorId: invocation.actorId, agentId: links.agentId });
       const finishedAt = new Date();
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, invocation.companyId);
       await tx.update(promptInjectionInvocations).set({ status: outcome.verdict ? "succeeded" : receipt.costStatus === "unpriced" ? "unknown" : "failed",
         violation: outcome.verdict?.violation ?? null, findings: outcome.verdict?.findings ?? null, errorCode: outcome.errorCode ?? null, costEventId: event.id, providerRequestId: receipt.providerRequestId,
         inputTokens: receipt.inputTokens, outputTokens: receipt.outputTokens, finishedAt, durationMs: Math.max(0, finishedAt.getTime() - invocation.startedAt.getTime()),
@@ -132,8 +135,7 @@ export function promptInjectionPreventionService(db: Db, options: {
       if (receipt.costStatus !== "unpriced") await tx.update(budgetReservations).set({ state: outcome.noProviderWork ? "released" : "settled", settledAt: finishedAt }).where(and(
         eq(budgetReservations.companyId, invocation.companyId), eq(budgetReservations.promptInjectionInvocationId, invocation.id), eq(budgetReservations.state, "held"),
       ));
-    });
-    await budgetService(db, options.budgetHooks).deliverPendingEnforcement(invocation.companyId);
+    }));
   }
   async function classify(context: PromptInjectionContext, content: string, signal?: AbortSignal): Promise<PromptInjectionModelOutcome & { usage?: DecisionUsage }> {
     signal?.throwIfAborted();
@@ -171,23 +173,17 @@ export function promptInjectionPreventionService(db: Db, options: {
       if (!currentSecret || currentSecret.status !== "active" || currentSecret.version !== credentialSnapshot.version)
         return { reason: "connection_unavailable" as const };
       const budgets = budgetServiceInTransaction(tx, publications);
-      const block = await budgets.getInvocationBlock(context.companyId, current.agentId, { projectId: current.projectId });
+      const { block, policies, observations } = await budgets.evaluateAdmission(context.companyId, current.agentId, { projectId: current.projectId });
       const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, context.companyId));
       const [agent] = current.agentId ? await tx.select({ status: agents.status }).from(agents).where(and(eq(agents.id, current.agentId), eq(agents.companyId, context.companyId))) : [];
       if (block || company.status !== "active" || (current.agentId && (!agent || agent.status === "paused" || agent.status === "terminated"))) return { reason: "budget_blocked" as const };
-      const policies = await tx.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, context.companyId), eq(budgetPolicies.isActive, true),
-        eq(budgetPolicies.hardStopEnabled, true), eq(budgetPolicies.metric, "billed_cents"), sql`${budgetPolicies.amount} > 0`, budgetPoliciesForRun(context.companyId, current.agentId, current.projectId)));
       const amount = policies.reduce((max, p) => { const n = centsToUnits(p.reservationCents); return n > max ? n : max; }, 0n);
-      for (const policy of policies) {
-        const [held] = await tx.select({ total: sql<string>`coalesce(sum(${budgetReservations.amountCents}),0)::text` }).from(budgetReservations).where(and(
-          eq(budgetReservations.companyId, context.companyId), eq(budgetReservations.state, "held"),
-          policy.scopeType === "agent" ? eq(budgetReservations.agentId, current.agentId!) : undefined,
-          policy.scopeType === "project" ? eq(budgetReservations.projectId, current.projectId!) : undefined,
-        ));
-        const committed = centsToUnits((await computeObservedSpend(tx, policy)).totalExact) + centsToUnits(held.total);
+      for (const [index, policy] of policies.entries()) {
+        const committed = centsToUnits(observations[index].ledgerCents) + centsToUnits(observations[index].effectiveHeldCents);
         if (committed >= centsToUnits(policy.amount) || committed + amount > centsToUnits(policy.amount)) return { reason: "budget_blocked" as const };
       }
       signal?.throwIfAborted();
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, context.companyId);
       const [invocation] = await tx.insert(promptInjectionInvocations).values({ id: randomUUID(), companyId: context.companyId, source: context.source, toolInvocationId: context.toolInvocationId ?? null, toolName: context.toolName,
         actorType: current.actorType, actorId: current.actorId, responsibleUserId: current.userId, agentId: current.agentId,
         issueId: current.issueId, projectId: current.projectId, runId: current.runId, identityContextId: current.identityContextId,

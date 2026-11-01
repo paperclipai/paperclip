@@ -1,10 +1,40 @@
 # Runner E2E fixture authoring
 
+[Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed
+only company, agents and project context through public APIs. Both agents use
+production role instructions; evaluator outcomes are never injected. Real browser
+submission, task audits, worker document provenance, completion delivery and
+reload readback establish the outcome. The existing fixture registry, subscription
+credential staging and whole-company cleanup own setup and teardown. The explicit
+OpenCode backlog cell instead uses an encrypted OpenRouter profile secret
+reference. It preserves the same fixture and oracle without registering
+OpenCode delegation or changing the other suites' model.
+
+[Deployment-targeted journeys](PRODUCT-JOURNEYS.md) resolve only their requested
+fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the
+argument preserves the existing all-fixtures behavior. A verified onboarding
+context may seed the graph; independent setup is labeled as recipe provenance.
+The model-free task-document journey reuses the run-owned backlog-task fixture.
+It creates and changes the document only through the production browser editor;
+setup never seeds the saved outcome. Task ownership also covers its documents
+and revisions during cleanup.
+
 ## Connection creation fixtures
 
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
+
+[Antigravity additional-agent setup](ANTIGRAVITY-AGENT-JOURNEY.md) instead reuses
+an existing same-user personal default Google subscription on an attached local
+macOS ARM64 candidate. That prerequisite does not seed the measured new agent or
+task: both are created through ordinary visible controls. The attempt journals
+owned resources before task dispatch, preserves the supplied company/account/grant,
+and exposes bounded read-only preflight and ownership-checked recovery. Native
+Test is prompt-free; exactly two work turns are admitted. Independent actual
+downloaded bytes, effective model/conversation, accepted/committed Done lineage
+and local physical retirement determine the outcome. No fresh OAuth or
+managed-local bootstrap is claimed.
 
 The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
 authenticated browser session. `RunnerApi.setBrowserSession` binds that session
@@ -142,6 +172,12 @@ keeps `reuseLease:false` and `runnerLifecycleMode:"per_turn"`. The dedicated
 warm-continuity fixture uses `reuseLease:true` and
 `runnerLifecycleMode:"warm"`; its distinct `configurationKey` is part of the
 suite fingerprint even though both fixtures report `environmentId:"daytona"`.
+Suites may select an `environmentOverrides` entry by task ID and environment
+ID when one case needs a different lifecycle. The matrix, setup payload and
+suite fingerprint use that selected configuration. Kimi's native Write Stop
+and provider-loss cases select the non-reused, per-turn Daytona fixture required
+by their strict observer; its other Daytona cases retain warm reuse. Local Kimi
+fixtures retain the instance-managed environment.
 Keep short provider cleanup backstops, a Daytona secret reference, and an
 immutable image digest. Teardown
 must delete the environment with reusable-lease destruction and must fail the
@@ -353,6 +389,31 @@ default. Its file case anchors the task to a public project workspace, validates
 the model's claimed result by reading the actual final bytes, and also exercises
 remote copy-back. Keep candidate admission scoped to the selected model and the
 isolated operator environment; ordinary agent configuration must not enable it.
+
+## Kimi Code candidate qualification
+
+The explicit-only `kimi-qualification` suite reuses eight established user
+journeys and adds native pending-permission Stop and native worker-loss journeys
+in each local/Daytona environment, with one attempt per cell. The
+`runner-acpx-kimi` profile selects the exact candidate/model pair in the isolated
+server, and receives only an encrypted `KIMI_API_KEY` secret reference. No native question/plan or usage/cost support is inferred from these fixtures. Semantic Paperclip interaction cards retain their
+existing browser, durable revision, and continuation assertions.
+
+The file cell creates its project/workspace through the public fixture registry
+path, then the agent creates, edits, validates and registers the file itself.
+Independent workspace byte and downloaded-artifact byte matchers both remain
+required. Stop/reset and chat restart reuse their existing active-work and
+continuation observations. They do not replace native pending-permission,
+provider-loss, or complete runtime-cleanup acceptance. The original
+`extended-harnesses` matrix remains unchanged.
+
+The two Kimi lifecycle tasks require a native Write request with an exact
+workspace target. The browser must show its permission card before the action.
+One task uses public Stop; the other kills only the attributed native child.
+Both require a rejected stale Allow response, expired pending work, no completed
+mutation, continuous target absence, and physical process retirement. The Linux
+fault helper verifies process birth, ancestry, pinned code, held descriptors and
+pidfd identity before it can signal a process.
 
 ## Persistent agent files
 
@@ -925,9 +986,9 @@ The Copilot `extended-harnesses` file case supplies a portable read-only validat
 
 ## Same-task case handoffs
 
-The suite contains three local cells: `receipt-smoke` under both `runner-codex`
-(API key) and `runner-codex-subscription`, plus the original subscription-only
-`same-task-roundtrip`. The API profile uses the same model and workflow
+The suite contains four local cells: `receipt-smoke` and `same-task-roundtrip`
+under both `runner-codex` (API key) and `runner-codex-subscription`.
+The API profile uses the same model and workflow
 definition with ordinary encrypted `OPENAI_API_KEY` secret references, including
 the provider's `CODEX_API_KEY` alias. It does not stage a subscription login.
 Receipt smoke has exactly four successful native task work runs, with triage,
@@ -967,7 +1028,7 @@ They remain unchanged and start no work. Public screenshots use the primary
 case detail route, document dialogs on that route and the primary task route.
 List navigation itself produces no screenshot.
 
-Both case fixtures supply required `workflow_document_text` through the handoff
+The receipt fixture supplies `workflow_document_text` through the handoff
 API; it becomes the ordinary task's `workflow` document before dispatch. Receipt
 role prompts tell each phase to read that document. Older recorded campaigns
 precede this new required field and remain evidence of their original version.
@@ -991,3 +1052,50 @@ home, refuses nonisolated or redirected roots and occupied auth files, and
 registers cleanup before agent setup. It copies no operator config, sessions,
 plugins or unrelated files. The shared fixture registry owns that dependency;
 there is no private runtime injection.
+
+The `same-task-roundtrip` arithmetic cell now creates two reusable name-and-prompt
+workflows through production APIs and kicks off using `workflowId`. Its existing
+four-phase journey adopts A → B → A, then preserves A. Every phase reads the
+effective task document and persists its distinct procedure marker; the oracle
+requires the captured workflow identities and effective revision references.
+Case Work and expanded history show the names and arbitrary phases. This changes
+the definition/grader digest; historical passes do not qualify this extension.
+The receipt cells continue exercising inline kickoff compatibility. Provider-turn,
+timeout, credentials and cleanup bounds are unchanged.
+
+The arithmetic journey records four delivered agent handoffs and one completed
+terminal intent. The final case is `done` at handoff version 5, while the same
+four provider work runs and unchanged workflow document revision finish the task.
+The oracle rejects a missing or pending terminal intent.
+
+## Feedback persistence (explicit only)
+
+`--suite feedback-persistence` selects four native Claude/Codex cells across local and Daytona execution.
+Each creates one standard task through the browser, asks for two distinct
+synthetic feedback items, and requires the real `submit_complaint` and
+`submit_suggestion` tools. The case expects one task work run and disables
+automatic retries. Local attempts have five minutes; Daytona inherits the
+15-minute remote deadline. Company and agent accounted-work budgets are $10.
+Setup probes and any background work must also pass through the separately
+budgeted gateway when using an operations manifest. Local compute is unmetered.
+Daytona cells require an immutable image and the existing provider credential.
+Their ephemeral sandboxes carry the 60-minute provider lifetime. Historical local
+measurements remain separate; Daytona cost and time are unknown until measured.
+These registrations do not qualify remote behavior or change daily/weekly selections.
+The runner E2E maintainers own this manual case; `--all` excludes it.
+
+After collection and fixture teardown, the oracle reads the retained evidence
+file and requires exact nonce-bearing bodies, the original company/agent/task
+and observed run, plus one completed native receipt for each tool. Missing or
+partial collection, prose-only claims, foreign attribution, duplicate records,
+and failed submissions cannot pass. Full bodies stay in private evidence;
+public reports retain counts, fingerprints, and closed oracle checks. The usual
+result screenshot, trace, secret scanning and supervisor cleanup still apply.
+This case proves explicit submission and persistence, not spontaneous feedback
+quality or survival after an abrupt worker kill.
+
+```sh
+pnpm test:e2e:runner -- --list --suite feedback-persistence
+pnpm test:e2e:runner -- --list --suite feedback-persistence --environment daytona
+pnpm test:e2e:runner -- --id feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion --max-automatic-retries 0 --max-parallel 1
+```

@@ -6,9 +6,11 @@ export * from "./runnerd-codex-transport.js";
 export * from "./turn-stream.js";
 export * from "./linux-process-start.js";
 
-export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxPiInstallation } from "../drivers/acpx/installation-integrity.js";
+export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } from "../drivers/acpx/installation-integrity.js";
 export { probeCopilotMetadata, validateCopilotMetadata, type CopilotMetadataResult } from "../drivers/copilot-metadata-probe.js";
 
-export { probeAcpxCursorInstallation } from "../drivers/acpx/profile-installation.js";
+export { probeAcpxCursorInstallation, probeAcpxPiInstallation, probeAcpxKimiInstallation } from "../drivers/acpx/profile-installation.js";
+export { probeKimiModels, KimiMetadataProbeError, type KimiVerifiedModelMetadata } from "../drivers/acpx/kimi-models.js";
+export { probeKimiMetadata, validateKimiMetadata, kimiMetadataProbeDigest, kimiMetadataProbeNodeDigest, type KimiMetadataResult } from "../drivers/acpx/kimi-metadata-probe.js";
 
 export { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./bundled-remote-provider-pack.js";

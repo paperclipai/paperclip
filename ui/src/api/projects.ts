@@ -2,6 +2,7 @@ import type {
   Project,
   ProjectAccessMember,
   ProjectRepositoryOptions,
+  ProjectGitAuthorization,
   ProjectWorkspace,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
@@ -20,6 +21,8 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const projectsApi = {
+  gitAuthorization: (id: string) => api.get<ProjectGitAuthorization>(projectPath(id, undefined, "/git-authorization")),
+  setGitAuthorization: (id: string, grantId: string | null) => api.put<ProjectGitAuthorization>(projectPath(id, undefined, "/git-authorization"), { grantId }),
   repositoryOptions: (companyId: string) => api.get<ProjectRepositoryOptions>(`/companies/${companyId}/project-repositories`),
   setRepositories: (id: string, repositoryIds: string[]) => api.put<Project>(projectPath(id, undefined, "/repositories"), { repositoryIds }),
   list: (companyId: string, opts: { includeArchived?: boolean } = {}) => {

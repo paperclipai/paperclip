@@ -32,6 +32,9 @@ const subject = "user_test";
 const originRejectionContract = JSON.parse(readFileSync(
   new URL("./fixtures/cloud-connector-origin-rejection.json", import.meta.url), "utf8",
 )) as { status: number; body: { error: string } };
+const refreshReauthorizationContract = JSON.parse(readFileSync(
+  new URL("./fixtures/cloud-connector-refresh-reauthorization.json", import.meta.url), "utf8",
+)) as { status: number; body: { error: string } };
 
 function rawPrivateKey(key: KeyObject): string {
   const jwk = key.export({ format: "jwk" }) as { d?: string };
@@ -140,6 +143,24 @@ describe("Paperclip Cloud connector", () => {
       code: "REAUTHORIZATION_REQUIRED", status: 409,
       message: "Paperclip Cloud connector rejected the request (operation=session, status=409, reason=UNKNOWN_BROKER_ERROR)",
     });
+  });
+
+  it("asks for reconnection when the provider rejects a refresh grant", async () => {
+    const connector = createPaperclipCloudConnector({
+      config: config().config,
+      request: vi.fn(async () => Response.json(refreshReauthorizationContract.body, {
+        status: refreshReauthorizationContract.status,
+      })) as typeof fetch,
+    });
+    const error = await connector.refresh({
+      subject, companyId, profile: "gmail.read", refreshToken: "refresh-secret",
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(PaperclipCloudConnectorError);
+    expect(error).toMatchObject({
+      code: "REAUTHORIZATION_REQUIRED", status: 409,
+      message: "Paperclip Cloud connector rejected the request (operation=refresh, status=409, reason=PROVIDER_REAUTHORIZATION_REQUIRED)",
+    });
+    expect(JSON.stringify(error)).not.toContain("refresh-secret");
   });
 
   it("keeps the original status when the error body stream fails", async () => {
@@ -735,11 +756,42 @@ describe("dedicated App gateway delivery", () => {
     expect((await connector.leaseEvents({subject,companyId}))?.events[0].payload.githubApp).toEqual(packet);
     expect(JSON.stringify(inner)).not.toContain("private comment");
   });
-  it("rejects an inner envelope swapped from another opaque route", async () => {
+  it("retains an inner envelope swapped from another opaque route for retry", async () => {
     const keys = config();
     const inner = seal({v:1,instanceId,environment:"staging",registrationId:"route-b"},keys.sealPublicKey,"events",keys.config,"github.bot");
     const outer = seal({v:1,instanceId,environment:"staging",leaseId:"lease-a",events:[{id:"transport-a",provider:"github",event:"gateway_delivery",payload:{githubApp:{registrationId:"route-a",sealed:inner}},bindingIds:["github-app:route-a"]}]},keys.sealPublicKey,"events",keys.config,"github.code");
     const connector=createPaperclipCloudConnector({config:keys.config,request:vi.fn(async()=>Response.json({leaseId:"lease-a",sealed:outer})) as typeof fetch});
-    await expect(connector.leaseEvents({subject,companyId})).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+    await expect(connector.leaseEvents({subject,companyId})).resolves.toMatchObject({
+      leaseId: "lease-a", events: [], failedEventIds: ["transport-a"],
+    });
+  });
+
+  it.each(["ciphertext", "lease"])("still rejects an invalid outer %s binding", async failure => {
+    const keys = config();
+    const outer = seal({ v: 1, instanceId, environment: "staging", leaseId: "lease-a", events: [] },
+      failure === "ciphertext" ? config().sealPublicKey : keys.sealPublicKey, "events", keys.config, "github.code");
+    const connector = createPaperclipCloudConnector({ config: keys.config,
+      request: vi.fn(async () => Response.json({ leaseId: failure === "lease" ? "other-lease" : "lease-a", sealed: outer })) as typeof fetch });
+    await expect(connector.leaseEvents({ subject, companyId })).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+  });
+
+  it("isolates a stale-key event while decrypting healthy siblings and legacy events", async () => {
+    const keys = config();
+    const staleKeys = config();
+    const packet = { v: 1, instanceId, environment: "staging", registrationId: "route-a", rawBody: "e30=" };
+    const event = (id: string, inner: unknown) => ({ id, provider: "github", event: "gateway_delivery",
+      payload: { githubApp: { registrationId: "route-a", sealed: inner } }, bindingIds: ["github-app:route-a"] });
+    const outer = seal({ v: 1, instanceId, environment: "staging", leaseId: "lease-a", events: [
+      event("stale", seal(packet, staleKeys.sealPublicKey, "events", keys.config, "github.bot")),
+      event("healthy", seal(packet, keys.sealPublicKey, "events", keys.config, "github.bot")),
+      { id: "legacy", provider: "github", event: "installation", payload: {}, bindingIds: [] },
+    ] }, keys.sealPublicKey, "events", keys.config, "github.code");
+    const connector = createPaperclipCloudConnector({ config: keys.config,
+      request: vi.fn(async () => Response.json({ leaseId: "lease-a", sealed: outer })) as typeof fetch });
+    const result = await connector.leaseEvents({ subject, companyId });
+    expect(result?.failedEventIds).toEqual(["stale"]);
+    expect(result?.events.map(event => event.id)).toEqual(["healthy", "legacy"]);
+    expect(result?.events[0]?.payload.githubApp).toEqual(packet);
+    expect(JSON.stringify(result)).not.toContain('"ct"');
   });
 });

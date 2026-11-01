@@ -14,6 +14,7 @@ import { AiConnectionSelect } from "./AiConnectionSelect";
 import { AiProviderSetup } from "./AiProviderSetup";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
+import { aiConnectionDisplayLabel } from "./model";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -33,8 +34,10 @@ export function aiProviderForAdapter(
       claude_local: "anthropic",
       codex_local: "openai",
       opencode_local: "openrouter",
+      pi_local: "openrouter",
       grok_local: "xai",
       copilot_runtime: "github",
+      antigravity_runtime: "google",
       gemini_local: "google",
       hermes_local: "openrouter",
     } as Record<string, AiProvider>
@@ -88,6 +91,11 @@ export function AiConnectionField({
     enabled: Boolean(provider),
   });
   const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
+  const pendingAccount = pendingAdoption?.mode === "responsible_user"
+    ? personalDefault
+    : pendingAdoption && pendingAdoption.mode !== "router"
+      ? accounts.data?.connections.find(account => account.id === pendingAdoption.connectionId && account.grantId === pendingAdoption.grantId)
+      : undefined;
   const selectDefault = useMutation({
     mutationFn: async (result: NonNullable<typeof savedAccount>) => {
       // Reconnect retains the existing default and its access. A new account
@@ -124,7 +132,7 @@ export function AiConnectionField({
     );
   return (
     <div className="space-y-4">
-      {value && value.mode !== "router" && (adapterType !== "opencode_local" || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
+      {value && value.mode !== "router" && (!["opencode_local", "pi_local"].includes(adapterType) || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
         <p role="alert" className="text-sm text-destructive">
           This connection does not support the current harness and model. Choose
           a compatible connection before saving.
@@ -144,6 +152,7 @@ export function AiConnectionField({
       </label>}
       {value?.mode !== "router" && <AiConnectionSelect
         adapterType={adapterType}
+          model={model}
         requirement={{ companyId, provider }}
         connections={accounts.data?.connections ?? []}
         value={value}
@@ -175,10 +184,8 @@ export function AiConnectionField({
           </DialogHeader>
           {pendingAdoption?.mode !== "router" && <p className="text-sm">
             {pendingAdoption?.mode === "responsible_user"
-              ? `Responsible user’s default. For you: ${accounts.data?.connections.find((account) => account.isDefault && account.provider === provider)?.name ?? "Not connected"}. Other users use their own default.`
-              : accounts.data?.connections.find(
-                  (account) => account.id === pendingAdoption?.connectionId,
-                )?.name}
+              ? `Responsible user’s default. For you: ${pendingAccount ? aiConnectionDisplayLabel(pendingAccount) : "Not connected"}. Other users use their own default.`
+              : pendingAccount && aiConnectionDisplayLabel(pendingAccount)}
           </p>}
           {pendingAdoption?.mode !== "router" && <p className="text-xs text-muted-foreground">
             After adoption, missing credentials block execution. Previous

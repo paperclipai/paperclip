@@ -84,7 +84,10 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     name: "GitHub Copilot",
     methods: { api_key: { adapters: ["copilot_runtime"], envKey: "COPILOT_GITHUB_TOKEN" } },
   },
-  google: { name: "Google", methods: { api_key: { adapters: ["gemini_local"], envKey: "GEMINI_API_KEY" } } },
+  google: { name: "Google", methods: {
+    api_key: { adapters: ["gemini_local", "pi_local", "antigravity_runtime"], envKey: "GEMINI_API_KEY" },
+    subscription: { adapters: ["antigravity_runtime"], envKey: "GEMINI_HOME" },
+  } },
   anthropic: {
     name: "Claude",
     methods: {
@@ -92,20 +95,20 @@ export const AI_CONNECTION_CAPABILITIES: Record<
         adapters: ["claude_local"],
         envKey: "CLAUDE_CODE_OAUTH_TOKEN",
       },
-      api_key: { adapters: ["claude_local"], envKey: "ANTHROPIC_API_KEY" },
+      api_key: { adapters: ["claude_local", "pi_local"], envKey: "ANTHROPIC_API_KEY" },
     },
   },
   openai: {
     name: "OpenAI",
     methods: {
       subscription: { adapters: ["codex_local"], envKey: "CODEX_HOME" },
-      api_key: { adapters: ["codex_local"], envKey: "OPENAI_API_KEY" },
+      api_key: { adapters: ["codex_local", "pi_local"], envKey: "OPENAI_API_KEY" },
     },
   },
   openrouter: {
     name: "OpenRouter",
     methods: {
-      api_key: { adapters: ["opencode_local"], envKey: "OPENROUTER_API_KEY" },
+      api_key: { adapters: ["opencode_local", "pi_local"], envKey: "OPENROUTER_API_KEY" },
     },
   },
   xai: {
@@ -124,9 +127,17 @@ export function isAiConnectionCompatible(
   acpxAgent?: unknown,
 ): boolean {
   adapterType = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
+  // Antigravity uses its own Google runtime sign-in or a Gemini API key.
+  // Tool OAuth and API-compatible endpoints cannot authenticate this harness.
+  if (adapterType === "antigravity_runtime") return requirement.provider === "google"
+    && (requirement.method === "api_key" || requirement.method === "subscription")
+    && !("routing" in requirement && requirement.routing);
   if ("routing" in requirement && requirement.routing) return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, adapterType);
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
+  if (adapterType === "pi_local") return (requirement.method === "api_key" || ("mode" in requirement && requirement.mode === "responsible_user"))
+    && ["openrouter", "openai", "anthropic", "google"].includes(requirement.provider)
+    && typeof model === "string" && model.startsWith(`${requirement.provider}/`);
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
     return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime"].includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
@@ -226,7 +237,7 @@ export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
 
 export const aiConnectionLoginIntentSchema = z
   .object({
-    provider: z.enum(["anthropic", "openai", "xai"]),
+    provider: z.enum(["anthropic", "openai", "xai", "google"]),
     method: z.literal("subscription"),
     name: z.string().trim().min(1).max(160),
     ownership: z.enum(["personal", "shared"]),
@@ -248,6 +259,7 @@ export interface LocalAiLoginStatus {
   authorizationUrl?: string;
   code?: string;
   error?: string;
+  accountLabel?: string;
 }
 export interface LocalAiLoginAttempt {
   sessionId: string;
@@ -260,6 +272,6 @@ export interface LocalAiLoginAttempt {
 export function aiSubscriptionNeedsIsolatedLogin(config: Record<string, unknown> | undefined): boolean {
   const metadata = aiConnectionMetadataSchema.safeParse(config?.ai);
   return metadata.success && metadata.data.method === "subscription" &&
-    (metadata.data.provider === "openai" || metadata.data.provider === "xai") &&
+    (["openai", "xai", "google"].includes(metadata.data.provider)) &&
     config?.aiIsolatedSubscription !== true;
 }

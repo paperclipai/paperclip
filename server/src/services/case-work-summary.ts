@@ -1,10 +1,10 @@
 import { and, eq, getTableColumns, inArray } from "drizzle-orm";
-import { agents, caseHandoffs, issues, type Db } from "@paperclipai/db";
+import { agents, caseHandoffs, issues, workflows, type Db } from "@paperclipai/db";
 import { authorizationService, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 
 type CaseSummaryDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
-type CaseWorkIdentity = { id: string; companyId: string; workIssueId: string | null };
-const { actorContext: _actorContext, ...publicHandoffColumns } = getTableColumns(caseHandoffs);
+type CaseWorkIdentity = { id: string; companyId: string; workIssueId: string | null; workflowId?: string | null };
+const { actorContext: _actorContext, workflowPrompt: _prompt, baseWorkflowDocumentRevisionId: _base, ...publicHandoffColumns } = getTableColumns(caseHandoffs);
 
 /** Enrich an already-authorized page in batches; never load one task per case. */
 export async function enrichCaseWork<T extends CaseWorkIdentity>(
@@ -15,6 +15,9 @@ export async function enrichCaseWork<T extends CaseWorkIdentity>(
 ) {
   if (!rows.length) return [];
   const issueIds = [...new Set(rows.flatMap(row => row.workIssueId ? [row.workIssueId] : []))];
+  const workflowIds = [...new Set(rows.flatMap(row => row.workflowId ? [row.workflowId] : []))];
+  const workflowById = new Map((workflowIds.length ? await db.select({ id: workflows.id, name: workflows.name }).from(workflows)
+    .where(and(eq(workflows.companyId, companyId), inArray(workflows.id, workflowIds))) : []).map(row => [row.id, row]));
   const readCondition = await issueReadSqlCondition(db, actor);
   const [workRows, pendingRows] = await Promise.all([
     issueIds.length ? db.select({
@@ -52,6 +55,7 @@ export async function enrichCaseWork<T extends CaseWorkIdentity>(
     const pending = pendingByCase.get(row.id);
     return {
       ...row,
+      workflow: row.workflowId ? workflowById.get(row.workflowId) ?? null : null,
       workIssue: work ? { ...work, assigneeAgentName: work.assigneeAgentId ? names.get(work.assigneeAgentId) ?? null : null } : null,
       pendingHandoff: pending ? { ...pending, fromAgentName: pending.fromAgentId ? names.get(pending.fromAgentId) ?? null : null,
         toAgentName: pending.toAgentId ? names.get(pending.toAgentId) ?? null : null } : null,

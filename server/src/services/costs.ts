@@ -5,7 +5,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, agentRuntimeState, authUsers, companies, companyMemberships, costEvents, heartbeatRuns, issues, projects, goals, aiSubscriptions } from "@paperclipai/db";
 import { notFound, unprocessable, conflict } from "../errors.js";
-import { budgetService, budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
+import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { logActivity, type LogActivityInput, type ActivityPublication } from "./activity-log.js";
 import { withAccountingReadSnapshot, withAccountingTransaction } from "./accounting-transaction.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -82,7 +82,8 @@ export async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
-export async function createCostEventInTransaction(db: Db, companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId" | "receiptHash" | "costCents"> & { costCents: MoneyInput }, publications: ActivityPublication[] = [], actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId">) {
+export async function createCostEventInTransaction(db: Db, companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId" | "receiptHash" | "costCents"> & { costCents: MoneyInput }, publications: ActivityPublication[] = [], actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId">,
+  options: { deferBudgetEvaluation?: boolean } = {}) {
   const parsed = ((data.usageKind === "decision" || data.usageKind === "fast_response" || data.usageKind === "prompt_injection") ? createServiceCostEventSchema : createCostEventSchema).safeParse({ ...data, occurredAt: data.occurredAt.toISOString() });
   if (!parsed.success) throw unprocessable("Invalid cost receipt", parsed.error.flatten());
   const values = {
@@ -152,7 +153,9 @@ export async function createCostEventInTransaction(db: Db, companyId: string, da
       updatedAt: new Date(),
     }).where(and(eq(agentRuntimeState.agentId, event.agentId), eq(agentRuntimeState.companyId, companyId)));
   }
-  await budgetServiceInTransaction(db, publications).evaluateCostEvent(event);
+  // A multi-model run receipt inserts all parts before one scope evaluation.
+  // The owning accounting transaction must perform that deferred evaluation.
+  if (!options.deferBudgetEvaluation) await budgetServiceInTransaction(db, publications).evaluateCostEvent(event);
   await logActivity(db, {
     companyId, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? "cost_accounting", agentId: actor?.agentId ?? event.agentId,
     ...((event.usageKind === "decision" || event.usageKind === "fast_response" || event.usageKind === "prompt_injection") ? { responsibleUserIdOverride: event.responsibleUserId } : {}),
@@ -162,13 +165,11 @@ export async function createCostEventInTransaction(db: Db, companyId: string, da
   return { ...event, costCentsExact: values.costCents };
 }
 
-export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
-  const budgets = budgetService(db, budgetHooks);
+export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId" | "receiptHash" | "costCents"> & { costCents: MoneyInput }, actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId">) => {
       if (data.idempotencyKey?.startsWith("heartbeat:")) throw unprocessable("The heartbeat idempotency namespace is reserved for run receipts");
       const event = await withAccountingTransaction(db, companyId, (tx, publications) => createCostEventInTransaction(tx, companyId, data, publications, actor));
-      await budgets.deliverPendingEnforcement(companyId);
       return event;
     },
 

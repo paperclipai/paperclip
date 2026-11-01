@@ -68,7 +68,7 @@ export function ConfigureBuiltInAgentModal({
   const { definition } = state;
 
   const [adapterType, setAdapterType] = useState<string>(
-    () => state.agent && ["codex_local", "claude_local"].includes(agentHarnessType(state.agent.adapterType, state.agent.adapterConfig)) ? agentHarnessType(state.agent.adapterType, state.agent.adapterConfig) : state.agent?.adapterType ?? defaultAdapterType(state),
+    () => state.agent && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agentHarnessType(state.agent.adapterType, state.agent.adapterConfig)) ? agentHarnessType(state.agent.adapterType, state.agent.adapterConfig) : state.agent?.adapterType ?? defaultAdapterType(state),
   );
   const [runner, setRunner] = useState<AgentRunnerChoice | undefined>();
   const environmentId = state.agent?.defaultEnvironmentId ?? null;
@@ -143,7 +143,7 @@ export function ConfigureBuiltInAgentModal({
         : { adapterType, adapterConfig };
       const result = await builtInAgentsApi.provision(companyId, definition.key, {
         ...adapterInput,
-        ...(["codex_local", "claude_local"].includes(adapterType) && runner !== undefined ? { runner } : {}),
+        ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && runner !== undefined ? { runner } : {}),
         ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
       });
       return result;
@@ -189,7 +189,7 @@ export function ConfigureBuiltInAgentModal({
             />
           </Field>
 
-          {["codex_local", "claude_local"].includes(adapterType) && <details className="space-y-3">
+          {["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
             <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
             <AgentRunnerSelect value={runner ?? (state.agent ? agentRunner(state.agent.adapterType) : "auto")}
               pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}

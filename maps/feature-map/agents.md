@@ -31,9 +31,100 @@ Agent access: [companion](../agent-access-map/agents.md).
 
 Use New agent from the roster or `/agents/new`.
 
+Submitting the name creates an inactive record before adapter selection or account setup.
+A name-only draft returns to adapter selection when reopened.
+Save & exit keeps its configuration; Finish setup on the agent returns to the
+same record. Open an unfinished agent from the roster to reach its header.
+The header shows Finish setup instead of Run or Resume, including during computer
+preparation and verification. Terminating agents cannot reopen setup. Final
+submission requests approval when required, then follows the existing preparation
+and verification lifecycle.
+The confirmation shows **Finishing agent setup** until the foreground detail
+query observes actual readiness. **Assign a Task** then hands that current
+record to the composer, so its status does not come from an older paused draft.
+Manual/import pauses and required hire approval remain blocking states.
+
+When the native Runner adapter is available, **Google Antigravity** appears in the ordinary
+adapter picker. Before runtime acceptance, its card says **Not available yet**.
+Selecting it opens Google account setup and model configuration without saving
+an unqualified native execution configuration. The existing inactive draft stays
+held; Test and Finish remain unavailable, and the page says model and connection settings are not
+saved. The selected adapter is retained with the draft: **Back to agents**, reload,
+and **Finish setup** return to the same Google setup. Pending roster rows identify
+Google Antigravity without implying a configured connection or runnable model.
+**Change adapter** returns to the picker with the saved choice selected and allows
+switching that same held draft to another supported adapter.
+Verify discovery, Google-specific setup, draft preservation and the
+disabled actions separately from a successful Antigravity hire or task run.
+
+On an isolated host with a current operator candidate authorization, company-scoped
+adapter inventory can expose **Candidate** with one exact model. That company can
+connect, save, reopen, Test and Finish setup while the global release stays pending.
+Test verifies native account/model admission and cleanup without a model turn.
+Other companies, remote targets, expired authority and other models stay blocked.
+Verify this scoped path separately from production qualification and real task acceptance.
+
+The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+protects the ordinary roster/picker path, saved personal Google subscription,
+native Test, actual ready handoff, Instructions-only file marker, task and
+same-task follow-up. Its fixed driver starts from the dashboard and creates the
+new agent through visible controls. The current runnable cell attaches to a
+self-hosted target with the admitted local macOS ARM64 candidate and exact low
+model. Saved-account reuse does not qualify fresh OAuth, other platforms or
+global provider release; registration and synthetic controls are separate from
+the retained exploratory and fresh fixed-driver results.
+
+Agent-owned plugin environments prepare the saved draft in the background when
+their driver declares `requiresAgent`. The draft waits in `verifying` with its
+setup hold until hiring finishes. Changing environments keeps the selected
+account and Configure step, saves the selection, and invalidates its test.
+Preparation and failed-save retries remain visible without reconnecting.
+Companies requiring hire approval save the account with pending verification;
+resource allocation waits for approval.
+
 ### `agent-configuration`
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
+
+Open **Advanced** at `/agents/:agentId/advanced` for the compact agent
+[YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
+runtime setting, and adapter key; save, reload, and check the ordinary settings
+and Revisions. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
+and a concurrent settings edit. Errors must retain the draft; stale saves return
+a conflict. Unchanged secret markers must preserve their stored values. Navigating
+away with a draft must show the existing unsaved-change guard. **Reload saved**
+discards the draft. Also edit instruction text, skill pins, direct tool installs,
+channel settings/resources, permissions/trust/project boundaries, secret operations,
+and API key operations. Verify each result in its owning tab. Revision restore is
+an isolated save. Default YAML excludes catalogs, inherited definitions, history, and instruction
+contents. Verify profile-key references, named instruction-file patches (`null`
+deletes one file), omitted-setting preservation, and explicit clears. Adding
+unrelated company profiles must not grow this agent’s YAML. Inherited access and
+history remain in their owning tabs. An
+interrupted multi-resource save must report partial progress, preserve returned
+one-time keys, and require reload before another save. Domain APIs retain their
+existing authorization; a multi-resource save is not atomic.
+
+For a low-trust agent, open **Permissions / Trust → Allowed projects**. An operator
+with agent-management permission can select additional projects and explicitly
+save them. Existing projects and other containment restrictions remain intact.
+Cancel discards the draft; a failed save retains it. Reload to verify persistence.
+This does not start or retry a task.
+
+In `/agents/all`, select roster checkboxes and choose **Edit connection & model**.
+A mixed selection offers one action per harness. Each field is opt-in. The editor
+previews each changed value and excludes agents already at the target value.
+Models must be compatible with every selected connection. Failed writes show
+per-agent errors; Retry touches only the remaining agents. Connection pools and
+externally managed agents are not editable through this shortcut.
+
+Verify connection-only, model-only, both fields, mixed-harness selection, hidden
+selections, no-op counts, incompatible models, partial failure and retry. Reload
+the roster and compare stored settings, including unrelated heartbeat and adapter
+fields. A concurrent configuration edit must return a conflict. Shared runtime
+validation, access checks, revisions and audit logging still apply. Live runs
+retain their existing settings; model changes can reset saved sessions. Connection
+adoption can require an explicit reset of existing sessions.
 
 ### `organization`
 
@@ -59,6 +150,17 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 ### `hire-agent`
 
 Automated: [new agent page](../../ui/src/pages/NewAgent.test.tsx) and [configuration form](../../ui/src/components/AgentConfigForm.render.test.tsx) cover mocked UI behavior.
+
+For an agent-owned plugin environment, verify preparation before connecting,
+same-agent probes, account preservation after an environment change, failed
+selection-save retry, and switching back while the computer stops. Confirm the
+setup hold still blocks ordinary work and API key creation before finishing.
+Start through the name/adapter dialog with a managed-only or forced Kubernetes
+policy and a draft that inherits its environment. Once preparation completes,
+confirm the auth choices, Advanced gateway, and saved subscription remain usable.
+The [setup lifecycle tests](../../server/src/modules/agent-lifecycle/__tests__/setup.test.ts)
+exercise durable transitions with synthetic plugin resources; they do not prove
+live VM provisioning.
 
 Manual: Hire an agent with a distinct name and role. Complete any required approval, reload the roster, and open its configuration. Confirm manager, adapter, and model persisted; run a small task to prove execution readiness.
 
@@ -101,19 +203,68 @@ from the hiring picker; API fixture creation does not prove this UI journey.
 
 Automated: [instruction service](../../server/src/__tests__/agent-instructions-service.test.ts) and [instruction revisions](../../server/src/__tests__/agent-instruction-revisions.test.ts) cover file/revision contracts.
 
+The [AI account field regression](../../ui/src/components/ai-connections/AiConnectionField.test.tsx)
+checks duplicate provider names, account identity in choices and adoption confirmation,
+the exact selected grant, and disabled unavailable accounts with authorized metadata fixtures.
+Manually compare a personal API key and shared subscription with the same name in
+Harness / Runtime. Confirm their method, scope and available identity before saving.
+Reload the saved choice and verify the next eligible task uses it; labels alone
+do not establish credential validity or change account access.
+
 Manual: Save a harmless instruction edit, reload, and verify its revision and effect in the next eligible run. Pause and resume the disposable agent; confirm pause prevents new work and does not erase previous runs.
 
 For failed setup, use an unavailable model or invalid command on a disposable agent.
 Confirm the profile names the failed verification step and gives a relevant action.
-Check that it explains automatic retry and offers **Retry now**. Fix the configuration,
+Check that a failed configuration test explains that automatic verification is paused
+and offers **Retry now**. Repeated refreshes must not start another test. Timeouts
+and temporary test-environment failures still retry automatically. Fix the configuration,
 retry, and reload; the failure must disappear only after readiness commits.
 Provider output and credentials must not appear in the lifecycle message.
 
 An explicit runner change is a configuration change, with normal revisions and
-session invalidation. Incompatible settings must produce a field-specific error;
-selecting another runner must not silently discard them or change an active run's
+session invalidation. Obsolete Claude tuning options (including maxTurnsPerRun) are ignored with a field-specific warning;
+permission, network, filesystem and command incompatibilities still produce an error.
+Selecting another runner must not silently discard security settings or change an active run's
 recorded execution. Keep runner choice in Advanced and verify the next eligible
 run separately from historical transcripts.
+
+Existing legacy Claude, Codex, and Grok Build agents on qualified default environments, or
+probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Verify a company owner with `agents:configure` and no instance-admin role can qualify the saved computer and upgrade. A caller without configuration permission must be denied before a probe starts. Exercise that action with
+pending edits and an environment-variable draft. An unsaved change to a different
+effective computer must disable the action and explain that the computer change
+must be saved first; restoring the saved target must re-enable it. Reopen the page and compare the
+saved harness, model, account bindings, instructions, and run policy. Check a
+Grok upgrade with an unset or `grok-build` model: it must use `grok-4.7`.
+Compare effective search policy before and after, including the implicit disabled
+default and explicit enabled search. Verify task model and effort changes use the
+Grok catalog and reach execution while retaining the account and search policy. Check a
+saved `maxTurnsPerRun: 1000`: upgrade must warn and remove it. Test an initially
+unqualified Daytona Paperclip Computer: click must probe, record qualification,
+refresh availability, and only then save. A failed probe or changed selection must
+leave the agent on Legacy. Check a rejected permission setting, repair it, and retry. Verify a real task before
+and after migration, including its output, preserved history, and fresh session.
+The notice must stay absent for native agents, other harnesses, and unsupported
+targets. Discovery failure must not imply that an upgrade is available.
+Navigate to another agent while an upgrade is pending. Its result must stay with
+the original agent, without showing success on the new page or redirecting back.
+Focused coverage: [save receipt](../../ui/src/pages/AgentRunnerUpgrade.test.tsx)
+and [configuration form](../../ui/src/components/AgentConfigForm.render.test.tsx).
+
+For an existing native agent on a Daytona snapshot or immutable sandbox image,
+use **Test** in its saved Harness or Runtime configuration after a managed
+computer update. This action qualifies the saved computer under the existing
+agent configuration permission before testing the runtime. A current proof must
+remain unchanged. A missing proof requires a real successful probe and verified
+cleanup. Failed qualification must stop the runtime test. Unsaved configuration
+or a different computer must not qualify a draft target. A company owner must not
+need instance-admin permission, and the generic environment probe must remain
+restricted. Existing runs retain their recorded allocation and snapshot binding.
+
+Storybook: [Runner upgrade](../../ui/storybook/stories/agents/codex-runner/upgrade.stories.tsx)
+mounts the production page and shell with mutable HTTP fixtures for both harnesses,
+pending, failure/retry, incompatible settings, repair, native/unsupported states,
+and mobile/light presentation. Fixture success does not establish real migration
+or provider execution.
 
 ### `organization`
 

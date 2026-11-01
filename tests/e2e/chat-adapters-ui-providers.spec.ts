@@ -180,6 +180,7 @@ test.describe.serial("native chat adapter UI", () => {
     await expect(page.getByLabel("App configuration access token", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Signing Secret", { exact: true })).toHaveCount(0);
     await page.reload();
+    await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible();
     expect(mock.slackCreations).toBe(1); expect(mock.slackInstallations).toBe(1);
     mock.setWebhookVerified();
     await expect(page.getByRole("heading", { name: "Success", exact: true })).toBeVisible();
