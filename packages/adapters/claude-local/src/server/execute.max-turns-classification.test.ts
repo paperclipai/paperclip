@@ -102,4 +102,21 @@ describe("claude_local failure classification precedence", () => {
 
     expect(result.errorCode).toBe("model_not_found");
   });
+
+  it("classifies a max-budget stop as terminal and drops the session", async () => {
+    mockExecutionResult(
+      buildProcResult(
+        { is_error: true, subtype: "error_max_budget_usd", total_cost_usd: 8.02 },
+        "tool output: 429 Too Many Requests, rate limit reached",
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_budget_exhausted");
+    expect(result.errorFamily).toBeNull();
+    expect(result.retryNotBefore).toBeNull();
+    expect(result.clearSession).toBe(true);
+    expect((result.resultJson as Record<string, unknown>).stopReason).toBe("max_budget_exhausted");
+  });
 });

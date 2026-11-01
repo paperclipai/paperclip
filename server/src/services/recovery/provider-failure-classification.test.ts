@@ -25,6 +25,13 @@ describe("classifyAdapterFailureForRecovery", () => {
     expect(classifyContinuationFailure(unknown as never).kind).toBe("transient_infra");
     expect(isConfigurationIncompleteFailedRun(unknown)).toBe(false);
   });
+  it("does not automatically replay a run that hit its max-budget cap", () => {
+    expect(classifyContinuationFailure({
+      errorCode: "max_budget_exhausted",
+      error: "Claude stopped at the max budget",
+      resultJson: { subtype: "error_max_budget_usd", stopReason: "max_budget_exhausted" },
+    } as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("retries a continuation whose host lost the controller lease before dispatch", () => {
     expect(classifyContinuationFailure({ errorCode: "controller_lease_lost", error: "Legacy controller lease lost", resultJson: null } as never))
       .toMatchObject({ kind: "transient_infra", maxAttempts: 3 });
