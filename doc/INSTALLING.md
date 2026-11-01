@@ -124,6 +124,29 @@ If `~/.local/bin` is not on `PATH`, the installer offers to update the relevant
 shell startup file when running interactively. Non-interactive installs print
 the exact `export PATH` command instead of editing shell files silently.
 
+### Choosing the shim location
+
+Set `PAPERCLIP_SHIM_PATH` to install the managed shim somewhere other than
+`~/.local/bin/paperclipai`:
+
+```sh
+PAPERCLIP_SHIM_PATH=/opt/paperclip/bin/paperclipai npx paperclipai@latest install
+```
+
+This is the supported escape hatch for hosts where `HOME` cannot host
+`~/.local/bin` — a `HOME` that is a symlink, lives on a filesystem the install
+refuses as unsafe, or is shared with another account. The variable selects the
+shim for the whole managed install: `install`, `update`, `uninstall`, and
+`paperclipai doctor` all read it, and `paperclipai service install` writes the
+service definition with the same path, so the service and the installer cannot
+disagree about which executable runs.
+
+Missing directories along that path are created for you. Every directory that
+already exists must be a real directory rather than a symbolic link, and, when
+it is inside your home directory, must be owned by you. Paperclip still refuses
+a symlinked or multiply linked shim, and still refuses to replace a shim it did
+not write.
+
 ## Install Sources
 
 Install the current stable release:
