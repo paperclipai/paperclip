@@ -224,7 +224,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       source: "on_demand", requestedByActorType: "user", requestedByActorId: "board-user",
       issueStateGuard: expect.objectContaining({ statuses: ["blocked"], assigneeAgentId: f.agent.id }),
     }));
-    expect(await readIssue(f.issue.id)).toMatchObject({ status: "blocked", monitorNextCheckAt: null, monitorAttemptCount: 1 });
+    // The human check consumes the arm but not an attempt: `maxAttempts` is the
+    // automatic schedule's budget, so board clicks cannot exhaust it.
+    expect(await readIssue(f.issue.id)).toMatchObject({ status: "blocked", monitorNextCheckAt: null, monitorAttemptCount: 0 });
   });
 
   it.each(["agent", "system"] as const)("does not let a %s check a blocked task", async (actorType) => {

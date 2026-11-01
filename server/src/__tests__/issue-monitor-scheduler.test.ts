@@ -574,7 +574,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     expect(issue.monitorNextCheckAt).toBeNull();
     expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(triggeredAt.toISOString());
-    expect(issue.monitorAttemptCount).toBe(1);
+    // A board check records that it ran, but does not spend an attempt: the
+    // budget belongs to the automatic schedule. See the manual-check test below.
+    expect(issue.monitorAttemptCount).toBe(0);
     expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null).toBeNull();
 
     const wakeup = await db
@@ -702,6 +704,76 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).toContain("issue.monitor_exhausted");
     expect(activity).toContain("issue.monitor_recovery_wake_queued");
     expect(activity).not.toContain("issue.monitor_triggered");
+  });
+
+  it("does not spend the attempt budget on a board check and marks the wake manual", async () => {
+    // A human pressing "Check now" used to increment the same counter the
+    // scheduler does, so enough board clicks exhausted `maxAttempts` and
+    // silently cleared the issue's only live wake path. The budget is sized
+    // against the external service's cadence, not against human curiosity.
+    const { issueId, agentId } = await seedFixture({
+      monitorAttemptCount: 1,
+      monitor: { maxAttempts: 1, recoveryPolicy: "wake_owner" },
+    });
+    const heartbeat = heartbeatService(db);
+    // Hours before the 12:30Z arm: "check now" deliberately ignores the schedule.
+    const checkedAt = new Date("2026-04-11T06:21:00.000Z");
+
+    const result = await heartbeat.triggerIssueMonitor(issueId, {
+      now: checkedAt,
+      actorType: "user",
+      actorId: "local-board",
+    });
+
+    expect(result.outcome).toBe("triggered");
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorAttemptCount).toBe(1);
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "triggered",
+      attemptCount: 1,
+      clearReason: null,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.payload).toMatchObject({ source: "manual" });
+
+    await waitForHeartbeatIdle();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wakeup!.runId!));
+    expect(run?.contextSnapshot).toMatchObject({ manualTrigger: true });
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_triggered");
+    expect(activity).not.toContain("issue.monitor_exhausted");
+  });
+
+  it("still spends the attempt budget on a scheduled tick", async () => {
+    const { issueId, agentId } = await seedFixture({
+      monitorAttemptCount: 1,
+      monitor: { maxAttempts: 2, recoveryPolicy: "wake_owner" },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorAttemptCount).toBe(2);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.payload).toMatchObject({ source: "scheduled" });
   });
 
   it("clears timed-out monitors and creates a visible recovery issue when requested", async () => {
