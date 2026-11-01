@@ -1586,7 +1586,7 @@ async function startServerWithDatabaseTeardown(
         }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
-        throw err;
+        // Periodic recovery remains the degraded backstop; repair must not gate boot.
       });
       trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
       await startupHeartbeatRecovery;

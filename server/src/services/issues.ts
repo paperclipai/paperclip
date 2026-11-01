@@ -6620,6 +6620,51 @@ export async function readIssueCommentRunLogText(run: {
   return content;
 }
 
+export async function reachableBlockingCandidates(
+  dbOrTx: DbReader,
+  companyId: string,
+  issueId: string,
+  blockerIssueIds: string[],
+): Promise<Set<string>> {
+  if (blockerIssueIds.length === 0) return new Set();
+  const rows = await dbOrTx
+    .select({
+      blockerIssueId: issueRelations.issueId,
+      blockedIssueId: issueRelations.relatedIssueId,
+    })
+    .from(issueRelations)
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+      ),
+    );
+
+  const adjacency = new Map<string, string[]>();
+  for (const row of rows) {
+    const list = adjacency.get(row.blockerIssueId) ?? [];
+    list.push(row.blockedIssueId);
+    adjacency.set(row.blockerIssueId, list);
+  }
+
+  const reachable = new Set<string>();
+  for (const blockerIssueId of blockerIssueIds) {
+    const queue = [...(adjacency.get(issueId) ?? [])];
+    const visited = new Set<string>([issueId]);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === blockerIssueId) {
+        reachable.add(blockerIssueId);
+        break;
+      }
+      if (visited.has(current)) continue;
+      visited.add(current);
+      queue.push(...(adjacency.get(current) ?? []));
+    }
+  }
+  return reachable;
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -7387,40 +7432,8 @@ export function issueService(db: Db) {
     blockerIssueIds: string[],
     dbOrTx: DbReader = db,
   ) {
-    if (blockerIssueIds.length === 0) return;
-
-    const rows = await dbOrTx
-      .select({
-        blockerIssueId: issueRelations.issueId,
-        blockedIssueId: issueRelations.relatedIssueId,
-      })
-      .from(issueRelations)
-      .where(
-        and(
-          eq(issueRelations.companyId, companyId),
-          eq(issueRelations.type, "blocks"),
-        ),
-      );
-
-    const adjacency = new Map<string, string[]>();
-    for (const row of rows) {
-      const list = adjacency.get(row.blockerIssueId) ?? [];
-      list.push(row.blockedIssueId);
-      adjacency.set(row.blockerIssueId, list);
-    }
-
-    for (const blockerIssueId of blockerIssueIds) {
-      const queue = [...(adjacency.get(issueId) ?? [])];
-      const visited = new Set<string>([issueId]);
-      while (queue.length > 0) {
-        const current = queue.shift()!;
-        if (current === blockerIssueId) {
-          throw unprocessable("Blocking relations cannot contain cycles");
-        }
-        if (visited.has(current)) continue;
-        visited.add(current);
-        queue.push(...(adjacency.get(current) ?? []));
-      }
+    if ((await reachableBlockingCandidates(dbOrTx, companyId, issueId, blockerIssueIds)).size > 0) {
+      throw unprocessable("Blocking relations cannot contain cycles");
     }
   }
 

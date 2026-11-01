@@ -29,6 +29,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { logger } from "../middleware/logger.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbeat.js";
@@ -222,6 +223,114 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     return { companyId, managerId, coderId, sourceIssueId, prefix, sourceIssue: sourceIssue! };
   }
+
+  async function seedParentBlockingHealthyChild() {
+    const fixture = await seedCompany();
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId, companyId: fixture.companyId, parentId: fixture.sourceIssueId,
+      title: "Review parent implementation", status: "blocked",
+      assigneeAgentId: fixture.coderId, issueNumber: 2, identifier: `${fixture.prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId: fixture.companyId, issueId: fixture.sourceIssueId,
+      relatedIssueId: childId, type: "blocks",
+    });
+    return { ...fixture, childId };
+  }
+
+  async function expectOnlyParentBlocksChild(companyId: string, sourceIssueId: string, childId: string) {
+    expect(await db.select({ issueId: issueRelations.issueId, relatedIssueId: issueRelations.relatedIssueId })
+      .from(issueRelations).where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.type, "blocks"))))
+      .toEqual([{ issueId: sourceIssueId, relatedIssueId: childId }]);
+  }
+
+  it("preserves a board wait when its healthy child is blocked by the parent", async () => {
+    const { companyId, sourceIssueId, childId } = await seedParentBlockingHealthyChild();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "board",
+      cause: "deliberate_wait_without_target", fingerprint: "cycle-regression",
+      nextAction: "Wait for board disposition", wakePolicy: { type: "board_escalation" },
+    });
+    await recoveryService(db, { enqueueWakeup: vi.fn(async () => null) }).reconcileStrandedAssignedIssues();
+    await expectOnlyParentBlocksChild(companyId, sourceIssueId, childId);
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id, status: "active" });
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0].status).toBe("in_progress");
+  });
+
+  it("isolates a failed active action and processes the next action", async () => {
+    const fixture = await seedCompany();
+    const secondId = randomUUID();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.sourceIssueId));
+    await db.insert(issues).values({ id: secondId, companyId: fixture.companyId, title: "Second terminal source", status: "done" });
+    for (const sourceIssueId of [fixture.sourceIssueId, secondId]) {
+      await issueRecoveryActionService(db).upsertSourceScoped({
+        companyId: fixture.companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "board",
+        cause: "deliberate_wait_without_target", fingerprint: `isolation:${sourceIssueId}`,
+        nextAction: "Reconcile terminal source", wakePolicy: { type: "board_escalation" },
+      });
+    }
+    const errorLog = vi.spyOn(logger, "error");
+    const resolutionLog = vi.spyOn(logger, "info");
+    const originalUpdate = db.update.bind(db);
+    let attempts = 0;
+    const update = vi.spyOn(db, "update").mockImplementation((table: any) => {
+      if (table === issueRecoveryActions && ++attempts === 1) throw new Error("poisoned recovery action");
+      return originalUpdate(table);
+    });
+    try {
+      const result = await recoveryService(db, { enqueueWakeup: vi.fn(async () => null) }).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ failed: 1 });
+      expect(attempts).toBe(2);
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, fixture.companyId));
+      expect(actions.filter(action => action.status === "resolved")).toHaveLength(1);
+      expect(actions.filter(action => action.status === "active")).toHaveLength(1);
+      expect(errorLog).toHaveBeenCalledWith(expect.objectContaining({
+        actionId: actions.find(action => action.status === "active")!.id,
+        error: "poisoned recovery action",
+      }), "recovery action reconciliation failed");
+      expect(resolutionLog).toHaveBeenCalledWith(expect.objectContaining({
+        actionId: actions.find(action => action.status === "resolved")!.id,
+        resolutionNote: "source_terminal",
+      }), "recovery action resolved");
+    } finally {
+      update.mockRestore();
+      errorLog.mockRestore();
+      resolutionLog.mockRestore();
+    }
+  });
+
+  it("does not turn continuation waiting on review into a cyclic dependency wait", async () => {
+    const { companyId, sourceIssueId, childId, coderId } = await seedParentBlockingHealthyChild();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId: coderId, invocationSource: "assignment", status: "cancelled",
+      errorCode: "issue_continuation_waiting_on_review", error: "Waiting for review",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      startedAt: new Date(Date.now() - 120000), finishedAt: new Date(Date.now() - 60000),
+      contextSnapshot: { issueId: sourceIssueId, retryReason: "issue_continuation_needed" },
+    });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn(async () => null) }).reconcileStrandedAssignedIssues();
+    expect(result.waitingOnReviewResolved).toBe(0);
+    await expectOnlyParentBlocksChild(companyId, sourceIssueId, childId);
+  });
+
+  it("restores a board action through a healthy child that does not depend on the parent", async () => {
+    const { companyId, sourceIssueId, childId, coderId } = await seedParentBlockingHealthyChild();
+    await db.delete(issueRelations).where(eq(issueRelations.companyId, companyId));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, childId));
+    await seedHeartbeatRun({ companyId, agentId: coderId, issueId: childId, runId: randomUUID() });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "board",
+      cause: "deliberate_wait_without_target", fingerprint: "safe-child-control",
+      nextAction: "Wait for review", wakePolicy: { type: "board_escalation" },
+    });
+    await recoveryService(db, { enqueueWakeup: vi.fn(async () => null) }).reconcileStrandedAssignedIssues();
+    expect(await db.select({ issueId: issueRelations.issueId, relatedIssueId: issueRelations.relatedIssueId })
+      .from(issueRelations).where(eq(issueRelations.companyId, companyId)))
+      .toEqual([{ issueId: childId, relatedIssueId: sourceIssueId }]);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0])
+      .toMatchObject({ status: "resolved", resolutionNote: "durable_path_restored:healthy_child" });
+  });
 
   async function seedHeartbeatRun(input: {
     companyId: string;

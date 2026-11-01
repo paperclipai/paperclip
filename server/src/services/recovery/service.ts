@@ -103,6 +103,7 @@ import {
 import {
   TERMINAL_HEARTBEAT_RUN_STATUSES,
   issueService,
+  reachableBlockingCandidates,
   executeIssuePostCommitActions,
   type IssuePostCommitAction,
 } from "../issues.js";
@@ -517,6 +518,8 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "low_trust_requires_sandbox_environment",
   "low_trust_runtime_services_denied",
 ]);
+
+const recoverySkippedCyclicBlockerCandidates = "recovery skipped cyclic blocker candidates";
 
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
@@ -2910,6 +2913,29 @@ export function recoveryService(
     return openChildren;
   }
 
+  async function safeRecoveryBlockers(
+    issue: typeof issues.$inferSelect,
+    existingBlockerIds: string[],
+    children: Array<{ id: string; identifier: string | null }>,
+  ) {
+    const candidates = [...new Set([
+      ...existingBlockerIds,
+      ...children.map((child) => child.id),
+    ])];
+    const cyclic = await reachableBlockingCandidates(db, issue.companyId, issue.id, candidates);
+    if (cyclic.size > 0) {
+      logger.warn(
+        { sourceIssueId: issue.id, identifier: issue.identifier, blockerIssueIds: [...cyclic] },
+        recoverySkippedCyclicBlockerCandidates,
+      );
+    }
+    return {
+      blockedByIssueIds: candidates.filter((id) => !cyclic.has(id)),
+      addedChildren: children.filter((child) =>
+        !existingBlockerIds.includes(child.id) && !cyclic.has(child.id)),
+    };
+  }
+
   async function resolveContinuationWaitingOnReview(
     issue: typeof issues.$inferSelect,
   ) {
@@ -2917,13 +2943,11 @@ export function recoveryService(
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
       openChildIssues(issue),
     ]);
-    const blockedByIssueIds = [
-      ...new Set([
-        ...existingBlockers.map((row) => row.id),
-        ...openChildren.map((row) => row.id),
-      ]),
-    ];
-    if (blockedByIssueIds.length === 0) return null;
+    const { blockedByIssueIds, addedChildren } = await safeRecoveryBlockers(
+      issue, existingBlockers.map((row) => row.id), openChildren,
+    );
+    // Existing dependencies alone do not establish a new recovery path.
+    if (addedChildren.length === 0) return null;
 
     const updated = await issuesSvc.update(issue.id, {
       status: "blocked",
@@ -2932,8 +2956,8 @@ export function recoveryService(
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([
-      ...openChildren,
-      ...existingBlockers,
+      ...addedChildren,
+      ...existingBlockers.filter((row) => blockedByIssueIds.includes(row.id)),
     ]);
     await issuesSvc.addComment(
       issue.id,
@@ -3410,137 +3434,151 @@ export function recoveryService(
 
     const result = {
       requeued: 0,
+      failed: 0,
       escalated: 0,
       resolved: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
     for (const { action, issue } of rows) {
-      const wakePolicy = parseObject(action.wakePolicy);
-      const wakePolicyType = readNonEmptyString(wakePolicy.type);
-      if (
-        wakePolicyType !== "bounded_recovery_owner" &&
-        wakePolicyType !== "bounded_owner_disposition_repair" &&
-        action.ownerType !== "board"
-      ) {
-        continue;
-      }
-
-      if (issue.status === "done" || issue.status === "cancelled") {
-        const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-          companyId: action.companyId,
-          sourceIssueId: action.sourceIssueId,
-          actionId: action.id,
-          status: "resolved",
-          outcome: "restored",
-          resolutionNote: "source_terminal",
-        });
-        if (resolved) {
-          result.resolved += 1;
-          result.issueIds.push(issue.id);
-        }
-        continue;
-      }
-
-      // A queued comment or healthy child cannot establish what the stopped
-      // provider already did. Only execution reconciliation can clear this hold.
-      if (requiresExecutionReconciliation(action.cause)
-        || isNativeWorkspaceExportRepairCause(action.cause)
-        || action.cause === "native_workspace_sync_out_unsafe_archive") {
-        // A queued wake or healthy child does not export this accepted result.
-        // Only its native finalizer or an explicit board disposition can settle it.
-        result.skipped += 1;
-        continue;
-      }
-
-      const [sourceState, healthyChildren, hasNewSourcePath] =
-        await Promise.all([
-          collectDispositionRepairSourceState(db, { issue }),
-          healthyOpenChildIssues(issue),
-          sourceHasNewPathOutsideRecoveryAction(action),
-        ]);
-      const durablePathRestored =
-        action.ownerType !== "board" && sourceState.hasDurableWaitingPath;
-      if (
-        durablePathRestored ||
-        healthyChildren.length > 0 ||
-        hasNewSourcePath
-      ) {
-        if (healthyChildren.length > 0 && !sourceState.hasDurableWaitingPath) {
-          const blockerIds = await existingUnresolvedBlockerIssueIds(
-            issue.companyId,
-            issue.id,
-          );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
-        }
-        const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-          companyId: action.companyId,
-          sourceIssueId: action.sourceIssueId,
-          actionId: action.id,
-          status: "resolved",
-          outcome: "restored",
-          resolutionNote: durablePathRestored
-            ? `durable_path_restored:${sourceState.durablePathReason ?? "unknown"}`
-            : healthyChildren.length > 0
-              ? "durable_path_restored:healthy_child"
-              : "new_source_execution_path",
-        });
-        if (resolved) {
-          result.resolved += 1;
-          result.issueIds.push(issue.id);
-        }
-        continue;
-      }
-
-      if (wakePolicyType === "bounded_owner_disposition_repair") {
+      try {
+        const wakePolicy = parseObject(action.wakePolicy);
+        const wakePolicyType = readNonEmptyString(wakePolicy.type);
         if (
-          await isAutomaticRecoverySuppressedByPauseHold(
-            db,
-            issue.companyId,
-            issue.id,
-            treeControlSvc,
-          )
+          wakePolicyType !== "bounded_recovery_owner" &&
+          wakePolicyType !== "bounded_owner_disposition_repair" &&
+          action.ownerType !== "board"
         ) {
+          continue;
+        }
+
+        if (issue.status === "done" || issue.status === "cancelled") {
+          const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+            companyId: action.companyId,
+            sourceIssueId: action.sourceIssueId,
+            actionId: action.id,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: "source_terminal",
+          });
+          if (resolved) {
+            logger.info(
+              { actionId: action.id, sourceIssueId: issue.id, identifier: issue.identifier,
+                resolutionNote: resolved.resolutionNote },
+              "recovery action resolved",
+            );
+            result.resolved += 1;
+            result.issueIds.push(issue.id);
+          }
+          continue;
+        }
+
+        // A queued comment or healthy child cannot establish what the stopped
+        // provider already did. Only execution reconciliation can clear this hold.
+        if (requiresExecutionReconciliation(action.cause)
+          || isNativeWorkspaceExportRepairCause(action.cause)
+          || action.cause === "native_workspace_sync_out_unsafe_archive") {
+          // A queued wake or healthy child does not export this accepted result.
+          // Only its native finalizer or an explicit board disposition can settle it.
           result.skipped += 1;
           continue;
         }
 
-        const latestRun = await latestRecoveryActionRun(action);
-        const persistedAttempt = Math.max(
-          action.attemptCount,
-          Math.max(
-            0,
-            Math.floor(asNumber(wakePolicy.attempt, action.attemptCount)),
-          ),
+        const [sourceState, healthyChildren, hasNewSourcePath] =
+          await Promise.all([
+            collectDispositionRepairSourceState(db, { issue }),
+            healthyOpenChildIssues(issue),
+            sourceHasNewPathOutsideRecoveryAction(action),
+          ]);
+        const blockerIds = healthyChildren.length > 0
+          ? await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id)
+          : [];
+        const { blockedByIssueIds, addedChildren } = await safeRecoveryBlockers(
+          issue, blockerIds, healthyChildren,
         );
-        const outcome = await reconcileDispositionRepair(issue, latestRun, {
-          historicalAttemptCount: persistedAttempt,
-        });
-        if (outcome === "queued") {
-          result.requeued += 1;
-          result.issueIds.push(issue.id);
-        } else if (outcome === "escalated") {
-          result.escalated += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
+        const durablePathRestored =
+          action.ownerType !== "board" && sourceState.hasDurableWaitingPath;
+        if (durablePathRestored || addedChildren.length > 0 || hasNewSourcePath) {
+          if (addedChildren.length > 0 && !sourceState.hasDurableWaitingPath) {
+            await issuesSvc.update(issue.id, {
+              status: "blocked",
+              blockedByIssueIds,
+            });
+          }
+          const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+            companyId: action.companyId,
+            sourceIssueId: action.sourceIssueId,
+            actionId: action.id,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: durablePathRestored
+              ? `durable_path_restored:${sourceState.durablePathReason ?? "unknown"}`
+              : addedChildren.length > 0
+                ? "durable_path_restored:healthy_child"
+                : "new_source_execution_path",
+          });
+          if (resolved) {
+            logger.info(
+              { actionId: action.id, sourceIssueId: issue.id, identifier: issue.identifier,
+                resolutionNote: resolved.resolutionNote },
+              "recovery action resolved",
+            );
+            result.resolved += 1;
+            result.issueIds.push(issue.id);
+          }
+          continue;
         }
+
+        if (wakePolicyType === "bounded_owner_disposition_repair") {
+          if (
+            await isAutomaticRecoverySuppressedByPauseHold(
+              db,
+              issue.companyId,
+              issue.id,
+              treeControlSvc,
+            )
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const latestRun = await latestRecoveryActionRun(action);
+          const persistedAttempt = Math.max(
+            action.attemptCount,
+            Math.max(
+              0,
+              Math.floor(asNumber(wakePolicy.attempt, action.attemptCount)),
+            ),
+          );
+          const outcome = await reconcileDispositionRepair(issue, latestRun, {
+            historicalAttemptCount: persistedAttempt,
+          });
+          if (outcome === "queued") {
+            result.requeued += 1;
+            result.issueIds.push(issue.id);
+          } else if (outcome === "escalated") {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (action.ownerType === "board") continue;
+
+        // Legacy takeover actions remain readable and resolvable, but recovery no
+        // longer schedules another agent-owned wake for them.
+        result.skipped += 1;
+      } catch (err) {
+        logger.error(
+          { actionId: action.id, sourceIssueId: action.sourceIssueId,
+            identifier: issue.identifier, error: err instanceof Error ? err.message : String(err) },
+          "recovery action reconciliation failed",
+        );
+        result.failed += 1;
         continue;
       }
-
-      if (action.ownerType === "board") continue;
-
-      // Legacy takeover actions remain readable and resolvable, but recovery no
-      // longer schedules another agent-owned wake for them.
-      result.skipped += 1;
     }
     return result;
   }
@@ -4349,6 +4387,7 @@ export function recoveryService(
       );
 
     const result = {
+      failed: 0,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -5525,6 +5564,7 @@ export function recoveryService(
     result.issueIds.push(...orphanBlockerRecovery.issueIds);
 
     const activeRecovery = await reconcileActiveRecoveryActions();
+    result.failed += activeRecovery.failed;
     result.continuationRequeued += activeRecovery.requeued;
     result.escalated += activeRecovery.escalated;
     result.skipped += activeRecovery.skipped;

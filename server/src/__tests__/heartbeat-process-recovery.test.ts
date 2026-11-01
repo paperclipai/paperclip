@@ -6576,7 +6576,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toBe(true);
   });
 
-  it("converts a continuation parked for review into a dependency wait on its existing blockers", async () => {
+  it("preserves existing blockers without rewriting a review wait when nothing new can be added", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
@@ -6626,21 +6626,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    expect(result.waitingOnReviewResolved).toBe(1);
+    expect(result.waitingOnReviewResolved).toBe(0);
     expect(result.escalated).toBe(0);
-    expect(result.issueIds).toEqual([issueId]);
+    expect(result.issueIds).not.toContain(issueId);
 
     const blocked = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(blocked?.status).toBe("blocked");
+    expect(blocked?.status).toBe("in_progress");
     expect(blocked?.assigneeAgentId).toBe(agentId);
 
-    // Only the still-open blocker is carried over; the resolved one is excluded.
+    // No dependency update is issued: both original relation rows remain.
     const blockers = await sourceBlockerIssueIds(companyId, issueId);
-    expect(blockers).toEqual([openBlockerId]);
+    expect(blockers.sort()).toEqual([openBlockerId, doneBlockerId].sort());
 
     const recoveryIssues = await db
       .select()
@@ -6657,17 +6657,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.authorType).toBe("system");
-    expect(comments[0]?.body).toContain("This task is waiting on");
-    expect(comments[0]?.body).toContain("continue automatically");
-    // The blocker's real identifier is linked — not the "another open issue" fallback.
-    expect(comments[0]?.body).toContain(`${issuePrefix}-20`);
-    expect(comments[0]?.body).not.toContain("another open issue");
-    expect(comments[0]?.body).not.toContain(`${issuePrefix}-21`);
-    expect(comments[0]?.body).not.toContain(
-      "issue_continuation_waiting_on_review",
-    );
+    expect(comments).toHaveLength(0);
   });
 
   it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {

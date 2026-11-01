@@ -41,6 +41,7 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  reachableBlockingCandidates,
   readIssueCommentRunLogText,
 } from "../services/issues.ts";
 import { getRunLogStore } from "../services/run-log-store.js";
@@ -4500,6 +4501,28 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         }),
       ],
     });
+  });
+
+  it("finds only direct and transitive cycle-forming blocker candidates in the company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyId, name: "Cycle test", issuePrefix: `C${companyId.slice(0, 6)}` },
+      { id: otherCompanyId, name: "Other company", issuePrefix: `C${otherCompanyId.slice(0, 6)}` },
+    ]);
+    const [source, direct, transitive, upstream, unrelated] = Array.from({ length: 5 }, () => randomUUID());
+    await db.insert(issues).values([source, direct, transitive, upstream, unrelated].map(id => ({ id, companyId, title: id })));
+    await db.insert(issueRelations).values([
+      { companyId, issueId: source, relatedIssueId: direct, type: "blocks" },
+      { companyId, issueId: direct, relatedIssueId: transitive, type: "blocks" },
+      { companyId, issueId: upstream, relatedIssueId: source, type: "blocks" },
+    ]);
+    expect(await reachableBlockingCandidates(db, companyId, source, [direct, transitive, upstream, unrelated, direct]))
+      .toEqual(new Set([direct, transitive]));
+    expect(await reachableBlockingCandidates(db, otherCompanyId, source, [direct, transitive])).toEqual(new Set());
+    await expect(svc.update(source, { blockedByIssueIds: [transitive] }))
+      .rejects.toMatchObject({ status: 422, message: "Blocking relations cannot contain cycles" });
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.companyId, companyId))).toHaveLength(3);
   });
 
   it("rejects blocking cycles", async () => {
