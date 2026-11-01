@@ -53,6 +53,23 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
   let child: ChildProcessWithoutNullStreams | null = null;
+  let codeSubmitted = false;
+  let rejectionTail = "";
+  // The terminal output is credential-bearing. Inspect only a bounded in-memory
+  // suffix for this fixed provider error; never log it or include it in errors.
+  const rejectProviderCode = (chunk: string) => {
+    if (provider !== "anthropic" || !codeSubmitted || state.error) return;
+    rejectionTail = (rejectionTail + chunk).slice(-2048);
+    const text = rejectionTail
+      .replace(/\x1b\[[0-9;]*[GC]/g, " ")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\r/g, " ");
+    if (/OAuth\s+error:\s*That\s+code\s+wasn.t\s+accepted\./i.test(text)) {
+      rejectionTail = "";
+      state.error = "Claude rejected this authorization code. Start sign-in again, then paste the complete new code (including #state if shown).";
+      controller.abort();
+    }
+  };
   const driver = {
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
       let executable = "claude";
@@ -83,7 +100,11 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
       };
       return new Promise((resolve, reject) => {
         child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
-        child.stdout.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
+        child.stdout.on("data", (bytes: Buffer) => {
+          const chunk = bytes.toString("utf8");
+          onData(chunk);
+          rejectProviderCode(chunk);
+        });
         // Provider output may contain secrets. Never log or retain stderr.
         child.stderr.resume();
         child.once("error", () => {
@@ -101,7 +122,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
   if (provider === "anthropic") {
     let deliverCode: ((code: string) => void) | undefined;
     const codeReady = new Promise<string>((resolve) => { deliverCode = resolve; });
-    state.submitCode = (code) => { deliverCode?.(code); deliverCode = undefined; };
+    state.submitCode = (code) => { codeSubmitted = true; deliverCode?.(code); deliverCode = undefined; };
     void runSetupTokenLogin(driver, {
       timeoutMs: 300_000, signal: controller.signal,
       onPrompt: (prompt) => { state.authorizationUrl = prompt.url; },

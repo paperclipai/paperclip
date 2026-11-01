@@ -92,6 +92,9 @@ it("submits a Claude browser code through the owned local attempt", async () => 
   });
   flushSync(() => Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Submit code")?.click());
   await vi.waitFor(() => expect(api.submitLocalLoginCode).toHaveBeenCalledWith("company", "attempt-1", "fixture-code"));
+  await vi.waitFor(() => expect(host.textContent).toContain("Code submitted. Waiting for Claude"));
+  expect(Array.from(host.querySelectorAll("button")).some(button => button.textContent === "Submit code")).toBe(false);
+  expect(api.submitLocalLoginCode).toHaveBeenCalledTimes(1);
   expect(host.textContent).not.toContain("claude auth login");
 });
 
