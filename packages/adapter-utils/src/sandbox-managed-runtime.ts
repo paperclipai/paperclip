@@ -1327,9 +1327,20 @@ export async function prepareSandboxManagedRuntime(input: {
   const syncWorkspace = input.syncWorkspace !== false &&
     (await fs.access(input.workspaceLocalDir).then(
       () => true,
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return false;
-        throw error;
+      async (error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        for (let parent = path.dirname(path.resolve(input.workspaceLocalDir)); ; parent = path.dirname(parent)) {
+          const existing = await fs.stat(parent).catch((cause: NodeJS.ErrnoException) => {
+            if (cause.code === "ENOENT") return null;
+            throw cause;
+          });
+          if (existing) {
+            if (!existing.isDirectory()) throw Object.assign(new Error("Workspace ancestor is not a directory"), { code: "ENOTDIR" });
+            break;
+          }
+          if (parent === path.dirname(parent)) break;
+        }
+        return false;
       },
     ));
   const workspaceInboundMode = input.workspaceInboundMode ?? "host_current";
@@ -1894,7 +1905,7 @@ export async function prepareSandboxManagedRuntime(input: {
           const { localPath, projectId, ignoreResolution } = source;
           const label = `project-${projectId}`;
           try {
-            if (!path.posix.isAbsolute(localPath)) {
+            if (!path.isAbsolute(localPath)) {
               throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
             }
             if (

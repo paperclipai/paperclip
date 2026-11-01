@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { localSandboxPath as sandboxPath, localSandboxHostPath as sandboxHostPath, localSandboxShell, localSandboxShellArgs } from "@paperclipai/adapter-utils/test-fixtures/local-posix-sandbox";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
@@ -30,17 +30,6 @@ import {
   testClaudeAcpEnvironment,
 } from "./acp.js";
 
-function sandboxPath(localPath: string): string {
-  if (process.platform !== "win32") return localPath;
-  const normalized = path.resolve(localPath).replaceAll("\\", "/");
-  return `/${normalized[0]!.toLowerCase()}${normalized.slice(2)}`;
-}
-
-function sandboxHostPath(remotePath: string): string {
-  return process.platform === "win32" && /^\/[a-z]\//i.test(remotePath)
-    ? `${remotePath[1]}:${remotePath.slice(2)}` : remotePath;
-}
-
 // A local stand-in for a sandbox runner: runs the managed-runtime staging
 // scripts (mkdir/tar/find) as real child processes so the remote ACP lane can
 // be exercised end-to-end against the host filesystem.
@@ -57,14 +46,9 @@ function createLocalSandboxRunner() {
       onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     }) => {
       counter += 1;
-      const bash = process.platform === "win32"
-        ? path.join(process.env.ProgramFiles ?? "C:/Program Files", "Git/bin/bash.exe") : "/bin/bash";
-      if ((input.command === "bash" || input.command === "sh") && !existsSync(bash)) throw new Error("The local POSIX sandbox fixture requires Git Bash on Windows or /bin/bash on Unix");
-      const command = input.command === "bash" || input.command === "sh" ? bash : input.command;
-      const args = [...(input.args ?? [])];
-      if (process.platform === "win32" && command === bash && args[0] === "-c") {
-        args[1] = `export PATH=/usr/bin:/bin:$PATH; ${args[1] ?? ""}`;
-      }
+      const isShell = input.command === "bash" || input.command === "sh";
+      const command = isShell ? localSandboxShell() : input.command;
+      const args = isShell ? localSandboxShellArgs(input.args ?? []) : input.args ?? [];
       return await runChildProcess(`claude-acp-sandbox-run-${counter}`, command, args, {
         cwd: input.cwd === "/" ? path.parse(process.cwd()).root : sandboxHostPath(input.cwd ?? process.cwd()),
         env: input.env ?? {},
