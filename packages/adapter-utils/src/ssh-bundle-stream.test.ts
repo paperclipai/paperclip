@@ -38,11 +38,6 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return (await execFile("git", ["-C", cwd, ...args], { timeout: 30_000 })).stdout.trim();
 }
 
-// The fake `ssh` routes on the remote script (last argv, `sh -c '<script>'`).
-// Bundle-export scripts replay a payload file to stdout; every other script
-// (tar download, du probe) runs locally with `sh -c`, since the "remote" dir
-// in these tests is a real local path. Non-bundle invocations never touch the
-// bundle call counter.
 function fakeSshRouterScript(bundleHandler: string): string {
   return [
     "#!/usr/bin/env node",
@@ -68,10 +63,6 @@ async function installFakeSsh(binDirPrefix: string, script: string): Promise<voi
   process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
 }
 
-// Installs a fake `ssh` whose stdout replays `payloadPath` through a slow
-// Transform with a small highWaterMark, then exits. The old
-// pipe()+close→sink.end() shape resolved on child close and truncated the
-// tail; pipeline() must drain everything first.
 async function installFakeSshSlowStream(payloadPath: string, exitCode: number): Promise<void> {
   await installFakeSsh(
     "paperclip-fake-ssh-slow-",
@@ -94,10 +85,6 @@ async function installFakeSshSlowStream(payloadPath: string, exitCode: number): 
   );
 }
 
-// Installs a fake `ssh` that serves one payload on the first bundle-export
-// invocation and the other afterwards (polarity via `serveFullFirst`),
-// tracking bundle-call count in a file next to the script so the child
-// processes share it.
 async function installFakeSshFlakyStream(
   fullPayloadPath: string,
   truncatedPayloadPath: string,
@@ -151,7 +138,6 @@ async function createRemoteRepo(rootDir: string): Promise<{ remoteDir: string; h
   await execFile("git", ["init", "-b", "main", remoteDir], { timeout: 30_000 });
   await git(remoteDir, ["config", "user.name", "Paperclip Test"]);
   await git(remoteDir, ["config", "user.email", "test@paperclip.dev"]);
-  // Random payload so the bundle is large enough to exercise backpressure.
   const big = path.join(rootDir, "big.bin");
   const writer = spawn("sh", ["-c", `head -c 1500000 /dev/urandom > ${JSON.stringify(big)}`]);
   await new Promise<void>((resolve, reject) => {
@@ -249,8 +235,6 @@ describe("ssh bundle stream", () => {
     });
 
     expect(await git(localDir, ["rev-parse", "HEAD"])).toBe(head);
-    // The truncated first attempt gets a terminal failure line, and the retry
-    // still ends on a completion line.
     const exportLines = seen.filter((line) => line.includes("Exporting git history"));
     expect(exportLines.some((line) => line.includes("failed after"))).toBe(true);
     expect(exportLines.at(-1)).not.toMatch(/failed/);
@@ -266,8 +250,6 @@ describe("ssh bundle stream", () => {
     const truncPath = path.join(rootDir, "trunc.bundle");
     await writeFile(truncPath, fullBytes.subarray(0, Math.floor(fullBytes.length * 0.4)));
 
-    // Both serves are the truncated payload, so the retry also fails and the
-    // fetch error surfaces instead of retrying forever.
     await installFakeSshFlakyStream(truncPath, truncPath, { serveFullFirst: false });
 
     const localDir = path.join(rootDir, "local");
@@ -286,8 +268,6 @@ describe("ssh bundle stream", () => {
     const payloadPath = path.join(rootDir, "payload.bin");
     const payload = Buffer.alloc(1_500_000, "x");
     await writeFile(payloadPath, payload);
-    // The fake ssh serves the payload at full speed and exits once stdout
-    // flushes, so the slow counter below still holds bytes when ssh closes.
     await installFakeSshFlakyStream(payloadPath, payloadPath);
 
     let transferred = 0;

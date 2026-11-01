@@ -731,8 +731,6 @@ async function streamSshToLocalFile(input: {
       if (settled) return;
       settled = true;
       ssh.kill("SIGTERM");
-      // Destroy the sink so a stuck pipeline rejects instead of hanging;
-      // do not call sink.end() here — pipeline() owns the sink lifecycle.
       sink.destroy();
       reject(error);
     };
@@ -743,26 +741,17 @@ async function streamSshToLocalFile(input: {
     ssh.on("error", fail);
     sink.on("error", fail);
 
-    // Drain stdout through the (optional) progress counter with pipeline() so
-    // every byte lands in the sink before we resolve. The old
-    // pipe()+close→sink.end() shape could end the sink while the counter still
-    // held buffered chunks, truncating the bundle under backpressure.
     const counter = input.progress?.counter;
     if (counter) counter.on("error", fail);
     const drained = ssh.stdout
       ? (counter ? pipeline(ssh.stdout, counter, sink) : pipeline(ssh.stdout, sink))
       : Promise.resolve();
 
-    // The child's exit code, resolved once it closes. A spawn "error" without a
-    // later "close" still unblocks settle(); fail() above already rejected.
     const exitCodePromise = new Promise<number>((resolveExit) => {
       ssh.on("error", () => resolveExit(-1));
       ssh.on("close", (code) => resolveExit(code ?? 0));
     });
 
-    // Resolve only after BOTH the pipeline drained (sink finish) AND the
-    // child exited 0. Either side failing rejects; fail() above wins the race
-    // on transport errors via the settled flag.
     const settle = async () => {
       let drainError: Error | null = null;
       try {
@@ -789,7 +778,6 @@ async function streamSshToLocalFile(input: {
   }).finally(auth.cleanup);
 }
 
-/** Test-only. Drive the SSH download path with a caller-supplied progress counter. */
 export const streamSshToLocalFileForTest = streamSshToLocalFile;
 
 async function importGitWorkspaceToSsh(input: {
@@ -876,8 +864,6 @@ async function importGitWorkspaceToSsh(input: {
   }
 }
 
-// Matches the fetch-side signature of a truncated bundle download: the
-// tail of the pack never arrived, so index-pack hits EOF while inflating.
 function isTruncatedBundleFetchError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /early EOF|index-pack (died|failed)|did not end with a hash|not a bundle|unexpected end/i.test(message);
@@ -909,9 +895,6 @@ async function exportGitWorkspaceFromSsh(input: {
 
     // The remote bundle size isn't known before streaming, so report bytes
     // received (MB mode) with a terminal completion line.
-    // Created fresh per attempt: pipeline() ends the counter it drains, so a
-    // retried stream needs a new one. Annotated (not inferred) so closure
-    // assignment doesn't narrow the later finish/fail calls to never.
     let progress: TransferProgress | null | undefined;
     const createProgress = () => {
       progress = input.onProgress
@@ -927,10 +910,6 @@ async function exportGitWorkspaceFromSsh(input: {
     };
 
     try {
-      // A truncated stream surfaces at fetch time as `fatal: early EOF` /
-      // `error: index-pack died`. `git bundle verify` cannot gate this — it
-      // only reads the ref header, so it reports "okay" on a truncated file.
-      // Re-stream once on that signature instead.
       let retriedTruncatedFetch = false;
       for (;;) {
         await streamSshToLocalFile({
@@ -948,7 +927,6 @@ async function exportGitWorkspaceFromSsh(input: {
         } catch (error) {
           if (!retriedTruncatedFetch && isTruncatedBundleFetchError(error)) {
             retriedTruncatedFetch = true;
-            // Close out this attempt's progress line before the retry replaces it.
             await progress?.fail();
             continue;
           }
