@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
   agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueComments, issues,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { heartbeatService } from "./heartbeat.js";
+import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -69,6 +72,65 @@ const support = await getEmbeddedPostgresTestSupport();
     .set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, runId));
   const queuedRuns = (companyId: string) => db.select().from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+
+  it.each(["done", "cancelled", "reassigned", "inactive"])(
+    "stops registered retries when a system receipt becomes %s", async kind => {
+      const f = await seed();
+      const parked = await park(f);
+      // System wakes without comments/interaction are not retired by strandedQueues.
+      await db.update(agentWakeupRequests).set({ requestedByActorType: "system",
+        requestedByActorId: null, payload: { issueId: f.issueId, executionWait: parked.payload?.executionWait },
+      }).where(eq(agentWakeupRequests.id, parked.id));
+      await makeDue(parked.id);
+      type Coordinator = ReturnType<typeof createDeliveryWorkCoordinator>;
+      type Task = Parameters<Coordinator["register"]>[1];
+      const tasks = new Map<string, Task>();
+      const coordinator = { register(queue: string, task: Task) {
+        tasks.set(queue, task);
+        return { ready: Promise.resolve(), wake() {}, async stop() {} };
+      } } as unknown as Coordinator;
+      const service = heartbeatService(db);
+      const workers = registerDeferredReceiptWork(db, coordinator, {
+        resume: scope => service.readmitUnblockedExecutionWaits(scope),
+        settleTaskChat: async () => {}, createNativeBatch: () => async () => {},
+        schedulingSuppressed: async () => false,
+      }, () => true);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await workers.ready;
+        const task = tasks.get(DELIVERY_QUEUES.deferredExecutionReceipts)!;
+        const pass = () => task.run(new AbortController().signal);
+        const start = Date.now();
+        await pass();
+        expect(task.nextRunAt?.()).toBe(start + 60_000);
+        if (kind === "inactive") await db.update(companies).set({ status: "paused" }).where(eq(companies.id, f.companyId));
+        else if (kind === "reassigned") {
+          const replacement = randomUUID();
+          await db.insert(agents).values({ id: replacement, companyId: f.companyId, name: "Replacement", role: "engineer" });
+          await db.update(issues).set({ assigneeAgentId: replacement }).where(eq(issues.id, f.issueId));
+        } else await db.update(issues).set({ status: kind }).where(eq(issues.id, f.issueId));
+        vi.setSystemTime(start + 60_000);
+        await pass();
+        expect(task.nextRunAt?.()).toBeNull();
+        // Reconstruction must not reintroduce the ineligible receipt either.
+        workers.wake();
+        vi.setSystemTime(start + 120_000);
+        await pass();
+        expect(task.nextRunAt?.()).toBeNull();
+        expect(await queuedRuns(f.companyId)).toHaveLength(0);
+        await db.update(companies).set({ status: "active" }).where(eq(companies.id, f.companyId));
+        await db.update(issues).set({ status: "todo", assigneeAgentId: f.agentId }).where(eq(issues.id, f.issueId));
+        workers.wake();
+        vi.setSystemTime(start + 180_000);
+        await pass();
+        expect(task.nextRunAt?.()).toBe(start + 240_000);
+      } finally {
+        await workers.stop();
+        vi.useRealTimers();
+        await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, parked.id));
+      }
+    },
+  );
 
   it("re-admits a wake left parked by a gate that has disappeared, exactly once", async () => {
     const f = await seed();
