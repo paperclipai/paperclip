@@ -2344,6 +2344,7 @@ export function PromptsTab({
         rootPath={persistedRootPath}
         entryFile={bundle?.entryFile ?? "AGENTS.md"}
         blocked={isDirty}
+        onSwitched={() => setBundleDraft(null)}
       />
 
       <div

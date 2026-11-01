@@ -9,6 +9,7 @@ import { InstructionsBundleSettings } from "./InstructionsBundleSettings";
 const mockAgentsApi = vi.hoisted(() => ({
   updateInstructionsBundle: vi.fn(),
 }));
+const onSwitched = vi.fn();
 
 vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
 
@@ -49,6 +50,7 @@ describe("InstructionsBundleSettings", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     mockAgentsApi.updateInstructionsBundle.mockReset();
+    onSwitched.mockReset();
   });
 
   afterEach(async () => {
@@ -61,7 +63,7 @@ describe("InstructionsBundleSettings", () => {
     await act(() =>
       root.render(
         <QueryClientProvider client={queryClient}>
-          <InstructionsBundleSettings agentId="agent-1" companyId="company-1" mode="managed" rootPath="" entryFile="AGENTS.md" blocked={false} />
+          <InstructionsBundleSettings agentId="agent-1" companyId="company-1" mode="managed" rootPath="" entryFile="AGENTS.md" blocked={false} onSwitched={onSwitched} />
         </QueryClientProvider>,
       ),
     );
@@ -85,6 +87,7 @@ describe("InstructionsBundleSettings", () => {
       "company-1",
     );
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Loaded AGENTS from /srv/prompts/atlas");
+    expect(onSwitched).toHaveBeenCalledTimes(1);
   });
 
   it("shows the server's reason and leaves the loading state when the entry file is missing", async () => {
@@ -95,6 +98,7 @@ describe("InstructionsBundleSettings", () => {
     expect(mockAgentsApi.updateInstructionsBundle).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("AGENTS.md was not found in /srv/prompts/atlas");
     expect(button(container, "Load profile").disabled).toBe(false);
+    expect(onSwitched).not.toHaveBeenCalled();
     expect(Array.from(container.querySelectorAll("input")).every((input) => !input.disabled)).toBe(true);
   });
 });

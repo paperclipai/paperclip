@@ -33,6 +33,7 @@ export function InstructionsBundleSettings({
   rootPath,
   entryFile,
   blocked,
+  onSwitched,
 }: {
   agentId: string;
   agentUrlKey?: string | null;
@@ -41,6 +42,7 @@ export function InstructionsBundleSettings({
   rootPath: string;
   entryFile: string;
   blocked: boolean;
+  onSwitched: () => void;
 }) {
   const queryClient = useQueryClient();
   const [root, setRoot] = useState(mode === "external" ? rootPath : "");
@@ -77,6 +79,7 @@ export function InstructionsBundleSettings({
       return;
     }
     await refresh();
+    onSwitched();
     setLoad({ kind: "loaded", root: trimmedRoot, entry: trimmedEntry });
   };
 
@@ -85,6 +88,7 @@ export function InstructionsBundleSettings({
     try {
       await agentsApi.updateInstructionsBundle(agentId, { mode: "managed", rootPath: null, entryFile }, companyId);
       await refresh();
+      onSwitched();
       setLoad({ kind: "idle" });
     } catch (error) {
       setLoad({ kind: "error", field: null, message: errorMessage(error, "Couldn’t switch back to the managed bundle.") });

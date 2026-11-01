@@ -538,6 +538,43 @@ describe("PromptsTab instruction editor", () => {
     expect(cancelAction).toBeNull();
   });
 
+  it("adopts a loaded external profile instead of keeping the old bundle as unsaved changes", async () => {
+    const managed = makeSummary("AGENTS.md", "AGENTS.md");
+    const loaded = makeSummary("SOUL.md", "SOUL.md");
+    const onDirtyChange = vi.fn();
+    await renderPromptsTab(
+      makeBundle("AGENTS.md", [managed]),
+      {
+        "AGENTS.md": makeDetail(managed, "# Managed"),
+        "SOUL.md": makeDetail(loaded, "# Loaded profile"),
+      },
+      { onDirtyChange },
+    );
+    mockAgentsApi.updateInstructionsBundle.mockImplementation(async () => {
+      mockAgentsApi.instructionsBundle.mockResolvedValue(makeBundle("SOUL.md", [loaded], {
+        mode: "external",
+        rootPath: "/srv/prompts/atlas",
+        resolvedEntryPath: "/srv/prompts/atlas/SOUL.md",
+      }));
+      return {};
+    });
+
+    await act(async () => buttonByText(container, "Advanced settings").click());
+    const panel = container.querySelector<HTMLElement>('[aria-label="External management"]')!;
+    const [rootInput, entryInput] = Array.from(panel.querySelectorAll("input"));
+    await act(async () => setNativeValue(rootInput, "/srv/prompts/atlas"));
+    await act(async () => setNativeValue(entryInput, "SOUL.md"));
+    await act(async () => buttonByText(container, "Load profile").click());
+
+    await waitFor(() => {
+      expect(panel.querySelector('[role="status"]')?.textContent).toContain("Loaded SOUL.md from /srv/prompts/atlas");
+      expect(container.querySelector('[data-testid="instructions-raw-source"]')?.textContent?.trim()).toBe("# Loaded profile");
+    });
+    expect(mockAgentsApi.updateInstructionsBundle).toHaveBeenCalledTimes(1);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(saveAction).toBeNull();
+  });
+
   it("edits pending new files as raw text before server metadata exists", async () => {
     const summary = makeSummary("settings.json", "settings.json", {
       language: "json",
