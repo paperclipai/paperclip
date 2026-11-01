@@ -55,6 +55,7 @@ async function fileMetadata(
   options: { excludeHiddenPaths?: boolean } = {},
 ): Promise<Array<{ path: string; size: number; contentHash: string }>> {
   const files: Array<{ path: string; size: number; contentHash: string }> = [];
+  const candidates: Array<{ candidate: string; relativePath: string }> = [];
   const visit = async (directory: string): Promise<void> => {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const candidate = path.join(directory, entry.name);
@@ -63,33 +64,36 @@ async function fileMetadata(
       if (options.excludeHiddenPaths && rootEntry.startsWith(".")) continue;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) await visit(candidate);
-      else if (entry.isFile()) {
-        const stat = await fs.stat(candidate, { bigint: true });
-        const cached = fileHashCache.get(candidate);
-        const signature = `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-        let contentHash = cached?.signature === signature ? cached.contentHash : null;
-        if (contentHash === null) {
-          const hash = createHash("sha256");
-          for await (const chunk of createReadStream(candidate)) hash.update(chunk);
-          contentHash = hash.digest("hex");
-          fileHashCache.set(candidate, { signature, contentHash });
-          if (fileHashCache.size > MAX_FILE_HASH_CACHE_ENTRIES) {
-            const oldest = fileHashCache.keys().next().value;
-            if (oldest) fileHashCache.delete(oldest);
-          }
-        } else {
-          fileHashCache.delete(candidate);
-          fileHashCache.set(candidate, { signature, contentHash });
-        }
-        files.push({
-          path: relativePath,
-          size: Number(stat.size),
-          contentHash,
-        });
-      }
+      else if (entry.isFile()) candidates.push({ candidate, relativePath });
     }
   };
   if (await pathExists(rootDir)) await visit(rootDir);
+  for (let offset = 0; offset < candidates.length; offset += 8) {
+    await Promise.all(candidates.slice(offset, offset + 8).map(async ({ candidate, relativePath }) => {
+      const stat = await fs.stat(candidate, { bigint: true });
+      const cached = fileHashCache.get(candidate);
+      const signature = `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      let contentHash = cached?.signature === signature ? cached.contentHash : null;
+      if (contentHash === null) {
+        const hash = createHash("sha256");
+        for await (const chunk of createReadStream(candidate)) hash.update(chunk);
+        contentHash = hash.digest("hex");
+        fileHashCache.set(candidate, { signature, contentHash });
+        if (fileHashCache.size > MAX_FILE_HASH_CACHE_ENTRIES) {
+          const oldest = fileHashCache.keys().next().value;
+          if (oldest) fileHashCache.delete(oldest);
+        }
+      } else {
+        fileHashCache.delete(candidate);
+        fileHashCache.set(candidate, { signature, contentHash });
+      }
+      files.push({
+        path: relativePath,
+        size: Number(stat.size),
+        contentHash,
+      });
+    }));
+  }
   return files.sort((left, right) => left.path.localeCompare(right.path));
 }
 

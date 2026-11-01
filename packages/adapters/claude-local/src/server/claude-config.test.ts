@@ -30,6 +30,33 @@ import {
 } from "./claude-config.js";
 
 describe("managed profile skill discovery", () => {
+  it("keeps every file across bounded scan batches and detects a later content change", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-profile-batches-"));
+    try {
+      const source = path.join(root, "source");
+      const skill = path.join(source, "skills", "fixture");
+      await fs.mkdir(skill, { recursive: true });
+      await fs.writeFile(path.join(skill, "SKILL.md"), "Fixture policy");
+      for (let index = 0; index < 24; index++) await fs.writeFile(path.join(skill, `${index}.txt`), `file ${index}`);
+      const input = { env: { PAPERCLIP_HOME: path.join(root, "state") }, companyId: "company", agentId: "agent", sourceDir: source, configDir: path.join(root, "managed"), importMode: "cache" as const };
+      const first = await prepareManagedClaudePluginRuntime(input);
+      const second = await prepareManagedClaudePluginRuntime(input);
+      expect(second.profileIdentity).toBe(first.profileIdentity);
+      for (let index = 0; index < 24; index++) {
+        await expect(fs.readFile(path.join(input.configDir, "skills", "fixture", `${index}.txt`), "utf8")).resolves.toBe(`file ${index}`);
+      }
+      const changed = path.join(skill, "23.txt");
+      const previous = await fs.stat(changed);
+      await fs.writeFile(changed, "changed");
+      await fs.utimes(changed, previous.atime, previous.mtime);
+      const refreshed = await prepareManagedClaudePluginRuntime(input);
+      expect(refreshed.profileIdentity).not.toBe(first.profileIdentity);
+      await expect(fs.readFile(path.join(input.configDir, "skills", "fixture", "23.txt"), "utf8")).resolves.toBe("changed");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["copy", "cache"] as const)("adds native loading guidance in %s mode without changing the source", async (importMode) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-native-profile-skills-"));
     try {
