@@ -39,22 +39,25 @@ COPY cli/package.json ./cli/package.json
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
 ARG PAPERCLIP_RUNNER_LOCK_SHA256=342a01e487a68d0ad9cb8d8852a0ffed4dd7b0fa58e2e047d1064e9340fe6f57
-# pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
-# Subtract all available CPUs to select its minimum (one tarball worker).
-RUN export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
-    && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
-    && sha256sum -c /tmp/provider-lock.sha256 \
-    && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
-RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
-RUN export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
+# pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
+# Subtract all available CPUs to select its minimum (one tarball worker).
+# Install and build in one layer so the disposable workspace and package store
+# do not remain in an earlier snapshot while BuildKit exports the portable pack.
+RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
+    && export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
+    && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
+    && sha256sum -c /tmp/provider-lock.sha256 \
+    && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...' \
     && pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
       node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
         "--candidate-providers=${PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS}" \
-    && chmod -R a+rX /provider-pack
+    && chmod -R a+rX /provider-pack \
+    && du -sk /workspace /provider-pack \
+    && rm -rf /workspace /root/.local/share/pnpm/store
 
 # Fleet sandbox base image. Keep this section aligned with
 # paperclipai/paperclip-cloud/fleet-sandbox-image/Dockerfile. The only Paperclip

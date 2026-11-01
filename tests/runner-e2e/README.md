@@ -1068,6 +1068,13 @@ pnpm test:e2e:runner:models:update
 
 ## Daytona image
 
+The image builder retains only its stripped Runner executable and portable
+provider pack. The dependency install and pack build share one layer so the
+workspace and package store can be removed before export. Source-provenance
+changes can repeat the dependency install; this bounds retained builder disk
+at the cost of install-cache granularity. The build reports workspace and pack
+sizes, and final runtime and CLI checks still execute in the published image.
+
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
 room for each declared attempt and the acquisition budget. It supplements the
