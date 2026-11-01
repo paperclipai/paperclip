@@ -408,6 +408,12 @@ npx paperclipai@latest onboard --yes --bind tailnet
 
 If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `npx paperclipai configure` to edit settings.
 
+> **macOS troubleshooting:** If `npx paperclipai onboard` silently exits with no output, you likely have `libvips` installed via Homebrew. This causes the `sharp` dependency to attempt a source build instead of using its prebuilt binary, which fails silently. Fix with:
+>
+> ```bash
+> SHARP_IGNORE_GLOBAL_LIBVIPS=1 npx paperclipai onboard --yes
+> ```
+
 Or manually:
 
 ```bash
