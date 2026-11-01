@@ -472,13 +472,14 @@ describe("no company-scope decision bypasses the role check", () => {
  *
  * The sweep above detects modules that read an actor's `companyIds`. It does
  * not detect a module that reads `membership_role` from the database and then
- * tests it against `viewer`, in either of these shapes:
+ * tests it against `viewer`, in any of these shapes:
  *
  *     membership.membershipRole !== "viewer"                      // "has authority"
  *     ne(companyMemberships.membershipRole, "viewer")              // the same, in SQL
+ *     sql`${m.membershipRole} is distinct from 'viewer'`           // the same, raw
  *
- * Both shapes treat *any* non-`viewer` role as a staff member, so a role that
- * is merely added to the role list satisfies them. 36 of the modules below
+ * All three shapes treat *any* non-`viewer` role as a staff member, so a role
+ * that is merely added to the role list satisfies them. 36 of the modules below
  * never call a company-scope helper, so no route gate runs before them;
  * external pipelines reach them (chat, MCP, OAuth callbacks, the token broker,
  * git credentials).
@@ -504,9 +505,34 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const serverSrc = join(here, "..");
 
-  /** Either shape of "this member is not a viewer, so it has authority". */
-  const TESTS_ROLE_AGAINST_VIEWER =
-    /(?:!==|===)\s*"viewer"|ne\(\s*[\w.]*membershipRole\s*,\s*"viewer"\s*\)/;
+  /**
+   * Every shape of "this member is not a viewer, so it has authority".
+   *
+   * The quote class matters. Drizzle's helpers are written with the repo's
+   * double quotes, but a raw `sql` fragment is Postgres, so its literal is
+   * single-quoted -- which is how `services/voice/voice-session-store.ts`
+   * stayed invisible to an earlier, double-quote-only version of this
+   * detector while being a real authority check.
+   *
+   * A `switch` over the role is deliberately *not* a shape here. It is the one
+   * form that cannot admit a new role silently: `grantsForHumanRole` switches
+   * on the shared union with no `default`, so TypeScript rejects the switch
+   * until the new role has its own branch. "has an empty default grant set"
+   * above asserts that branch exists, and a grep of `server/src` finds no
+   * other switch over a membership role, with or without a `default`. The
+   * hazard this ratchet guards is the silent kind.
+   */
+  const QUOTED_VIEWER = String.raw`["']viewer["']`;
+  const TESTS_ROLE_AGAINST_VIEWER = new RegExp(
+    [
+      // membership.membershipRole !== "viewer"   (and the === deny direction)
+      String.raw`(?:!==|===)\s*${QUOTED_VIEWER}`,
+      // ne(companyMemberships.membershipRole, "viewer")
+      String.raw`ne\(\s*[\w.]*membershipRole\s*,\s*${QUOTED_VIEWER}\s*\)`,
+      // sql`${companyMemberships.membershipRole} is distinct from 'viewer'`
+      String.raw`membershipRole\}?\s*(?:is(?:\s+not)?\s+distinct\s+from|<>|!=|=)\s*${QUOTED_VIEWER}`,
+    ].join("|"),
+  );
 
   /**
    * Every module that currently decides authority this way. Ordered, so a diff
@@ -568,6 +594,15 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     "services/tool-access/token-broker/admission.ts",
     "services/tool-access.ts",
     "services/tool-gateway.ts",
+    // Found by widening the detector to the raw-SQL shape, not by a new
+    // commit: `authorizeCaller` is the company-membership gate for a voice
+    // session and its predicate is `is distinct from 'viewer'`, so a client
+    // passes it. Gated subset: every board voice route resolves its company
+    // through `assertCompanyAccess`, so the deny in authz.ts runs first. The
+    // one route that skips it on purpose, POST /voice-sessions/:id/end,
+    // instead requires `session.callerId === caller.id` -- and a client
+    // cannot own a session, because starting one is behind the gate.
+    "services/voice/voice-session-store.ts",
   ] as const;
 
   /**
@@ -633,7 +668,7 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     ].join(" ")).toEqual([]);
   });
 
-  it("recognizes both real shapes of the viewer-shaped check", () => {
+  it("recognizes every real shape of the viewer-shaped check", () => {
     // Taken verbatim from the modules in the inventory above.
     expect(TESTS_ROLE_AGAINST_VIEWER.test(
       "membership.membershipRole !== \"viewer\" &&",
@@ -649,8 +684,35 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     expect(TESTS_ROLE_AGAINST_VIEWER.test(
       "if (membership.membershipRole === \"viewer\") throw forbidden(\"read-only\");",
     )).toBe(true);
+    // The raw-SQL shape, verbatim from services/voice/voice-session-store.ts.
+    // Single-quoted, because the fragment is Postgres and not TypeScript.
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "sql`${companyMemberships.membershipRole} is distinct from 'viewer'`",
+    )).toBe(true);
+    // Neighbouring raw-SQL spellings of the same decision.
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "sql`${companyMemberships.membershipRole} <> 'viewer'`",
+    )).toBe(true);
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "sql`${companyMemberships.membershipRole} = 'viewer'`",
+    )).toBe(true);
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "sql`${m.membershipRole} is not distinct from 'viewer'`",
+    )).toBe(true);
+    // A single-quoted literal in either helper shape counts too, so the
+    // detector does not depend on the formatter's quote style holding.
+    expect(TESTS_ROLE_AGAINST_VIEWER.test("membership.membershipRole !== 'viewer'")).toBe(true);
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "ne(companyMemberships.membershipRole, 'viewer')",
+    )).toBe(true);
     // Not a role decision.
     expect(TESTS_ROLE_AGAINST_VIEWER.test("const label = \"viewer\";")).toBe(false);
+    expect(TESTS_ROLE_AGAINST_VIEWER.test("const label = 'viewer';")).toBe(false);
     expect(TESTS_ROLE_AGAINST_VIEWER.test("role === \"client\"")).toBe(false);
+    // A role column compared against some other role is a different question
+    // and must not be swept in here, or the inventory stops meaning anything.
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "eq(companyMemberships.membershipRole, \"owner\")",
+    )).toBe(false);
   });
 });
