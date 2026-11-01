@@ -16,7 +16,7 @@ const job = { id: 11, type: 'github', url: 'https://github.com/paperclipai/paper
 const jobrun = { id: 77, job, launchId: 12, stage: 'in_progress', url: runUrl };
 const attachment = { id: 900, name: 'Execution provenance and checks', contentType: 'application/json', contentLength: 100,
   missed: false, fromTestCase: false };
-const screenshot = { ...attachment, id: 901, name: 'Synthetic chat fixture', contentType: 'image/png', contentLength: 1000 };
+const screenshot = { ...attachment, id: 901, name: 'Private evidence receipt', contentType: 'application/json', contentLength: 1000 };
 const exported = selected.map(row => ({ caseId: row.caseId, executionId: row.executionId, status: 'passed', cleanup: 'passed',
   attachments: [attachment, screenshot].map(({ id, missed, fromTestCase, ...rest }) => rest) }));
 

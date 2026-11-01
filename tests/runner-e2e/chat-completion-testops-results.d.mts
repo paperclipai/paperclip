@@ -12,5 +12,6 @@ export interface PilotOutcome {
 export function readPilotExport(root: string, context: Context, selection: Selection): Promise<{
   campaign: { campaignId: string; results: RunnerE2EResult[] };
   selected: (PilotCase & { caseId: number })[]; retained: Map<string, Buffer>;
+  privateEvidence: { executionId: string; requiredEvidenceComplete: boolean | null; finalScreenshot: { sha256: string; bytes: number } | null }[];
 }>;
 export function exportPilotAllure(root: string, output: string, context: Context, selection: Selection): Promise<PilotOutcome[]>;

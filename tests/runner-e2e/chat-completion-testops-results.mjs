@@ -3,7 +3,6 @@ import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/pr
 import path from 'node:path';
 import { cases, targetSha, model, hash, validateSelection, reject } from './chat-completion-testops-contract.mjs';
 
-const pngMagic = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 async function inventory(root, relative = '') {
   const found = []; const entries = await readdir(path.join(root, relative));
   if (entries.length > 12) reject('export_inventory');
@@ -11,9 +10,8 @@ async function inventory(root, relative = '') {
     if (!/^[A-Za-z0-9._-]+$/.test(name) || ['.', '..'].includes(name)) reject('export_path');
     const file = relative ? `${relative}/${name}` : name, stat = await lstat(path.join(root, file));
     if (stat.isSymbolicLink() || stat.nlink !== 1 && !stat.isDirectory()) reject('export_path');
-    const directories = ['evidence', ...cases.flatMap(row => [`evidence/${row.executionId}`, `evidence/${row.executionId}/attempt-1`])];
     if (stat.isDirectory()) {
-      if (!directories.includes(file)) reject('export_path'); found.push(...await inventory(root, file));
+      reject('export_path');
     } else if (stat.isFile() && stat.size <= 12 * 1024 * 1024) found.push(file);
     else reject('export_path');
     if (found.length > 8) reject('export_inventory');
@@ -33,9 +31,10 @@ export async function readPilotExport(root, context, selection) {
   if (binding.schema !== 'paperclip.chat-completion-testops-export/v1' || binding.runId !== context.runId || binding.attempt !== '1'
     || binding.workflowSha !== context.workflowSha || binding.targetSha !== targetSha || binding.campaignId !== `gha-${context.runId}-1`
     || JSON.stringify(binding.executionIds) !== JSON.stringify(selected.map(row => row.executionId)) || !Array.isArray(binding.files)
-    || binding.files.length < 2 || binding.files.length > 5) reject('export_binding');
+    || binding.files.length !== 2 || !Array.isArray(binding.privateEvidence) || binding.privateEvidence.length !== selected.length
+    || new Set(binding.privateEvidence.map(row => row.executionId)).size !== selected.length) reject('export_binding');
   const names = binding.files.map(row => row.path);
-  const allowed = ['normalized-results.json', 'junit.xml', ...selected.map(row => `evidence/${row.executionId}/attempt-1/final-state.png`)];
+  const allowed = ['normalized-results.json', 'junit.xml'];
   if (new Set(names).size !== names.length || names.some(name => !allowed.includes(name)) || !names.includes('normalized-results.json')
     || !names.includes('junit.xml') || JSON.stringify([...names, 'binding.json'].sort()) !== JSON.stringify(files.sort())) reject('export_inventory');
   const retained = new Map(); let total = 0;
@@ -59,22 +58,23 @@ export async function readPilotExport(root, context, selection) {
       || row.provider !== 'opencode' || row.environmentId !== 'local' || row.model !== model || row.runtimeMode !== 'native'
       || row.attempt !== 1 || row.source?.sha !== targetSha || row.source?.workflowRunUrl !== `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`
       || !['passed', 'failed'].includes(row.status) || !['passed', 'failed', 'not_started'].includes(row.cleanup)
-      || !Array.isArray(row.matcherResults) || row.matcherResults.length > 200 || !Array.isArray(row.screenshots) || row.screenshots.length > 1) reject('export_result');
+      || !Array.isArray(row.matcherResults) || row.matcherResults.length > 200 || !Array.isArray(row.screenshots) || row.screenshots.length !== 0) reject('export_result');
     if (row.matcherResults.some(check => check.matcher?.kind !== 'json_path' || !/^[A-Za-z0-9._-]{1,150}$/.test(check.matcher.path)
       || check.matcher.expected !== true || typeof check.passed !== 'boolean')) reject('export_checks');
-    const png = retained.get(`evidence/${row.executionId}/attempt-1/final-state.png`);
-    if (png && (!png.subarray(0, 8).equals(pngMagic) || png.subarray(12, 16).toString('ascii') !== 'IHDR')) reject('export_png');
-    if (Boolean(png) !== (row.screenshots.length === 1) || row.screenshots.some(shot => shot.id !== 'final-state'
-      || shot.file !== 'final-state.png' || shot.publication !== undefined || shot.sha256 !== hash(png))) reject('export_png');
+    const evidence = binding.privateEvidence.find(value => value.executionId === row.executionId);
+    if (!evidence || ![true, false, null].includes(evidence.requiredEvidenceComplete)
+      || evidence.finalScreenshot !== null && (!/^[a-f0-9]{64}$/.test(evidence.finalScreenshot?.sha256 ?? '')
+        || !Number.isSafeInteger(evidence.finalScreenshot.bytes) || evidence.finalScreenshot.bytes < 24 || evidence.finalScreenshot.bytes > 12 * 1024 * 1024)) reject('private_evidence_receipt');
     const runs = expected.key === 'control' ? 1 : expected.key === 'defaults' ? 3 : 2;
     if (row.status === 'passed' && (row.cleanup !== 'passed' || row.matcherResults.length !== expected.checks
-      || row.matcherResults.some(check => !check.passed) || row.runIds?.length !== runs || !png)) reject('export_incomplete_pass');
+      || row.matcherResults.some(check => !check.passed) || row.runIds?.length !== runs
+      || evidence.requiredEvidenceComplete !== true || evidence.finalScreenshot === null)) reject('export_incomplete_pass');
   }
-  return { campaign, selected, retained };
+  return { campaign, selected, retained, privateEvidence: binding.privateEvidence };
 }
 
 export async function exportPilotAllure(root, output, context, selection) {
-  const { campaign, selected, retained } = await readPilotExport(root, context, selection);
+  const { campaign, selected, privateEvidence } = await readPilotExport(root, context, selection);
   await mkdir(output, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
   const stat = await lstat(output);
   if (!stat.isDirectory() || stat.isSymbolicLink() || process.getuid && stat.uid !== process.getuid() || (await readdir(output)).length) reject('allure_output');
@@ -88,8 +88,6 @@ export async function exportPilotAllure(root, output, context, selection) {
       await writeFile(path.join(output, source), bytes, { flag: 'wx', mode: 0o600 });
       attachments.push({ name, source, type }); metadata.push({ name, contentType: type, contentLength: bytes.length });
     };
-    const png = retained.get(`evidence/${result.executionId}/attempt-1/final-state.png`);
-    if (png) await attach('Synthetic chat fixture', 'image/png', png, 'png');
     const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
     const provenance = { schema: 'paperclip.chat-completion-testops-provenance/v1', campaignId: campaign.campaignId,
       runId: context.runId, attempt: 1, workflowSha: context.workflowSha, sourceSha: targetSha,
@@ -102,6 +100,12 @@ export async function exportPilotAllure(root, output, context, selection) {
       checks: result.matcherResults.map(row => ({ path: row.matcher.path, passed: row.passed })),
       note: 'Original case clocks, one attempt and no eval retries. Setup usage and AWS accounting may be incomplete. Private original evidence remains separate.' };
     await attach('Execution provenance and checks', 'application/json', Buffer.from(JSON.stringify(provenance, null, 2)), 'json');
+    const evidence = privateEvidence.find(row => row.executionId === result.executionId);
+    const evidenceReceipt = { schema: 'paperclip.chat-completion-testops-private-evidence/v1', runId: context.runId, attempt: 1,
+      executionId: result.executionId, ...evidence, storage: 'existing protected Runner E2E history',
+      archiveKind: `manual-cell-${hash(result.executionId)}`,
+      note: 'Only this availability receipt and checksum are attached. Original screenshots and diagnostics require authenticated private-history retrieval.' };
+    await attach('Private evidence receipt', 'application/json', Buffer.from(JSON.stringify(evidenceReceipt, null, 2)), 'json');
     const value = { uuid: randomUUID(), name: selectedCase.name, fullName: selectedCase.fullName,
       testCaseId: hash(`${JSON.stringify(selectedCase.fullName)}\n`),
       historyId: hash(JSON.stringify([selectedCase.fullName, 'runner-opencode', model, 'local'])), status, stage: 'finished',

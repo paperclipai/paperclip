@@ -205,9 +205,10 @@ has concurrency one and does not cancel sibling cases after a failure.
 The main-only reporter uses the existing protected `ALLURE_TOKEN`; the evaluated
 app and worker never receive it. Original evidence stays in the existing private
 AWS storage with the unchanged validators, scanners, byte bounds and exact-key
-policies. A separate trusted projection admits only the exact reviewed synthetic
-fixtures' final PNGs, verdicts, checks and accounting metadata into private
-TestOps. These PNGs receive no public publication marker. Raw logs, hidden
+policies. A separate trusted projection carries verdicts, checks, accounting and
+private-evidence receipts. The final PNGs are verified in protected storage;
+only their checksums and availability are recorded in TestOps. GitHub artifacts
+contain metadata only. Raw logs, screenshots, hidden
 reasoning, API snapshots, credentials and provider sessions are not attachments.
 Original failed grades and cleanup failures remain failed. Same-run readback
 requires matching results and complete result-owned attachment metadata within
@@ -228,7 +229,8 @@ Initial setup uses the existing workflow operations:
    once. Its request produces the TestOps-owned `evaluate` dispatch. Do not
    manually dispatch an additional evaluation after an uncertain launch.
 4. Verify the fresh TestOps launch, all selected case results, source links,
-   independent checks, screenshots and cleanup. Retain earlier failed attempts.
+   independent checks, private-evidence receipts and cleanup. Inspect screenshots
+   through authenticated private-history retrieval. Retain earlier failed attempts.
 
 The runtime accepts only `operation`, `ALLURE_JOB_RUN_ID` and reserved username
 metadata. It rejects arbitrary source/model/budget selectors, branch workflows,

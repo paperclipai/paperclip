@@ -185,12 +185,12 @@ export async function verifyPilotUpload(api, selection, context, exported, { now
     const found = selected.find(value => value.caseId === row.caseId);
     if (!found || row.executionId !== found.executionId || !['passed', 'failed'].includes(row.status)
       || !['passed', 'failed', 'not_started'].includes(row.cleanup) || row.status === 'passed' && row.cleanup !== 'passed'
-      || !Array.isArray(row.attachments) || row.attachments.length < (row.status === 'passed' ? 2 : 1) || row.attachments.length > 2
+      || !Array.isArray(row.attachments) || row.attachments.length !== 2
       || row.attachments.filter(value => value.name === 'Execution provenance and checks' && value.contentType === 'application/json').length !== 1
-      || row.attachments.some(value => !['Execution provenance and checks', 'Synthetic chat fixture'].includes(value.name)
+      || row.attachments.filter(value => value.name === 'Private evidence receipt' && value.contentType === 'application/json').length !== 1
+      || row.attachments.some(value => !['Execution provenance and checks', 'Private evidence receipt'].includes(value.name)
         || !Number.isSafeInteger(value.contentLength) || value.contentLength <= 0 || value.contentLength > 12 * 1024 * 1024
-        || value.name === 'Synthetic chat fixture' && value.contentType !== 'image/png')
-      || row.status === 'passed' && row.attachments.filter(value => value.name === 'Synthetic chat fixture').length !== 1) reject('export_mismatch');
+        || value.contentType !== 'application/json')) reject('export_mismatch');
   }
   const deadline = now() + 120_000;
   const get = route => {

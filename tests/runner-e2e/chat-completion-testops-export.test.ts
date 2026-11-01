@@ -37,11 +37,14 @@ async function fixture() {
   await save(); return { root, report, output, allure, campaign, results, selected, save };
 }
 
-it("converts three original cases into three exact TestOps outcomes with all 35 checks and private PNGs", async () => {
+it("converts three original cases into three exact TestOps outcomes with all 35 checks and private-evidence receipts", async () => {
   const f = await fixture(); await writeFile(path.join(f.report, "private-provider.log"), "PRIVATE_LOG_MUST_NOT_EXPORT");
   await exportCompletionPilot(f.report, f.output, binding, f.campaign.expected);
   const projected = await readFile(path.join(f.output, "normalized-results.json"), "utf8");
   expect(projected).not.toMatch(/PRIVATE_|OPAQUE_PROVIDER_BODY|publication/);
+  expect((await readdir(f.output)).sort()).toEqual(["binding.json", "junit.xml", "normalized-results.json"]);
+  const receipt = JSON.parse(await readFile(path.join(f.output, "binding.json"), "utf8"));
+  expect(receipt.privateEvidence.every((row: { finalScreenshot: { sha256: string } }) => /^[a-f0-9]{64}$/.test(row.finalScreenshot.sha256))).toBe(true);
   const exported = await exportPilotAllure(f.output, f.allure, binding, f.selected);
   expect(exported.map(row => row.caseId)).toEqual([100, 101, 102]);
   expect(exported.every(row => row.status === "passed" && row.attachments.length === 2)).toBe(true);
@@ -70,6 +73,22 @@ it("retains failed grading and failed cleanup as a failed TestOps result", async
   const exported = await exportPilotAllure(f.output, f.allure, binding, f.selected);
   expect(exported.map(row => row.status)).toEqual(["passed", "failed", "passed"]);
   expect(await readFile(path.join(f.output, "junit.xml"), "utf8")).toContain('failures="1"');
+});
+
+it("records a failed case with unavailable private evidence without inventing an image", async () => {
+  const f = await fixture(); f.results[0]!.status = "failed"; f.results[0]!.evidenceValid = false;
+  await rm(path.join(f.report, "evidence", f.results[0]!.executionId, "attempt-1", "final-state.png"));
+  await f.save(); await exportCompletionPilot(f.report, f.output, binding, f.campaign.expected);
+  const receipt = JSON.parse(await readFile(path.join(f.output, "binding.json"), "utf8"));
+  expect(receipt.privateEvidence[0]).toMatchObject({ requiredEvidenceComplete: false, finalScreenshot: null });
+  expect((await exportPilotAllure(f.output, f.allure, binding, f.selected))[0]!.status).toBe("failed");
+});
+
+it.each(["unexpected.png", "media"])("rejects private media added to the public artifact: %s", async name => {
+  const f = await fixture(); await exportCompletionPilot(f.report, f.output, binding, f.campaign.expected);
+  if (name === "media") await mkdir(path.join(f.output, name));
+  else await writeFile(path.join(f.output, name), png);
+  await expect(exportPilotAllure(f.output, f.allure, binding, f.selected)).rejects.toThrow();
 });
 
 it.each(["wrong-source", "wrong-workflow-run", "wrong-model", "retry", "missing-check", "failed-check", "cleanup", "run-count", "missing-image", "symlink"])("rejects %s before exporting a pass", async kind => {

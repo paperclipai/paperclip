@@ -62,6 +62,16 @@ test('bootstrap and the fenced plan launcher cannot carry a TestOps execution id
   f.event.inputs.ALLURE_JOB_RUN_ID = '77'; assert.throws(() => admitDispatch(f.env, f.event, 42));
 });
 
+for (const value of ['00077', '9007199254740992', '12345678901234567']) {
+  test(`dispatch rejects unsafe job identity ${value}`, () => {
+    const f = fixture(); f.event.inputs.ALLURE_JOB_RUN_ID = value; assert.throws(() => admitDispatch(f.env, f.event, 42));
+  });
+}
+test('dispatch preserves the maximum safe TestOps job identity', () => {
+  const f = fixture(); f.event.inputs.ALLURE_JOB_RUN_ID = '9007199254740991';
+  assert.equal(admitDispatch(f.env, f.event, 42).operation, 'evaluate');
+});
+
 test('the executable guard binds the actual original GitHub run before service or provider access', async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'testops-context-')));
   try {
@@ -104,6 +114,9 @@ test('the real workflow separates metadata authority, provider execution and res
   assert.ok(!text.includes('<<:')); assert.ok(!text.includes('target_branch:'));
   assert.equal(w.jobs.build.steps.find(step => step.name?.startsWith('Resolve the fixed')).run.includes('--ignore-scripts'), true);
   const paid = w.jobs.chat.steps.find(step => step.env?.OPENROUTER_API_KEY);
+  assert.equal(paid.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS, 'v1');
+  assert.equal(paid.env.ALLURE_JOB_RUN_ID, '${{ inputs.ALLURE_JOB_RUN_ID }}');
   assert.ok(paid.run.includes('--max-automatic-retries 0'));
+  assert.ok(w.jobs.build.steps.some(step => step.run?.includes('chat-completion-testops-host-control.mjs')));
   assert.ok(w.jobs.chat.steps.indexOf(paid) > w.jobs.chat.steps.findIndex(step => step.name?.startsWith('Verify source-bound')));
 });

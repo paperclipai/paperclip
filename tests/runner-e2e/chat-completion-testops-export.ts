@@ -27,10 +27,9 @@ async function ownedRead(root: string, relative: string, limit: number) {
   return bytes;
 }
 
-/** Protected TestOps projection for three reviewed, wholly synthetic fixtures.
- * Their source captures are private, so this path does not assign a public
- * screenshot marker or grant publication to the public history system. Only
- * the exact pinned fixture's final PNG crosses into the private TestOps project.
+/** Public-safe metadata projection for the protected TestOps reporter.
+ * Original screenshots stay in private AWS storage. The exact final PNG is
+ * verified here, but only its checksum and availability receipt cross jobs.
  */
 export async function exportCompletionPilot(root: string, output: string, binding: Binding, expectedIds: string[]) {
   if (!/^[1-9][0-9]{0,15}$/.test(binding.runId) || binding.attempt !== "1" || !/^[a-f0-9]{40}$/.test(binding.workflowSha)
@@ -42,6 +41,7 @@ export async function exportCompletionPilot(root: string, output: string, bindin
     || !Array.isArray(raw.expected) || JSON.stringify([...raw.expected].sort()) !== JSON.stringify([...expectedIds].sort())
     || !Array.isArray(raw.results) || raw.results.length !== expectedIds.length || new Set(raw.results.map((row: RunnerE2EResult) => row.executionId)).size !== expectedIds.length) throw new Error("Foreign pilot campaign");
   const files = new Map<string, Buffer>(), results: RunnerE2EResult[] = [];
+  const privateEvidence: { executionId: string; requiredEvidenceComplete: boolean | null; finalScreenshot: { sha256: string; bytes: number } | null }[] = [];
   for (const id of expectedIds) {
     const descriptor = cases.find(row => row.executionId === id)!;
     const original = raw.results.find((row: RunnerE2EResult) => row.executionId === id) as RunnerE2EResult & { evidenceValid?: boolean };
@@ -63,8 +63,10 @@ export async function exportCompletionPilot(root: string, output: string, bindin
     catch (error) { if (original.status === "passed" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (image) {
       if (!image.subarray(0, 8).equals(pngMagic) || image.subarray(12, 16).toString("ascii") !== "IHDR") throw new Error("Invalid pilot fixture PNG");
-      assertSecretFree(image, [], "TestOps synthetic pilot PNG", { includeShapes: true }); files.set(relative, image);
+      assertSecretFree(image, [], "Private synthetic pilot PNG", { includeShapes: true });
     }
+    privateEvidence.push({ executionId: id, requiredEvidenceComplete: typeof original.evidenceValid === "boolean" ? original.evidenceValid : null,
+      finalScreenshot: image ? { sha256: hash(image), bytes: image.length } : null });
     const result: RunnerE2EResult = {
       schema: original.schema, executionId: id, suiteId: "chat-features", suiteDefinitionHash: original.suiteDefinitionHash,
       source: { sha: targetSha, ref: null, workflowRunUrl: runUrl }, attempt: 1, status: original.status,
@@ -76,9 +78,7 @@ export async function exportCompletionPilot(root: string, output: string, bindin
       ...(original.billing ? { billing: publicBilling(original.billing) } : {}),
       matcherResults: checks.map(check => ({ matcher: { kind: "json_path", path: (check.matcher as { path: string }).path, expected: true },
         passed: check.passed, detail: "Retained independent Product E2E oracle check" })),
-      // This is a private TestOps attachment. Deliberately retain no public
-      // publication marker; public history continues rejecting these images.
-      screenshots: image ? [{ id: "final-state", label: "Synthetic chat fixture", file: "final-state.png", sha256: hash(image) }] : [],
+      screenshots: [],
     };
     validateRetainedRunnerResult(result); results.push(result);
   }
@@ -89,7 +89,7 @@ export async function exportCompletionPilot(root: string, output: string, bindin
   files.set("junit.xml", Buffer.from(`<?xml version="1.0" encoding="UTF-8"?><testsuite name="Chat completion pilot" tests="${results.length}" failures="${failed}">${results.map(row => `<testcase classname="paperclip.Product E2E.chat-features" name="${row.caseId}" time="${row.durationMs / 1000}">${row.status !== "passed" || row.cleanup !== "passed" ? '<failure message="Original evaluation or cleanup failed"/>' : ""}</testcase>`).join("")}</testsuite>\n`));
   const manifest = [...files].sort(([a], [b]) => a.localeCompare(b)).map(([name, bytes]) => ({ path: name, sha256: hash(bytes), bytes: bytes.length }));
   if (manifest.reduce((total, row) => total + row.bytes, 0) > 32 * 1024 * 1024) throw new Error("Pilot projection exceeds allowance");
-  const receipt = { schema: "paperclip.chat-completion-testops-export/v1", ...binding, campaignId, executionIds: expectedIds, files: manifest };
+  const receipt = { schema: "paperclip.chat-completion-testops-export/v1", ...binding, campaignId, executionIds: expectedIds, privateEvidence, files: manifest };
   await mkdir(output, { mode: 0o700 });
   for (const [relative, bytes] of files) {
     const destination = path.join(output, relative); await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });

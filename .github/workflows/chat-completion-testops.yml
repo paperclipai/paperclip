@@ -162,7 +162,13 @@ jobs:
           version: 9.15.4
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
+          path: .testops-trusted
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ needs.authorize.outputs.target_sha }}
+          clean: false
           persist-credentials: false
       - name: Resolve the fixed candidate graph with lifecycle scripts disabled
         run: |
@@ -171,7 +177,10 @@ jobs:
       - name: Build existing TypeScript and native Runner outputs
         run: |
           pnpm --filter @paperclipai/paperclip-runner build:typescript
-          pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+      - name: Exercise the real workflow and pinned source host contract before model access
+        run: node --import ./cli/node_modules/tsx/dist/loader.mjs .testops-trusted/tests/runner-e2e/chat-completion-testops-host-control.mjs
+      - name: Build native Runner outputs
+        run: pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
       - name: Package the resolved lock and exact source outputs
         env:
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
@@ -462,7 +471,7 @@ jobs:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}
           path: chat-completion-testops-selection
       - *allure
-      - name: Upload original outcomes, checks and private fixture screenshots
+      - name: Upload original outcomes, checks and private-evidence receipts
         id: allure_upload
         env: &upload_env
           GH_TOKEN: ${{ github.token }}
