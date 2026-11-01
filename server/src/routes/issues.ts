@@ -14374,6 +14374,19 @@ export function issueRoutes(
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
           : previousExecutionPolicy;
+      if (
+        req.body.executionPolicy !== undefined &&
+        req.actor.type !== "board" &&
+        previousExecutionPolicy?.stages.some(
+          (stage) => !nextExecutionPolicy?.stages.some((nextStage) => nextStage.id === stage.id),
+        )
+      ) {
+        res.status(403).json({
+          error: "Only the board can remove execution policy stages. To change the monitor, send every current stage with its id.",
+          code: "execution_stage_removal_locked",
+        });
+        return;
+      }
       if (normalizedAssigneeAgentId !== undefined) {
         updateFields.assigneeAgentId = normalizedAssigneeAgentId;
       }
@@ -14769,7 +14782,10 @@ export function issueRoutes(
       const issueUpdateData = {
         ...updateFields,
         workspaceSelectionActor: req.actor,
-        expectedExecutionPolicy,
+        expectedExecutionPolicy:
+          expectedExecutionPolicy === undefined && req.body.executionPolicy !== undefined && req.actor.type !== "board"
+            ? existing.executionPolicy ?? null
+            : expectedExecutionPolicy,
         expectedStatusVersion,
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
