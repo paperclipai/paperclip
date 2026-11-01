@@ -167,3 +167,35 @@ Authenticated retrieval uses the existing private-history operator machinery
 and approved bucket access. This PR does not grant a reader role or perform an
 upload. Actual deployment, environment approval, compatible target fingerprints,
 private storage access and one exact run approval remain operational gates.
+
+
+## Published Pi provisioning input
+
+The exact private local cell
+`chat-features.runner-opencode.local.instance-operations.provision-runtime`
+receives an owned `0700` directory and `0600` configuration file after private
+storage preflight. The file uses the existing
+`PAPERCLIP_CHAT_INSTALLED_SOURCE_CONFIG` contract. It selects published
+`paperclipai@2026.1023.0` with its fixed npm SHA512 integrity and names the
+existing `OPENROUTER_API_KEY` input. No new key, account or credential alias is
+introduced. The controller remains native OpenCode/DeepSeek1017; the declared Pi
+feature uses its actual required runtime and model.
+
+Official npm metadata for both `paperclipai` and `@paperclipai/server` version
+`2026.1023.0` supplies matching provenance source commit
+`ff835a3fc62fb50dd1c3cc2ff2246029adeb0d39`. That source includes the public
+`runtime setup pi` provisioner and its release inputs. This selects preparation
+inputs; it does not prove installed bytes, account access, readiness or a model
+call. The existing target independently checks downloaded archives, the exact
+installed CLI/server/tree/version and running process, real initial Pi asset
+absence, release-matched provisioned assets and genuine native Pi task evidence.
+A package download alone never qualifies the case.
+
+The owned input file is removed after the paid command, including failure,
+before evidence transfer. The existing selected private input/scanner and secret
+reference paths remain in force. The original three work runs, two human
+messages and 1,440-second feature attempt are unchanged. Actual preparation,
+auxiliary runtime/model use and usage remain separately observed, not inferred.
+`onboarding.new-instance` does not consume this configuration; its separate
+installed-candidate preparation and original zero/zero/600-second boundary are
+unchanged. A missing protected approval or required evidence still fails closed.

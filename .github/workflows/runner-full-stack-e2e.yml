@@ -1298,6 +1298,34 @@ jobs:
           finalization_status=$?
           test "$run_status" = 0 && test "$finalization_status" = 0
 
+      - name: Prepare release-matched Pi installation inputs
+        id: provision_inputs
+        if: needs.catalog.outputs.operations_cadence == '' && steps.manual_cell_route.outputs.route == 'private' && steps.manual_private_verified.outcome == 'success' && matrix.profileId == 'runner-opencode' && matrix.environmentId == 'local' && matrix.executionId == 'chat-features.runner-opencode.local.instance-operations.provision-runtime'
+        env:
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          let directory;
+          try {
+            if (process.env.SELECTED_EXECUTION_ID !== "chat-features.runner-opencode.local.instance-operations.provision-runtime") throw new Error();
+            const temporary = fs.realpathSync(process.env.RUNNER_TEMP);
+            if (/[\r\n]/.test(temporary)) throw new Error();
+            directory = fs.mkdtempSync(path.join(temporary, "paperclip-provision-inputs-"));
+            fs.chmodSync(directory, 0o700);
+            const config = { schemaVersion: 1, disposable: true,
+              source: { version: "2026.1023.0", integrity: "sha512-PA2gLYoJKcmen1YaNr7jtyyZK2xNyW92XEedgZ82S1MMeMEB2kdmk1okRMD4aFUV4OZPFBwk76pV0jCM2Fuy0g==" },
+              piCredentialEnv: "OPENROUTER_API_KEY" };
+            const filename = path.join(directory, "installed-source.json");
+            fs.writeFileSync(filename, JSON.stringify(config), { flag: "wx", mode: 0o600 });
+            fs.appendFileSync(process.env.GITHUB_ENV, `PAPERCLIP_PROVISION_INPUT_ROOT=${directory}\nPAPERCLIP_CHAT_INSTALLED_SOURCE_CONFIG=${filename}\n`);
+          } catch {
+            if (directory) fs.rmSync(directory, { recursive: true, force: true });
+            process.stderr.write("Selected published installation input preparation failed; details withheld\n"); process.exitCode = 1;
+          }
+          NODE
+
       - name: Run paid cell
         if: needs.catalog.outputs.operations_cadence == '' && (steps.manual_cell_route.outputs.route == 'actions' || steps.manual_private_verified.outcome == 'success')
         env:
@@ -1323,6 +1351,24 @@ jobs:
           else
             pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
           fi
+
+      - name: Remove selected Pi installation input files
+        if: always() && env.PAPERCLIP_PROVISION_INPUT_ROOT != ''
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          try {
+            const root = process.env.PAPERCLIP_PROVISION_INPUT_ROOT;
+            const temporary = fs.realpathSync(process.env.RUNNER_TEMP);
+            const info = root ? fs.lstatSync(root) : undefined;
+            if (!root || path.dirname(root) !== temporary || !path.basename(root).startsWith("paperclip-provision-inputs-")
+              || !info?.isDirectory() || info.isSymbolicLink() || fs.realpathSync(root) !== root
+              || info.uid !== process.getuid() || (info.mode & 0o077)) throw new Error();
+            fs.rmSync(root, { recursive: true, force: true });
+            fs.appendFileSync(process.env.GITHUB_ENV, "PAPERCLIP_PROVISION_INPUT_ROOT=\nPAPERCLIP_CHAT_INSTALLED_SOURCE_CONFIG=\n");
+          } catch { process.stderr.write("Selected published installation input cleanup failed; details withheld\n"); process.exitCode = 1; }
+          NODE
 
       - name: Stage bounded campaign evidence
         id: stage_evidence
