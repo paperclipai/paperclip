@@ -37,7 +37,9 @@ export async function prepareChatRemoteHost(input: { executions: readonly Select
   try {
     const testOpsPilot = env.GITHUB_WORKFLOW_REF === testOpsWorkflow && env.PAPERCLIP_CHAT_COMPLETION_TESTOPS === "v1"
       && env.GITHUB_RUN_ATTEMPT === "1" && /^[1-9][0-9]{0,15}$/.test(env.ALLURE_JOB_RUN_ID ?? "")
-      && input.executions.every(execution => testOpsPilotIds.has(execution.id));
+      && Number.isSafeInteger(Number(env.ALLURE_JOB_RUN_ID))
+      && input.executions.every(execution => testOpsPilotIds.has(execution.id)
+        && execution.id === `chat-features.runner-opencode.local.${execution.task.id}`);
     if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_REPOSITORY !== "paperclipai/paperclip" || env.GITHUB_REF !== "refs/heads/master"
       || env.GITHUB_WORKFLOW_REF !== workflow && !testOpsPilot
       || !/^\d+$/.test(env.GITHUB_RUN_ID ?? "") || !/^\d+$/.test(env.GITHUB_RUN_ATTEMPT ?? "") || deps.platform !== "linux" || deps.arch !== "x64") throw new Error(reason);
@@ -45,6 +47,7 @@ export async function prepareChatRemoteHost(input: { executions: readonly Select
     const source = await deps.sourceRevision(input.repositoryRoot);
     if (!/^[a-f0-9]{40}$/.test(source) || env.PAPERCLIP_RUNNER_E2E_SOURCE_SHA !== source) throw new Error(reason);
     Object.assign(receipt, { workflowRef: env.GITHUB_WORKFLOW_REF, workflowRunId: env.GITHUB_RUN_ID, workflowAttempt: Number(env.GITHUB_RUN_ATTEMPT), sourceRevision: source });
+    if (testOpsPilot) Object.assign(receipt, { testOps: { admission: "v1", allureJobRunId: env.ALLURE_JOB_RUN_ID } });
     reason = "aws-instance-identity-unavailable";
     const tokenResponse = await deps.fetch("http://169.254.169.254/latest/api/token", { method: "PUT", redirect: "error", headers: { "X-aws-ec2-metadata-token-ttl-seconds": "60" }, signal: AbortSignal.timeout(5000) });
     if (!tokenResponse.ok) throw new Error(reason);
