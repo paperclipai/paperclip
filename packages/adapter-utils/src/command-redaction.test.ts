@@ -145,3 +145,111 @@ second-line\" status=401`;
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
   });
 });
+
+describe("unquoted secret values stop before a backslash run that introduces a quote", () => {
+  it("keeps JSON valid when an apikey value is followed by an escaped quote", () => {
+    const input = '{"v":"a.js?apikey=SECRET123\\",\\"bnt_t\\""}';
+    const output = redactCommandText(input);
+    expect(output).toBe('{"v":"a.js?apikey=***REDACTED***\\",\\"bnt_t\\""}');
+    expect(() => JSON.parse(output)).not.toThrow();
+    expect(output).not.toContain("SECRET123");
+  });
+
+  it("keeps a CLI secret option value from eating a following escaped quote", () => {
+    expect(redactCommandText('tool --apikey=SECRET123\\",\\"x\\"'))
+      .toBe('tool --apikey=***REDACTED***\\",\\"x\\"');
+  });
+
+  it("keeps a bearer value from eating a following escaped quote", () => {
+    expect(redactCommandText('Authorization: Bearer SECRET123\\",\\"x\\"'))
+      .toBe('Authorization: Bearer ***REDACTED***\\",\\"x\\"');
+  });
+
+  it("keeps a backslash run that introduces a single quote outside the value", () => {
+    expect(redactCommandText("apikey=SECRET123\\' trailing"))
+      .toBe("apikey=***REDACTED***\\' trailing");
+  });
+
+  it("still consumes backslashes that do not introduce a quote", () => {
+    expect(redactCommandText("token=C:\\path\\to\\file end"))
+      .toBe("token=***REDACTED*** end");
+  });
+});
+
+describe("backslash runs before value terminators", () => {
+  const run = "\\".repeat(3);
+
+  it("leaves a backslash run visible before whitespace", () => {
+    expect(redactCommandText(`token=abc${run} end`)).toBe(
+      `token=${REDACTED_COMMAND_TEXT_VALUE}${run} end`,
+    );
+  });
+
+  it("leaves a backslash run visible before a backtick", () => {
+    expect(redactCommandText("token=abc" + run + "` end")).toBe(
+      "token=" + REDACTED_COMMAND_TEXT_VALUE + run + "` end",
+    );
+  });
+
+  it("leaves a backslash run visible before a quote", () => {
+    expect(redactCommandText(`token=abc${run}" end`)).toBe(
+      `token=${REDACTED_COMMAND_TEXT_VALUE}${run}" end`,
+    );
+  });
+
+  it("consumes a backslash run at the end of input", () => {
+    expect(redactCommandText(`token=abc${run}`)).toBe(
+      `token=${REDACTED_COMMAND_TEXT_VALUE}`,
+    );
+  });
+
+  it("consumes a backslash run before a value character", () => {
+    expect(redactCommandText(`token=abc${run}def end`)).toBe(
+      `token=${REDACTED_COMMAND_TEXT_VALUE} end`,
+    );
+  });
+});
+
+describe("CLI quoted values ending in a backslash redact", () => {
+  it("redacts a double-quoted CLI value ending in a single backslash", () => {
+    expect(redactCommandText('--token "SECRET123\\"')).toBe(
+      `--token "${REDACTED_COMMAND_TEXT_VALUE}\\"`,
+    );
+  });
+
+  it("redacts a Windows-style quoted CLI path ending in a backslash", () => {
+    expect(redactCommandText('--token "C:\\path\\" end')).toBe(
+      `--token "${REDACTED_COMMAND_TEXT_VALUE}\\" end`,
+    );
+  });
+
+  it("redacts a single-quoted CLI value ending in a backslash", () => {
+    expect(redactCommandText("--token 'SECRET123\\'")).toBe(
+      `--token '${REDACTED_COMMAND_TEXT_VALUE}\\'`,
+    );
+  });
+
+  it("redacts an equals-form quoted CLI value ending in a backslash", () => {
+    expect(redactCommandText('--token="SECRET123\\"')).toBe(
+      `--token="${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+  });
+
+  it("redacts a quoted CLI value ending in a double backslash run", () => {
+    expect(redactCommandText('--token "SECRET123\\\\" end')).toBe(
+      `--token "${REDACTED_COMMAND_TEXT_VALUE}\\\\" end`,
+    );
+  });
+
+  it("redacts a quoted CLI value ending in a backslash without eating later text", () => {
+    expect(redactCommandText('--token "SECRET123\\" --verbose')).toBe(
+      `--token "${REDACTED_COMMAND_TEXT_VALUE}\\" --verbose`,
+    );
+  });
+
+  it("redacts up to the first escaped quote inside a quoted CLI value", () => {
+    expect(redactCommandText('--token "SECRET123\\"cd" end')).toBe(
+      `--token "${REDACTED_COMMAND_TEXT_VALUE}\\"cd" end`,
+    );
+  });
+});
