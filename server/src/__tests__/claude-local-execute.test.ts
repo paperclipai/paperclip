@@ -1733,6 +1733,65 @@ describe("claude execute", () => {
     }
   });
 
+  it("fails a hook-blocked prompt instead of returning the echoed prompt as the reply", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-prompt-blocked-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    const reason = "The prompt was rejected by a project policy hook.";
+    const echoed = `UserPromptSubmit operation blocked by hook:\n${reason}\n\nOriginal prompt: ## Paperclip Wake Payload`;
+    await writeTextFailingClaudeCommand(commandPath, {
+      exitCode: 0,
+      stdout: [
+        { type: "system", subtype: "init", session_id: "11111111-1111-4111-8111-111111111111", model: "claude-test" },
+        { type: "system", subtype: "informational", content: echoed, level: "warning", prevent_continuation: true,
+          prompt_submit_outcome: { kind: "blocked_by_hook", prompt_kept: false, reason } },
+        { type: "result", subtype: "success", is_error: false, num_turns: 0, result: echoed,
+          session_id: "11111111-1111-4111-8111-111111111111", usage: { input_tokens: 0, output_tokens: 0 } },
+      ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-prompt-blocked",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.errorCode).toBe("claude_prompt_blocked_by_hook");
+      expect(result.errorMessage).toContain(reason);
+      expect(result.summary).toBe("");
+      expect(JSON.stringify(result.resultJson)).not.toContain("Paperclip Wake Payload");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
     const workspace = path.join(root, "workspace");
