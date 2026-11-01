@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -499,6 +499,74 @@ describe("ssh env-lab fixture", () => {
     expect(remoteScript).toContain("--version");
     await target.cleanup();
   });
+
+  // Debian and Ubuntu use dash as /bin/sh. A bash-only line in a login profile,
+  // such as `export -a`, is a special builtin error, and dash exits the whole
+  // shell on it: `|| true` never runs. The wrapper must survive that profile
+  // and keep the PATH that the profile exported before the failing line.
+  const dashPath = (() => {
+    try {
+      return execFileSync("sh", ["-c", "command -v dash"], { encoding: "utf8" }).trim() || null;
+    } catch {
+      return null;
+    }
+  })();
+
+  it.skipIf(!dashPath)(
+    "survives a bash-only login profile when the remote /bin/sh is dash",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-dash-profile-"));
+      try {
+        const homeDir = path.join(rootDir, "home");
+        const binDir = path.join(rootDir, "bin");
+        await mkdir(homeDir, { recursive: true });
+        await mkdir(binDir, { recursive: true });
+        // Route the wrapper's `sh -c` through dash, as on a Debian/Ubuntu host.
+        await symlink(dashPath!, path.join(binDir, "sh"));
+        await writeFile(
+          path.join(homeDir, ".bash_profile"),
+          'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n',
+        );
+        await writeFile(
+          path.join(homeDir, ".bashrc"),
+          [
+            'export PATH="/opt/from-bashrc/bin:$PATH"',
+            'if [[ -n "$PS1" ]]; then :; fi',
+            "export -a",
+            "",
+          ].join("\n"),
+        );
+
+        const target = await buildSshSpawnTarget({
+          spec: {
+            host: "ssh.example.test",
+            port: 22,
+            username: "ssh-user",
+            remoteCwd: rootDir,
+            remoteWorkspacePath: rootDir,
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+          command: "sh",
+          args: ["-c", 'printf "%s" "$PATH"'],
+          env: { FOO: "bar" },
+        });
+        await target.cleanup();
+
+        // The last ssh argument is the command line the remote login shell runs.
+        const remoteCommandLine = String(target.args.at(-1) ?? "");
+        const output = execFileSync(dashPath!, ["-c", remoteCommandLine], {
+          encoding: "utf8",
+          env: { HOME: homeDir, PATH: `${binDir}:/usr/bin:/bin` },
+        });
+
+        expect(output.split(":")[0]).toBe("/opt/from-bashrc/bin");
+      } finally {
+        await rm(rootDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("rejects invalid environment variable keys when constructing SSH spawn targets", async () => {
     await expect(
