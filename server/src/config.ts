@@ -243,6 +243,9 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
     providerId: process.env.PAPERCLIP_AUTH_OIDC_PROVIDER_ID,
     displayName: process.env.PAPERCLIP_AUTH_OIDC_DISPLAY_NAME,
     discoveryUrl: process.env.PAPERCLIP_AUTH_OIDC_DISCOVERY_URL,
+    authorizationUrl: process.env.PAPERCLIP_AUTH_OIDC_AUTHORIZATION_URL,
+    tokenUrl: process.env.PAPERCLIP_AUTH_OIDC_TOKEN_URL,
+    userInfoUrl: process.env.PAPERCLIP_AUTH_OIDC_USERINFO_URL,
     clientId: process.env.PAPERCLIP_AUTH_OIDC_CLIENT_ID,
   };
   const oidcFromEnv = authOidcConfigSchema.safeParse(oidcEnv);

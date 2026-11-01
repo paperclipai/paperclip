@@ -60,6 +60,9 @@ export const authOidcConfigSchema = z.object({
   providerId: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
   displayName: z.string().min(1),
   discoveryUrl: z.string().url(),
+  authorizationUrl: z.string().url().optional(),
+  tokenUrl: z.string().url().optional(),
+  userInfoUrl: z.string().url().optional(),
   clientId: z.string().min(1),
 }).strict();
 

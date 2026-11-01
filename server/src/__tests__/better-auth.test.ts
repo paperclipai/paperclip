@@ -285,6 +285,27 @@ describe("Better Auth OIDC login", () => {
     await expect(auth.$context).resolves.toBeDefined();
   });
 
+  it("signs in with explicit endpoints when discovery is unreachable", async () => {
+    vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
+    vi.stubEnv("PAPERCLIP_AUTH_OIDC_CLIENT_SECRET", "client-secret");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const auth = create({
+      authOidc: {
+        ...oidc,
+        authorizationUrl: "https://idm.example.test/ui/oauth2",
+        tokenUrl: "https://idm.example.test/oauth2/token",
+        userInfoUrl: "https://idm.example.test/oauth2/openid/paperclip/userinfo",
+      },
+    });
+    const provider = (await auth.$context).socialProviders.find((candidate) => candidate.id === "kanidm")!;
+    const redirect = await provider.createAuthorizationURL({
+      state: "state",
+      codeVerifier: "verifier",
+      redirectURI: `${origin}/api/auth/callback/kanidm`,
+    });
+    expect(redirect.origin + redirect.pathname).toBe("https://idm.example.test/ui/oauth2");
+  });
+
   it("starts a PKCE sign-in and links only verified emails", async () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
     vi.stubEnv("PAPERCLIP_AUTH_OIDC_CLIENT_SECRET", "client-secret");
