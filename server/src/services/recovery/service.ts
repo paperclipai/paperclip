@@ -133,6 +133,7 @@ import {
 } from "../issues.js";
 import {
   applyIssueMonitorPolicyTransition,
+  isPendingHumanReviewHold,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../issue-execution-policy.js";
@@ -4571,6 +4572,7 @@ export function recoveryService(
       successfulRunHandoffEscalated: 0,
       successfulRunHandoffRetried: 0,
       reviewParticipantRequeued: 0,
+      humanReviewHoldSkipped: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
@@ -4638,8 +4640,20 @@ export function recoveryService(
         }
       }
       if (isWaitingConversation(issue)) { result.skipped += 1; continue; }
+      const storedExecutionState = parseIssueExecutionState(issue.executionState);
+      // A pending execution-review stage held by a human (the sticky escalated
+      // hold after the review-round cap) is a live manual review path. A
+      // checkout can temporarily flip the issue to `in_progress` with an agent
+      // assignee without clearing `executionState`; without this guard the
+      // continuation lane retries the agent and files a stranded recovery
+      // action, kicking the card out of the board review queue. Only the
+      // recorded human participant can advance the stage, so stand down.
+      if (isPendingHumanReviewHold(storedExecutionState)) {
+        result.humanReviewHoldSkipped += 1;
+        continue;
+      }
       const executionState = issue.status === "in_review"
-        ? parseIssueExecutionState(issue.executionState)
+        ? storedExecutionState
         : null;
       const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
       const currentParticipant = pendingExecutionState
