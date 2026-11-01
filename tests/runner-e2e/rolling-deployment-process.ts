@@ -84,11 +84,13 @@ export async function startRollingDeploymentProcess(input: {
       }
       throw new Error(`Server ${input.name} did not become ready; inspect ${input.name}.log`);
     },
-    async stop() {
-      if (stopped) return;
-      await stopper.stopAll();
-      await new Promise<void>(resolve => log.end(resolve));
-      stopped = true;
+    async stop(options: { requireGraceful?: boolean } = {}) {
+      if (!stopped) {
+        await stopper.stopAll();
+        await new Promise<void>(resolve => log.end(resolve));
+        stopped = true;
+      }
+      if (options.requireGraceful) stopper.assertGracefulExit(child);
     },
   };
 }

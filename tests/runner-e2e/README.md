@@ -102,7 +102,9 @@ run/file oracles. Its supervisor starts an independent empty-home server, waits
 for `/api/ready`, moves ingress, sends SIGTERM to the predecessor, and deletes
 that predecessor's whole home and build. Continuous ordinary task reads and
 comment saves must have zero failures, and every accepted save must be read back
-exactly once. It repeats replacement after completion before the retained-session
+exactly once. Forced process cleanup fails graceful qualification even if the
+successor recovers the execution. The read-only observer shares the controllers'
+disposable encryption key. It repeats replacement after completion before the retained-session
 follow-up. The five-minute outage suites are unchanged.
 
 ```sh

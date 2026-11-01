@@ -50,6 +50,10 @@ export async function superviseRollingDeployment(input: {
     return await response.json() as T;
   };
   let current: Server | undefined, lastRequest: string | undefined, probeIssueId: string | undefined;
+  // The read-only observer uses the production checkpoint loader in this
+  // isolated supervisor process. Give it the same disposable key as A/B/C.
+  const previousMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  process.env.PAPERCLIP_SECRETS_MASTER_KEY = environment.PAPERCLIP_SECRETS_MASTER_KEY;
   try {
     current = await start(); await current.waitForReady(); proxy.routeTo(current.origin);
     while (!input.cancelled()) {
@@ -91,7 +95,7 @@ export async function superviseRollingDeployment(input: {
           start: async () => { const server = await start(); return { pid: server.child.pid, server }; },
           waitForReady: async replacement => { await replacement.server.waitForReady(); },
           switchTraffic: replacement => { current = replacement.server; proxy.routeTo(current.origin); },
-          stopPrevious: () => previous.stop(),
+          stopPrevious: () => previous.stop({ requireGraceful: true }),
           deletePreviousHome: () => rm(previous.home, { recursive: true }),
           beforeHandoff: observer?.beforeHandoff,
           afterHandoff: observer ? (receipt, record) => observer.recovered(receipt, record, input.cancelled) : undefined,
@@ -112,7 +116,12 @@ export async function superviseRollingDeployment(input: {
   } finally {
     // Every started server remains owned, including an unready successor.
     // End-of-attempt cleanup also runs after a retained failing receipt.
-    await Promise.all(servers.map(server => server.stop()));
-    await proxy.close();
+    try {
+      try { await Promise.all(servers.map(server => server.stop())); }
+      finally { await proxy.close(); }
+    } finally {
+      if (previousMasterKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      else process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousMasterKey;
+    }
   }
 }

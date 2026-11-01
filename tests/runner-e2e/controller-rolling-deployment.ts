@@ -8,6 +8,7 @@ export const isRollingWebDeployment = (execution: Pick<MatrixExecution, "suite">
 export interface ControllerRollingDeploymentReceipt extends Omit<ControllerOutageReceipt, "schema" | "holdMs" | "signal"> {
   schema: "paperclip.e2e.controller-rolling-deployment/v1";
   signal: "SIGTERM";
+  gracefulShutdown?: boolean;
   trafficSwitchedAfterMs?: number;
   homeDeletedAfterMs?: number;
   previousHomeRemoved?: boolean;
@@ -23,7 +24,7 @@ export function validControllerRollingDeploymentReceipt(value: unknown, requestI
     && Number.isFinite(Date.parse(r.startedAt))
     && Number.isSafeInteger(r.previousPid) && r.previousPid > 0
     && Number.isSafeInteger(r.replacementPid) && r.replacementPid! > 0 && r.previousPid !== r.replacementPid
-    && r.cacheDiscarded === true && r.previousHomeRemoved === true
+    && r.cacheDiscarded === true && r.previousHomeRemoved === true && r.gracefulShutdown === true
     && times.every(ms => typeof ms === "number" && Number.isFinite(ms) && ms >= 0)
     && r.replacementStartedAfterMs! <= r.readyAfterMs! && r.readyAfterMs! <= r.trafficSwitchedAfterMs!
     && r.trafficSwitchedAfterMs! <= r.stoppedAfterMs! && r.stoppedAfterMs! <= r.homeDeletedAfterMs!
@@ -55,7 +56,7 @@ export async function rollController<T extends { pid?: number }>(input: {
   // SIGTERM, so an observation taken after A exits would miss that boundary.
   await input.beforeHandoff?.(receipt); check();
   input.switchTraffic(replacement); receipt.trafficSwitchedAfterMs = elapsed(); await record();
-  await input.stopPrevious(); receipt.stoppedAfterMs = elapsed(); await record();
+  await input.stopPrevious(); receipt.gracefulShutdown = true; receipt.stoppedAfterMs = elapsed(); await record();
   await input.deletePreviousHome(); receipt.homeDeletedAfterMs = elapsed();
   receipt.previousHomeRemoved = true; receipt.cacheDiscarded = true; await record();
   await input.afterHandoff?.(receipt, record);

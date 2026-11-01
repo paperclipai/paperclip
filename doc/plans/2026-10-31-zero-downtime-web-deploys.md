@@ -250,10 +250,27 @@ the normal build vendoring step corrected it. All three attempts cleaned up.
 
 Staging read-only discovery and authentication work with AWS `paperclip-dev`
 (account `078455283791`); production `paperclip-prod` is also authenticated.
-The existing shared `canary-staging` stack is `stack-pool-8fabb27531db77af`.
+The existing shared `canary-staging` stack is `stack-pool-8fabb27531db`.
 Do not assume it is exclusively owned: select a dedicated zero-downtime test
 stack or acquire the existing stack operation lock before any hosted mutation.
 No hosted mutation or paid model call has occurred for this task yet.
 
 Remaining: live overlap proof; released artifacts; migration/enrollment and
 compatible rollback; ten staging deployments; internal production canary.
+
+The active-overlap harness is a separate stacked PR [#18526](https://github.com/paperclipai/paperclip/pull/18526)
+on runtime PR #18518 to preserve the repository's review-size boundary. Its first
+review found that the checkpoint observer lacked the disposable encryption key
+and that forced process cleanup could pass graceful qualification. Both are
+corrected; 22 focused tests passed, including actual child shutdown and shared
+key decryption/restoration. The earlier model-free receipt remains evidence for
+HTTP availability and cleanup, not active checkpoint recovery.
+
+The full harness run at `0f122611a1` completed with 5,814 passes, 17 failures and
+four skips. Preserve `/private/tmp/paperclip-zdt-e2e-unit-all-rolling.log`:
+four onboarding mock expectations, four unchanged workflow security expectations,
+one Pi profile version expectation, three date-expired accounting fixtures,
+two report-command timeouts, two process-shutdown races and one host embedded
+Postgres startup failure. The complete shutdown file passed in the focused run;
+other failures still need base-revision classification. No blanket green suite
+or live availability claim is made.

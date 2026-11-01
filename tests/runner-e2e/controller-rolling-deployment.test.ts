@@ -28,7 +28,7 @@ describe("rolling controller qualification", () => {
     expect(validControllerReplacementReceipt(receipt)).toBe(true);
     expect(validControllerOutageReceipt(receipt)).toBe(false);
     for (const changed of [
-      { previousHomeRemoved: false }, { cacheDiscarded: false }, { replacementPid: 100 },
+      { previousHomeRemoved: false }, { cacheDiscarded: false }, { replacementPid: 100 }, { gracefulShutdown: false },
       { trafficSwitchedAfterMs: -1 }, { readyAfterMs: receipt.stoppedAfterMs! + 1 },
       { probes: { reads: 10, writes: 3, verifiedWrites: 2, failures: [] } },
       { probes: { reads: 10, writes: 3, verifiedWrites: 3, failures: ["502"] } },
@@ -39,6 +39,11 @@ describe("rolling controller qualification", () => {
     const f = fixture(); f.input.waitForReady = async () => { throw new Error("B unready"); };
     await expect(rollController(f.input)).rejects.toThrow("B unready");
     expect(f.order).toEqual(["start-B"]);
+  });
+  it("rejects forced predecessor cleanup before deleting its home or observing recovery", async () => {
+    const f = fixture(); f.input.stopPrevious = async () => { throw new Error("forced shutdown"); };
+    await expect(rollController(f.input)).rejects.toThrow("forced shutdown");
+    expect(f.order).toEqual(["start-B", "B-ready", "observe-A", "route-B"]);
   });
   it("keeps the original outage contract separate from the explicit rolling cell", () => {
     const [rolling] = selectRunnerExecutions(parseRunnerSelectors(["--suite", "rolling-web-deployment"]));
