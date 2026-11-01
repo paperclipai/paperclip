@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, environments,
   executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
@@ -14,12 +14,14 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
 (recoveryPostgresSupport.supported ? describe : describe.skip)("lifecycle-cancelled workspace preservation", () => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
+  const fixtures = new Set<string>();
   async function seed() {
     if (!database) {
       database = await startRecoveryPostgres("lifecycle-cancelled-workspace-");
       db = createDb(database.connectionString);
     }
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    fixtures.add(runId);
     const workspaceId = randomUUID(), leaseId = randomUUID(), environmentId = randomUUID();
     const providerLeaseId = `allocation-${randomUUID()}`, snapshotId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Stopped native files", issuePrefix: companyId.slice(0, 8) });
@@ -54,7 +56,11 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
     return { companyId, agentId, issueId, runId, workspaceId, leaseId, reference, nativeCancellation, run };
   }
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
-  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  afterEach(async () => {
+    vi.useRealTimers(); vi.restoreAllMocks();
+    if (fixtures.size) await db.update(heartbeatRuns).set({ status: "failed" }).where(inArray(heartbeatRuns.id, [...fixtures]));
+    fixtures.clear();
+  });
 
   async function unchanged(f: Awaited<ReturnType<typeof seed>>) {
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
@@ -170,5 +176,60 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
       throw new Error("outer transaction rollback");
     })).rejects.toThrow("outer transaction rollback");
     await unchanged(f);
+  });
+
+  it.each(["existing", "renewed-under-lock"] as const)("waits for the actual %s controller lease deadline", async kind => {
+    const f = await seed();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const expiresAt = new Date(Date.now() + 600_000);
+    let release = () => {};
+    let blocker: Promise<void> | undefined;
+    if (kind === "existing") {
+      await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: expiresAt }).where(eq(heartbeatRuns.id, f.runId));
+    } else {
+      let ready!: (pid: number) => void;
+      const acquired = new Promise<number>(resolve => { ready = resolve; });
+      const released = new Promise<void>(resolve => { release = resolve; });
+      blocker = db.transaction(async tx => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.issueId)).for("update");
+        const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        ready(row.pid); await released;
+      });
+      const pid = await acquired;
+      const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        const registration = registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true);
+        await vi.waitFor(async () => {
+          const [row] = await db.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_stat_activity
+            where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))`);
+          expect(row.waiting).toBe(1);
+        });
+        await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: expiresAt }).where(eq(heartbeatRuns.id, f.runId));
+        release(); await blocker; await registration.ready;
+        expect(worker.nextWakeAt()).toBe(expiresAt.getTime());
+        const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled();
+        reads.mockRestore(); transactions.mockRestore();
+        await vi.advanceTimersByTimeAsync(300_001);
+        await vi.waitFor(async () => expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].resultJson)
+          .toHaveProperty("workspaceRestoreRecovery"));
+        expect(worker.nextWakeAt()).toBeNull();
+      } finally { release(); await blocker; await worker.stop(); }
+      return;
+    }
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      expect(worker.nextWakeAt()).toBe(expiresAt.getTime());
+      const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled();
+      reads.mockRestore(); transactions.mockRestore();
+      await vi.advanceTimersByTimeAsync(300_001);
+      await vi.waitFor(async () => expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].resultJson)
+        .toHaveProperty("workspaceRestoreRecovery"));
+      expect(worker.nextWakeAt()).toBeNull();
+    } finally { await worker.stop(); }
   });
 });

@@ -220,6 +220,8 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
       .where(and(pendingCancelledWorkspace(), scopeCondition({ companyId: entry.companyId, runId: entry.id })));
     if (!run || !eligible(run)) return null;
     if (!canRun() || signal?.aborted) throw new Error("Cancelled workspace preservation stopped");
+    const controllerDeadline = run.controllerLeaseExpiresAt?.getTime();
+    if (controllerDeadline && controllerDeadline > Date.now()) return { ...entry, dueAt: controllerDeadline };
     const [finalization] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
       eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
@@ -235,7 +237,9 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
     if (source) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
     const [current] = await db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
-    return current && current.status === "cancelled" && eligible(current) ? { ...entry, dueAt: Date.now() + 30_000 } : null;
+    const currentControllerDeadline = current?.controllerLeaseExpiresAt?.getTime();
+    return current && current.status === "cancelled" && eligible(current) ? { ...entry,
+      dueAt: currentControllerDeadline && currentControllerDeadline > Date.now() ? currentControllerDeadline : Date.now() + 30_000 } : null;
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.cancelledWorkspacePreservation, batchSize: 5,
