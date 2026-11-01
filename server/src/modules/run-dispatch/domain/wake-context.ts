@@ -16,6 +16,14 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
+export const PENDING_INTERACTION_WAKE_REASON = "interaction_pending";
+/**
+ * A bounded retry rewrites `wakeReason` (for example to
+ * `transient_failure_retry`), but the run keeps the authority of the wake it
+ * retries. This key carries that original identity forward so a gate that
+ * reads the wake reason still sees it after the rewrite.
+ */
+export const ORIGINAL_WAKE_REASON_KEY = "originalWakeReason";
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
 export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
@@ -107,6 +115,30 @@ export function allowsIssueInteractionWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !allowedWakeReasons.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot));
+}
+
+/**
+ * Reads the interaction id from a pending-card wake snapshot. A bounded retry
+ * keeps the card identity in `originalWakeReason` while its own `wakeReason`
+ * records the retry, so both shapes name the same authority. This is only an
+ * identifier: the caller must still verify in the database that the
+ * interaction is pending and addressed to the run's agent before treating it
+ * as authority to run outside assignee-ship.
+ */
+export function readPendingInteractionWakeId(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): string | null {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const originalWakeReason = readNonEmptyString(
+    contextSnapshot?.[ORIGINAL_WAKE_REASON_KEY],
+  );
+  if (
+    wakeReason !== PENDING_INTERACTION_WAKE_REASON &&
+    originalWakeReason !== PENDING_INTERACTION_WAKE_REASON
+  ) {
+    return null;
+  }
+  return readNonEmptyString(contextSnapshot?.interactionId);
 }
 
 export function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown): boolean {

@@ -35,6 +35,7 @@ function baseGateFacts(): ScheduledRetryFacts {
     issueAssigneeAgentId: "agent-1",
     issueExecutionRunId: "run-1",
     isNonAssigneeWorkspaceBusyRetry: false,
+    isAddressedPendingInteractionWake: false,
     reviewParticipant: NO_PARTICIPANT,
     activePauseHold: null,
     dependenciesBlocked: null,
@@ -56,6 +57,7 @@ function baseStalenessFacts(): QueuedRunFacts {
     isInteractionWake: false,
     isAuthorizedSourceScopedRecovery: false,
     isNonAssigneeWorkspaceBusyRetry: false,
+    isAddressedPendingInteractionWake: false,
     resumeIntent: false,
     wakeCommentIdPresent: false,
     continuationParkApplies: false,
@@ -244,6 +246,15 @@ describe("decideScheduledRetryGate", () => {
       ...baseGateFacts(),
       issueAssigneeAgentId: "agent-2",
       isNonAssigneeWorkspaceBusyRetry: true,
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
+  });
+
+  it("allows a retry for a pending card addressed to this agent on another agent's issue", () => {
+    const facts: ScheduledRetryFacts = {
+      ...baseGateFacts(),
+      issueAssigneeAgentId: "agent-2",
+      isAddressedPendingInteractionWake: true,
     };
     expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
   });
@@ -465,6 +476,27 @@ describe("decideQueuedRunStaleness", () => {
       isNonAssigneeWorkspaceBusyRetry: true,
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("allows a pending card addressed to this agent to run on another agent's issue", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueAssigneeAgentId: "agent-2",
+      isAddressedPendingInteractionWake: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("still cancels a non-assignee pending-card wake when the addressee is not verified", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueAssigneeAgentId: "agent-2",
+      isAddressedPendingInteractionWake: false,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_assignee_changed",
+    });
   });
 
   it("allows an authorized source-scoped recovery to bypass the ownership check", () => {
