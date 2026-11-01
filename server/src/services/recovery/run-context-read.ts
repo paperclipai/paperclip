@@ -7,6 +7,7 @@ const recoveryContextKeys = [
   "sourceRunId", "resumeFromRunId", "missingDisposition",
   "providerQuotaRetryNotBefore", "transientRetryNotBefore",
   "dispositionRepairAttempt", "dispositionRepairFingerprint", "legacyDispositionEpisode",
+  "legacyDispositionSourceContinuation",
   "reviewPathRecoveryAttempt", "reviewPathConsumedRef", "interactionId", "approvalId",
   "clearReason", "monitorAttemptCount", "wakeCommentIds", "wakeCommentId", "commentId",
   "externalChatContinuation", "paperclipWake", "paperclipWorkspace",

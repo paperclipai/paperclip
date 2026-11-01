@@ -2975,6 +2975,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       error: run.error ?? null,
       errorCode: run.errorCode ?? null,
       continuationAttempt,
+      contextSnapshot: run.contextSnapshot as Record<string, unknown> | null,
       evidence: {
         issueCommentsCreated: countValue(commentStats?.count),
         documentRevisionsCreated: countValue(documentStats?.count),

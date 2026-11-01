@@ -3923,10 +3923,12 @@ export function recoveryService(
     const state = await collectDispositionRepairSourceState(db, {
       issue: current,
     });
+    let sourceContinuationKey: string | null = null;
     if (episode) {
       if (!latestRun) return "skipped";
       const decision = await decidePersistedLegacyContinuation(current, latestRun.id, state, episode);
       if (decision.kind === "skip") return "skipped";
+      if (decision.kind === "continue_source_work") sourceContinuationKey = decision.idempotencyKey;
       state.fingerprint = legacyDispositionFingerprint(current.companyId, current.id, latestRun.agentId, episode.id);
     }
     if (state.hasActiveExecutionPath) return "skipped";
@@ -3996,6 +3998,48 @@ export function recoveryService(
           : "owner_budget_blocked",
       });
       return escalated ? "escalated" : "skipped";
+    }
+
+    if (sourceContinuationKey && episode && ownerAgentId && latestRun) {
+      const sourceContinuationContext = withRecoveryContext({
+        issueId: current.id,
+        taskId: current.id,
+        retryOfRunId: latestRun.id,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.disposition_repair_source_continuation",
+        bypassContinuationSummaryPark: true,
+        legacyDispositionSourceContinuation: true,
+        dispositionRepairFingerprint: episode.id,
+        dispositionRepairAttempt: episode.maxAttempts,
+      }, "normal_model");
+      let queued: Awaited<ReturnType<typeof deps.enqueueWakeup>>;
+      try {
+        queued = await deps.enqueueWakeup(ownerAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_continuation_needed",
+          idempotencyKey: sourceContinuationKey,
+          payload: sourceContinuationContext,
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          contextSnapshot: sourceContinuationContext,
+          issueStateGuard: { statuses: ["todo"], assigneeAgentId: ownerAgentId },
+        });
+      } catch (error) {
+        if (!isUniqueViolation(error, "agent_wakeup_requests_disposition_repair_idempotency_uq")) throw error;
+        const [existing] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, current.companyId),
+          eq(agentWakeupRequests.agentId, ownerAgentId),
+          eq(agentWakeupRequests.idempotencyKey, sourceContinuationKey),
+        )).limit(1);
+        if (!existing) throw error;
+        return "skipped";
+      }
+      if (queued) {
+        await resolveDispositionRepairActionAsCovered(current, "source_work_continuation_queued");
+      }
+      return queued ? "queued" : "skipped";
     }
 
     if (sameFingerprintAttempt >= maxAttempts) {
