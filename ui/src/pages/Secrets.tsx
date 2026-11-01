@@ -3181,7 +3181,12 @@ export function Secrets() {
           <DialogHeader>
             <DialogTitle>Delete secret</DialogTitle>
             <DialogDescription>
-              Permanently removes <strong>{deleteConfirm?.name}</strong>. Active bindings will fail until you remap them.
+              Permanently removes <strong>{deleteConfirm?.name}</strong>. Deletion is blocked while any agent,
+              project, routine, or environment still binds this secret. Remove those bindings first
+              {(deleteConfirm?.referenceCount ?? 0) > 0
+                ? ` (currently ${deleteConfirm?.referenceCount} binding${deleteConfirm?.referenceCount === 1 ? "" : "s"})`
+                : ""}
+              .
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
