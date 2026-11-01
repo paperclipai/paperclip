@@ -118,6 +118,7 @@ describe("claude_local ACP startup fallback", () => {
           networkScope: "allowlist",
           networkTrustedUrls: [paperclipApiUrl],
         }),
+        outputReadAheadBytes: 8 * 1024 * 1024,
       }),
     );
   });

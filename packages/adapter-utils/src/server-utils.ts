@@ -65,6 +65,14 @@ export interface RunProcessResult {
   // duplex control channel died before a clean completion.
   errorCode?: string | null;
   terminalResultCleanup?: TerminalResultCleanupEvidence | null;
+  outputCapture?: OutputCaptureEvidence;
+}
+
+export interface OutputCaptureEvidence {
+  readAheadBytes: number;
+  peakPendingLogBytes: number;
+  readAheadPauses: number;
+  pendingLogBytesAtExit: number | null;
 }
 
 export interface TerminalResultCleanupOptions {
@@ -147,6 +155,7 @@ export function signalRunningProcess(
 
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_OUTPUT_READ_AHEAD_BYTES = 8 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
@@ -4730,6 +4739,7 @@ export async function runChildProcess(
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
+    outputReadAheadBytes?: number;
   },
 ): Promise<RunProcessResult> {
   const onLogError =
@@ -4803,6 +4813,20 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        const readAheadBytes =
+          typeof opts.outputReadAheadBytes === "number" &&
+          Number.isFinite(opts.outputReadAheadBytes) &&
+          opts.outputReadAheadBytes > 0
+            ? Math.floor(opts.outputReadAheadBytes)
+            : 0;
+        let pendingLogBytes = 0;
+        const pausedOverReadAhead = new Set<NodeJS.ReadableStream>();
+        const outputCapture: OutputCaptureEvidence = {
+          readAheadBytes,
+          peakPendingLogBytes: 0,
+          readAheadPauses: 0,
+          pendingLogBytesAtExit: null,
+        };
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
         let terminalCleanupSignal: NodeJS.Signals | null = null;
@@ -4892,40 +4916,65 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        const queueLog = (
+          stream: "stdout" | "stderr",
+          readable: NodeJS.ReadableStream,
+          chunk: unknown,
+          text: string,
+        ) => {
+          const size = Buffer.isBuffer(chunk)
+            ? chunk.length
+            : Buffer.byteLength(text, "utf8");
+          pendingLogBytes += size;
+          if (pendingLogBytes > outputCapture.peakPendingLogBytes) {
+            outputCapture.peakPendingLogBytes = pendingLogBytes;
+          }
+          if (readAheadBytes === 0) {
+            readable.pause();
+          } else if (
+            pendingLogBytes > readAheadBytes &&
+            !pausedOverReadAhead.has(readable)
+          ) {
+            readable.pause();
+            pausedOverReadAhead.add(readable);
+            outputCapture.readAheadPauses += 1;
+          }
+          logChain = logChain
+            .then(() => opts.onLog(stream, text))
+            .catch((err) =>
+              onLogError(err, runId, `failed to append ${stream} log chunk`),
+            )
+            .finally(() => {
+              pendingLogBytes -= size;
+              maybeArmTerminalResultCleanup();
+              if (readAheadBytes === 0) {
+                resumeReadable(readable);
+              } else if (
+                pausedOverReadAhead.size > 0 &&
+                pendingLogBytes <= readAheadBytes / 2
+              ) {
+                for (const paused of pausedOverReadAhead) resumeReadable(paused);
+                pausedOverReadAhead.clear();
+              }
+            });
+        };
+
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
           if (!readable) return;
-          readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stdout", text))
-            .catch((err) =>
-              onLogError(err, runId, "failed to append stdout log chunk"),
-            )
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          queueLog("stdout", readable, chunk, text);
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
           const readable = child.stderr;
           if (!readable) return;
-          readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
-          logChain = logChain
-            .then(() => opts.onLog("stderr", text))
-            .catch((err) =>
-              onLogError(err, runId, "failed to append stderr log chunk"),
-            )
-            .finally(() => {
-              maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
-            });
+          queueLog("stderr", readable, chunk, text);
         });
 
         const stdin = child.stdin;
@@ -4952,6 +5001,7 @@ export async function runChildProcess(
         });
 
         child.on("exit", () => {
+          outputCapture.pendingLogBytesAtExit = pendingLogBytes;
           maybeArmTerminalResultCleanup();
         });
 
@@ -4961,6 +5011,21 @@ export async function runChildProcess(
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
             runningProcesses.delete(runId);
+            if (
+              readAheadBytes > 0 &&
+              ((outputCapture.pendingLogBytesAtExit ?? 0) > 0 ||
+                outputCapture.readAheadPauses > 0)
+            ) {
+              const note =
+                `[paperclip] output read-ahead: ${outputCapture.pendingLogBytesAtExit ?? 0} bytes ` +
+                `awaiting log at child exit, peak ${outputCapture.peakPendingLogBytes}, ` +
+                `bound ${readAheadBytes}, paused at bound ${outputCapture.readAheadPauses}x\n`;
+              logChain = logChain
+                .then(() => opts.onLog("stderr", note))
+                .catch((err) =>
+                  onLogError(err, runId, "failed to append output read-ahead note"),
+                );
+            }
             void logChain.finally(() => {
               void Promise.resolve()
                 .then(() => target.cleanup?.())
@@ -4973,6 +5038,7 @@ export async function runChildProcess(
                     stderr,
                     pid: child.pid ?? null,
                     startedAt,
+                    outputCapture,
                     terminalResultCleanup: terminalCleanupStarted
                       ? {
                           kind: "terminal_result_cleanup",
