@@ -1138,12 +1138,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   // after its assertions so another case (or shard order) cannot claim them.
   const fixtureCompanies = new Set<string>();
   const fixtureServices = new Set<ChatChannelService>();
+  const reclaimedLeaseTokens = new Set<string>();
   afterEach(async () => {
     try {
       await Promise.all([...fixtureServices].map((service) => service.shutdown()));
     } finally {
       const companyIds = [...fixtureCompanies];
       await retireFixtureState(companyIds);
+      await releaseReclaimedLeases([...reclaimedLeaseTokens]);
       if (companyIds.length > 0) {
         // Pausing an endpoint does not remove its rows from global recovery
         // selectors. After every assertion and worker shutdown, settle leftover
@@ -1157,8 +1159,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       fixtureServices.clear();
       fixtureCompanies.clear();
+      reclaimedLeaseTokens.clear();
     }
   });
+
+  function reclaimedLeaseTakeover() {
+    const token = `reclaimed-${randomUUID()}`;
+    reclaimedLeaseTokens.add(token);
+    return {
+      token,
+      expiresAt: new Date(Date.now() + 90_000),
+      updatedAt: new Date(),
+    };
+  }
+
+  async function releaseReclaimedLeases(tokens: string[]) {
+    if (tokens.length === 0) return;
+    await db
+      .delete(chatEndpointLeases)
+      .where(inArray(chatEndpointLeases.token, tokens));
+  }
 
   async function retireFixtureState(companyIds: string[]) {
     if (companyIds.length === 0) return;
@@ -1250,6 +1270,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
     return { companyId, assignedAgentId, replacementAgentId };
   }
+
+  it("cleans only synthetic takeover tokens and preserves other lease owners", async () => {
+    const fixture = await seedCompany();
+    const { endpoint } = await configuredTelegramEndpoint(fixture);
+    const synthetic = reclaimedLeaseTakeover();
+    const replaced = reclaimedLeaseTakeover();
+    const replacementToken = randomUUID();
+    const unrelatedToken = randomUUID();
+    const keys = ["cleanup-owned", "cleanup-replaced", "cleanup-unrelated"];
+    await db.insert(chatEndpointLeases).values([
+      { ...synthetic, leaseKey: keys[0]! },
+      { ...replaced, leaseKey: keys[1]! },
+      { token: unrelatedToken, expiresAt: synthetic.expiresAt, leaseKey: keys[2]! },
+    ].map((lease) => ({ ...lease, companyId: fixture.companyId, endpointId: endpoint.id })));
+    await db.update(chatEndpointLeases).set({ token: replacementToken })
+      .where(eq(chatEndpointLeases.token, replaced.token));
+
+    await releaseReclaimedLeases([...reclaimedLeaseTokens]);
+
+    const remaining = await db.select({ token: chatEndpointLeases.token })
+      .from(chatEndpointLeases)
+      .where(and(eq(chatEndpointLeases.endpointId, endpoint.id), inArray(chatEndpointLeases.leaseKey, keys)));
+    expect(remaining.map((row) => row.token).sort()).toEqual([replacementToken, unrelatedToken].sort());
+  });
 
   it("tracks the actual Board Teams claim and retires recovery when its receipt commits", async () => {
     const context = await teamsFileAuthorityFixture();
@@ -38411,11 +38455,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (input.companyId !== fixture.companyId || !reclaimLease) return true;
         const reclaimed = await db
           .update(chatEndpointLeases)
-          .set({
-            token: `reclaimed-${randomUUID()}`,
-            expiresAt: new Date(Date.now() + 90_000),
-            updatedAt: new Date(),
-          })
+          .set(reclaimedLeaseTakeover())
           .where(
             and(
               eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -38589,11 +38629,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (!reclaimLease) return true;
         const reclaimed = await db
           .update(chatEndpointLeases)
-          .set({
-            token: `reclaimed-${randomUUID()}`,
-            expiresAt: new Date(Date.now() + 90_000),
-            updatedAt: new Date(),
-          })
+          .set(reclaimedLeaseTakeover())
           .where(
             and(
               eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -38719,11 +38755,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           if (!reclaimLease) return true;
           const reclaimed = await db
             .update(chatEndpointLeases)
-            .set({
-              token: `reclaimed-${randomUUID()}`,
-              expiresAt: new Date(Date.now() + 90_000),
-              updatedAt: new Date(),
-            })
+            .set(reclaimedLeaseTakeover())
             .where(
               and(
                 eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -38793,11 +38825,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           if (!loseFinalOwnership) return true;
           await db
             .update(chatEndpointLeases)
-            .set({
-              token: `reclaimed-${randomUUID()}`,
-              expiresAt: new Date(Date.now() + 90_000),
-              updatedAt: new Date(),
-            })
+            .set(reclaimedLeaseTakeover())
             .where(
               and(
                 eq(chatEndpointLeases.endpointId, input.endpointId),
@@ -38864,11 +38892,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await db.transaction(async (tx) => {
             const [reclaimed] = await tx
               .update(chatEndpointLeases)
-              .set({
-                token: `reclaimed-${randomUUID()}`,
-                expiresAt: new Date(Date.now() + 90_000),
-                updatedAt: new Date(),
-              })
+              .set(reclaimedLeaseTakeover())
               .where(
                 and(
                   eq(chatEndpointLeases.endpointId, endpoint.id),

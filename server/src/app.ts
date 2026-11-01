@@ -236,6 +236,18 @@ import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
+
+export function createAppPluginDevWatcher(
+  uiMode: UiMode,
+  lifecycle: Parameters<typeof createPluginDevWatcher>[0],
+  resolvePluginPackagePath: NonNullable<Parameters<typeof createPluginDevWatcher>[1]>,
+  createWatcher: typeof createPluginDevWatcher = createPluginDevWatcher,
+  options: Parameters<typeof createPluginDevWatcher>[3] = {},
+): ReturnType<typeof createPluginDevWatcher> | null {
+  const optedIn = process.env.PAPERCLIP_PLUGIN_DEV_WATCH === "1";
+  if (!optedIn && (process.env.NODE_ENV === "production" || uiMode !== "vite-dev")) return null;
+  return createWatcher(lifecycle, resolvePluginPackagePath, undefined, options);
+}
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
@@ -1283,7 +1295,8 @@ export async function createApp(
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = managedAutoInstallKeys !== null ? null : createPluginDevWatcher(
+  const devWatcher = managedAutoInstallKeys !== null ? null : createAppPluginDevWatcher(
+    opts.uiMode,
     lifecycle,
     async (pluginId) =>
       (await pluginRegistry.getById(pluginId))?.packagePath ?? null,

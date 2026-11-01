@@ -12,6 +12,8 @@ vi.mock("chokidar", () => ({
   default: chokidarMock,
 }));
 
+import { createAppPluginDevWatcher } from "../app.js";
+
 import { createPluginDevWatcher, resolvePluginWatchTargets } from "../services/plugin-dev-watcher.js";
 
 const tempDirs: string[] = [];
@@ -22,6 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.useRealTimers();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
@@ -134,7 +137,9 @@ describe("createPluginDevWatcher", () => {
     devWatcher.close();
   });
 
-  it("never watches plugins installed from an unwatched root such as the bundled catalog", async () => {
+  it.each(["development", "production"])("startup excludes bundled plugins in %s while watching local plugins", async (mode) => {
+    vi.stubEnv("NODE_ENV", mode);
+    vi.stubEnv("PAPERCLIP_PLUGIN_DEV_WATCH", mode === "production" ? "1" : "");
     const catalogRoot = makeTempPluginDir();
     const bundledDir = path.join(catalogRoot, "sandbox-providers", "example");
     writePluginPackage(bundledDir);
@@ -143,12 +148,13 @@ describe("createPluginDevWatcher", () => {
     installMockFsWatcher();
     const lifecycle = createLifecycle();
 
-    const devWatcher = createPluginDevWatcher(
+    const devWatcher = createAppPluginDevWatcher(
+      "vite-dev",
       lifecycle as never,
       async (pluginId) => (pluginId === "bundled" ? bundledDir : localDir),
       undefined,
       { unwatchedRoots: [catalogRoot] },
-    );
+    )!;
 
     lifecycle.emit("plugin.loaded", { pluginId: "bundled", pluginKey: "bundled" });
     devWatcher.watch("bundled-direct", bundledDir);
