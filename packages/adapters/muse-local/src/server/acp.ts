@@ -228,9 +228,13 @@ async function commandIsResolvable(
   return (await findCommandOnPath(token, pathValue)) !== null;
 }
 
-async function resolveMuseAcpCommand(config: Record<string, unknown>): Promise<string> {
+async function resolveMuseAcpCommand(
+  config: Record<string, unknown>,
+  target?: ReturnType<typeof readAdapterExecutionTarget>,
+): Promise<string> {
   const configured = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
   if (configured) return configured;
+  if (target?.kind === "remote") return "muse-acp";
   const ancestor = await findAncestorBin(packageRootDir, "muse-acp");
   if (ancestor) return ancestor;
   return "muse-acp";
@@ -258,7 +262,7 @@ async function museAcpUnavailableReason(
   if (!nodeVersionMeetsMuseAcpMinimum()) {
     return `Node ${process.version} (${process.execPath}) does not satisfy Muse ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
-  const command = await resolveMuseAcpCommand(input.config);
+  const command = await resolveMuseAcpCommand(input.config, target);
   if (!(await commandIsResolvable(command, resolveConfigPath(input.config), input))) {
     return `Muse ACP command is not available: ${command}.`;
   }
@@ -325,8 +329,8 @@ export async function testMuseAcpEnvironment(
 
   const authJsonCandidates = [
     typeof envConfig.MUSE_AUTH_PATH === "string" ? envConfig.MUSE_AUTH_PATH : null,
-    typeof process.env.MUSE_AUTH_PATH === "string" ? process.env.MUSE_AUTH_PATH : null,
-    path.join(os.homedir(), ".config/muse/auth.json"),
+    considerHostEnv && typeof process.env.MUSE_AUTH_PATH === "string" ? process.env.MUSE_AUTH_PATH : null,
+    considerHostEnv ? path.join(os.homedir(), ".config/muse/auth.json") : null,
   ].filter(Boolean) as string[];
 
   let hasAuthJson = false;

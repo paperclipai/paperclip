@@ -113,38 +113,36 @@ export async function testEnvironment(
   }
 
   if (binaryFound) {
-    const originalXdgConfig = env.XDG_CONFIG_HOME || process.env.XDG_CONFIG_HOME;
-    const xdgConfig = env.XDG_CONFIG_HOME || path.join(runtimeEnv.HOME || os.homedir(), ".config");
-    const targetAuth = path.join(xdgConfig, "muse", "auth.json");
-    const sourceCandidates = [
-      env.MUSE_AUTH_PATH,
-      originalXdgConfig ? path.join(originalXdgConfig, "muse", "auth.json") : null,
-      path.join(runtimeEnv.HOME || os.homedir(), ".config/muse/auth.json"),
-    ].filter(Boolean) as string[];
-
     let hasAuth = false;
     let authContent: string | null = null;
-    if (await fs.access(targetAuth).then(() => true).catch(() => false)) {
-      hasAuth = true;
-      authContent = await fs.readFile(targetAuth, "utf8").catch(() => null);
+
+    if (targetIsRemote) {
+      // For remote targets, only accept credentials explicitly configured for the adapter/run
+      hasAuth = Boolean(env.MUSE_AUTH_PATH || env.META_API_KEY || env.MUSE_API_KEY);
+      if (env.MUSE_AUTH_PATH && (await fs.access(env.MUSE_AUTH_PATH).then(() => true).catch(() => false))) {
+        authContent = await fs.readFile(env.MUSE_AUTH_PATH, "utf8").catch(() => null);
+      }
     } else {
-      for (const src of sourceCandidates) {
-        if (src && src !== targetAuth && (await fs.access(src).then(() => true).catch(() => false))) {
-          try {
-            const data = await fs.readFile(src, "utf8");
-            await fs.mkdir(path.join(xdgConfig, "muse"), { recursive: true, mode: 0o700 });
-            await fs.writeFile(targetAuth, data, { mode: 0o600 });
-            hasAuth = true;
-            authContent = data;
-            break;
-          } catch {}
+      // Local targets: check configured env vars, or inspect local auth files (read-only, never mutate)
+      const originalXdgConfig = env.XDG_CONFIG_HOME || process.env.XDG_CONFIG_HOME;
+      const xdgConfig = env.XDG_CONFIG_HOME || path.join(runtimeEnv.HOME || os.homedir(), ".config");
+      const targetAuth = path.join(xdgConfig, "muse", "auth.json");
+      const sourceCandidates = [
+        env.MUSE_AUTH_PATH,
+        originalXdgConfig ? path.join(originalXdgConfig, "muse", "auth.json") : null,
+        path.join(runtimeEnv.HOME || os.homedir(), ".config/muse/auth.json"),
+      ].filter(Boolean) as string[];
+
+      for (const src of [targetAuth, ...sourceCandidates]) {
+        if (src && (await fs.access(src).then(() => true).catch(() => false))) {
+          hasAuth = true;
+          authContent = await fs.readFile(src, "utf8").catch(() => null);
+          break;
         }
       }
-    }
-    if (targetIsRemote) {
-      hasAuth = Boolean(authContent || env.MUSE_AUTH_PATH || env.META_API_KEY);
-    } else if (!hasAuth && (env.META_API_KEY || runtimeEnv.META_API_KEY)) {
-      hasAuth = true;
+      if (!hasAuth && (env.META_API_KEY || env.MUSE_API_KEY || runtimeEnv.META_API_KEY || runtimeEnv.MUSE_API_KEY)) {
+        hasAuth = true;
+      }
     }
 
     if (hasAuth) {

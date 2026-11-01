@@ -138,11 +138,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const targetAuth = path.join(runTmpDir, "muse", "auth.json");
-  const sourceCandidates = [
-    env.MUSE_AUTH_PATH,
-    originalXdgConfig ? path.join(originalXdgConfig, "muse", "auth.json") : null,
-    path.join(process.env.HOME || os.homedir(), ".config/muse/auth.json"),
-  ].filter(Boolean) as string[];
+    const targetIsRemote = executionTarget?.kind === "remote";
+    const sourceCandidates = [
+      env.MUSE_AUTH_PATH,
+      originalXdgConfig ? path.join(originalXdgConfig, "muse", "auth.json") : null,
+      !targetIsRemote ? path.join(process.env.HOME || os.homedir(), ".config/muse/auth.json") : null,
+    ].filter(Boolean) as string[];
 
   for (const src of sourceCandidates) {
     if (src && src !== targetAuth && (await fs.access(src).then(() => true).catch(() => false))) {

@@ -207,6 +207,7 @@ export class MuseAcpBridge {
     const req: any = { jsonrpc: "2.0", method, params };
     let promise: Promise<any> = Promise.resolve();
     if (id !== undefined) {
+      req.id = id;
       promise = new Promise((resolve, reject) => {
         this.mspPendingRequests.set(id, { resolve, reject });
       });
