@@ -16,6 +16,7 @@ const EXPECTED_BUNDLED_KEYS = [
 const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/communications/speko-company-phone-agent",
   "paperclipai/optional/content/content-machine",
+  "paperclipai/optional/software-development/full-sdlc-team",
 ];
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,6 +101,16 @@ describe("shipped teams catalog", () => {
       "product-engineering/qa": { role: "qa", reportsTo: "cto", skills: ["qa-acceptance"] },
       "product-engineering/senior-coder": { role: "engineer", reportsTo: "cto", skills: ["github-pr-workflow", "doc-maintenance"] },
       "product-design/ux-designer": { role: "designer", reportsTo: null, skills: ["wireframe", "design-critique", "task-planning"] },
+      "full-sdlc-team/architect": { role: "engineer", reportsTo: "delivery-lead", skills: ["doc-maintenance", "github-pr-workflow"] },
+      "full-sdlc-team/backend-dev": { role: "engineer", reportsTo: "delivery-lead", skills: ["github-pr-workflow", "doc-maintenance"] },
+      "full-sdlc-team/business-analyst": { role: "analyst", reportsTo: "delivery-lead", skills: ["task-planning", "doc-maintenance"] },
+      "full-sdlc-team/delivery-lead": { role: "engineering-manager", reportsTo: null, skills: ["task-planning", "github-pr-workflow", "doc-maintenance"] },
+      "full-sdlc-team/devops": { role: "devops", reportsTo: "delivery-lead", skills: ["github-pr-workflow", "doc-maintenance"] },
+      "full-sdlc-team/frontend-dev": { role: "engineer", reportsTo: "delivery-lead", skills: ["github-pr-workflow", "doc-maintenance"] },
+      "full-sdlc-team/mobile-dev": { role: "engineer", reportsTo: "delivery-lead", skills: ["github-pr-workflow", "doc-maintenance"] },
+      "full-sdlc-team/qa": { role: "qa", reportsTo: "delivery-lead", skills: ["qa-acceptance"] },
+      "full-sdlc-team/security": { role: "engineer", reportsTo: "delivery-lead", skills: ["qa-acceptance", "doc-maintenance"] },
+      "full-sdlc-team/ux-designer": { role: "designer", reportsTo: "delivery-lead", skills: ["wireframe", "doc-maintenance"] },
       "speko-company-phone-agent/speko-company-phone-agent": { role: "general", reportsTo: null, skills: undefined },
       "content-machine/content-lead": { role: "content-strategist", reportsTo: null, skills: ["content-calendar"] },
     };
