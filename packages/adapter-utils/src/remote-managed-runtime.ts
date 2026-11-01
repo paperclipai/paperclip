@@ -116,11 +116,6 @@ export async function prepareRemoteManagedRuntime(input: {
   syncWorkspace?: boolean;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
-  /**
-   * Nested git worktree directories (relative to the workspace and every
-   * project repository) that are neither uploaded nor restored. Defaults to
-   * `.paperclip/worktrees` and `.claude/worktrees`; `[]` syncs them.
-   */
   nestedWorktreeDirs?: readonly string[];
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */

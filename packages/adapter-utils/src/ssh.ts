@@ -441,8 +441,6 @@ async function estimateLocalDirSize(input: {
   followSymlinks?: boolean;
 }): Promise<number> {
   const regexes = ["._*", ...(input.exclude ?? [])].map(tarPatternToRegExp);
-  // tar matches an unanchored pattern against any trailing run of path
-  // components, so test every suffix of the path.
   const isExcluded = (relPath: string) => {
     const segments = relPath.split("/");
     return segments.some((_, index) => {
@@ -473,22 +471,9 @@ async function estimateLocalDirSize(input: {
 
 interface RemoteDirSizeEstimate {
   bytes: number;
-  // False when only an unfiltered `du` was available, so the figure also counts
-  // the excluded paths and can over-state what tar will actually stream.
   excludeAware: boolean;
 }
 
-// Best-effort remote size probe for the from-ssh restore. `du -sk` is POSIX and
-// available on the BSD/Linux remotes we target; it is block-rounded, which keeps
-// the reported percent safely below 100 until the stream actually closes. GNU
-// `--exclude` and BSD `-I` are tried so the figure leaves out what tar skips;
-// a remote with neither falls back to the unfiltered total. `--count-links`
-// counts each hard link separately: `du` otherwise counts linked contents once,
-// but the baseline merge writes a separate copy for every filename, so the
-// uncounted links would fill the disk after the check passed. Returns null when
-// unavailable so the caller falls back to MB-received mode and skips the
-// free-space preflight. (BSD `du` has no count-links equivalent, so the BSD
-// fallback stays a lower bound when the remote hardlinks large files.)
 async function probeRemoteDirSize(input: {
   spec: SshConnectionConfig;
   remoteDir: string;
@@ -498,13 +483,10 @@ async function probeRemoteDirSize(input: {
   const patterns = rawPatterns.map(shellQuote);
   const gnuFlags = patterns.map((pattern) => `--exclude=${pattern}`).join(" ");
   const bsdFlags = patterns.map((pattern) => `-I ${pattern}`).join(" ");
-  // BSD `du -I` matches a mask against the entry name only, so a pattern with a
-  // path separator never matches and its figure still counts those paths.
   const bsdExcludeAware = rawPatterns.every((pattern) => !pattern.includes("/"));
   const script = [
     `cd ${shellQuote(input.remoteDir)} 2>/dev/null || exit 0`,
     `size=$(du -sk --count-links ${gnuFlags} . 2>/dev/null | cut -f1)`,
-    // tar streams a sparse file as zeros, so the restore writes its apparent size.
     `if [ -n "$size" ]; then`,
     `  apparent=$(du -sk --count-links --apparent-size ${gnuFlags} . 2>/dev/null | cut -f1)`,
     `  if [ -n "$apparent" ] && [ "$apparent" -gt "$size" ]; then size=$apparent; fi`,
@@ -526,22 +508,33 @@ async function probeRemoteDirSize(input: {
   }
 }
 
-// Peak staging usage is one copy of the restored tree. The 2x factor in the
-// issue becomes "every tree plus the largest": each merge can add a full copy
-// to a workspace that shares the temp volume, and the next tree stages on top.
-// For a single tree that is exactly 2x.
 const STAGING_SPACE_ERROR_CODE = "ssh_sync_insufficient_staging_space";
 
 function formatGiB(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 }
 
-// Refuses the restore before anything is written when the temp volume cannot
-// hold the staged copy, instead of failing mid-extract with ENOSPC and leaving
-// a half-filled disk. Trees whose size is unavailable, or still counts excluded
-// paths, are left out of the sum with a warning, so an uncertain figure never
-// blocks a restore that would fit.
-async function assertStagingSpace(estimates: ReadonlyArray<RemoteDirSizeEstimate | null>): Promise<void> {
+async function stagingSharesVolume(stagingRoot: string, localDirs: readonly string[]): Promise<boolean> {
+  let stagingDev: unknown;
+  try {
+    stagingDev = (await fs.stat(stagingRoot)).dev;
+  } catch {
+    return true;
+  }
+  for (const dir of localDirs) {
+    try {
+      if ((await fs.stat(dir)).dev === stagingDev) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function assertStagingSpace(
+  estimates: ReadonlyArray<RemoteDirSizeEstimate | null>,
+  localDirs: readonly string[] = [],
+): Promise<void> {
   const known = estimates.filter((estimate): estimate is RemoteDirSizeEstimate => estimate?.excludeAware === true);
   if (known.length < estimates.length) {
     console.warn(
@@ -560,7 +553,9 @@ async function assertStagingSpace(estimates: ReadonlyArray<RemoteDirSizeEstimate
     return;
   }
   const totalBytes = known.reduce((sum, estimate) => sum + estimate.bytes, 0);
-  const requiredBytes = totalBytes + Math.max(...known.map((estimate) => estimate.bytes));
+  const largestBytes = Math.max(...known.map((estimate) => estimate.bytes));
+  const sharesVolume = localDirs.length === 0 || (await stagingSharesVolume(stagingRoot, localDirs));
+  const requiredBytes = sharesVolume ? totalBytes + largestBytes : totalBytes;
   if (freeBytes >= requiredBytes) return;
   throw Object.assign(
     new Error(
@@ -668,9 +663,6 @@ async function runSshScript(
   );
 }
 
-// Removes everything under `localDir` except the preserved paths. Entries are
-// posix paths relative to `localDir`; a nested entry keeps its ancestors and
-// only clears their other children.
 async function clearLocalDirectory(
   localDir: string,
   preserveEntries: readonly string[] = [],
@@ -694,10 +686,6 @@ async function clearLocalDirectory(
   }));
 }
 
-// Finds the nested worktree directories that exist under `localDir`, at any
-// depth, so a restore that replaces the local tree can leave them in place.
-// `.git` and `node_modules` are not searched: nobody keeps worktrees there and
-// both can hold very many directories.
 async function findLocalNestedWorktreeDirs(localDir: string, dirs: readonly string[]): Promise<string[]> {
   if (dirs.length === 0) return [];
   const found: string[] = [];
@@ -1020,9 +1008,6 @@ async function exportGitWorkspaceFromSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
-    // The imported objects now live in the local repository. Remove the bundle
-    // before resetting the checkout, which may write a second copy of the tree
-    // onto the same volume as TMPDIR.
     await fs.rm(bundleDir, { recursive: true, force: true });
     if (input.resetLocalWorkspace !== false) {
       await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
@@ -1649,9 +1634,6 @@ export async function syncDirectoryToSsh(input: {
   }
 }
 
-// Streams `tar` of the remote directory straight into `targetDir` with no
-// intermediate copy. Callers pick the destination: a throwaway staging
-// directory, or one they merge from afterwards.
 async function extractDirectoryFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
@@ -1674,9 +1656,6 @@ async function extractDirectoryFromSsh(input: {
     `sh -c ${shellQuote(remoteTarScript)}`,
   ];
 
-  // The remote tar size isn't known locally, so the remote directory estimate
-  // (clamped to 99%) stands in for it; when it is unavailable we report bytes
-  // received in MB mode with a terminal completion line.
   const progress = input.onProgress
     ? createTransferProgress({
       onProgress: input.onProgress,
@@ -1763,14 +1742,6 @@ async function extractDirectoryFromSsh(input: {
   }
 }
 
-// Replaces `localDir` with the remote directory. The tree is staged in the temp
-// directory first so a failed transfer never leaves `localDir` half-written.
-// Refuses a no-baseline restore whose staged tree replaces a kept local entry's
-// parent directory with a non-directory, before anything is cleared. The clear
-// keeps a preserved entry's ancestor directories, so without this check the
-// later copy fails (it cannot copy the staged file over the kept directory)
-// after unrelated local files have already been deleted. Mirrors the baseline
-// restore's protected-children refusal, which runs before `beforeApply`.
 async function assertNoPreservedParentReplacements(
   stagingDir: string,
   localDir: string,
@@ -1808,7 +1779,7 @@ export async function syncDirectoryFromSsh(input: {
     remoteDir: input.remoteDir,
     exclude: input.exclude,
   });
-  await assertStagingSpace([remoteSize]);
+  await assertStagingSpace([remoteSize], [input.localDir]);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   try {
     await extractDirectoryFromSsh({
@@ -1820,8 +1791,6 @@ export async function syncDirectoryFromSsh(input: {
       onProgress: input.onProgress,
       progressLabel: input.progressLabel,
     });
-    // Refuse before the clear: a staged file that replaces a kept directory
-    // would fail the copy after unrelated local files are already deleted.
     await assertNoPreservedParentReplacements(stagingDir, input.localDir, input.preserveLocalEntries);
     await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
     await copyDirectoryContents(stagingDir, input.localDir);
@@ -1837,7 +1806,6 @@ export async function prepareWorkspaceForSshExecution(input: {
   onProgress?: RuntimeProgressSink;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
-  /** Replaces the default nested-worktree directories; `[]` uploads them. */
   nestedWorktreeDirs?: readonly string[];
 }): Promise<{ gitBacked: boolean; repositories?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
@@ -1903,13 +1871,6 @@ export async function restoreWorkspaceFromSshExecution(input: {
   restoreGitHistory?: boolean;
   onProgress?: RuntimeProgressSink;
   repositories?: Array<{ path: string; baselineSnapshot?: DirectorySnapshot }>;
-  /**
-   * Without a baseline, these directories are excluded from the restore and
-   * kept in place locally. With a baseline, the baseline's own `exclude` list
-   * decides, so a caller that captures its own baseline must include
-   * `resolveNestedWorktreeExcludes` for the directories it left out of
-   * `prepareWorkspaceForSshExecution`.
-   */
   nestedWorktreeDirs?: readonly string[];
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
@@ -1932,10 +1893,6 @@ export async function restoreWorkspaceFromSshExecution(input: {
   ) {
     throw new Error(`Workspace baseline must exclude ${PROJECT_REPOSITORIES_DIR} when project repositories are restored separately`);
   }
-  // Probe every baseline tree before the first write, so a restore that cannot
-  // fit is refused whole instead of stopping half-applied. With git history, the
-  // bundle of each tree is downloaded to the temp directory too; the remote
-  // `.git` size bounds it.
   const remoteSizes = new Map<string, RemoteDirSizeEstimate | null>();
   if (input.baselineSnapshot) {
     const trees = [
@@ -1952,7 +1909,10 @@ export async function restoreWorkspaceFromSshExecution(input: {
         : undefined)),
     ]);
     trees.forEach((tree, index) => remoteSizes.set(tree.remoteDir, fileEstimates[index]));
-    await assertStagingSpace([...fileEstimates, ...historyEstimates.filter((estimate) => estimate !== undefined)]);
+    await assertStagingSpace([...fileEstimates, ...historyEstimates.filter((estimate) => estimate !== undefined)], [
+      input.localDir,
+      ...repositories.map((repository) => path.join(input.localDir, repository.path)),
+    ]);
   }
   for (const repository of repositories) {
     const repositoryRemoteDir = path.posix.join(remoteDir, repository.path);
@@ -1986,8 +1946,6 @@ async function restoreWorkspaceRootFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir: string;
-  // Probed by the caller, which has already checked the free space; only the
-  // baseline path stages the restore in a temp directory.
   remoteSize: RemoteDirSizeEstimate | null;
   baselineSnapshot?: DirectorySnapshot;
   restoreGitHistory?: boolean;
@@ -2026,8 +1984,6 @@ async function restoreWorkspaceRootFromSsh(input: {
         baseline: input.baselineSnapshot,
         sourceDir: stagingDir,
         targetDir: input.localDir,
-        // Local nested worktrees are not in the staged tree. A remote that
-        // replaces their parent must not delete them.
         protectedPatterns: resolveNestedWorktreeExcludes(input).filter((pattern) =>
           input.baselineSnapshot?.exclude.includes(pattern)),
         // Git history advances via integrateImportedGitHead; the working tree
@@ -2063,16 +2019,11 @@ async function restoreWorkspaceRootFromSsh(input: {
     const projectRepositoryEntries = input.hasProjectRepositories ? [PROJECT_REPOSITORIES_DIR] : [];
     const exclude = [".git", ".paperclip-runtime", ...projectRepositoryEntries, ...nestedWorktreeExcludes];
     const preserveLocalEntries = [".git", ...projectRepositoryEntries, ...localNestedWorktreeDirs];
-    // Probe before the first write: the history bundle lands in the temp
-    // directory too, so a full volume must refuse before the download, and the
-    // branch must not advance before either refusal.
     const [treeSize, historySize] = await Promise.all([
       probeRemoteDirSize({ spec: input.spec, remoteDir, exclude }),
       probeRemoteDirSize({ spec: input.spec, remoteDir: path.posix.join(remoteDir, ".git") }),
     ]);
-    await assertStagingSpace([treeSize, historySize]);
-    // Stage the tree and refuse a protected parent replacement before the
-    // export below runs `git reset --hard` on the local checkout.
+    await assertStagingSpace([treeSize, historySize], [input.localDir]);
     const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
     try {
       await extractDirectoryFromSsh({

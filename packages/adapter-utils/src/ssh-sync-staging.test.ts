@@ -12,9 +12,6 @@ import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
 import { restoreWorkspaceFromSshExecution, syncDirectoryToSsh, type SshRemoteExecutionSpec } from "./ssh.js";
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 
-// A stand-in `ssh` that runs the remote command on this machine, so the real
-// tar/du pipelines of the SSH workspace sync run without an sshd. The remote
-// "host" is a local directory tree; remote login profiles are exercised as-is.
 const FAKE_SSH = `#!/bin/sh
 for last; do :; done
 printf '%s\\n---\\n' "$last" >> "$FAKE_SSH_LOG"
@@ -26,7 +23,6 @@ fi
 exec sh -c "$last"
 `;
 
-// A BSD-style du: it has no --exclude, and -I masks only match entry names.
 const FAKE_BSD_DU = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_BSD_DU_LOG"
 for arg; do
@@ -55,7 +51,6 @@ const realGitPath = spawnSync("sh", ["-c", "command -v git"], {
   env: { ...process.env, PATH: "/usr/bin:/bin:/usr/local/bin" },
 }).stdout.trim();
 const MB = 1024 * 1024;
-// The size probe needs GNU du (--exclude, --apparent-size) on the "remote".
 const hasGnuDu = spawnSync("du", ["--version"], { stdio: "ignore" }).status === 0;
 const itWithGnuDu = it.skipIf(!hasGnuDu);
 const execFileAsync = promisify(execFile);
@@ -108,7 +103,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH ?? ""}`);
     vi.stubEnv("FAKE_SSH_LOG", sshLog);
     vi.stubEnv("FAKE_BSD_DU_LOG", bsdDuLog);
-    // Every staging directory the sync creates lands in stagingRoot.
     vi.stubEnv("TMPDIR", stagingRoot);
     spec = {
       host: "127.0.0.1",
@@ -166,14 +160,12 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     const prepared = await prepare();
     const remote = prepared.workspaceRemoteDir;
 
-    // Not uploaded: the worktrees never reach the remote, their siblings do.
     expect(await readFile(path.join(remote, "src/app.ts"), "utf8")).toBe("export const app = 1;\n");
     expect(await readFile(path.join(remote, ".paperclip/keep.txt"), "utf8")).toBe("synced\n");
     expect(await exists(path.join(remote, ".paperclip/worktrees"))).toBe(false);
     expect(await exists(path.join(remote, ".claude/worktrees"))).toBe(false);
     expect(await exists(path.join(remote, "packages/a/.claude/worktrees"))).toBe(false);
 
-    // The remote run edits a tracked file and creates worktrees of its own.
     await writeTree(remote, {
       "src/app.ts": "export const app = 2;\n",
       "created-remotely.txt": "new\n",
@@ -182,13 +174,10 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     });
     await prepared.restoreWorkspace();
 
-    // Restored: ordinary remote changes come back.
     expect(await readFile(path.join(localDir, "src/app.ts"), "utf8")).toBe("export const app = 2;\n");
     expect(await readFile(path.join(localDir, "created-remotely.txt"), "utf8")).toBe("new\n");
-    // Not restored: remote-created worktrees stay remote.
     expect(await exists(path.join(localDir, ".paperclip/worktrees/remote-made"))).toBe(false);
     expect(await exists(path.join(localDir, ".claude/worktrees/remote-made"))).toBe(false);
-    // The local worktrees are not mistaken for remote deletions.
     expect(await readFile(path.join(localDir, ".paperclip/worktrees/wt1/big.bin"), "utf8")).toBe("local worktree one\n");
     expect(await readFile(path.join(localDir, ".claude/worktrees/wt2/notes.md"), "utf8")).toBe("local worktree two\n");
     expect(await readFile(path.join(localDir, "packages/a/.claude/worktrees/wt3/deep.txt"), "utf8")).toBe("local nested worktree\n");
@@ -274,14 +263,12 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
       message: expect.stringMatching(/Not enough free space in .*tmp to restore the workspace from SSH/),
     });
 
-    // No staging directory was created and the remote tree was never read.
     expect(mkdtemp).not.toHaveBeenCalled();
     expect(await readFile(sshLog, "utf8")).not.toContain("-cf");
     expect(await readFile(path.join(localDir, "src/app.ts"), "utf8")).toBe("export const app = 1;\n");
     expect(await exists(path.join(localDir, "data"))).toBe(false);
   });
 
-  // A workspace root plus one project repository, restored through a baseline.
   async function restoreRootAndRepository(input: {
     freeKiB: number;
     rootBytes: number;
@@ -323,7 +310,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
   }
 
   itWithGnuDu("refuses a restore with several trees before it restores any of them", async () => {
-    // Only the repository tree fits in 64 KiB; the workspace root does not.
     await expect(restoreRootAndRepository({ freeKiB: 64, rootBytes: 2 * MB, repositoryBytes: 1024 }))
       .rejects.toMatchObject({ code: "ssh_sync_insufficient_staging_space" });
 
@@ -332,7 +318,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
   });
 
   itWithGnuDu("counts every tree and the largest one, since each merge can fill a shared volume", async () => {
-    // 4.5 MiB covers twice the largest tree (2 MiB) but not 3 MiB of trees plus the largest.
     await expect(restoreRootAndRepository({ freeKiB: 4608, rootBytes: 2 * MB, repositoryBytes: 1 * MB }))
       .rejects.toMatchObject({ code: "ssh_sync_insufficient_staging_space" });
     expect(await readFile(path.join(localDir, "src/app.ts"), "utf8")).toBe("export const app = 1;\n");
@@ -348,7 +333,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
   });
 
   itWithGnuDu("counts the git history that is downloaded to the temp directory", async () => {
-    // The files are small; the remote history is 4 MiB, so the bundle may be too.
     await mkdir(path.join(remoteCwd, "ws/.git/objects/pack"), { recursive: true });
     await writeFile(path.join(remoteCwd, "ws/.git/objects/pack/pack-1.pack"), Buffer.alloc(4 * MB, 3));
 
@@ -374,12 +358,29 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     for (let index = 0; index < 9; index += 1) {
       await link(path.join(remote, "data.bin"), path.join(remote, `link-${index}.bin`));
     }
-    // Ten names share 1 MiB on disk, but the merge writes ten copies: 10 MiB to
-    // restore, 20 MiB required. 12 MiB free fits the single-counted 2 MiB.
     vi.spyOn(fsPromises, "statfs").mockResolvedValue({ bavail: 12 * 1024, bsize: 1024 } as Awaited<ReturnType<typeof fsPromises.statfs>>);
 
     await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "ssh_sync_insufficient_staging_space" });
     expect(await readFile(path.join(localDir, "src/app.ts"), "utf8")).toBe("export const app = 1;\n");
+  });
+
+  itWithGnuDu("requires only the staged copy when the workspace lives on another volume", async () => {
+    await writeTree(localDir, { "src/app.ts": "export const app = 1;\n" });
+    const prepared = await prepare();
+    await writeTree(prepared.workspaceRemoteDir, {
+      "src/app.ts": "export const app = 2;\n",
+      "data/blob.bin": Buffer.alloc(2 * MB, 7),
+    });
+    vi.spyOn(fsPromises, "statfs").mockResolvedValue({ bavail: 3 * 1024, bsize: 1024 } as Awaited<ReturnType<typeof fsPromises.statfs>>);
+    const realStat = fsPromises.stat.bind(fsPromises);
+    vi.spyOn(fsPromises, "stat").mockImplementation((async (target: string) => {
+      const result = await realStat(target);
+      return Object.assign(Object.create(Object.getPrototypeOf(result)), result, { dev: target === stagingRoot ? 1 : 2 });
+    }) as typeof fsPromises.stat);
+
+    await prepared.restoreWorkspace();
+
+    expect(await readFile(path.join(localDir, "src/app.ts"), "utf8")).toBe("export const app = 2;\n");
   });
 
   it("does not delete a local nested worktree when the remote replaces its parent directory", async () => {
@@ -395,7 +396,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
 
     await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "workspace_restore_protected_children" });
 
-    // The merge refuses before it applies anything.
     expect(await readFile(path.join(localDir, "packages/a/.claude/worktrees/wt/f.txt"), "utf8")).toBe("local worktree\n");
     expect(await readFile(path.join(localDir, "packages/a/x.ts"), "utf8")).toBe("local\n");
     expect(await readFile(path.join(localDir, "other.txt"), "utf8")).toBe("local\n");
@@ -406,13 +406,11 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await git(localDir, ["init", "-q", "-b", "main"]);
     await git(localDir, ["add", "-A"]);
     await git(localDir, ["commit", "-q", "-m", "init"]);
-    // Untracked, so only the protection check stands between it and the merge.
     await writeTree(localDir, { "packages/a/.claude/worktrees/wt/f.txt": "local worktree\n" });
     const initialHead = await gitOutput(localDir, ["rev-parse", "main"]);
     const prepared = await prepare();
     const remote = prepared.workspaceRemoteDir;
 
-    // The remote run commits, and replaces the directory that holds the worktree.
     await rm(path.join(remote, "packages/a"), { recursive: true });
     await writeFile(path.join(remote, "packages/a"), "now a file\n");
     await writeFile(path.join(remote, "other.txt"), "remote\n");
@@ -421,7 +419,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
 
     await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "workspace_restore_protected_children" });
 
-    // A refused restore leaves the checkout exactly as it was: same branch tip, same files.
     expect(await gitOutput(localDir, ["rev-parse", "main"])).toBe(initialHead);
     expect(await readFile(path.join(localDir, "packages/a/.claude/worktrees/wt/f.txt"), "utf8")).toBe("local worktree\n");
     expect(await readFile(path.join(localDir, "packages/a/x.ts"), "utf8")).toBe("local\n");
@@ -438,8 +435,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await git(repository, ["init", "-q", "-b", "main"]);
     await git(repository, ["add", "-A"]);
     await git(repository, ["commit", "-q", "-m", "init"]);
-    // Untracked and never uploaded, so only the repository baseline exclude keeps
-    // the restore from reading it as a deletion on the remote.
     await writeTree(repository, { ".claude/worktrees/wt/f.txt": "local worktree\n" });
 
     const prepared = await prepare();
@@ -484,7 +479,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await localTreeWithCustomWorktree();
     const assetDir = path.join(root, "asset");
     await writeTree(assetDir, { "a.txt": "asset\n" });
-    // The remote changes after the workspace upload, then the asset upload fails.
     const hook = `rm -rf '${remoteCwd}/.paperclip-runtime/runs/run-1/workspace/custom' && printf 'now a file\\n' > '${remoteCwd}/.paperclip-runtime/runs/run-1/workspace/custom'`;
     vi.stubEnv("FAKE_SSH_HOOK_MATCH", "failing-asset-marker");
     vi.stubEnv("FAKE_SSH_HOOK", hook);
@@ -502,10 +496,8 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     const prepared = await prepare();
     await writeTree(prepared.workspaceRemoteDir, {
       "data/blob.bin": Buffer.alloc(1 * MB, 3),
-      // Excluded from the restore, so it must not count towards the estimate.
       ".paperclip/worktrees/remote-made/huge.bin": Buffer.alloc(24 * MB, 9),
     });
-    // 4 MiB free covers 2x the 1 MiB restore but not 2x the 25 MiB on disk.
     vi.spyOn(fsPromises, "statfs").mockResolvedValue({ bavail: 4096, bsize: 1024 } as Awaited<ReturnType<typeof fsPromises.statfs>>);
 
     await prepared.restoreWorkspace();
@@ -518,8 +510,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await writeTree(localDir, { "src/app.ts": "export const app = 1;\n" });
     const prepared = await prepare();
     await writeTree(prepared.workspaceRemoteDir, { "src/app.ts": "export const app = 2;\n" });
-    // The remote's du cannot skip the nested worktrees, so its figure is an
-    // overcount and must not refuse a restore that would fit.
     await writeFile(path.join(bin, "du"), FAKE_BSD_DU, { mode: 0o755 });
     await writeFile(path.join(root, ".profile"), `export PATH="${bin}:$PATH"\n`);
     vi.stubEnv("HOME", root);
@@ -592,7 +582,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     });
     const remote = path.join(remoteCwd, "ws");
     await writeTree(remote, {
-      // The remote replaces the directory holding the local worktree with a file.
       "packages/a": "now a file\n",
       "other.txt": "remote\n",
     });
@@ -600,7 +589,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await expect(restoreWorkspaceFromSshExecution({ spec, localDir, remoteDir: remote }))
       .rejects.toMatchObject({ code: "workspace_restore_protected_children" });
 
-    // The refusal lands before the clear, so unrelated local files survive too.
     expect(await readFile(path.join(localDir, "packages/a/.claude/worktrees/wt/f.txt"), "utf8")).toBe("local worktree\n");
     expect(await readFile(path.join(localDir, "packages/a/x.ts"), "utf8")).toBe("local\n");
     expect(await readFile(path.join(localDir, "other.txt"), "utf8")).toBe("local\n");
@@ -622,7 +610,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await expect(restoreWorkspaceFromSshExecution({ spec, localDir, remoteDir: remote }))
       .rejects.toMatchObject({ code: "ssh_sync_insufficient_staging_space" });
 
-    // The refusal lands before the export, so the branch tip and files are untouched.
     expect(await gitOutput(localDir, ["rev-parse", "main"])).toBe(initialHead);
     expect(await readFile(path.join(localDir, "src/app.ts"), "utf8")).toBe("export const app = 1;\n");
     expect(await exists(path.join(localDir, "data.bin"))).toBe(false);
@@ -657,13 +644,11 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await git(localDir, ["init", "-q", "-b", "main"]);
     await git(localDir, ["add", "-A"]);
     await git(localDir, ["commit", "-q", "-m", "init"]);
-    // Untracked, so only the protection check stands between it and the reset.
     await writeTree(localDir, { "packages/a/.claude/worktrees/wt/f.txt": "local worktree\n" });
     const initialHead = await gitOutput(localDir, ["rev-parse", "main"]);
     const prepared = await prepare();
     const remote = prepared.workspaceRemoteDir;
 
-    // The remote run commits, and replaces the directory that holds the worktree.
     await rm(path.join(remote, "packages/a"), { recursive: true });
     await writeFile(path.join(remote, "packages/a"), "now a file\n");
     await writeFile(path.join(remote, "other.txt"), "remote\n");
@@ -673,7 +658,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await expect(restoreWorkspaceFromSshExecution({ spec, localDir, remoteDir: remote }))
       .rejects.toMatchObject({ code: "workspace_restore_protected_children" });
 
-    // A refused restore leaves the checkout exactly as it was: same branch tip, same files.
     expect(await gitOutput(localDir, ["rev-parse", "main"])).toBe(initialHead);
     expect(await readFile(path.join(localDir, "packages/a/.claude/worktrees/wt/f.txt"), "utf8")).toBe("local worktree\n");
     expect(await readFile(path.join(localDir, "packages/a/x.ts"), "utf8")).toBe("local\n");
@@ -685,14 +669,10 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await git(localDir, ["init", "-q", "-b", "main"]);
     await git(localDir, ["add", "-A"]);
     await git(localDir, ["commit", "-q", "-m", "init"]);
-    // Untracked locally, so only the staged-tree exclude keeps the remote's
-    // worktrees out of the kept local worktree.
     await writeTree(localDir, { ".claude/worktrees/wt/local.txt": "local worktree\n" });
     const prepared = await prepare();
     const remote = prepared.workspaceRemoteDir;
 
-    // The remote run commits one tracked file and leaves worktrees of its own
-    // untracked; only the tracked file may come back.
     await writeTree(remote, {
       "fresh.txt": "fresh\n",
       ".claude/worktrees/wt/remote-made.txt": "remote worktree\n",
@@ -720,7 +700,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
       target: { kind: "remote" as const, transport: "ssh" as const, remoteCwd, spec },
       adapterKey: "test",
       workspaceLocalDir: localDir,
-      // Empty: nested worktrees sync like ordinary files.
       nestedWorktreeDirs: [],
     });
 
@@ -744,10 +723,8 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
       "data/blob.bin": Buffer.alloc(1024, 7),
       [`${repositoryDir}/README.md`]: "repository, edited remotely\n",
       [`${repositoryDir}/blob.bin`]: Buffer.alloc(1024, 5),
-      // Excluded from the restore, so it must not count towards the estimate.
       [`${repositoryDir}/.claude/worktrees/x/big.bin`]: Buffer.alloc(10 * MB, 9),
     });
-    // 64 KiB covers 2x the small trees but not 2x the 10 MiB worktree on disk.
     vi.spyOn(fsPromises, "statfs").mockResolvedValue({ bavail: 64, bsize: 1024 } as Awaited<ReturnType<typeof fsPromises.statfs>>);
 
     await restoreWorkspaceFromSshExecution({
@@ -773,7 +750,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
       "src/app.ts": "remote\n",
       ".claude/worktrees/x/big.bin": Buffer.alloc(10 * MB, 7),
     });
-    // 64 KiB covers 2x the small restore but not 2x the 10 MiB on disk.
     vi.spyOn(fsPromises, "statfs").mockResolvedValue({ bavail: 64, bsize: 1024 } as Awaited<ReturnType<typeof fsPromises.statfs>>);
 
     await restoreWorkspaceFromSshExecution({ spec, localDir, remoteDir: remote });
@@ -793,16 +769,13 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     await writeTree(remote, { "fresh.txt": "fresh\n" });
     await git(remote, ["add", "-A"]);
     await git(remote, ["commit", "-q", "-m", "remote work"]);
-    // The working tree is tiny; the history bundle is not.
     await mkdir(path.join(remote, ".git/objects/pack"), { recursive: true });
     await writeFile(path.join(remote, ".git/objects/pack/pack-1.pack"), Buffer.alloc(4 * MB, 3));
-    // 1 MiB covers 2x the tiny tree but not tree + 4 MiB history + largest.
     vi.spyOn(fsPromises, "statfs").mockResolvedValue({ bavail: 1024, bsize: 1024 } as Awaited<ReturnType<typeof fsPromises.statfs>>);
 
     await expect(restoreWorkspaceFromSshExecution({ spec, localDir, remoteDir: remote }))
       .rejects.toMatchObject({ code: "ssh_sync_insufficient_staging_space" });
 
-    // The refusal lands before the export, so the branch tip and files are untouched.
     expect(await gitOutput(localDir, ["rev-parse", "main"])).toBe(initialHead);
     expect(await exists(path.join(localDir, "fresh.txt"))).toBe(false);
   });
@@ -826,7 +799,6 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
 
     expect(await readFile(path.join(remote, "src/app.ts"), "utf8")).toBe("export const app = 1;\n");
     expect(await exists(path.join(remote, "packages/a/.claude/worktrees"))).toBe(false);
-    // The terminal line reports the estimated total: bytes, not megabytes.
     const done = lines.filter((line) => line.includes("100%"));
     expect(done.length).toBeGreaterThan(0);
     expect(done[done.length - 1]).toContain("/0.0 MB");

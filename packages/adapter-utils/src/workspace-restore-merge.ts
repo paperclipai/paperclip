@@ -730,9 +730,6 @@ export function directoryMergeConflicts(baseline: DirectorySnapshot, source: Dir
 
 export const PROTECTED_CHILDREN_ERROR_CODE = "workspace_restore_protected_children";
 
-// Refuses to replace `relative` when it holds a path the restore must never
-// touch. The merge captures the target without its excluded paths, so it cannot
-// see them when a replaced directory is removed with everything below it.
 async function assertNoProtectedChildren(
   targetDir: string,
   relative: string,
@@ -754,9 +751,6 @@ async function assertNoProtectedChildren(
   }
 }
 
-// Applies `assertNoProtectedChildren` to every source entry that would replace
-// a local directory. It reads the target directly, not through a snapshot, so
-// the caller can run it before anything else changes.
 async function assertNoProtectedReplacements(
   targetDir: string,
   baseline: DirectorySnapshot,
@@ -776,11 +770,6 @@ export async function mergeDirectoryWithBaseline(input: {
   targetDir: string;
   conflictPolicy?: "reject";
   workspaceSnapshotIsolation?: "worker";
-  /**
-   * Exclude patterns whose matches must survive the merge. A source entry that
-   * would replace a directory holding such a path fails before anything is
-   * applied, instead of deleting it.
-   */
   protectedPatterns?: readonly string[];
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
@@ -793,8 +782,6 @@ export async function mergeDirectoryWithBaseline(input: {
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
-      // Refuse before `beforeApply`: the caller advances the local git branch
-      // there, and a refused restore must leave the checkout untouched.
       if (input.protectedPatterns?.length) {
         await assertNoProtectedReplacements(canonicalTargetDir, input.baseline, source, input.protectedPatterns);
       }

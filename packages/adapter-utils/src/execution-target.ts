@@ -1449,11 +1449,6 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
-  /**
-   * SSH transport only: nested git worktree directories that are neither
-   * uploaded nor restored. Defaults to `.paperclip/worktrees` and
-   * `.claude/worktrees`; `[]` syncs them.
-   */
   nestedWorktreeDirs?: readonly string[];
   workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];

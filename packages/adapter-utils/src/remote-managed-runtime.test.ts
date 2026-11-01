@@ -254,8 +254,6 @@ describe("remote managed runtime", () => {
     expect(exclude).toContain("build");
     expect(exclude).toContain("weird\\[1].txt");
     expect(exclude).toContain("node_modules");
-    // Nested agent worktrees are excluded from referenced projects too, at the
-    // workspace root and at any depth.
     expect(exclude).toContain(".claude/worktrees");
     expect(exclude).toContain(".claude/worktrees/*");
     expect(exclude).toContain("*/.claude/worktrees");
@@ -287,7 +285,6 @@ describe("remote managed runtime", () => {
       workspaceLocalDir: workspaceDir,
       workspaceRemoteDir: "/app",
       syncWorkspace: false,
-      // Empty: nested worktrees stage like ordinary files.
       nestedWorktreeDirs: [],
       additionalSources: [
         {
