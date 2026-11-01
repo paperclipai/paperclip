@@ -832,6 +832,12 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
           allowedActions: ["tools/list"],
         },
       });
+      const listOnlyInitialized = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${listOnlyToken.token}`)
+        .send({ jsonrpc: "2.0", id: 3, method: "initialize" })
+        .expect(200);
+      expect(listOnlyInitialized.body.result.capabilities).toEqual({ tools: {} });
       await request(app)
         .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
         .set("authorization", `Bearer ${listOnlyToken.token}`)
