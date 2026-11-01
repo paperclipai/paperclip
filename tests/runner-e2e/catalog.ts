@@ -1525,7 +1525,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: [], environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
     profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
     tasks: [apiArtifactTransferTask], expectedMatrixSize: 1,
-    definitionMetadata: { version: 1, grading: "source-installation-and-independent-download-digest", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
+    definitionMetadata: { version: 2, grading: "redacted-installation-receipt-stored-source-and-delivery-digest", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
   },
   {
     id: "task-titles", label: "Automatic task titles", manualOnly: true,

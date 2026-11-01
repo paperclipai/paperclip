@@ -646,8 +646,9 @@ cell: `api-artifact-transfer.runner-codex.daytona.verified-artifact-copy`.
 It seeds a 388131-byte synthetic description containing Unicode and escaped
 characters. The agent must read the source through the authenticated API,
 install its saved response with `download_artifact`, and deliver the unchanged
-file. The oracle correlates the source capture and completed installation with
-the independently downloaded attachment size, hash, source ID and full content.
+file. The oracle uses the persisted, redacted API and installation receipts, then
+independently downloads both the stored source and delivered attachment through
+the authorized public API. Their bytes, hashes, source ID and full content must agree.
 A missing tool, incomplete receipt, copied substitute or one-byte loss fails.
 The browser must show the same downloadable attachment after reloading.
 

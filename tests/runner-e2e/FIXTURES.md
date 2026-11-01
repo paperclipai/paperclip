@@ -207,8 +207,9 @@ matrix. Unsupported profile/environment combinations belong in
 existing single-turn flow and fixture registry. A synthetic backlog issue is
 created through the public API before the tested task. The task carries its ID
 and requires `download_artifact`; the fixture never preinstalls the output.
-The independent oracle verifies the full delivered response against the exact
-source-capture identity and completed installation. It also compares the seeded
+The independent oracle reads the stored source through its authorized asset
+endpoint and verifies the full delivered response against that source and the
+completed installation receipt after production run-log redaction. It also compares the seeded
 description, so agreeing attachment metadata cannot hide a missing byte.
 The normal run-attributed public attachment download and reloaded browser link
 remain required. No new credential or private provider hook is introduced.

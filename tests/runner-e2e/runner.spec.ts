@@ -40,7 +40,7 @@ import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAsser
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
-import { artifactTransferDescription, gradeApiArtifactTransfer, usesApiResponseProof } from "./api-artifact-transfer.js";
+import { artifactTransferDescription, gradeApiArtifactTransfer, readArtifactTransferSource, usesApiResponseProof } from "./api-artifact-transfer.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
@@ -2338,7 +2338,8 @@ for (const execution of executions) {
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
         if (execution.suite.id === "api-artifact-transfer") {
           const transfer = gradeApiArtifactTransfer(runEventsByRun.flatMap(captured => captured.events),
-            apiResponseSourceId ?? "", downloadedResponseProof, artifactTransferDescription(nonce));
+            apiResponseSourceId ?? "", downloadedResponseProof, artifactTransferDescription(nonce),
+            await readArtifactTransferSource(api, runEventsByRun.flatMap(captured => captured.events)));
           await writeSanitizedJson(snapshotsDir, "api-artifact-transfer.json", transfer, secrets);
           if (!transfer.passed) invariantFailures.push(`Verified artifact transfer was not proven: ${transfer.failure}`);
           await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", {
