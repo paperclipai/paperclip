@@ -155,15 +155,20 @@ describe("buildDeskShelves", () => {
     const items = [
       buildItem({ id: "due", decideBy: "today", createdAt: todayIso }),
       buildItem({ id: "overdue", decideBy: "2026-07-01", createdAt: earlierIso }),
-      buildItem({ id: "new", createdAt: "2026-07-09T05:00:00Z" }),
+      buildItem({ id: "new", createdAt: "2026-07-09T05:00:00Z", activityAt: "2026-07-09T05:00:00Z" }),
       buildItem({ id: "old", createdAt: earlierIso }),
-      buildItem({ id: "whenever", decideBy: "whenever", createdAt: "2026-07-09T11:00:00Z" }),
+      buildItem({
+        id: "whenever",
+        decideBy: "whenever",
+        createdAt: "2026-07-09T11:00:00Z",
+        activityAt: "2026-07-09T11:00:00Z",
+      }),
     ];
     const shelves = buildDeskShelves(items, NOW);
     expect(shelves.map((s) => s.key)).toEqual(["desk:decide-now", "desk:new-today", "desk:earlier"]);
     // Decide-now items are pulled out of the arrival groups (disjoint shelves).
     expect(shelves[0]!.items.map((i) => i.id)).toEqual(["overdue", "due"]);
-    // "New today" is newest-arrival-first: whenever (11:00) before new (05:00).
+    // "New today" is most-recent-activity-first: whenever (11:00) before new (05:00).
     expect(shelves[1]!.items.map((i) => i.id)).toEqual(["whenever", "new"]);
     expect(shelves[2]!.items.map((i) => i.id)).toEqual(["old"]);
     // Every item lands in exactly one shelf.
@@ -173,6 +178,63 @@ describe("buildDeskShelves", () => {
 
   it("returns no shelves for an empty desk", () => {
     expect(buildDeskShelves([], NOW)).toEqual([]);
+  });
+
+  describe("sort order", () => {
+    // Arrival (createdAt) decides the shelf; activity (activityAt) decides the
+    // order inside it. The two disagree on purpose in every shelf below.
+    const items = [
+      buildItem({ id: "today-quiet", createdAt: "2026-07-09T10:00:00Z", activityAt: "2026-07-09T10:00:00Z" }),
+      buildItem({ id: "today-active", createdAt: "2026-07-09T02:00:00Z", activityAt: "2026-07-09T11:00:00Z" }),
+      buildItem({ id: "earlier-quiet", createdAt: "2026-07-05T09:00:00Z", activityAt: "2026-07-05T09:00:00Z" }),
+      buildItem({ id: "earlier-active", createdAt: "2026-06-20T09:00:00Z", activityAt: "2026-07-08T09:00:00Z" }),
+    ];
+    const idsByShelf = (shelves: ReturnType<typeof buildDeskShelves>) =>
+      Object.fromEntries(shelves.map((s) => [s.key, s.items.map((i) => i.id)]));
+
+    it("defaults to newest activity first, matching an explicit 'newest'", () => {
+      expect(buildDeskShelves(items, NOW)).toEqual(buildDeskShelves(items, NOW, "newest"));
+      expect(idsByShelf(buildDeskShelves(items, NOW, "newest"))).toEqual({
+        "desk:new-today": ["today-active", "today-quiet"],
+        "desk:earlier": ["earlier-active", "earlier-quiet"],
+      });
+    });
+
+    it("flips the order inside each shelf for 'oldest' without reordering or re-bucketing shelves", () => {
+      const shelves = buildDeskShelves(items, NOW, "oldest");
+      expect(shelves.map((s) => s.key)).toEqual(["desk:new-today", "desk:earlier"]);
+      expect(idsByShelf(shelves)).toEqual({
+        "desk:new-today": ["today-quiet", "today-active"],
+        "desk:earlier": ["earlier-quiet", "earlier-active"],
+      });
+    });
+
+    it("breaks activity ties by rank (lower rank wins) in both directions, ignoring arrival", () => {
+      const tied = [
+        buildItem({ id: "a", createdAt: "2026-07-09T11:00:00Z", rank: 2 }),
+        buildItem({ id: "b", createdAt: "2026-07-09T02:00:00Z", rank: 1 }),
+      ];
+      expect(buildDeskShelves(tied, NOW, "newest")[0]!.items.map((i) => i.id)).toEqual(["b", "a"]);
+      expect(buildDeskShelves(tied, NOW, "oldest")[0]!.items.map((i) => i.id)).toEqual(["b", "a"]);
+    });
+
+    it("keeps 'Decide now' deadline-first and applies the order among items sharing a deadline", () => {
+      const due = [
+        buildItem({ id: "due-quiet", decideBy: "today", activityAt: "2026-07-09T02:00:00Z" }),
+        buildItem({ id: "overdue", decideBy: "2026-07-01", activityAt: "2026-07-09T10:00:00Z" }),
+        buildItem({ id: "due-active", decideBy: "today", activityAt: "2026-07-09T11:00:00Z" }),
+      ];
+      expect(buildDeskShelves(due, NOW, "newest")[0]!.items.map((i) => i.id)).toEqual([
+        "overdue",
+        "due-active",
+        "due-quiet",
+      ]);
+      expect(buildDeskShelves(due, NOW, "oldest")[0]!.items.map((i) => i.id)).toEqual([
+        "overdue",
+        "due-quiet",
+        "due-active",
+      ]);
+    });
   });
 });
 
