@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { paperclipConfigSchema } from "../../packages/shared/src/config-schema.js";
@@ -55,6 +55,13 @@ export async function superviseRollingDeployment(input: {
   const previousMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
   process.env.PAPERCLIP_SECRETS_MASTER_KEY = environment.PAPERCLIP_SECRETS_MASTER_KEY;
   try {
+    // Keep the fixture's isolation evidence for its one generated stable secret.
+    // It is outside A/B/C homes, like the independent database and object store;
+    // each server receives this exact value through its environment.
+    const keyPath = path.resolve(config.secrets.localEncrypted.keyFilePath);
+    if (!keyPath.startsWith(`${path.resolve(input.temporaryRoot)}${path.sep}`)) throw new Error("Rolling fixture key escaped its owned root");
+    await mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
+    await writeFile(keyPath, environment.PAPERCLIP_SECRETS_MASTER_KEY, { mode: 0o600, flag: "wx" });
     current = await start(); await current.waitForReady(); proxy.routeTo(current.origin);
     while (!input.cancelled()) {
       if (current.child.exitCode !== null || current.child.signalCode !== null) throw new Error("Serving rolling controller exited unexpectedly");

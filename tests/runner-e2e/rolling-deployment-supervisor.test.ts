@@ -2,9 +2,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createLocalEncryptedCipher } from "../../server/src/secrets/local-encrypted-provider.js";
 
 const mocks = vi.hoisted(() => ({
-  start: vi.fn(), observer: vi.fn(), stop: vi.fn(), close: vi.fn(),
+  start: vi.fn(), observer: vi.fn(), stop: vi.fn(), close: vi.fn(), writeFile: vi.fn(),
 }));
-vi.mock("node:fs/promises", () => ({ readFile: async () => JSON.stringify({ database: { mode: "postgres", connectionString: "postgres://fixture" } }) }));
+vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, writeFile: mocks.writeFile,
+  readFile: async () => JSON.stringify({ database: { mode: "postgres", connectionString: "postgres://fixture" },
+    secrets: { localEncrypted: { keyFilePath: "/fixture/secrets/master.key" } } }) }));
 vi.mock("../../packages/shared/src/config-schema.js", () => ({ paperclipConfigSchema: { parse: (value: unknown) => value } }));
 vi.mock("./rolling-deployment-process.js", () => ({ startRollingDeploymentProcess: mocks.start }));
 vi.mock("./rolling-deployment-proxy.js", () => ({ startRollingDeploymentProxy: async () => ({ origin: "http://127.0.0.1:1", routeTo() {}, close: mocks.close }) }));
@@ -19,6 +21,8 @@ it.each([undefined, "prior-disposable-key"])("shares the server key with checkpo
   let material: ReturnType<ReturnType<typeof createLocalEncryptedCipher>["encrypt"]>;
   mocks.start.mockImplementation(async ({ sharedEnvironment }) => {
     expect(process.env.PAPERCLIP_SECRETS_MASTER_KEY).toBe(sharedEnvironment.PAPERCLIP_SECRETS_MASTER_KEY);
+    expect(mocks.writeFile).toHaveBeenCalledWith("/fixture/secrets/master.key", sharedEnvironment.PAPERCLIP_SECRETS_MASTER_KEY,
+      { mode: 0o600, flag: "wx" });
     material = createLocalEncryptedCipher("write").encrypt("synthetic checkpoint");
     return { child: { exitCode: null, signalCode: null }, configPath: "/fixture/config.json",
       origin: "http://127.0.0.1:2", waitForReady: async () => {}, stop: mocks.stop };

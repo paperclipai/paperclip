@@ -45,6 +45,9 @@ export async function startRollingDeploymentProcess(input: {
     await cp(path.join(input.repositoryRoot, "server/dist"), path.join(appRoot, "dist"), { recursive: true });
     await cp(path.join(input.repositoryRoot, "ui/dist"), path.join(appRoot, "ui-dist"), { recursive: true });
     await symlink(path.join(input.repositoryRoot, "server/node_modules"), path.join(appRoot, "node_modules"));
+    // This lane uses workspace dependencies, whose exports include TypeScript.
+    // Preserve the normal development plugin loader beside each compiled copy.
+    await symlink(path.join(input.repositoryRoot, "cli"), path.join(home, "app/cli"));
     await writeFile(path.join(appRoot, "package.json"), '{"type":"module"}');
     for (const omittedAsset of input.browser.omitAssets ?? []) {
       if (!/^[A-Za-z0-9_.-]+\.js$/.test(omittedAsset)) throw new Error("Unsafe omitted asset fixture");
