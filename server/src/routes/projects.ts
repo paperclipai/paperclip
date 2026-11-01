@@ -1151,8 +1151,10 @@ export function projectRoutes(db: Db) {
       await svc.assertDeletionAllowed(existing);
       const claimToken = randomUUID();
       deletionClaimToken = claimToken;
-      const claimed = await db.transaction(async (tx) =>
-        tx
+      const claimed = await db.transaction(async (tx) => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, existing.id)).for("update");
+        await svc.assertDeletionAllowed(existing, tx);
+        return tx
           .update(projects)
           .set({
             status: "deleting",
@@ -1169,8 +1171,8 @@ export function projectRoutes(db: Db) {
               lt(projects.deletionClaimExpiresAt, new Date()),
             ),
           ))
-          .returning({ id: projects.id }),
-      );
+          .returning({ id: projects.id });
+      });
       if (claimed.length === 0) {
         res.status(409).json({ error: "Project deletion is already in progress." });
         return;

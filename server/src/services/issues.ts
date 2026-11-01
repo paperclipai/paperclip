@@ -10581,11 +10581,13 @@ export function issueService(db: Db) {
 
         if (issueData.projectId) {
           const selectedProject = await tx
-            .select({ visibility: projects.visibility })
+            .select({ visibility: projects.visibility, status: projects.status })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .for("share")
             .then((rows) => rows[0] ?? null);
           if (!selectedProject) throw notFound("Project not found");
+          if (selectedProject.status === "deleting") throw conflict("Project is being deleted; tasks cannot be added.");
           if (selectedProject.visibility === "private") {
             visibility = "private";
             if (!privacyRootIssueId) {
@@ -11376,6 +11378,12 @@ export function issueService(db: Db) {
       const runUpdate = async (tx: any) => {
         const changesPrivacy = issueData.visibility !== undefined || issueData.parentId !== undefined || issueData.projectId !== undefined;
         if (changesPrivacy) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existing.companyId}`}, 0))`);
+        if (issueData.projectId) {
+          const [targetProject] = await tx.select({ status: projects.status }).from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, existing.companyId))).for("share");
+          if (!targetProject) throw notFound("Project not found");
+          if (targetProject.status === "deleting") throw conflict("Project is being deleted; tasks cannot be added.");
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.

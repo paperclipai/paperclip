@@ -350,7 +350,7 @@ describe("project env routes", () => {
     const database = {
       select: () => query(),
       update,
-      transaction: async (effect: (tx: unknown) => unknown) => effect({ update }),
+      transaction: async (effect: (tx: unknown) => unknown) => effect({ update, select: () => ({ from: () => ({ where: () => ({ for: async () => [{ id: "project-1" }] }) }) }) }),
     };
     const app = await createApp(database);
     const server = app.listen(0, "127.0.0.1");
@@ -433,7 +433,7 @@ describe("project env routes", () => {
     }));
     const database = {
       update,
-      transaction: async (effect: (tx: unknown) => unknown) => effect({ update }),
+      transaction: async (effect: (tx: unknown) => unknown) => effect({ update, select: () => ({ from: () => ({ where: () => ({ for: async () => [{ id: "project-1" }] }) }) }) }),
       select: () => ({
         from: () => ({
           where: () => {

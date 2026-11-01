@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositoryAccess,
   executionWorkspaces, issues, costEvents, financeEvents, projects, projectWorkspaces, projectAccessMembers, principalPermissionGrants,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { issueService } from "../services/issues.js";
 import { projectService } from "../services/projects.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../services/task-workspace-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -27,6 +28,32 @@ const support = await getEmbeddedPostgresTestSupport();
     vi.unstubAllEnvs();
     await database?.cleanup();
     if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  it("rejects new tasks and task moves into a deleting project", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Deletion fence", issuePrefix: `F${companyId.slice(0, 6)}` });
+    const [project] = await db.insert(projects).values({ companyId, name: "Deleting", status: "deleting" }).returning();
+    const service = issueService(db);
+    await expect(service.create(companyId, { title: "New task", projectId: project.id })).rejects.toThrow("Project is being deleted");
+    const [task] = await db.insert(issues).values({ companyId, title: "Existing task" }).returning();
+    await expect(service.update(task.id, { projectId: project.id })).rejects.toThrow("Project is being deleted");
+    expect((await db.select().from(issues).where(eq(issues.id, task.id)))[0].projectId).toBeNull();
+  });
+
+  it("serializes task creation against a project deletion claim", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Claim race", issuePrefix: `R${companyId.slice(0, 6)}` });
+    const [project] = await db.insert(projects).values({ companyId, name: "Claim race" }).returning();
+    let creation!: Promise<unknown>;
+    await db.transaction(async tx => {
+      await tx.select().from(projects).where(eq(projects.id, project.id)).for("update");
+      creation = issueService(db).create(companyId, { title: "Concurrent task", projectId: project.id });
+      creation.catch(() => {});
+      await tx.update(projects).set({ status: "deleting" }).where(eq(projects.id, project.id));
+    });
+    await expect(creation).rejects.toThrow("Project is being deleted");
+    expect(await db.select().from(issues).where(eq(issues.projectId, project.id))).toEqual([]);
   });
 
   it.each((["cwd", "file_url", "absolute_path"] as const).flatMap(sourceKind =>

@@ -1037,6 +1037,11 @@ export function projectService(
       const db = tx as unknown as Db;
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
+      if (projectData.visibility !== undefined) {
+        const [scope] = await db.select({ companyId: projects.companyId }).from(projects).where(eq(projects.id, id));
+        if (!scope) return null;
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${scope.companyId}`}, 0))`);
+      }
       const existingProject = await db
         .select({ id: projects.id, companyId: projects.companyId, name: projects.name, status: projects.status, deletionClaimToken: projects.deletionClaimToken, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
@@ -1148,7 +1153,7 @@ export function projectService(
       return cleared;
     },
 
-    assertDeletionAllowed: (project: { id: string; companyId: string }) => assertProjectDeletionAllowed(db, project),
+    assertDeletionAllowed: (project: { id: string; companyId: string }, executor: Db | ProjectTransaction = db) => assertProjectDeletionAllowed(executor, project),
 
     remove: async (
       id: string,

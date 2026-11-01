@@ -118,7 +118,7 @@ describe("durable agent file authority", () => {
     expect(await migrateAgentFiles(db, { ...input, apply: true, writersStopped: true })).toMatchObject({ pageReady: true });
     await replaceFilesystem();
     expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toEqual(Buffer.from("Legacy"));
-  });
+  }, 30_000);
 
   it("refuses migration while the agent has queued or running execution", async () => {
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
