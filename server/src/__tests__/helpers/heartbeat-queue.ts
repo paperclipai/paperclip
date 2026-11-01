@@ -9,7 +9,7 @@ import { createHeartbeatRunPreparation } from "../../services/heartbeat/run-prep
 import type { HeartbeatQueueDependencies } from "../../services/heartbeat/queue.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
-type MockedCallback = "getAgent" | "setRunStatus" | "setWakeupStatus" | "appendRunEvent" | "finalizeAgentStatus" | "getAgentInvokability" | "getWorktreeExecutionCutoff" | "applyRunDispatchPostCommitEffects" | "getSchedulingSuppression" | "canStartNewExternalBotWork" | "executeRun" | "applyWakeQueuePostCommitEffects" | "releaseIssueExecutionAndPromote" | "publishRunLifecyclePluginEvent" | "cancelRunInternal" | "cancelActiveForAgentInternal" | "resumeExecutionWaitComments" | "resumeQueuedCommentInterrupt" | "resumeSavedLegacyComments" | "sweepPendingCleanupLeases";
+type MockedCallback = "getAgent" | "setRunStatus" | "setWakeupStatus" | "appendRunEvent" | "finalizeAgentStatus" | "getAgentInvokability" | "getWorktreeExecutionCutoff" | "applyRunDispatchPostCommitEffects" | "getSchedulingSuppression" | "canStartNewExternalBotWork" | "executeRun" | "applyWakeQueuePostCommitEffects" | "releaseIssueExecutionAndPromote" | "publishRunLifecyclePluginEvent" | "cancelRunInternal" | "cancelActiveForAgentInternal" | "resumeExecutionWaitComments" | "readmitUnblockedExecutionWaits" | "resumeQueuedCommentInterrupt" | "resumeSavedLegacyComments" | "sweepPendingCleanupLeases";
 type QueueTestDependencies = HeartbeatQueueDependencies & { [K in MockedCallback]: Mock<HeartbeatQueueDependencies[K]> } & {
   issuesSvc: Mocked<HeartbeatQueueDependencies["issuesSvc"]>;
   treeControlSvc: Mocked<HeartbeatQueueDependencies["treeControlSvc"]>;
@@ -64,6 +64,7 @@ export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependenc
     cancelRunInternal: vi.fn<HeartbeatQueueDependencies["cancelRunInternal"]>(async () => undefined),
     cancelActiveForAgentInternal: vi.fn<HeartbeatQueueDependencies["cancelActiveForAgentInternal"]>(async () => undefined),
     resumeExecutionWaitComments: vi.fn<HeartbeatQueueDependencies["resumeExecutionWaitComments"]>(async () => undefined),
+    readmitUnblockedExecutionWaits: vi.fn<HeartbeatQueueDependencies["readmitUnblockedExecutionWaits"]>(async () => undefined),
     resumeQueuedCommentInterrupt: vi.fn<HeartbeatQueueDependencies["resumeQueuedCommentInterrupt"]>(async () => undefined),
     resumeSavedLegacyComments: vi.fn<HeartbeatQueueDependencies["resumeSavedLegacyComments"]>(async () => undefined),
     formatIssueIdentifierLink: (_identifier: string | null, fallback: string) => fallback,
