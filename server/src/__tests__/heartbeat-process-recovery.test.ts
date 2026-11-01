@@ -1080,6 +1080,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    executionStage?: "settled";
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
   }) {
@@ -1153,6 +1154,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             ? input.runError
             : "run failed before issue advanced",
       livenessState: input.livenessState ?? null,
+      executionStage: input.executionStage ?? null,
       // Graph-repair fixtures model failures before any provider work. Unknown
       // execution outcomes are covered by the process-loss and adapter-failure cases.
       resultJson: input.resultJson ?? {
@@ -12169,6 +12171,67 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     }
   });
+
+  it("requeues a settled execution-start rejection after the agent becomes invokable", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "agent_not_invokable",
+      runError: "Agent lifecycle state is pausing",
+      executionStage: "settled",
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    expect((await selectRecoveryIssueById(issueId))?.status).toBe("in_progress");
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs).toHaveLength(2);
+    expect(
+      runs.find((row) => row.id !== runId)?.contextSnapshot,
+    ).toMatchObject({
+      issueId,
+      retryReason: "transient_failure",
+    });
+  });
+
+  it.each([
+    "preparing",
+    "verifying",
+    "pausing",
+    "resuming",
+    "terminating",
+    "cleaning_up",
+  ] as const)(
+    "defers stranded recovery while the agent lifecycle is %s",
+    async (lifecycleState) => {
+      const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+      });
+      await db
+        .update(agents)
+        .set({ status: "paused", lifecycleState })
+        .where(eq(agents.id, agentId));
+
+      const result =
+        await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.skipped).toBeGreaterThanOrEqual(1);
+      expect(result.issueIds).not.toContain(issueId);
+      expect((await selectRecoveryIssueById(issueId))?.status).toBe(
+        "in_progress",
+      );
+      expect(
+        (await selectRecoveryRunsByAgent(agentId)).map((row) => row.id),
+      ).toEqual([runId]);
+    },
+  );
 
   it("does not recover a finished native chat while its response publication is pending", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
