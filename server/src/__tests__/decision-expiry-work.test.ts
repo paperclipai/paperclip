@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, createDb, subscribeDatabaseWork, decisionBundles, decisionEffectExecutions, decisions,
-  decisionTargetIssues, heartbeatRuns, issues } from "@paperclipai/db";
+  decisionTargetIssues, heartbeatRuns, issues, databaseWorkPending, reconcileDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { decisionService } from "../services/decisions.js";
@@ -42,6 +42,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   afterEach(async () => {
     await coordinator?.stop(); coordinator = undefined;
     vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs();
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.decisionExpiry);
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.decisionExpiry)).toBe(false);
     await db.execute(sql`drop trigger if exists decision_expiry_fail on decisions`);
     await db.execute(sql`drop function if exists decision_expiry_fail()`);
     await db.execute(sql`drop trigger if exists decision_expiry_audit_fail on activity_log`);

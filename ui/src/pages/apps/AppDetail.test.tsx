@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAppStoreDefinition } from "@paperclipai/shared";
 import type { AggregatorAppSnapshot, AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
+import type * as ToolsApiModule from "@/api/tools";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
@@ -1521,6 +1522,78 @@ describe("AppDetail", () => {
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { asCurrentUser: true });
     expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+  });
+
+  it.each([
+    { label: "dedicated active agent", credentialPolicy: "per_agent", grants: [dedicatedGitHubGrant()], body: { asAgentId: "agent-1" } },
+    { label: "dedicated revoked agent", credentialPolicy: "per_agent", grants: [dedicatedGitHubGrant({ status: "revoked" })], body: { asAgentId: "agent-1" } },
+    { label: "personal user", credentialPolicy: "per_user", grants: [personalGrant()], body: { asCurrentUser: true } },
+    { label: "organization", credentialPolicy: "shared", grants: [organizationGrant()], body: {} },
+  ])("retains the $label subject in the outbound OAuth reconnect request", async ({ credentialPolicy, grants, body }) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth",
+      credentialPolicy,
+      createdByUserId: "user-1",
+      healthStatus: "failed",
+      healthMessage: "Authorization expired (invalid_grant).",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants,
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+    const { toolsApi } = await vi.importActual<typeof ToolsApiModule>("@/api/tools");
+    startOAuthMock.mockImplementation(toolsApi.startOAuth);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      connectionId: "conn-1",
+      provider: "github",
+      authorizationUrl: "https://example.test/oauth",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    await renderAppDetail();
+    await act(async () => findButton("Reconnect")!.click());
+    await flushReact();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/tools/oauth/conn-1/start", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(body),
+    }));
+    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+  });
+
+  it.each([
+    { label: "missing grant", grants: [] },
+    { label: "missing agent subject", grants: [dedicatedGitHubGrant({ subjectAgentId: null })] },
+  ])("does not reconnect a dedicated identity with a $label as the board user", async ({ grants }) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth",
+      credentialPolicy: "per_agent",
+      healthStatus: "failed",
+      healthMessage: "Authorization expired (invalid_grant).",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants,
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+    await act(async () => findButton("Reconnect")!.click());
+    await flushReact();
+
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Couldn’t start sign-in",
+      body: "The dedicated agent identity could not be found. Reload the page to try again.",
+      tone: "error",
+    }));
   });
 
   it("does not offer a personal reconnect to someone other than its fixed owner", async () => {
