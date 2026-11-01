@@ -16,6 +16,7 @@ import {
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { accessService } from "../services/index.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
@@ -344,8 +345,8 @@ function sendGatewayError(res: import("express").Response, err: unknown) {
     res.status(err.status).json({ error: err.message, ...details });
     return;
   }
-  const message = err instanceof Error ? err.message : String(err);
-  res.status(500).json({ error: message });
+  logger.error({ err }, "Tool gateway request failed");
+  res.status(500).json({ error: "Internal server error" });
 }
 
 export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
