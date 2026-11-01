@@ -95,6 +95,8 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
         verifyBeforePrune: async archive => {
           verified++;
+          expect(archive).toMatch(/\.part\.gz$/);
+          expect(fs.existsSync(archive.replace(/\.[0-9a-f-]+\.part\.gz$/, ""))).toBe(false);
           expect(gunzipSync(fs.readFileSync(archive)).toString()).toBe("SELECT 1;\n");
           throw failure;
         },
@@ -102,10 +104,80 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       expect(verified).toBe(1);
       expect(fs.readFileSync(history)).toEqual(historyBytes);
       expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".sql.gz"))).toEqual(["paperclip-history.sql.gz"]);
+      expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".part.gz"))).toEqual([]);
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
       else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
     }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("falls back from an empty pg_dump stream without publishing it", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-empty-pg-dump-");
+    const executable = path.join(backupDir, "pg-dump-empty-fixture");
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = executable;
+    try {
+      const result = await runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      });
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+      expect(gunzipSync(fs.readFileSync(result.backupFile)).length).toBeGreaterThan(0);
+      expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".part.gz"))).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("rejects an empty forced pg_dump without publishing or pruning", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-forced-empty-pg-dump-");
+    const executable = path.join(backupDir, "pg-dump-empty-fixture");
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const history = path.join(backupDir, "paperclip-history.sql.gz");
+    const historyBytes = gzipSync("SELECT 'history';");
+    fs.writeFileSync(history, historyBytes);
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = executable;
+    try {
+      await expect(runDatabaseBackup({
+        connectionString,
+        backupDir,
+        backupEngine: "pg_dump",
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      })).rejects.toThrow("pg_dump produced an empty archive");
+      expect(fs.readFileSync(history)).toEqual(historyBytes);
+      expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".sql.gz"))).toEqual(["paperclip-history.sql.gz"]);
+      expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".part.gz"))).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("publishes JavaScript backups only after verification", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-pending-backup-");
+    let verified = false;
+    const result = await runDatabaseBackup({
+      connectionString,
+      backupDir,
+      backupEngine: "javascript",
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      verifyBeforePrune: async archive => {
+        verified = true;
+        expect(archive).toMatch(/\.part\.gz$/);
+        expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".sql.gz"))).toEqual([]);
+        expect(gunzipSync(fs.readFileSync(archive)).length).toBeGreaterThan(0);
+      },
+    });
+    expect(verified).toBe(true);
+    expect(fs.existsSync(result.backupFile)).toBe(true);
+    expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".part.gz"))).toEqual([]);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("preserves identity generation, sequence options and progress in JavaScript backups", async () => {
