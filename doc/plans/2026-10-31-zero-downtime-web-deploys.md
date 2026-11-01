@@ -458,8 +458,8 @@ that attempted run failed. The task was then unassigned, paused and hidden.
 Do not count this as successful agent execution or assume it incurred no cost.
 Private setup and restoration receipts remain under `/private/tmp/paperclip-zdt-`.
 
-A dedicated staging fixture was provisioned through the normal signup API:
-`stack-pool-db58954ece8c`, `web-deploy-qa-nov1.staging.paperclip.app`.
+A dedicated staging fixture was provisioned through the normal signup API.
+Its concrete host and stack identity remain in the private qualification receipt.
 It is pinned through the audited user-managed API, and the existing operator
 was added through the audited membership API. Normal organization-launcher
 entry reached its dashboard. A separate synthetic fixture owner authenticated
@@ -506,7 +506,7 @@ The first named-stack deployment was refused before creating a campaign because
 an existing fleet campaign still reserved the fixture. That campaign completed
 at 10:24:40 UTC and skipped the now-pinned fixture. Its operation lease was not
 held; the campaign reservation was the actual conflict. The refused workflow
-was explicitly retried, and request `edbb95f9-66d4-406a-9550-bad3c0118519`
+was explicitly retried, and the named-stack request
 is deploying the qualified maintenance composition. No hosted enrollment has
 started and no controller allowlist has changed yet.
 
