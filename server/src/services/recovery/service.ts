@@ -1118,7 +1118,9 @@ export function recoveryService(
     companyId: string,
     issueId: string,
     agentId?: string | null,
+    options?: { deferredWakeAgentId?: string | null },
   ) {
+    const deferredWakeAgentId = options?.deferredWakeAgentId ?? agentId;
     const [run, deferredWake, nativeRecovery] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
@@ -1143,7 +1145,9 @@ export function recoveryService(
             eq(agentWakeupRequests.companyId, companyId),
             eq(agentWakeupRequests.status, "deferred_issue_execution"),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-            agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+            deferredWakeAgentId
+              ? eq(agentWakeupRequests.agentId, deferredWakeAgentId)
+              : sql`true`,
           ),
         )
         .limit(1)
@@ -3461,6 +3465,7 @@ export function recoveryService(
 
   async function sourceHasNewPathOutsideRecoveryAction(
     action: typeof issueRecoveryActions.$inferSelect,
+    assigneeAgentId: string | null,
   ) {
     const [run, wake] = await Promise.all([
       db
@@ -3484,11 +3489,15 @@ export function recoveryService(
         .where(
           and(
             eq(agentWakeupRequests.companyId, action.companyId),
-            inArray(agentWakeupRequests.status, [
-              "queued",
-              "claimed",
-              "deferred_issue_execution",
-            ]),
+            or(
+              inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+              and(
+                eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                assigneeAgentId
+                  ? eq(agentWakeupRequests.agentId, assigneeAgentId)
+                  : sql`true`,
+              ),
+            ),
             sql`coalesce(${agentWakeupRequests.payload} ->> 'issueId', ${agentWakeupRequests.payload} ->> 'taskId') = ${action.sourceIssueId}`,
             sql`coalesce(${agentWakeupRequests.payload} ->> 'recoveryActionId', '') <> ${action.id}`,
           ),
@@ -3577,7 +3586,7 @@ export function recoveryService(
         await Promise.all([
           collectDispositionRepairSourceState(db, { issue }),
           healthyOpenChildIssues(issue),
-          sourceHasNewPathOutsideRecoveryAction(action),
+          sourceHasNewPathOutsideRecoveryAction(action, issue.assigneeAgentId),
         ]);
       const durablePathRestored =
         action.ownerType !== "board" && sourceState.hasDurableWaitingPath;
@@ -4781,6 +4790,7 @@ export function recoveryService(
           issue.companyId,
           issue.id,
           issue.status === "in_review" ? agentId : null,
+          issue.status === "todo" ? { deferredWakeAgentId: agentId } : undefined,
         )
       ) {
         result.skipped += 1;
@@ -5450,7 +5460,9 @@ export function recoveryService(
           result.issueIds.push(issue.id);
         } else if (
           dispatchOutcome.retryExhausted &&
-          !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
+          !(await hasActiveExecutionPath(issue.companyId, issue.id, null, {
+            deferredWakeAgentId: agentId,
+          }))
         ) {
           // Same exhaustion as the in_progress lane: the lost dispatch's
           // bounded retries are spent, so escalate instead of skipping on
