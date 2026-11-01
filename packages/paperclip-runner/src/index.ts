@@ -82,6 +82,7 @@ export {
   defaultCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
+  coldAdmissionTimeoutMs,
   resolveSourceCodexHome,
   settleRetainedRunnerdSession,
   retainedRunnerdCleanupProofIsCurrent,

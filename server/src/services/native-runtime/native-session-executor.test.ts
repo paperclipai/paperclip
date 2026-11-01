@@ -10994,7 +10994,7 @@ describe("native session bounded recovery", () => {
       return query;
     });
     const stop = vi.fn(async () => undefined);
-    const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop });
+    const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop, remainingMs: () => 60_000 });
     const releasePreparation = vi.fn(async () => {
       expect(renew).toHaveBeenCalledOnce();
       expect(stop).not.toHaveBeenCalled();

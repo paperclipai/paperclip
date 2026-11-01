@@ -13,6 +13,20 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe("native execution renewal ownership", () => {
+  it("reports only the remaining confirmed ownership budget", async () => {
+    vi.useFakeTimers();
+    const { input, returning } = fixture();
+    let complete!: (value: { runId: string }[]) => void;
+    returning.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const guard = startNativeSessionExecutionLeaseRenewal({ ...input, confirmedDeadline: performance.now() + 45_000 });
+    expect(guard.remainingMs()).toBe(45_000);
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(guard.remainingMs()).toBe(5_000);
+    complete([{ runId: "run" }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(guard.remainingMs()).toBe(40_000);
+    await guard.stop();
+  });
   it("keeps a successfully renewed lease through repeated slow connection acquisition", async () => {
     vi.useFakeTimers();
     const { input, update, transaction } = fixture();
