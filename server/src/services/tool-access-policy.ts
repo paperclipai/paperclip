@@ -53,6 +53,7 @@ import {
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import { canonicalToolArguments, readSignedToolArgumentsPayload, toolRequestIdentityHash } from "./tool-content-guards.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 class RejectedInvocationAdmission extends Error {
   constructor(readonly decision: ToolAccessDecision) {
@@ -2120,80 +2121,83 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     const name = input.body.name ?? `Trust ${invocation.toolName} ${actionRequest.id.slice(0, 8)}`;
     const description = input.body.description
       ?? `Progressive-autonomy trust rule promoted from action request ${actionRequest.id}.`;
-    const [policy] = await db.insert(toolPolicies).values({
-      companyId: input.companyId,
-      name,
-      description,
-      policyType: "trust_rule",
-      priority: input.body.priority ?? 40,
-      enabled: true,
-      selectors,
-      config: {
-        trustRule: {
-          sourceActionRequestId: actionRequest.id,
-          sourceInvocationId: invocation.id,
-          sourceApprovalCount: approvedCount,
+    return db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      const [policy] = await tx.insert(toolPolicies).values({
+        companyId: input.companyId,
+        name,
+        description,
+        policyType: "trust_rule",
+        priority: input.body.priority ?? 40,
+        enabled: true,
+        selectors,
+        config: {
+          trustRule: {
+            sourceActionRequestId: actionRequest.id,
+            sourceInvocationId: invocation.id,
+            sourceApprovalCount: approvedCount,
+            approvalThreshold,
+            argumentFilters: filters,
+            expiresAt,
+            revokedAt: null,
+            hitCount: 0,
+            lastHitAt: null,
+            catalogVersionHash: invocation.catalogVersionHash ?? null,
+            schemaHash: invocation.catalogSchemaHash ?? null,
+            batchApproval: input.body.batchApproval ?? null,
+          },
+        },
+        createdByAgentId: input.actor?.agentId ?? null,
+        createdByUserId: input.actor?.userId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      }).returning();
+
+      await tx.insert(toolAccessAuditEvents).values({
+        companyId: input.companyId,
+        connectionId: invocation.connectionId,
+        catalogEntryId: invocation.catalogEntryId,
+        actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
+        actorId: input.actor?.agentId ?? input.actor?.userId ?? null,
+        action: "tool_access.trust_rule_created",
+        outcome: "success",
+        reasonCode: "trust_rule_promoted_from_approval",
+        details: {
+          policyId: policy.id,
+          actionRequestId: actionRequest.id,
+          invocationId: invocation.id,
           approvalThreshold,
+          approvedCount,
+          selectors,
           argumentFilters: filters,
           expiresAt,
-          revokedAt: null,
-          hitCount: 0,
-          lastHitAt: null,
-          catalogVersionHash: invocation.catalogVersionHash ?? null,
-          schemaHash: invocation.catalogSchemaHash ?? null,
-          batchApproval: input.body.batchApproval ?? null,
         },
-      },
-      createdByAgentId: input.actor?.agentId ?? null,
-      createdByUserId: input.actor?.userId ?? null,
-      createdAt: now,
-      updatedAt: now,
-    }).returning();
-
-    await db.insert(toolAccessAuditEvents).values({
-      companyId: input.companyId,
-      connectionId: invocation.connectionId,
-      catalogEntryId: invocation.catalogEntryId,
-      actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
-      actorId: input.actor?.agentId ?? input.actor?.userId ?? null,
-      action: "tool_access.trust_rule_created",
-      outcome: "success",
-      reasonCode: "trust_rule_promoted_from_approval",
-      details: {
-        policyId: policy.id,
-        actionRequestId: actionRequest.id,
+      });
+      await tx.insert(toolCallEvents).values({
+        companyId: input.companyId,
+        eventType: "trust_rule_created",
+        actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
+        actorId: input.actor?.agentId ?? input.actor?.userId ?? null,
+        agentId: invocation.agentId,
+        runId: invocation.runId,
+        issueId: invocation.issueId,
+        applicationId: invocation.applicationId,
+        connectionId: invocation.connectionId,
+        catalogEntryId: invocation.catalogEntryId,
         invocationId: invocation.id,
-        approvalThreshold,
-        approvedCount,
-        selectors,
-        argumentFilters: filters,
-        expiresAt,
-      },
+        actionRequestId: actionRequest.id,
+        toolName: invocation.toolName,
+        decision: "allow",
+        matchedPolicyIds: [policy.id],
+        reasonCode: "trust_rule_promoted_from_approval",
+        outcome: "success",
+        argumentsSummary: invocation.argumentsSummary,
+        requestHash: invocation.argumentsHash,
+        requestSummary: invocation.argumentsSummary,
+        metadata: { approvalThreshold, approvedCount, selectors, expiresAt },
+      });
+      return policy;
     });
-    await db.insert(toolCallEvents).values({
-      companyId: input.companyId,
-      eventType: "trust_rule_created",
-      actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
-      actorId: input.actor?.agentId ?? input.actor?.userId ?? null,
-      agentId: invocation.agentId,
-      runId: invocation.runId,
-      issueId: invocation.issueId,
-      applicationId: invocation.applicationId,
-      connectionId: invocation.connectionId,
-      catalogEntryId: invocation.catalogEntryId,
-      invocationId: invocation.id,
-      actionRequestId: actionRequest.id,
-      toolName: invocation.toolName,
-      decision: "allow",
-      matchedPolicyIds: [policy.id],
-      reasonCode: "trust_rule_promoted_from_approval",
-      outcome: "success",
-      argumentsSummary: invocation.argumentsSummary,
-      requestHash: invocation.argumentsHash,
-      requestSummary: invocation.argumentsSummary,
-      metadata: { approvalThreshold, approvedCount, selectors, expiresAt },
-    });
-    return policy;
   }
 
   async function listTrustRules(companyId: string) {
