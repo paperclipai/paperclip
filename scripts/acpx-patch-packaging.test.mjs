@@ -463,6 +463,23 @@ test("bundled package staging materializes workspace dependency versions", () =>
   });
 });
 
+test("bundled package uses actual separately versioned workspace dependencies", () => {
+  const staged = materializePublishManifest({
+    name: "@paperclipai/server", version: "0.3.1",
+    dependencies: { "@paperclipai/plugin-sdk": "workspace:*", "@paperclipai/shared": "workspace:^" },
+  }, { "@paperclipai/plugin-sdk": "1.0.0", "@paperclipai/shared": "0.3.1" });
+  assert.deepEqual(staged.dependencies, { "@paperclipai/plugin-sdk": "1.0.0", "@paperclipai/shared": "^0.3.1" });
+});
+
+test("bundled package staging preserves synthetic release versions", () => {
+  const version = "2026.1101.0-canary.1";
+  const staged = materializePublishManifest({
+    name: "@paperclipai/server", version,
+    dependencies: { "@paperclipai/plugin-sdk": "workspace:*", "@paperclipai/shared": "workspace:^" },
+  }, { "@paperclipai/server": "0.3.1", "@paperclipai/plugin-sdk": "1.0.0", "@paperclipai/shared": "0.3.1" });
+  assert.deepEqual(staged.dependencies, { "@paperclipai/plugin-sdk": version, "@paperclipai/shared": `^${version}` });
+});
+
 test("bundled package staging installs only dependencies included in the tarball", () => {
   const publishManifest = {
     name: "@paperclipai/db",

@@ -6,6 +6,8 @@ import {
   type CommandRunner,
   installCommand,
   installGitPayload,
+  hydrateEmbeddedPostgresSymlinks,
+  reconcileStagedWorkspaceVersions,
   resolveGitHubRef,
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
@@ -39,6 +41,8 @@ describe("managed install commands", () => {
       ...ORIGINAL_ENV,
       HOME: path.join(root, "home"),
       PAPERCLIP_HOME: path.join(root, "home", ".paperclip"),
+      PAPERCLIP_INSTANCE_ID: "install-command-isolated-tests",
+      PAPERCLIP_SHIM_PATH: path.join(root, "home", ".local", "bin", "paperclipai"),
       PATH: "/usr/bin:/bin",
       SHELL: "/bin/bash",
     };
@@ -101,6 +105,42 @@ describe("managed install commands", () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
+  it("corrects stale workspace versions emitted by a pinned checkout helper", () => {
+    const source = path.join(root, "src");
+    const staged = path.join(root, "staged");
+    fs.mkdirSync(source);
+    fs.mkdirSync(staged);
+    fs.writeFileSync(path.join(source, "package.json"), JSON.stringify({
+      version: "0.3.1", dependencies: {
+        "@paperclipai/plugin-sdk": "workspace:*", "@paperclipai/shared": "workspace:^",
+      },
+    }));
+    fs.writeFileSync(path.join(staged, "package.json"), JSON.stringify({
+      version: "0.3.1", dependencies: {
+        "@paperclipai/plugin-sdk": "0.3.1", "@paperclipai/shared": "^0.3.1",
+      },
+    }));
+    const versions = { "@paperclipai/plugin-sdk": "1.0.0", "@paperclipai/shared": "0.3.1" };
+    expect(reconcileStagedWorkspaceVersions(source, staged, versions)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(staged, "package.json"), "utf8")).dependencies)
+      .toEqual({ "@paperclipai/plugin-sdk": "1.0.0", "@paperclipai/shared": "^0.3.1" });
+    expect(reconcileStagedWorkspaceVersions(source, staged, versions)).toBe(false);
+  });
+
+  it("hydrates a bundled Postgres native package before activation", async () => {
+    const payload = path.join(root, "candidate");
+    const native = path.join(payload, "node_modules", "@embedded-postgres", `${process.platform}-${process.arch}`);
+    fs.mkdirSync(path.join(native, "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(native, "native"), { recursive: true });
+    fs.writeFileSync(path.join(native, "native", "pg-symlinks.json"), "[]");
+    fs.writeFileSync(path.join(native, "scripts", "hydrate-symlinks.js"), "// test fixture\n");
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    expect(await hydrateEmbeddedPostgresSymlinks(payload, runCommand)).toBe(true);
+    expect(runCommand).toHaveBeenCalledWith(process.execPath, [path.join(native, "scripts", "hydrate-symlinks.js")], expect.objectContaining({ cwd: native }));
+    expect(await hydrateEmbeddedPostgresSymlinks(path.join(root, "missing"), runCommand)).toBe(false);
+    expect(runCommand).toHaveBeenCalledOnce();
+  });
+
   it("reuses a SHA-keyed git payload without downloading or rebuilding", async () => {
     const sha = "b".repeat(40);
     const paths = resolveInstallStorePaths();
@@ -140,7 +180,7 @@ describe("managed install commands", () => {
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
           const packageDir = args[args.indexOf("--dir") + 1];
-          const packageName = packageDir === "server" ? "paperclipai-server" : "paperclipai-shared";
+          const packageName = packageDir === "server" ? "paperclipai-server" : packageDir === "cli" ? "paperclipai" : "paperclipai-shared";
           fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
         }
         return { stdout: "", stderr: "" };
@@ -171,15 +211,18 @@ describe("managed install commands", () => {
     expect(manifest?.payloadPath).toContain(path.join("git", sha.slice(0, 12)));
     expect(runCommand.mock.calls.filter(([command, args]) => command === "curl" && args.includes("--output"))).toHaveLength(1);
     expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args[1] === "install")).toHaveLength(1);
-    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(2);
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(3);
     expect(runCommand.mock.calls.filter(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"))).toHaveLength(1);
-    expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
+    const npmPackCalls = runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack");
+    expect(npmPackCalls).toHaveLength(1);
+    expect(npmPackCalls.find(([, args]) => args[1]?.includes("workspace-package-"))?.[1]).toContain("--ignore-scripts");
     const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
   });
 
   it("builds git checkouts with NODE_ENV cleared so ambient production mode keeps devDependencies", async () => {
     process.env.NODE_ENV = "production";
+    process.env.CARGO_TARGET_DIR = "/tmp/foreign-cargo-target";
     const sha = "d".repeat(40);
     const runCommand = createGitCheckoutRunCommand(sha);
     await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths())).resolves.toMatchObject({ version: "0.3.1", reused: false });
@@ -188,11 +231,13 @@ describe("managed install commands", () => {
       file === "corepack" ||
       (file === "npm" && args[0] === "pack") ||
       (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")));
-    expect(buildCalls).toHaveLength(9);
+    expect(buildCalls).toHaveLength(11);
+    expect(buildCalls.some(([file, args]) => file === "corepack" && args.includes("build:issue-thread"))).toBe(true);
     for (const call of buildCalls) {
       const env = call[2]?.env;
       expect(env, `${call[0]} ${call[1].join(" ")} must run with an explicit env`).toBeDefined();
       expect(env, `${call[0]} ${call[1].join(" ")} must not inherit NODE_ENV`).not.toHaveProperty("NODE_ENV");
+      expect(env, `${call[0]} ${call[1].join(" ")} must not inherit foreign Cargo output`).not.toHaveProperty("CARGO_TARGET_DIR");
     }
     const uiPackCall = buildCalls.find(([file, , options]) => file === "corepack" && options?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST === "1");
     expect(uiPackCall).toBeDefined();
@@ -222,6 +267,11 @@ describe("managed install commands", () => {
   it("includes child-process stderr in command failures", async () => {
     await expect(runCommandWithDiagnostics(process.execPath, ["-e", "process.stderr.write('unsupported workspace dependency\\n'); process.exit(1)"]))
       .rejects.toThrow("unsupported workspace dependency");
+  });
+
+  it("preserves a bounded build stdout tail on otherwise opaque failures", async () => {
+    await expect(runCommandWithDiagnostics(process.execPath, ["-e", "process.stdout.write('WORKSPACE_BUILD_MARKER\\n'); process.exit(1)"]))
+      .rejects.toThrow("WORKSPACE_BUILD_MARKER");
   });
 
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
@@ -265,6 +315,7 @@ describe("managed install commands", () => {
       expect(fs.existsSync(paths.shimPath)).toBe(true);
     });
     await uninstallCommand({
+      userHomeDir: process.env.HOME!,
       detectServiceManager: vi.fn(async () => ({
         supported: true as const,
         manager: {
@@ -345,7 +396,10 @@ describe("managed install commands", () => {
     fs.mkdirSync(paths.cliRoot, { recursive: true });
     fs.writeFileSync(unrelatedFile, "keep");
 
-    await expect(uninstallCommand()).rejects.toThrow("unverified install store");
+    await expect(uninstallCommand({ userHomeDir: process.env.HOME!, detectServiceManager: vi.fn(async () => ({
+      supported: true as const,
+      manager: { status: vi.fn(async () => ({ installed: false, active: false })) } as never,
+    })) })).rejects.toThrow("unverified install store");
     expect(fs.readFileSync(unrelatedFile, "utf8")).toBe("keep");
   });
 
@@ -367,7 +421,10 @@ describe("managed install commands", () => {
 
     await withInstallStoreLock(
       async () => {
-        await expect(uninstallCommand()).rejects.toThrow("already running");
+        await expect(uninstallCommand({ userHomeDir: process.env.HOME!, detectServiceManager: vi.fn(async () => ({
+          supported: true as const,
+          manager: { status: vi.fn(async () => ({ installed: false, active: false })) } as never,
+        })) })).rejects.toThrow("already running");
       },
       paths,
     );
