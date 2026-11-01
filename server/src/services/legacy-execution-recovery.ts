@@ -22,6 +22,21 @@ import { issueService } from "./issues.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
+export const LEGACY_DISPOSITION_SUPPRESSION_KEY = "legacyDispositionDispatchSuppression";
+type SuppressionRun = Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> &
+  Partial<Pick<Run, "id" | "controllerBootId" | "processPid" | "processGroupId" | "executionStage" | "runnerProfileJson">>;
+
+export function isSuppressedLegacyDispositionDispatch(run: SuppressionRun): boolean {
+  const proof = run.runnerProfileJson?.[LEGACY_DISPOSITION_SUPPRESSION_KEY] as Record<string, unknown> | undefined;
+  return run.runtimeMode === "legacy" && run.status === "cancelled"
+    && run.errorCode === "legacy_disposition_repair_suppressed"
+    && run.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive"
+    && typeof run.id === "string" && typeof run.controllerBootId === "string"
+    && run.processPid === null && run.processGroupId === null
+    && (run.executionStage === "dispatching" || run.executionStage === "settled")
+    && proof?.version === 1 && proof.runId === run.id && proof.controllerBootId === run.controllerBootId
+    && proof.providerDispatchStarted === false && typeof proof.reason === "string" && proof.reason.length > 0;
+}
 
 const unusedReconciliationContextKeys = [
   "executionContinuation", "paperclipWake", "paperclipWakeComment",
@@ -43,7 +58,7 @@ export const legacyReconciliationRunFields = {
 
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
-  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
+  run: SuppressionRun & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
 ): boolean {
   if (
     run.runtimeMode === "native" ||
@@ -52,6 +67,7 @@ export function legacyExecutionNeedsReconciliation(
     return false;
   // A fresh model turn cannot repair or verify unrestored files.
   if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return true;
+  if (isSuppressedLegacyDispositionDispatch(run)) return false;
   // A fresh conversation turn lets the agent decide what remains. The retry
   // scheduler, not an action-outcome hold, owns the automatic attempt limit.
   if (hasConversationContinuationPolicy(run.resultJson)) return false;
