@@ -1,6 +1,7 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agentExecutionsHaveStopped } from "../services/agent-execution-stop.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
 import * as conversationContinuation from "../services/conversation-continuation.js";
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../services/environment-runtime.js";
@@ -3668,13 +3669,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "legacy",
         runtimeModeResolvedAt: null, nativeSessionId: null,
         resultJson: { startupCancellation: { beforeNativeSelection: true },
-          startupPreparationSettledAt: expect.any(String) },
+          startupPreparationSettledAt: expect.any(String), legacyAdapterNotEnteredAt: expect.any(String) },
       });
+      expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
       expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).toHaveLength(0);
       expect(factory).not.toHaveBeenCalled();
       expect(mockAdapterExecute).not.toHaveBeenCalled();
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(task.executionRunId).toBeNull();
+    });
+  });
+
+  it("records a stop receipt when cancellation wins before a legacy adapter is entered", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(heartbeatRuns).set({ invocationSource: "automation" }).where(eq(heartbeatRuns.id, runId));
+      let reachedDispatch = false;
+      const heartbeat = heartbeatService(db, {
+        beforeChatControlRecoveryCheck: async ({ stage, runId: id }) => {
+          if (stage !== "dispatch") return;
+          reachedDispatch = true;
+          await heartbeat.cancelRun(id);
+        },
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(reachedDispatch).toBe(true);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "legacy",
+        processPid: null, resultJson: { legacyAdapterNotEnteredAt: expect.any(String) } });
+      expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
     });
   });
 
