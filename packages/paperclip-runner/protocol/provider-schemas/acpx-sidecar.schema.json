@@ -69,7 +69,7 @@
         },
         {
           "if": { "properties": { "command": { "const": "session.open" } } },
-          "then": { "properties": { "params": { "allOf": [{ "$ref": "#/$defs/sessionOpenThinkingLevel" }, { "$ref": "#/$defs/sessionOpenClaudeEffort" }] } } }
+          "then": { "properties": { "params": { "allOf": [{ "$ref": "#/$defs/sessionOpenParams" }, { "$ref": "#/$defs/sessionOpenThinkingLevel" }, { "$ref": "#/$defs/sessionOpenClaudeEffort" }] } } }
         }
       ]
     },
@@ -93,6 +93,40 @@
       "additionalProperties": false
     },
     "piThinkingLevel": { "enum": ["off", "low", "high", "max"] },
+    "sessionOpenParams": {
+      "description": "The closed session.open parameter set. The sidecar's open-parameter allowlist is generated from these property names; field-specific rules live in the sibling definitions.",
+      "type": "object",
+      "properties": {
+        "runtimeDirectory": true,
+        "normalizedSessionId": true,
+        "workingDirectory": true,
+        "agent": true,
+        "model": true,
+        "permissionMode": true,
+        "mode": true,
+        "piThinkingLevel": true,
+        "claudeEffort": true,
+        "grokEffort": true,
+        "grokDisableWebSearch": true,
+        "permissionModePinned": true,
+        "providerPolicy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/providerPolicy" }] },
+        "systemInstructions": true,
+        "runtimeContext": { "description": "Validated against runtime-context.schema.json." },
+        "tools": true,
+        "providerSessionKey": true,
+        "expectedIdentity": true,
+        "candidateAdmission": true
+      },
+      "additionalProperties": false
+    },
+    "providerPolicy": {
+      "type": "object",
+      "required": ["readOnly"],
+      "properties": {
+        "readOnly": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "sessionOpenThinkingLevel": {
       "type": "object",
       "properties": {

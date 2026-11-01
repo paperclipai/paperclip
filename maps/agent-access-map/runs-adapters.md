@@ -55,7 +55,14 @@ Policy: Company model discovery requires company access; account-backed discover
 also enforces its account/pool and target-agent rules. Instance adapter inventory
 and installation retain board/admin gates. Delegated managed
 AI-account login operations are enumerated under `model-accounts`; they do not
-grant raw host administration or execution-session reset.
+grant raw host administration or execution-session reset. On Cloud-managed
+instances, external adapter install, reinstall, reload, removal and override
+operations return `403` with `adapter_install_platform_managed`, including for
+instance admins. Built-in metadata remains available to board users. Startup
+and UI parser reads do not consume saved external registrations or package code.
+[Local fixture controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+and [route controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+cover this boundary; they do not establish live agent or provider qualification.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -69,6 +76,19 @@ Runner discovery exposes `supportedRunners` and `defaultRunner`; it describes
 qualified selection, not successful authentication or task execution. Native
 Claude retains existing account grants and company/responsible-user boundaries.
 Source: [adapter discovery](../../server/src/adapters/registry.ts).
+
+Kimi Code has a qualified native ACPX profile on Mac ARM64 and Linux x64. It
+requires an explicit model and a company-secret `KIMI_API_KEY` binding, and uses
+the global Code API. Ordinary selection, setup and Runtime Test require no
+candidate grant. Runtime Test queries the authenticated Code model catalog and
+sends no model prompt. Future pending profiles retain exact trusted startup
+admission; saved agent configuration and public requests cannot supply authority.
+Inactive setup drafts can precede model entry; Test and hire still require it.
+The native model route returns no suggestions and accepts typed identifiers.
+Managed Kimi account connections, ambient OAuth borrowing, and automatic legacy
+migration are outside this release. Source/control evidence only; see the
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md)
+for the separately recorded runtime and product results.
 
 Gaps: Raw instance adapter listing requires board, while company model discovery exists
 for eligible agents.
@@ -122,6 +142,12 @@ Agent access: `partial` — Permitted agent-creation validation through REST / n
 Policy: Environment tests follow agent creation/configuration authority. Supported
 managed-account login initiation follows `model-accounts` below; human codes and
 consent, raw host login and adapter installation retain their specific gates.
+
+The board-driven [Antigravity saved-subscription journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+uses this ordinary environment Test after selecting the same signed-in owner's
+saved personal Google grant. It also verifies actual task outputs and native
+settlement independently. This does not establish agent-authored environment
+validation, fresh provider consent or access under another owner's grant.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -259,6 +285,12 @@ The sandbox uses its injected run credential. See
 
 Policy: Same company, company-scope read authority and run/task visibility still
 apply. Task-bound history and recovery records require task read authority.
+Generic interval scheduling and direct unscoped timer requests cannot create
+taskless native Runner runs. Task-bound monitors, routines, assignments and
+timer requests retain existing authorization; Legacy intervals are unchanged.
+The [queue](../../server/src/services/heartbeat/queue.test.ts) and
+[scheduler](../../server/src/services/heartbeat/scheduling.test.ts) PostgreSQL
+regressions use synthetic execution and grant no new agent API or credential authority.
 Each run-linked task is filtered by the caller's task-read predicate; a readable
 company run cannot expose inaccessible private task titles. Existing content
 and credential redaction apply. Adapter installation, raw host login, execution
@@ -292,6 +324,13 @@ renewal before coordinator release, while real ownership loss retains the detach
 guard. This changes no actor permission or session-reset authority. Follow the
 [session recipe](../feature-map/runs-adapters.md#session) for recovery followed by
 ordinary turns; deterministic runner checks do not establish live provider access.
+
+Sandbox export carries shallow Git boundaries through the full-bundle fallback
+and uses normal Git fetch connectivity checks. Existing host ancestry and merge
+guards remain effective. This grants no task retry or operator recovery authority;
+the saved-result export API still requires board runtime management permission.
+Follow the [session recipe](../feature-map/runs-adapters.md#session) for separately
+fetched shallow history; filesystem controls do not establish live recovery.
 
 Plugin suspension receipts remain required through recovery and admission, then
 are removed when the admitted session becomes live. A later warm run therefore

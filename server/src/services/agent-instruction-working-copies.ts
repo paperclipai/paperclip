@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyInstructionCollection, type InstructionCollectionScope } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup, type DirectoryCleanupScope } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit, type InstructionCommitScope } from "./instruction-commit-notifications.js";
@@ -101,6 +102,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     const signalsCleanup = directoryCleanupEntry(row) !== null || directoryCleanupEntry({ ...row, ...values }) !== null;
     const signalsCommit = row.state === "pending_commit" || values.state === "pending_commit";
     const write = async (tx: Db) => {
+      await notifyStrandedAgentStatus(tx, { companyId: row.companyId, agentId: row.agentId });
       if (signalsCommit)
         await notifyInstructionCommit(tx, { companyId: row.companyId, runId: row.runId });
       if (signalsCleanup) await notifyDirectoryCleanup(tx, { companyId: row.companyId, runId: row.runId });
@@ -112,7 +114,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       )).returning();
       return updated;
     };
-    return signalsCommit || signalsCleanup || signalsCollection ? db.transaction(tx => write(tx as unknown as Db)) : write(db);
+    return db.transaction(tx => write(tx as unknown as Db));
   }
   async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>) {
     const updated = await tryPatch(row, values);
@@ -193,7 +195,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
         })
       : await revisions.readCurrent({ companyId: input.companyId, agentId: input.agentId }, bound);
     if (!baseline) return null;
-    const exported = await agentInstructionsService().exportFiles(agent, { rejectSymlinks: true });
+    const exported = await agentInstructionsService(db).exportFiles(agent, { rejectSymlinks: true });
     const entryFile = instructionPath(baseline?.revision.entryFile ?? exported.entryFile);
     const content = instructionBytes(baseline?.content ?? exported.files[entryFile] ?? "");
     const localRoot = existing?.localRoot ?? expectedLocalRoot;
@@ -204,6 +206,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     if (!existing) {
       await db.transaction(async tx => {
         await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
+        await notifyStrandedAgentStatus(tx, { companyId: input.companyId, agentId: input.agentId });
       await tx.insert(copies).values({
         runId: input.runId, companyId: input.companyId, agentId: input.agentId,
         responsibleUserId: bound.onBehalfOfUserId!, entryFile,

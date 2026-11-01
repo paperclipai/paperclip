@@ -2903,8 +2903,57 @@
     {
       "idx": 416,
       "version": "7",
-      "when": 1793310181591,
-      "tag": "0416_tough_salo",
+      "when": 1793320102041,
+      "tag": "0416_salty_domino",
+      "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1793371684483,
+      "tag": "0417_chunky_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1793395364937,
+      "tag": "0418_curved_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1793400383797,
+      "tag": "0419_slippery_impossible_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 420,
+      "version": "7",
+      "when": 1793453735600,
+      "tag": "0420_broad_johnny_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 421,
+      "version": "7",
+      "when": 1793469782391,
+      "tag": "0421_bright_skaar",
+      "breakpoints": true
+    },
+    {
+      "idx": 422,
+      "version": "7",
+      "when": 1793503729899,
+      "tag": "0422_eminent_darwin",
+      "breakpoints": true
+    },
+    {
+      "idx": 423,
+      "version": "7",
+      "when": 1793525279311,
+      "tag": "0423_sharp_sauron",
       "breakpoints": true
     }
   ]

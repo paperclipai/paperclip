@@ -21,6 +21,19 @@ import type { AuthorizationActor, AuthorizationDecision } from "../services/auth
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 
 describe("resolveExecutionRunAdapterConfig", () => {
+  it("strips stored task shell selectors before secret resolution and provider projection", async () => {
+    const unsafe = {BASH_ENV:"/workspace/hook.sh",ZDOTDIR:"/workspace",GH_CONFIG_DIR:"/workspace/gh",PAPERCLIP_GITHUB_LAUNCHER_DIR:"/workspace/forged"};
+    const resolveAdapterConfigForRuntime = vi.fn(async (_companyId, config) => ({config,secretKeys:new Set(),manifest:[]}));
+    const result = await resolveExecutionRunAdapterConfig({companyId:"company-1",adapterType:"paperclip_runner",
+      executionRunConfig:{env:{...unsafe,CUSTOM_VALUE:"allowed"}},
+      secretsSvc:{resolveAdapterConfigForRuntime} as any});
+    expect(resolveAdapterConfigForRuntime.mock.calls[0]?.[1]).toMatchObject({env:{CUSTOM_VALUE:"allowed"}});
+    for (const key of Object.keys(unsafe)) {
+      expect(result.resolvedConfig.env).not.toHaveProperty(key);
+      expect(result.configuredTaskEnvironment).not.toHaveProperty(key);
+      expect((resolveAdapterConfigForRuntime.mock.calls[0]?.[1] as {env:object}).env).not.toHaveProperty(key);
+    }
+  });
   it.each(["many variables", "large value"])("keeps legacy adapter configuration compatible with %s", async kind => {
     const env = kind === "many variables"
       ? Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`CUSTOM_${index}`, "value"]))

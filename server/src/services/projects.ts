@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
@@ -1082,6 +1083,7 @@ export function projectService(
 
       const row = await db.transaction(async (tx) => {
         if (updates.visibility !== undefined) {
+          await notifyStatusCardIssueChange(tx, existingProject.companyId);
           await notifyChatInboundWakeNotices(tx, { companyId: existingProject.companyId });
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
         }
@@ -1159,6 +1161,7 @@ export function projectService(
         await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
         await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        await notifyStatusCardIssueChange(tx, project.companyId);
         if (project.deletionClaimToken && !removeOptions.deletionClaimToken) {
           throw conflict("Project deletion is already in progress. Retry the requested deletion.");
         }

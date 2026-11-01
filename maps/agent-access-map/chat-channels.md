@@ -615,6 +615,14 @@ not task completion. Source:
 PostgreSQL-backed provider fixtures; this entry does not claim live provider
 qualification for the new retry path.
 
+GitHub review formatting (2026-10-30): new bot catalogs describe `submit_review`
+summary and rationale as body-only fields; generated review instructions also
+explain this contract to existing bots. The publisher supplies the score heading
+and footer, removing leading copied current-bot or legacy score headings from
+the two text fields. Saved assessments, tool authority, and publication policy
+are unchanged. The PostgreSQL-backed publication fixture checks a newly
+configured bot with simulated GitHub responses; this is not live model proof.
+
 GitHub main-response identity (2026-10-19): PR requests share a company-, App-,
 repository- and PR-bound comment. Agents still supply no comment destination.
 Current sender, assignee, repository and publication authority are checked before
@@ -1026,3 +1034,12 @@ never-started evidence, current source authority, unchanged board comments and
 no prior delivery or allocation. The server records the restoration in activity;
 failed runs and original skipped receipts remain history. This grants no new
 agent retry capability and does not weaken execution-time source validation.
+
+GitHub finding category contract (2026-10-31): manual and automatic review
+instructions list the repository policy categories. `begin_review` returns the
+assessment snapshot's `findingCategories`; later settings do not change that
+snapshot. Submit an unknown category and confirm rejection before publication,
+then submit a listed custom category and inspect the saved assessment and
+processed publication. The channel integration fixture covers real PostgreSQL
+and the service path with simulated GitHub HTTP; live model behavior remains
+unverified.

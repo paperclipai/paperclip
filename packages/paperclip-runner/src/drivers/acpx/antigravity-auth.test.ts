@@ -45,9 +45,9 @@ reader.on('line', line => {
  if(request.method==='initialize') {
   process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.4.3'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1}}},authMethods:[{id:'oauth-personal'}]}})+'\\n');
  } else if(request.method==='authenticate') {
-  const url = mode==='bad-url' ? 'https://example.invalid/steal' : ${JSON.stringify(authorizationUrl())};
+  const url = mode.startsWith('bad-url') ? 'https://example.invalid/steal' : ${JSON.stringify(authorizationUrl())};
   const message='Open the following link to authenticate the ACP server: '+url+'\\n';
-  process.stderr.write(message.slice(0,42));process.stderr.write(message.slice(42));
+  if (!mode.endsWith('url-after-result')) {process.stderr.write(message.slice(0,42));process.stderr.write(message.slice(42));}
   if(mode==='blocked' || mode==='bad-url' || mode==='stubborn' || mode==='retained') return;
   if(mode==='error') {process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,error:{code:-32000,message:'do not expose fixture-refresh-token'}})+'\\n');return;}
   fs.mkdirSync(path.join(home,'antigravity-acp'),{mode:0o700});
@@ -55,7 +55,14 @@ reader.on('line', line => {
   process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{}})+'\\n');
  } else {throw new Error('inference/session request forbidden');}
 });
-reader.on('close',()=>mode==='stubborn'||mode==='retained'?setInterval(()=>{},1000):process.exit(0));
+reader.on('close',()=> {
+ if (mode.endsWith('url-after-result')) {
+  const url = mode.startsWith('bad-url') ? 'https://example.invalid/steal' : ${JSON.stringify(authorizationUrl())};
+  // EOF proves the client received the authenticate result before this stderr.
+  process.stderr.write('Open the following link to authenticate the ACP server: '+url+'\\n', () => process.exit(0));
+ } else if(mode==='stubborn'||mode==='retained') setInterval(()=>{},1000);
+ else process.exit(0);
+});
 `);
   setup.verify.mockResolvedValue({ openCommand: async () => ({ spawn: setup.spawn, close: setup.close }) });
   setup.spawn.mockImplementation((_args, options) => {
@@ -93,8 +100,10 @@ describe("Antigravity setup-only Google authentication", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("performs native authenticate, retires it, verifies identity, and preserves refresh rotation without repeated status network calls", async () => {
-    const home = await fixture(), fetch = googleIdentity(); vi.stubGlobal("fetch", fetch);
+  // The login predicate keeps its five-second bound. Allow ten more seconds
+  // for fixture startup and the durable mocked credential checks on a busy CI worker.
+  it.each(["success", "url-after-result"])("performs native authenticate, retires it, verifies identity, and preserves refresh rotation without repeated status network calls (%s)", async mode => {
+    const home = await fixture(mode), fetch = googleIdentity(); vi.stubGlobal("fetch", fetch);
     const login = startAntigravityBrowserLogin(home);
     await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5_000 });
     expect(login.authorizationUrl).toBe(authorizationUrl());
@@ -114,15 +123,15 @@ describe("Antigravity setup-only Google authentication", () => {
     await verifyAntigravityCredential(home);
     await verifyAntigravityCredential(home);
     expect(fetch).toHaveBeenCalledTimes(6);
-  });
+  }, 15_000);
 
-  it.each(["error", "bad-url"])("rejects %s without leaking provider text or calling Google", async mode => {
+  it.each(["error", "bad-url", "bad-url-after-result"])("rejects %s without leaking provider text or calling Google", async mode => {
     const home = await fixture(mode), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     const login = startAntigravityBrowserLogin(home);
     await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
     await vi.waitFor(() => expect(setup.close).toHaveBeenCalledOnce(), { timeout: 5_000 });
     expect(login.error).not.toContain("fixture");
-    if (mode === "bad-url") expect(login.authorizationUrl).toBeUndefined();
+    if (mode.startsWith("bad-url")) expect(login.authorizationUrl).toBeUndefined();
     expect(fetch).not.toHaveBeenCalled();
   });
 

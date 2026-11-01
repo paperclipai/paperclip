@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { setImmediate as immediate } from "node:timers/promises";
+import * as runState from "../services/heartbeat/run-state.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -262,6 +264,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await heartbeat.resumeQueuedRuns();
     const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
     expect(delivered.runId).toBeTruthy();
+    // The receipt can commit before execution enters liveRunExecutions.
+    // Observe actual adapter admission before awaiting its drain.
+    await vi.waitFor(async () => {
+      const current = await heartbeat.getRun(delivered.runId!);
+      expect(countExecuteCallsForRun(delivered.runId!), JSON.stringify({
+        status: current?.status, errorCode: current?.errorCode,
+      })).toBe(1);
+    }, { timeout: 5_000 });
     await heartbeat.waitForRunExecutionDrain(delivered.runId!);
     expect(countExecuteCallsForRun(delivered.runId!)).toBe(1);
     expect((await heartbeat.getRun(delivered.runId!))?.contextSnapshot).toMatchObject({ wakeCommentIds: [comment.id] });
@@ -286,8 +296,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
     const recovered = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
     await recovered.resumeQueuedRuns();
-    expect(await waitForCondition(async () => countExecuteCallsForRun(run!.id) === 1)).toBe(true);
-    await recovered.waitForRunExecutionDrain(run!.id);
+    await recovered.drainActiveRunExecutions();
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
@@ -371,6 +380,47 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   }
 
+  it("joins a claimed execution whose initial run read has not reached live registration", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Held preparation", status: "todo", assigneeAgentId: agentId }).returning();
+    const queued = await seedQueuedRun({ companyId, agentId, issueId: issue.id, wakeReason: "issue_assigned" });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const factory = runState.createHeartbeatRunState;
+    let held = false;
+    const spy = vi.spyOn(runState, "createHeartbeatRunState").mockImplementation((...args) => {
+      const owner = factory(...args);
+      const read = owner.getRun;
+      return { ...owner, getRun: async (...readArgs: Parameters<typeof read>) => {
+        const row = await read(...readArgs);
+        if (!held && row?.id === queued.runId && row.status === "running") {
+          held = true; entered.resolve(); await release.promise;
+        }
+        return row;
+      } };
+    });
+    const recovered = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    try {
+      await recovered.resumeQueuedRuns();
+      await entered.promise;
+      // Receipt admission is earlier than live-run registration. The legacy
+      // run-specific drain can return here; the tracked execution must not.
+      await recovered.waitForRunExecutionDrain(queued.runId);
+      expect(countExecuteCallsForRun(queued.runId)).toBe(0);
+      let settled = false;
+      const draining = recovered.drainActiveRunExecutions().then(() => { settled = true; });
+      await immediate();
+      expect(settled).toBe(false);
+      release.resolve();
+      await draining;
+      expect(countExecuteCallsForRun(queued.runId)).toBe(1);
+      expect(await recovered.getRun(queued.runId)).toMatchObject({ status: "succeeded", runtimeMode: "legacy" });
+    } finally {
+      release.resolve();
+      await recovered.drainActiveRunExecutions();
+      spy.mockRestore();
+    }
+  });
+
   it.each([
     { name: "assignments", sameIssue: true, first: "assignment", second: "assignment" },
     { name: "unrelated tasks", sameIssue: false, first: "assignment", second: "assignment" },
@@ -402,13 +452,18 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await queue(secondIssueId, second);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = Promise.withResolvers<void>();
+    const expectedExecutions = sameIssue ? 1 : 2;
+    let executions = 0;
     mockAdapterExecute.mockImplementation(async () => {
+      if (++executions === expectedExecutions) entered.resolve();
       await gate;
       return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Assignment finished.", provider: "test", model: "test-model" };
     });
     try {
       await heartbeat.resumeQueuedRuns();
-      expect(await waitForCondition(() => Promise.resolve(mockAdapterExecute.mock.calls.length > 0))).toBe(true);
+      await entered.promise;
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(expectedExecutions);
       const runs = await db.select().from(heartbeatRuns);
       const running = runs.filter((run) => run.status === "running");
       expect(running).toHaveLength(sameIssue ? 1 : 2);
@@ -833,19 +888,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       };
 
       await heartbeat.resumeQueuedRuns();
-      await waitForCondition(async () => {
-        const [run, wakeup] = await Promise.all([
-          db.select({ status: heartbeatRuns.status })
-            .from(heartbeatRuns)
-            .where(eq(heartbeatRuns.id, runId))
-            .then((rows) => rows[0] ?? null),
-          db.select({ status: agentWakeupRequests.status })
-            .from(agentWakeupRequests)
-            .where(eq(agentWakeupRequests.id, wakeupRequestId))
-            .then((rows) => rows[0] ?? null),
-        ]);
-        return run?.status === "cancelled" && wakeup?.status === "skipped";
-      });
+      await heartbeat.drainActiveRunExecutions();
 
       const [run, wakeup, issue] = await Promise.all([
         db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
@@ -1047,7 +1090,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     expect(run).not.toBeNull();
-    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+    await heartbeat.drainActiveRunExecutions();
 
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
@@ -1326,14 +1369,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
     const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual" });
     expect(run).not.toBeNull();
-    expect(await waitForCondition(() => Promise.resolve(countExecuteCallsForRun(run!.id) === 1))).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
     const [context] = mockAdapterExecute.mock.calls.find(([context]) => context?.runId === run!.id)!;
     expect(context.runtime.sessionId).toBe(rotate ? null : sessionId);
     if (rotate) {
       expect(context.context.paperclipSessionRotationReason).toContain((inputTokens + (rawInputIncludesCached === false ? cachedInputTokens : 0)).toLocaleString("en-US"));
       expect(context.context.paperclipSessionHandoffMarkdown).toContain("Continue from this completed turn");
     } else expect(context.context.paperclipSessionRotationReason).toBeUndefined();
-    await heartbeat.drainActiveRunExecutions();
     const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
     expect(finished.usageJson).toMatchObject({ rawInputTokens: 1, rawCachedInputTokens: 2, rawInputIncludesCached: false });
   });
@@ -1796,8 +1839,22 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const interactionId = randomUUID();
     const wakeCommentId = randomUUID();
     let claimedIssue: { status: string; executionRunId: string | null } | null = null;
+    let resumedRunId: string | undefined;
+    let signalAdapterStarted!: () => void;
+    const adapterStarted = new Promise<void>(resolve => { signalAdapterStarted = resolve; });
+    const execute = mockAdapterExecute.getMockImplementation()!;
+    mockAdapterExecute.mockImplementation(async (...args: unknown[]) => {
+      if ((args[0] as { runId: string }).runId === resumedRunId) {
+        signalAdapterStarted();
+        // A claimed continuation can finish after the old terminal poll.
+        if (interactionStatus === "rejected" && interactionKind === "connection_intent") {
+          await new Promise(resolve => setTimeout(resolve, 3100));
+        }
+      }
+      return execute();
+    });
     afterContinuationDispatchCheck = async ({ runId: checkedRunId, issueId: checkedIssueId }) => {
-      if (checkedIssueId !== issueId) return;
+      if (checkedIssueId !== issueId || checkedRunId !== resumedRunId) return;
       claimedIssue = await db
         .select({ status: issues.status, executionRunId: issues.executionRunId })
         .from(issues)
@@ -1831,13 +1888,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       contextExtras: { interactionId, interactionKind, interactionStatus, wakeCommentId,
         originCommentIds: [wakeCommentId],
         interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: `${interactionKind}.resolved`, forceFreshSession: true } });
+    resumedRunId = runId;
     await heartbeat.resumeQueuedRuns();
-    expect(await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded")).toBe(true);
-    // Terminal status precedes completion bookkeeping. Drain those writes before
-    // afterEach truncates the fixture, otherwise PostgreSQL can deadlock.
+    // Adapter entry guarantees this exact execution is registered. Await its
+    // owning completion barrier before terminal assertions and fixture cleanup.
+    await adapterStarted;
     await heartbeat.waitForRunExecutionDrain(runId);
+    expect((await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("succeeded");
     expect(countExecuteCallsForRun(runId)).toBe(1);
-    await waitForCondition(async () => claimedIssue !== null);
     expect(claimedIssue).toEqual({ status: "in_progress", executionRunId: runId });
   });
 });

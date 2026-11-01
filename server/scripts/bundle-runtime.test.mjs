@@ -71,6 +71,15 @@ describe("bundleRuntime", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("packages a maintenance entry without starting the application or needing a TypeScript loader", async () => {
+    const maintenanceEntry = path.join(root, "server", "dist", "maintenance.js");
+    write(maintenanceEntry, 'import { asset } from "@paperclipai/fixture"; console.log(JSON.stringify({ asset, phase: process.argv.at(-1) }));');
+    const outdir = path.join(root, "server", "dist-runtime");
+    await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir, maintenanceEntry });
+    const { stdout } = await execFileAsync(process.execPath, [path.join(outdir, "agent-files.mjs"), "--phase=eligibility"], { timeout: 30_000 });
+    expect(JSON.parse(stdout)).toEqual({ asset: "asset beside its source", phase: "--phase=eligibility" });
+  });
+
   it("bundles workspace TypeScript and runs with plain node", async () => {
     const outdir = path.join(root, "server", "dist-runtime");
     const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });

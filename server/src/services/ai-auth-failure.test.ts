@@ -26,6 +26,14 @@ describe("AI authentication failure recovery", () => {
   it("offers Google's supported API-key method for Gemini recovery", () => {
     expect(aiBindingForAuthRecovery("gemini_local", {})).toEqual({ provider: "google", method: "api_key", mode: "responsible_user" });
   });
+  it("offers Google subscription recovery for native Antigravity", () => {
+    expect(aiBindingForAuthRecovery("paperclip_runner", { provider: "acpx", acpxAgent: "antigravity" }))
+      .toEqual({ provider: "google", method: "subscription", mode: "responsible_user" });
+  });
+  it("offers an API key for a Google model in Pi", () => {
+    expect(aiBindingForAuthRecovery("pi_local", { model: "google/fixture-model" }))
+      .toEqual({ provider: "google", method: "api_key", mode: "responsible_user" });
+  });
 });
 
 

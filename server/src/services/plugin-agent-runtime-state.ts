@@ -1,5 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
-import { agents, environments, plugins, pluginCompanySettings, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { agents, environments, plugins, pluginCompanySettings, resourceLifecycleEvents, fileStorageDb, type Db } from "@paperclipai/db";
 import type { PluginAgentRuntimeState, PluginAgentRuntimeIdentity } from "@paperclipai/plugin-sdk";
 import { agentRecordQueries } from "../lib/agent-records.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
@@ -16,9 +16,9 @@ import { environmentSkillConfig } from "./environment-skills.js";
 async function readState(db: Db, pluginId: string, companyId: string, agentId: string, identityOnly: true): Promise<PluginAgentRuntimeIdentity | null>;
 async function readState(db: Db, pluginId: string, companyId: string, agentId: string, identityOnly?: false): Promise<Omit<PluginAgentRuntimeState, "skills" | "connectionAssignments"> | null>;
 async function readState(db: Db, pluginId: string, companyId: string, agentId: string, identityOnly = false): Promise<PluginAgentRuntimeIdentity | Omit<PluginAgentRuntimeState, "skills" | "connectionAssignments"> | null> {
-  return db.transaction(async tx => {
+  return fileStorageDb(db).transaction(async tx => {
     const [agent] = await tx.select().from(agents)
-      .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("share");
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
     if (!agent) return null;
     const [plugin] = await tx.select().from(plugins).where(eq(plugins.id, pluginId));
     const [settings] = await tx.select().from(pluginCompanySettings).where(and(eq(pluginCompanySettings.companyId, companyId), eq(pluginCompanySettings.pluginId, pluginId)));
@@ -35,7 +35,7 @@ async function readState(db: Db, pluginId: string, companyId: string, agentId: s
         lifecycleState: agent.lifecycleState, lifecycleVersion: agent.lifecycleVersion },
       instanceSecrets: await agentInstanceSecretService(tx as unknown as Db).read({ companyId, agentId, pluginId }),
     };
-    const instructions = await agentInstructionsService().getBundleLocation(agent);
+    const instructions = await agentInstructionsService(tx as unknown as Db).getBundleLocation(agent);
     const records = agentRecordQueries(tx as unknown as Db);
     const companyAgents = await records.listCompanyAgentEligibilityRows(companyId);
     return {
@@ -72,7 +72,7 @@ export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyI
       throw unprocessable("An environment skill is unavailable to this agent");
     }
     const connectionAssignments = await pluginAgentConnectionAssignments(db, companyId, agentId, { publicMcp: settings.enablePublicMcp, chatConnectors: settings.enableChatConnectors });
-    const fallback = !state.instructionsRootPath ? await agentInstructionsService().exportFiles(state.agent, { rejectSymlinks: true }) : null;
+    const fallback = !state.instructionsRootPath ? await agentInstructionsService(db).exportFiles(state.agent, { rejectSymlinks: true }) : null;
     const entryFile = fallback?.entryFile ?? state.instructionsEntryFile;
     const entryContent = fallback?.files[entryFile];
     const current = await readState(db, pluginId, companyId, agentId);
