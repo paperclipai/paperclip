@@ -73,6 +73,7 @@ describe("muse_local testEnvironment remote probe isolation", () => {
       companyId: "company-123",
       adapterType: "muse_local",
       config: {
+        engine: "cli",
         command: "muse",
         model: "muse-wonder-1.0",
         env: {

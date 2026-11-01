@@ -654,6 +654,16 @@ const ACPX_INHERITED_PROVIDER_ENV_KEYS: Readonly<Record<string, ReadonlySet<stri
     "KIMI_CODE_HOME",
   ]),
   grok: new Set(["XAI_API_KEY"]),
+  muse: new Set([
+    "MUSE_API_KEY",
+    "MUSE_AUTH_PATH",
+    "MUSE_MODEL",
+    "MUSE_PROVIDER",
+    "MUSE_REASONING_EFFORT",
+    "MUSE_CONFIG_DIR",
+    "MUSE_NO_AUTO_UPDATE",
+    "META_API_KEY",
+  ]),
 };
 
 /**
@@ -887,7 +897,7 @@ async function resolveBuiltInAgentCommand(input: {
     // rather than a flag (gemini) or a dedicated bin (claude/codex).
     return { command: "kimi acp", shellCommand: "kimi acp" };
   }
-  const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
+  const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : agent === "muse" ? "muse-acp" : null;
   if (!binName) return null;
   if (executionTargetIsRemote) {
     return { command: binName, shellCommand: binName };
@@ -2316,7 +2326,7 @@ async function buildRuntime(input: {
       : null,
     // Qualified built-in ACP harnesses reconnect to the supplied MCP servers
     // on session/load. Keep their conversation identity independent of tools.
-    mcpServers: ["claude", "codex", "grok", "gemini", "kimi"].includes(acpxAgent) ? [] : mcpIdentity,
+    mcpServers: ["claude", "codex", "grok", "gemini", "kimi", "muse"].includes(acpxAgent) ? [] : mcpIdentity,
     secretManifestHash: shortHash(secretManifest),
     // Fold the resolved adapter env (all applied user-configured values —
     // plain, secret_ref, and stable PAPERCLIP_* config such as an explicit

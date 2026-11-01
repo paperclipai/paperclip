@@ -12,6 +12,9 @@
     "directory": "packages/adapters/muse-local"
   },
   "type": "module",
+  "bin": {
+    "muse-acp": "./dist/cli/muse-acp.js"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts",

@@ -64,11 +64,19 @@ function makeContext(root: string, overrides: Partial<AdapterExecutionContext> =
       sessionDisplayId: null,
       taskKey: null,
     },
-    config: { cwd: root, model: "muse-wonder-1.0", reasoningEffort: "high" },
     context: {},
     authToken: "agent-auth-token",
     onLog: async () => {},
     ...overrides,
+    // Default these CLI-lane tests to the CLI engine so they never depend on
+    // whether `muse` is resolvable on PATH (ACP is the runtime default).
+    config: {
+      engine: "cli",
+      cwd: root,
+      model: "muse-wonder-1.0",
+      reasoningEffort: "high",
+      ...overrides.config,
+    },
   };
 }
 

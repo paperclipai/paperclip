@@ -1,3 +1,5 @@
+import { createServerAdapter } from "./server/index.js";
+
 export const type = "muse_local";
 export const label = "Muse Code";
 export const DEFAULT_MUSE_LOCAL_MODEL = "muse-wonder-1.0";
@@ -26,6 +28,8 @@ Don't use when:
 - Muse Code CLI is not installed or authenticated on the machine that runs Paperclip
 
 Core fields:
+- engine (string, optional): execution engine, "acp" (default) or "cli"
+- agentCommand (string, optional): override for the Muse ACP server command (defaults to muse-acp)
 - cwd (string, optional): default absolute working directory fallback for the agent process
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file
 - promptTemplate (string, optional): run prompt template
@@ -39,3 +43,5 @@ Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
 `;
+
+export { createServerAdapter };

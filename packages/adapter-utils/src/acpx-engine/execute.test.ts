@@ -3181,6 +3181,16 @@ describe("findAncestorBin", () => {
     const resolved = await findAncestorBin("/", "definitely-not-a-real-bin-name-xyz");
     expect(resolved).toBeNull();
   });
+
+  it("finds muse-acp binary in node_modules/.bin", async () => {
+    const root = await makeTempRoot();
+    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-muse-local");
+    await fs.mkdir(packageDir, { recursive: true });
+    const expectedBin = await writeFakeBin(packageDir, "muse-acp");
+
+    const resolved = await findAncestorBin(packageDir, "muse-acp");
+    expect(resolved).toBe(expectedBin);
+  });
 });
 
 describe("gemini ACP flag selection", () => {

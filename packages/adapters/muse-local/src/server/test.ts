@@ -14,10 +14,16 @@ import {
   runAdapterExecutionTargetProcess,
   prepareAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
+import { resolveMuseExecutionEngineForRun, testMuseAcpEnvironment } from "./acp.js";
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  const engineSelection = await resolveMuseExecutionEngineForRun(ctx);
+  if (engineSelection.engine === "acp") {
+    return testMuseAcpEnvironment(ctx);
+  }
+
   const checks: AdapterEnvironmentCheck[] = [];
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,

@@ -34,10 +34,23 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclip
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import {
+  resolveMuseExecutionEngineForRun,
+  createMuseAcpExecutor,
+} from "./acp.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const engineSelection = await resolveMuseExecutionEngineForRun(ctx);
+  if (engineSelection.engine === "acp") {
+    if (engineSelection.unavailableReason) {
+      throw new Error(engineSelection.unavailableReason);
+    }
+    const acpExecutor = createMuseAcpExecutor();
+    return acpExecutor(ctx);
+  }
+
   const {
     runId,
     agent,
