@@ -2,11 +2,11 @@ import type { RunnerApi } from "./api.js";
 import type { MatrixExecution } from "./types.js";
 import { createHash } from "node:crypto";
 import type { StoryCheck, StoryRun } from "./everyday-observations.js";
-import { validControllerOutageReceipt, type ControllerOutageReceipt } from "./controller-outage.js";
+import { validControllerReplacementReceipt, type ControllerReplacementReceipt } from "./controller-replacement.js";
 
 /** Only these explicit recovery definitions change the post-replacement user entry point. */
 export function retainedControllerFollowupTransport(execution: Pick<MatrixExecution, "suite" | "task">): "browser" | "task_comment_api" {
-  return ["daytona-restart-continuity", "remote-workspace-storage"].includes(execution.suite.id) && execution.task.id === "recover-controller"
+  return ["daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id) && execution.task.id === "recover-controller"
     && execution.suite.definitionMetadata?.retainedControllerContinuation === true
     && execution.suite.definitionMetadata.retainedControllerFollowupTransport === "task_comment_api"
     ? "task_comment_api" : "browser";
@@ -37,13 +37,13 @@ export function retainedControllerRun(run: StoryRun) {
 export function gradeRetainedControllerContinuation(input: {
   before: ReturnType<typeof retainedControllerRun>;
   after: ReturnType<typeof retainedControllerRun>;
-  outage: ControllerOutageReceipt | undefined;
+  outage: ControllerReplacementReceipt | undefined;
   requestedAt: string;
   completedTool: boolean;
   usefulReply: boolean;
 }): StoryCheck[] {
   const { before, after, outage } = input;
-  const passed = validControllerOutageReceipt(outage)
+  const passed = validControllerReplacementReceipt(outage)
     && before.status === "succeeded" && after.status === "succeeded"
     && before.runtimeMode === "native" && after.runtimeMode === "native"
     && before.runId !== after.runId && before.companyId === after.companyId

@@ -4,7 +4,7 @@ import type { Socket } from "node:net";
 
 /** Test-owned ingress. Each request keeps the backend selected at admission;
  * switching traffic never retries a request or terminates its existing stream. */
-export async function startRollingDeploymentProxy() {
+export async function startRollingDeploymentProxy(port = 0) {
   let target: URL | undefined;
   const agent = new Agent({ keepAlive: true });
   const sockets = new Set<Socket>();
@@ -56,7 +56,7 @@ export async function startRollingDeploymentProxy() {
     upstream.on("error", () => socket.destroy());
     upstream.end();
   });
-  server.listen(0, "127.0.0.1");
+  server.listen(port, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Proxy address unavailable");

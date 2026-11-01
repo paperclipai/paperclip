@@ -55,12 +55,12 @@ export async function startRollingDeploymentProcess(input: {
   const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(input.repositoryRoot, entry), {
     cwd: input.repositoryRoot,
     env: {
-      PATH: process.env.PATH, HOME: home, TMPDIR: temporary,
+      ...input.sharedEnvironment, PATH: input.sharedEnvironment.PATH ?? process.env.PATH, HOME: home, TMPDIR: temporary, XDG_CACHE_HOME: path.join(home, "cache"),
       NODE_ENV: "test", PAPERCLIP_HOME: home, PAPERCLIP_CONFIG: configPath,
-      PAPERCLIP_INSTANCE_ID: "default", DATABASE_URL: input.databaseUrl,
+      PORT: String(port), PAPERCLIP_INSTANCE_ID: "default", DATABASE_URL: input.databaseUrl,
       PAPERCLIP_API_URL: input.ingressOrigin, PAPERCLIP_TELEMETRY_ENABLED: "false",
       PAPERCLIP_DISABLE_TELEMETRY: "true", PAPERCLIP_LOG_LEVEL: "warn",
-      HEARTBEAT_SCHEDULER_ENABLED: "false", ...input.sharedEnvironment,
+      HEARTBEAT_SCHEDULER_ENABLED: input.sharedEnvironment.HEARTBEAT_SCHEDULER_ENABLED ?? "false",
     },
     detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
   });
@@ -70,7 +70,7 @@ export async function startRollingDeploymentProcess(input: {
   const origin = `http://127.0.0.1:${port}`;
   let stopped = false;
   return {
-    child, home, origin,
+    child, home, configPath, origin,
     async waitForReady() {
       const started = performance.now();
       while (performance.now() - started < 180_000) {

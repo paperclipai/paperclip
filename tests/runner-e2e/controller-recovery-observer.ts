@@ -8,7 +8,7 @@ const { sql }: typeof import("../../packages/db/node_modules/drizzle-orm/index.j
 import { createDb, type Db } from "../../packages/db/src/index.js";
 import { paperclipConfigSchema } from "../../packages/shared/src/config-schema.js";
 import { loadNativeRunnerCheckpoint } from "../../server/src/services/native-runtime/native-runner-checkpoint.js";
-import type { ControllerOutageReceipt } from "./controller-outage.js";
+import type { ControllerReplacementReceipt } from "./controller-replacement.js";
 
 export interface RecoveryBinding { companyId: string; issueId: string; runId: string }
 export interface RecoverySnapshot {
@@ -47,7 +47,7 @@ export function parseRecoveryBinding(value: unknown): RecoveryBinding {
   return row as unknown as RecoveryBinding;
 }
 
-export function recoveryObservation(before: RecoverySnapshot, after: RecoverySnapshot, fault: ControllerOutageReceipt,
+export function recoveryObservation(before: RecoverySnapshot, after: RecoverySnapshot, fault: ControllerReplacementReceipt,
   binding: RecoveryBinding, observedAfterMs: number): ControllerRecoveryReceipt | null {
   if (before.runId !== binding.runId || after.runId !== before.runId || after.runnerInstanceId !== before.runnerInstanceId
     || after.nativeSessionId !== before.nativeSessionId || after.attempt !== before.attempt) {
@@ -77,7 +77,7 @@ export function recoveryObservation(before: RecoverySnapshot, after: RecoverySna
     authenticatedConnectionCount: after.authenticatedConnectionCount, attachmentEvidence: "runner_checkpoint_authenticated_connection" };
 }
 
-export function validControllerRecoveryReceipt(fault: ControllerOutageReceipt | undefined): boolean {
+export function validControllerRecoveryReceipt(fault: ControllerReplacementReceipt | undefined): boolean {
   const r = fault?.recovery;
   return Boolean(r && r.bootId !== r.previousBootId && r.generation > r.previousGeneration
     && r.runnerSourceSeqAfter > r.runnerSourceSeqBefore && r.authenticatedConnectionCount > r.previousAuthenticatedConnectionCount
@@ -120,19 +120,21 @@ export async function createControllerRecoveryObserver(configPath: string, bindi
   const db = createDb(url);
   let before: RecoverySnapshot | undefined;
   const read = () => readControllerRecoverySnapshot(db, binding);
-  return {
-    // Called only after the old server is confirmed dead. This also excludes
-    // receipts committed while it was stopping from replacement evidence.
-    stopped: async (fault: ControllerOutageReceipt) => {
+  const capture = async (fault: ControllerReplacementReceipt) => {
       before = await read();
       before.sourceSeq = Math.max(before.sourceSeq, before.checkpointSourceSeq);
       fault.recoveryProgress = { binding, previousBootId: before.bootId, previousGeneration: before.generation,
         previousLeaseExpiresAt: before.leaseExpiresAt, runnerSourceSeqBefore: before.sourceSeq,
         previousAuthenticatedConnectionCount: before.authenticatedConnectionCount,
         runnerInstanceId: before.runnerInstanceId, nativeSessionId: before.nativeSessionId };
-    },
-    recovered: async (fault: ControllerOutageReceipt, record: () => Promise<void>, cancelled: () => boolean) => {
-      if (!before) throw new Error("Missing stopped-controller observation");
+  };
+  return {
+    beforeHandoff: capture,
+    // Called only after the old server is confirmed dead. This also excludes
+    // receipts committed while it was stopping from replacement evidence.
+    stopped: capture,
+    recovered: async (fault: ControllerReplacementReceipt, record: () => Promise<void>, cancelled: () => boolean) => {
+      if (!before) throw new Error("Missing controller boundary observation");
       const deadline = Date.parse(fault.startedAt) + 420_000;
       let ownershipObservedAfterMs: number | undefined;
       let authenticatedObservedAfterMs: number | undefined;

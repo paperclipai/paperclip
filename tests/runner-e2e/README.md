@@ -96,6 +96,33 @@ PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_REGION=us-east-1 \
 pnpm test:e2e:runner -- --id remote-workspace-storage.runner-codex.daytona.recover-controller --max-automatic-retries 0
 ```
 
+The separate explicit-only `rolling-web-deployment` suite uses the same synthetic
+projectless workflow, four-admission budget, thirty-minute limit, and independent
+run/file oracles. Its supervisor starts an independent empty-home server, waits
+for `/api/ready`, moves ingress, sends SIGTERM to the predecessor, and deletes
+that predecessor's whole home and build. Continuous ordinary task reads and
+comment saves must have zero failures, and every accepted save must be read back
+exactly once. It repeats replacement after completion before the retained-session
+follow-up. The five-minute outage suites are unchanged.
+
+```sh
+pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+This source lane requires a complete server/UI build and disposable S3 and
+Postgres. Each controller has an independent compiled build and cache; shared
+workspace dependencies mean it is not released-container or Railway evidence.
+The read-only recovery observer captures the live predecessor's identity just
+before handoff, then requires a new controller generation, authenticated Runner
+attachment, and new canonical events for the original execution. No fixture
+modifies leases, checkpoints, provider identity, or completed work.
+
+Before paid execution, set `PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG` and the
+loopback `PAPERCLIP_TEST_DATABASE_URL`, then run
+`tests/runner-e2e/controller-replacement-smoke.ts` through the existing tsx loader.
+It exercises the actual supervisor and two replacements without an agent and
+explicitly records `activeAgentContinuityQualified: false`.
+
 Optional `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT` and
 `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_FORCE_PATH_STYLE=true` select a test S3
 endpoint. Each attempt has a distinct `runner-e2e/<instance-id>/` prefix. The

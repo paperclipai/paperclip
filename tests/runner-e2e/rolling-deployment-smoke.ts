@@ -150,6 +150,15 @@ try {
   })();
   if (browserEnabled) browser = await openRollingDeploymentBrowser({ origin: proxy.origin, root, taskTitle: task.title,
     taskPath: `/issues/${task.id}`, omittedAssets });
+  await check("Unready replacement leaves the healthy server serving", async () => {
+    const unready = await startRollingDeploymentProcess({ root, name: "unready", repositoryRoot,
+      databaseUrl: database!.connectionString, ingressOrigin: proxy!.origin,
+      sharedEnvironment: { ...sharedEnvironment, PAPERCLIP_EPHEMERAL_SERVER: "true", PAPERCLIP_DECISION_SIGNING_SECRET: "" } });
+    processes.push(unready);
+    await assert.rejects(unready.waitForReady(), /exited before readiness/);
+    assert.equal((await api(proxy!.origin, `/issues/${task.id}`)).id, task.id);
+    assert.equal((await api(a.origin, `/issues/${task.id}`)).id, task.id);
+  });
   const b = await start("B");
   await check("B reads acknowledged task while A is alive", async () => {
     assert.equal((await api(b.origin, `/issues/${task.id}`)).title, task.title);
