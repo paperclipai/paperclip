@@ -430,6 +430,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       const workerManager = {
         startWorker: vi.fn().mockResolvedValue(undefined),
         isRunning: vi.fn(() => true),
+        getWorker: vi.fn(() => ({ status: "running" })),
         stopWorker: vi.fn().mockResolvedValue(undefined),
       };
       const eventBus = {
