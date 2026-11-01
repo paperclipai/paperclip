@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../services/unsafe-workspace-export-notifications.js";
@@ -35,6 +36,7 @@ import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from ".
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
+import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { inspectWorkspaceSource } from "../services/workspace-source-inspection.js";
@@ -10194,6 +10196,7 @@ export function issueRoutes(
         }
 
         if (sourceStatusChanged) {
+          await assertNativeRunKeepsOwnExecutionLock(req, lockedIssue, sourceIssueStatus);
           const safeHandBack =
             outcome === "restored" &&
             sourceIssueStatus === "todo" &&
@@ -13856,6 +13859,52 @@ export function issueRoutes(
     if (active) throw conflict("An agent currently owns execution. Wait for it to finish, or manage execution in Paperclip.", { code: "MCP_ACTIVE_EXECUTION" });
   }
 
+  /**
+   * A native run reports its outcome through paperclip_finish/paperclip_block,
+   * and the status arbiter applies the task status. A status change sent here
+   * by that same run (for example through call_api) releases the run's own
+   * execution lock. Every runner tool after that, paperclip_finish included,
+   * is unauthorized, so the run can never settle and recovery blocks the task.
+   * Reject the change before it commits, so the run can correct it in the same
+   * turn. Handoffs and reassignments are a different path and are unaffected.
+   *
+   * Conversation tasks are excluded: a conversation turn settles from its final
+   * reply (nativeConversationReplyResult), not from a runner tool, so a reply
+   * that moves the conversation to review still settles without the lock.
+   */
+  async function assertNativeRunKeepsOwnExecutionLock(
+    req: Request,
+    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    requestedStatus: unknown = req.body.status,
+  ) {
+    const runId = req.actor.type === "agent" ? req.actor.runId : null;
+    if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
+    if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
+    if (requestedStatus === undefined || requestedStatus === issue.status) return;
+    if (isConversation(issue)) return;
+    const keepsAssignment =
+      (req.body.assigneeAgentId === undefined || req.body.assigneeAgentId === issue.assigneeAgentId) &&
+      (req.body.assigneeUserId === undefined || req.body.assigneeUserId === issue.assigneeUserId);
+    if (!keepsAssignment) return;
+    const run = await heartbeat.getRun(runId);
+    if (!run || run.runtimeMode !== "native" || run.status !== "running"
+      || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    // A blocker that the dependency rules reject anyway keeps its specific
+    // error; otherwise the run reports the block with paperclip_block.
+    if (Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0) {
+      await assertOnboardingFirstTaskDependenciesAllowed(db, {
+        companyId: issue.companyId, actorAgentId: req.actor.agentId, actorRunId: runId,
+        blockedByIssueIds: req.body.blockedByIssueIds, parentIssueId: issue.parentId,
+      });
+    }
+    throw conflict(
+      "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
+        "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
+        "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
+      { code: "native_run_status_reported_by_finish", requestedStatus },
+    );
+  }
+
   router.patch(
     "/issues/:id",
     (req, _res, next) => {
@@ -13886,6 +13935,7 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      await assertNativeRunKeepsOwnExecutionLock(req, existing);
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -16687,6 +16737,7 @@ export function issueRoutes(
         }
         // The click is durable fresh user intent, including when the message
         // predates a failed run's stop. Keep its content and original attribution.
+        await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: locked.wake.id });
         await tx.update(agentWakeupRequests).set({
           payload: { ...readObject(locked.wake.payload), queuedCommentInterrupt: {
             actorId: actor.actorId, requestedAt: new Date().toISOString(),

@@ -677,6 +677,7 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
   runId?: string;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  requestedCwd?: string;
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {

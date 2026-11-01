@@ -48,6 +48,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { nativeSha256 } from "./canonical.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -311,6 +312,63 @@ describe("PaperclipControlPlanePort conformance", () => {
       await db.delete(authUsers);
       await temporary.cleanup();
     }
+  });
+
+  it("publishes native recovery metadata in the existing snapshot transaction and fences stale generations", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const owner = { ...identity, authorityRunId: identity.runId, bootId: randomUUID(), generation: 1, leaseOwner: "snapshot-owner" };
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha,
+      runnerProfileJson: { unrelated: "preserve" } });
+    await db.insert(nativeRunFinalizations).values({ runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId,
+      phase: "observed",
+      controllerBootId: owner.bootId, controllerGeneration: owner.generation, leaseOwner: owner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const port = new PaperclipControlPlanePort(db, { ...identity, completionContractId: contractId,
+      completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "snapshot-control" }, {
+      nativeRecovery: { owner, compatibility: { configDigest: `sha256:${"a".repeat(64)}`, processConfigDigest: null } },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const snapshot = { backendKind: "mock" as const, sessionId: identity.sessionId, identity };
+    const statements: string[] = [];
+    const previousDebug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, statement) => { statements.push(statement); };
+    try { await port.checkpointSession(snapshot); }
+    finally { db.$client.options.debug = previousDebug; }
+    expect(statements.filter(statement => /^begin\b/i.test(statement.trim()))).toHaveLength(1);
+    expect(statements.filter(statement => /^update\s+"heartbeat_runs"/i.test(statement.trim()))).toHaveLength(1);
+    expect(statements.filter(statement => /^(?:with|select)\b/i.test(statement.trim()))).toHaveLength(1);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(saved.runnerProfileJson).toMatchObject({ unrelated: "preserve", sessionCheckpoint: snapshot,
+      nativeControllerRecovery: { schema: "paperclip.native-controller-recovery.v1", snapshotSha256: nativeSha256(saved.runnerProfileJson?.sessionCheckpoint),
+        checkpoint: null, processConfigDigest: null } });
+    // Missing PRP is an explicit incomplete publication, never fabricated authority.
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: 2 }).where(eq(nativeRunFinalizations.runId, identity.runId));
+    await expect(port.checkpointSession({ ...snapshot, providerSessionId: "stale" })).rejects.toThrow("checkpoint_owner_lost");
+    await expect(port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }))
+      .rejects.toThrow("checkpoint_owner_lost");
+    const [unchanged] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(unchanged.runnerProfileJson).toEqual(saved.runnerProfileJson);
+    // A valid coordinator lock does not certify a lease that expires while the
+    // subsequent run-row lock waits. Recheck time at the actual write boundary.
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: 1, leaseExpiresAt: new Date(Date.now() + 150) })
+      .where(eq(nativeRunFinalizations.runId, identity.runId));
+    let locked!: () => void, release!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const blocker = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId)).for("update");
+      locked();
+      await held;
+    });
+    await acquired;
+    const waiting = port.checkpointSession(snapshot);
+    const rejected = expect(waiting).rejects.toThrow("checkpoint_owner_lost");
+    try { await new Promise(resolve => setTimeout(resolve, 200)); }
+    finally { release(); await blocker; }
+    await rejected;
   });
 
   it("permits only read-only admission while an existing startup drains", async () => {

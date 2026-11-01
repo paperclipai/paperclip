@@ -3,7 +3,7 @@ import type { ConnectionApi } from "../connection-target.js";
 
 export type JourneyOutcome = "passed" | "failed" | "blocked" | "unsupported";
 export type JourneyId = "task-properties" | "task-create" | "project-task-context" | "task-document-persistence" | "ask-question" | "cloud-onboarding"
-  | "question-answer-resume" | "task-search-filter" | "followup-while-running" | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect";
+  | "question-answer-resume" | "task-search-filter" | "followup-while-running" | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect" | "hire-delegate-reuse";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";
@@ -111,7 +111,8 @@ export interface TargetSession {
   /** Publish the observed finalization failure without releasing resources or leases. */
   checkpointEvidence?(input?: TargetLifecycleInput): Promise<void>;
   /** Durable intent before creation; receipt immediately after creation. */
-  own(resource: { kind: "issue" | "project" | "agent" | "connection" | "tool-connection" | "skill"; name: string; id?: string; journeyId?: JourneyId }): Promise<void>;
+  own(resource: { kind: "issue" | "project" | "agent" | "connection" | "tool-connection" | "skill"; name: string; id?: string; journeyId?: JourneyId;
+    freshChat?: { companyId: string; userId: string; leadAgentId: string; absent: true } }): Promise<void>;
 }
 export interface TargetProvider {
   version: 1;

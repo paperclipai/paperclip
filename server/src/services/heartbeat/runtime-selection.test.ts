@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agents, companies, completionContracts, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
 import { buildNativeRuntimeContext } from "../native-runtime/runtime-context.js";
@@ -12,7 +12,7 @@ import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.t
 import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
 import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
-import { canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
+import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
 
@@ -40,6 +40,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); if (instructionRoot) await rm(instructionRoot, { recursive: true, force: true }); });
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(async () => {
     await db.execute(sql`truncate table companies restart identity cascade`);
     vi.clearAllMocks();
@@ -75,6 +76,28 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it("persists and admits a standing-chat response contract without requiring the unavailable action", async () => {
+    const { input, issue, agent, run } = await fixture();
+    const [conversation] = await db.update(issues).set({ title: "Chat with CEO", description: null,
+      conversationAgentId: agent.id, conversationUserId: "runtime-test-operator", conversationState: "active" })
+      .where(eq(issues.id, issue.id)).returning();
+    input.task.issueRef = conversation!;
+    input.task.context.conversationMode = true;
+    const request = "Restart this instance.";
+    input.task.safeWakeComments = [{ id: randomUUID(), body: request }];
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    const contract = selected.nativeExecution.completionContract.contract;
+    expect(contract.objective).toMatch(/current conversation response/i);
+    expect(contract.criteria).toEqual([{ id: "objective", requirement: expect.stringContaining(request) }]);
+    expect(contract.criteria[0]!.requirement).not.toBe(request);
+    const [persisted] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issue.id));
+    expect(persisted!.contractJson).toEqual(contract);
+    expect(selected.nativeExecution.completionContract.sha256).toBe(persisted!.canonicalSha256);
+    expect((await read(run.id)).runnerProfileJson?.nativeExecutionInput).toEqual(selected.nativeExecution);
+    expect(buildNativeModelEnvelope(selected.nativeExecution).completionContract).toEqual(contract);
+  });
 
   it("keeps recovery out of live preparation before the workspace descriptor exists", async () => {
     const { input, run, issue } = await fixture();
@@ -303,6 +326,24 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("runner_warm_environment_requires_reusable_lease");
     expect(input.onNativeLifecycleSelected).not.toHaveBeenCalled();
     expect(await coordinators(run.id)).toHaveLength(0);
+  });
+
+  it.each(["warm", "per_turn"] as const)("checks resolved %s policy for ephemeral admission", async mode => {
+    const { input, run } = await fixture();
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    // Deliberately disagree with the resolved provider policy in both cases.
+    input.agent.adapterConfig = { ...input.agent.adapterConfig, ...(mode === "per_turn" ? { lifecycleMode: "warm" } : {}) };
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: true,
+      effectiveCapabilities: { reusableLeases: true } as never,
+      runnerLifecyclePolicy: mode === "warm" ? { mode, idleTimeoutMs: 300_000 } : { mode, idleTimeoutMs: null } };
+    if (mode === "per_turn") {
+      await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("warm Paperclip Runner");
+      expect(await coordinators(run.id)).toHaveLength(0);
+    } else {
+      const selected = await selectHeartbeatRuntime(db, input);
+      expect(selected.selected && selected.nativeExecution?.session.lifecyclePolicy.mode).toBe("warm");
+      expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { session: { lifecyclePolicy: { mode: "warm" } } } });
+    }
   });
 
   it.each([

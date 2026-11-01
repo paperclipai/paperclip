@@ -55,8 +55,9 @@ original bounds. Its source registration is not an AWS or TestOps pass. The
 broader YAML catalog remains planning inventory.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
-extends the existing native restart oracle to a 125-second controller outage,
-using the recorded Claude and Codex models in disposable development fixtures.
+extends the existing native restart oracle to a 300-second controller outage
+and another replacement after completion, using the recorded Claude and Codex
+models in disposable development fixtures.
 It requires same-process adoption, saved files and finalization without replay;
 local regression checks and catalog discovery are separate from live acceptance.
 
@@ -70,7 +71,9 @@ tests do not establish a completed live pass or unattended CI qualification.
 The deployment-targeted `question-answer-resume` journey reuses the classic
 two-question scenario and native continuation oracle on an attached target.
 It checks the actual board answers, one to three bound work runs, an agent-authored
-task document and browser readback after reload. It accepts provider questions and
+task document and browser readback after reload. A typed reference may use a text
+field or the native card's explicit written-answer control; a predefined option
+cannot replace the exact typed answer. It accepts provider questions and
 durable questions proven by an applied semantic receipt or an immutable completed
 native API mutation receipt. It does not qualify named-tool selection. Its provider owns target setup,
 usage and cleanup. Registration and local calibration do not establish a fresh

@@ -7,7 +7,7 @@ import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import type { MatrixExecution } from "./types.js";
 
-const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL"] as const;
+const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL", "PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL"] as const;
 const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
   "PAPERCLIP_API_KEY",
   "PAPERCLIP_ACPX_CANDIDATE_ADMISSION",
@@ -136,6 +136,7 @@ export function buildRunnerE2EProcessEnvironment(
   const installed = usesInstalledCli(source);
   if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
+  delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
   // The supervisor's read-only recovery observer must use the same disposable
   // instance key as the serving child, never a launching shell's vault key.
   delete result.PAPERCLIP_SECRETS_MASTER_KEY;
@@ -209,6 +210,7 @@ export function buildPaperclipServerEnvironment(
   overrides: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
   const result = { ...source };
+  delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
   for (const key of Object.keys(result)) {
     if (PROVIDER_SECRET_KEY.test(key)) delete result[key];
   }
@@ -231,6 +233,7 @@ export function assertIsolatedServerEnvironment(
     temporaryRoot: string;
     paperclipHome: string;
     configPath: string;
+    workspaceStorage?: NodeJS.ProcessEnv;
   },
 ) {
   const home = env.PAPERCLIP_HOME;
@@ -259,10 +262,14 @@ export function assertIsolatedServerEnvironment(
     ...AMBIENT_PAPERCLIP_CREDENTIAL_KEYS,
     ...AMBIENT_EXTERNAL_STATE_KEYS,
   ]) {
-    if (env[key])
+    if (env[key] && !(AMBIENT_EXTERNAL_STATE_KEYS.includes(key as typeof AMBIENT_EXTERNAL_STATE_KEYS[number])
+      && expected.workspaceStorage?.[key] === env[key] && expected.workspaceStorage?.PAPERCLIP_STORAGE_PROVIDER === "s3"))
       throw new Error(
         `Paperclip server environment unexpectedly contains ${key}`,
       );
+  }
+  if (expected.workspaceStorage && Object.entries(expected.workspaceStorage).some(([key, value]) => env[key] !== value)) {
+    throw new Error("Paperclip server storage does not match its explicit synthetic workspace qualification");
   }
   for (const key of GENERATED_SERVER_SECRET_KEYS) {
     if (!env[key])

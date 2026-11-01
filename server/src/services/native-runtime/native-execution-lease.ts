@@ -1,5 +1,6 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
-import { livenessDb, nativeRunFinalizations } from "@paperclipai/db";
+import { heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, gt, sql } from "drizzle-orm";
 import { currentNativeControllerIdentity, type NativeControllerIdentity } from "./native-restart-recovery.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
@@ -7,6 +8,27 @@ import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js
 export const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 const RENEWAL_STATEMENT_TIMEOUT_MS = 10_000;
+
+/** Preparation can perform provider I/O only under its current recovery claim. */
+export async function assertNativeSessionPreparationAuthority(input: {
+  db: Db; companyId: string; runId: string; leaseOwner: string | undefined;
+  controllerGeneration?: number; providerAttempt?: number;
+}) {
+  if (!input.leaseOwner) throw new Error("native_session_lease_lost");
+  const controller = await currentNativeControllerIdentity();
+  const [owned] = await input.db.select({ runId: nativeRunFinalizations.runId })
+    .from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "running"),
+      eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+      eq(nativeRunFinalizations.controllerBootId, controller.bootId), eq(nativeRunFinalizations.controllerPid, controller.pid),
+      eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+      gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+      ...(input.controllerGeneration === undefined ? [] : [eq(nativeRunFinalizations.controllerGeneration, input.controllerGeneration)]),
+      ...(input.providerAttempt === undefined ? [] : [eq(nativeRunFinalizations.attempt, input.providerAttempt)]),
+    )).limit(1);
+  if (!owned) throw new Error("native_session_lease_lost");
+}
 
 export async function renewNativeSessionExecutionLease(input: {
   db: Db;
@@ -53,6 +75,7 @@ async function renewNativeSessionExecutionLeaseDeadline(
     // but conservatively include UPDATE/commit response time without assuming
     // that this server's wall clock agrees with the database's clock.
     confirmedDeadline = performance.now() + leaseTtlMs;
+    await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId });
     return tx.update(nativeRunFinalizations)
       .set({
         leaseExpiresAt: sql`clock_timestamp() + (${leaseTtlMs} * interval '1 millisecond')`,

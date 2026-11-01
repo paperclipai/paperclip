@@ -32,6 +32,7 @@ export { projectAccessMembers } from "./project_access_members.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { executionWorkspaceSnapshots } from "./execution_workspace_snapshots.js";
 export {
   executionWorkspaceRestorePoints,
   EXECUTION_WORKSPACE_RESTORE_POINT_STATUSES,
@@ -232,6 +233,7 @@ export { announcementDismissals, announcementPublications } from "./announcement
 export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_completion_deliveries.js";
 
 export { agentInstructionRevisions, agentInstructionHeads, agentInstructionWorkingCopies } from "./agent_instruction_revisions.js";
+export { agentFileRoots, type DurableAgentFileEntry } from "./agent_file_roots.js";
 export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrowsers } from "./browser_use.js";
 
 
