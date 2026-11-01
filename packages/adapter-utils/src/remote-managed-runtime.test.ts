@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -348,5 +350,120 @@ describe("remote managed runtime", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  async function prepareAssetRead() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-read-'"));
+    cleanupDirs.push(root);
+    let readAsset!: (remotePath: string) => Promise<Buffer>;
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: root,
+        remoteCwd: root, privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true },
+      runId: "read-contract", adapterKey: "test", workspaceLocalDir: root,
+      syncWorkspace: false,
+      assets: [{ key: "home", localDir: root, restore: async ({ readFile }) => { readAsset = readFile; } }],
+    });
+    await prepared.restoreWorkspace();
+    runSshCommand.mockClear();
+    return { root, readAsset };
+  }
+
+  function executeReadCommandsLocally() {
+    const exec = promisify(execFile);
+    runSshCommand.mockImplementation(async (...args: unknown[]) =>
+      exec("sh", ["-c", args[1] as string], { encoding: "utf8" }));
+  }
+
+  it("maps a missing asset under a searchable parent to ENOENT using real shell checks", async () => {
+    const { root, readAsset } = await prepareAssetRead();
+    executeReadCommandsLocally();
+    const missingPath = path.join(root, "absent.json");
+    await expect(readAsset(missingPath)).rejects.toMatchObject({ code: "ENOENT", path: missingPath });
+    expect(runSshCommand).toHaveBeenCalledTimes(2);
+    await writeFile(missingPath, "fixture-bytes");
+    await expect(readAsset(missingPath)).resolves.toEqual(Buffer.from("fixture-bytes"));
+  });
+
+  it("keeps a missing parent directory fail-loud", async () => {
+    const { root, readAsset } = await prepareAssetRead();
+    executeReadCommandsLocally();
+    await expect(readAsset(path.join(root, "missing-parent", "absent.json")))
+      .rejects.toMatchObject({ code: expect.any(Number) });
+    expect(runSshCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not mistake an unresolvable symbolic link for a missing optional file", async () => {
+    const { root, readAsset } = await prepareAssetRead();
+    executeReadCommandsLocally();
+    const loop = path.join(root, "loop");
+    await symlink("loop", loop);
+    await expect(readAsset(loop)).rejects.toMatchObject({ code: expect.any(Number) });
+    expect(runSshCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["loop/", "loop///", "absent/", "absent///"])("preserves directory-path read errors without an absence probe: %s", async (suffix) => {
+    const { root, readAsset } = await prepareAssetRead();
+    executeReadCommandsLocally();
+    await symlink("loop", path.join(root, "loop"));
+    // Keep trailing separators intact: -L loop/ does not identify the symlink.
+    await expect(readAsset(`${root}/${suffix}`)).rejects.toMatchObject({ code: expect.any(Number) });
+    expect(runSshCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["/", "///"])("preserves a directory-root read failure without probing: %s", async (remotePath) => {
+    const { readAsset } = await prepareAssetRead();
+    const failure = Object.assign(new Error("fixture directory read failed"), { code: 1 });
+    runSshCommand.mockRejectedValueOnce(failure);
+    await expect(readAsset(remotePath)).rejects.toBe(failure);
+    expect(runSshCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("keeps unreadable files and unsearchable parents fail-loud", async () => {
+    const { root, readAsset } = await prepareAssetRead();
+    executeReadCommandsLocally();
+    const privateDir = path.join(root, "private");
+    const file = path.join(privateDir, "fixture.txt");
+    await mkdir(privateDir);
+    await writeFile(file, "fixture-bytes");
+    try {
+      await chmod(file, 0o000);
+      await expect(readAsset(file)).rejects.toMatchObject({ code: expect.any(Number) });
+      await chmod(privateDir, 0o600);
+      await expect(readAsset(path.join(privateDir, "absent.json")))
+        .rejects.toMatchObject({ code: expect.any(Number) });
+    } finally {
+      await chmod(privateDir, 0o700);
+      await chmod(file, 0o600);
+    }
+  });
+
+  it.each([
+    ["SSH connection/authentication", { code: 255 }],
+    ["SSH timeout", { code: 1, killed: true, signal: "SIGTERM" }],
+  ])("does not convert %s failures into optional-file absence", async (_label, fields) => {
+    const { root, readAsset } = await prepareAssetRead();
+    const failure = Object.assign(new Error("transport failed"), fields);
+    runSshCommand.mockRejectedValueOnce(failure).mockResolvedValueOnce({ stdout: "missing", stderr: "" });
+    await expect(readAsset(path.join(root, "absent.json"))).rejects.toBe(failure);
+    expect(runSshCommand).toHaveBeenCalledTimes(1);
+    runSshCommand.mockReset().mockResolvedValue({ stdout: "", stderr: "" });
+  });
+
+  it("does not expose a local SSH setup ENOENT as remote optional-file absence", async () => {
+    const { root, readAsset } = await prepareAssetRead();
+    const failure = Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" });
+    runSshCommand.mockRejectedValueOnce(failure);
+    await expect(readAsset(path.join(root, "absent.json"))).rejects.toMatchObject({
+      code: "ERR_SSH_READ_SETUP", cause: failure,
+    });
+    expect(runSshCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the original read failure if the absence probe fails", async () => {
+    const { root, readAsset } = await prepareAssetRead();
+    const failure = Object.assign(new Error("file read failed"), { code: 2 });
+    runSshCommand.mockRejectedValueOnce(failure).mockRejectedValueOnce(Object.assign(new Error("SSH lost"), { code: 255 }));
+    await expect(readAsset(path.join(root, "absent.json"))).rejects.toBe(failure);
+    expect(runSshCommand).toHaveBeenCalledTimes(2);
   });
 });
