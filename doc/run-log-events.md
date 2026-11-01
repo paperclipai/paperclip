@@ -479,6 +479,27 @@ section in the Observability contract.
 
 ## Execution recovery
 
+An `interaction_pending` wake may address an agent other than the issue assignee.
+Before dispatch, Paperclip verifies the pending interaction's company, issue, and
+named agent again under the issue lock. A stale interaction cancels the queued
+run with `issue_assignee_changed` and writes a warning `lifecycle` event on the
+system stream. The event explains that the assignee changed before the queued
+run could start; it contains no interaction body or credentials. The current
+issue assignee receives adopted user comments through a deduplicated deferred
+wake instead of losing those comments with the cancelled run. Both the initial
+staleness gate and the final claim save that receipt in the cancellation
+transaction. The scheduler retries it through normal comment-wake admission,
+including when the assignee has native run history or no prior run. The saved
+comment and receipt are rechecked under the issue lock, so edits, discards,
+concurrent delivery, execution holds and pauses still apply. If admission merges
+those comments into an existing queued run, it consumes the deferred receipt in
+the same transaction so completion cannot promote it again. Both claim paths
+lock the interaction with `NOWAIT`: if a verdict transaction holds that row, the
+claim rolls back and stays queued, without starting provider work or cancelling
+the wake. This avoids waiting for an interaction while holding the issue lock.
+This check does
+not grant a general assignee bypass and adds no new Telemetry export.
+
 Cancelled runs retain `resultJson.cancellation`: a closed `source` label
 (`operator`, `queued_message`, `shutdown`, `provider`, `transport`,
 `control_plane`, `controller_lease`, or `unknown`), whether the stop was expected,

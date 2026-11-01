@@ -14,7 +14,7 @@ import { hasConversationContinuationPolicy } from "../../../services/conversatio
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
-import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -25,6 +25,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   projects,
@@ -87,6 +88,50 @@ import type {
   PromoteScheduledRetryOutcome,
 } from "../application/types.js";
 import { RunDispatchApplicationError } from "../application/types.js";
+
+// All stale-addressee cancellation paths persist redelivery in their own
+// transaction. The scheduler re-admits this receipt through ordinary wake
+// admission, even without owner run history.
+export async function requeueAdoptedCommentsForAssignee(
+  tx: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    runId: string;
+    source: string;
+    triggerDetail: string | null;
+    adoptedCommentIds: string[];
+  },
+) {
+  const commentIds = [...new Set(input.adoptedCommentIds.filter((id) => id.trim().length > 0))];
+  if (commentIds.length === 0) return;
+  const [issue] = await tx.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
+  if (!issue?.assigneeAgentId) return;
+  const [author] = await tx.select({ authorUserId: issueComments.authorUserId }).from(issueComments)
+    .where(and(eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+      inArray(issueComments.id, commentIds)))
+    .orderBy(desc(issueComments.createdAt)).limit(1);
+  await tx.insert(agentWakeupRequests).values({
+    companyId: input.companyId,
+    agentId: issue.assigneeAgentId,
+    source: input.source,
+    triggerDetail: input.triggerDetail,
+    reason: "issue_commented",
+    payload: withQueuedCommentIdsInWakePayload({
+      issueId: input.issueId,
+      _paperclipWakeContext: {
+        wakeReason: "issue_commented",
+        issueId: input.issueId,
+        requeuedFromRunId: input.runId,
+      },
+    }, commentIds),
+    status: "deferred_issue_execution",
+    requestedByActorType: "user",
+    requestedByActorId: author?.authorUserId ?? null,
+    idempotencyKey: `stale-addressee-requeue:${input.runId}`,
+  });
+}
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
@@ -202,6 +247,51 @@ function statusEffect(run: HeartbeatRun, previousStatus: string | null): PostCom
     issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId),
     previousStatus,
   };
+}
+
+export type AddresseeInteractionWakeInput = {
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  contextSnapshot: Record<string, unknown>;
+};
+
+/**
+ * Reads whether a run context is a server-issued `interaction_pending` wake
+ * whose named addressee is `agentId`, from stored interaction state: the
+ * interaction named in the context must exist, still be `pending`, belong to
+ * the same issue and company, and name the run agent as `addresseeAgentId`.
+ * Callers pass the transaction that owns the decision so the check stays
+ * current through a queued-to-running claim. When the caller holds the
+ * transaction open across the whole claim, pass `lockInteraction: true` so
+ * the read takes a `FOR UPDATE NOWAIT` row lock. Some verdict writes lock the
+ * interaction before the issue; blocking here while holding the issue would
+ * invert that order. Callers defer on 55P03, releasing the claim transaction.
+ * A successful lock prevents resolution between this read and the run-status
+ * write (review-flagged race on paperclipai/paperclip#13211).
+ */
+export async function verifyAddresseeInteractionWake(
+  dbOrTx: Db,
+  input: AddresseeInteractionWakeInput & { lockInteraction?: boolean },
+): Promise<boolean> {
+  const wakeReason = readNonEmptyString(input.contextSnapshot.wakeReason);
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  if (wakeReason !== "interaction_pending" || !interactionId) return false;
+  const query = dbOrTx
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.id, interactionId),
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+        eq(issueThreadInteractions.status, "pending"),
+      ),
+    )
+    .limit(1);
+  const rows = await (input.lockInteraction ? query.for("update", { noWait: true }) : query);
+  return Boolean(rows[0]);
 }
 
 export function createPostgresRunDispatchAdapter(
@@ -609,6 +699,19 @@ export function createPostgresRunDispatchAdapter(
       continuationParksExecutor = continuationSummaryParksExecutor(continuationSummaryBody);
     }
 
+    // A server-issued `interaction_pending` wake names the interaction it was
+    // created for. Authorize the named addressee from stored state only; the
+    // wake reason alone is not trusted. The same check runs again inside the
+    // queued-to-running claim transaction (see `verifyAddresseeInteractionWake`).
+    const isVerifiedAddresseeInteractionWake = issue
+      ? await verifyAddresseeInteractionWake(dbOrTx, {
+          companyId: input.companyId,
+          issueId: issue.id,
+          agentId: input.agentId,
+          contextSnapshot: context,
+        })
+      : false;
+
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
     const isAuthorizedSourceScopedRecovery =
       issue && wakeReason === "source_scoped_recovery_action" && recoveryActionId
@@ -655,6 +758,7 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isVerifiedAddresseeInteractionWake,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
@@ -1082,6 +1186,13 @@ export function createPostgresRunDispatchAdapter(
       }
 
       const context = parseObject(row.contextSnapshot);
+      if (decision.errorCode === "issue_assignee_changed" && context.wakeReason === "interaction_pending") {
+        await requeueAdoptedCommentsForAssignee(tx, {
+          companyId: row.companyId, issueId, runId: row.id,
+          source: row.invocationSource, triggerDetail: row.triggerDetail,
+          adoptedCommentIds: queuedCommentIdsFromRunContext(context),
+        });
+      }
       if (decision.errorCode === "issue_waiting_for_response" && context.connectionIntentResolution === "existing_connection"
         && context.source === "connection_intent.resolved" && context.interactionKind === "connection_intent"
         && typeof context.interactionId === "string") {

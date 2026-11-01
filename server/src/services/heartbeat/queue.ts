@@ -167,7 +167,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
-import { allowsIssueInteractionWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { allowsIssueInteractionWake, verifyAddresseeInteractionWake, requeueAdoptedCommentsForAssignee, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
 import { withAgentStartLock } from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -1343,6 +1343,109 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 return { kind: "stale" as const, run: null };
               }
 
+              // An `interaction_pending` wake that adopts deferred comments
+              // carries `wakeCommentIds` and claims through this
+              // queued-comment path instead of the ordinary claim below. It
+              // must pass the same locked addressee verification: re-read
+              // the stored interaction under a `FOR UPDATE NOWAIT` row lock.
+              // Verdict submission can lock interaction-before-issue, so a
+              // contended claim must roll back and defer rather than wait while
+              // holding the issue. A successful lock prevents resolution from
+              // landing between this read and the run-status writes below. A
+              // wake that no longer verifies is cancelled here: other
+              // ownership bypasses (review participant, workspace/AI-connection
+              // busy retry) can keep the ordinary staleness gate passing after
+              // the interaction resolves, which would otherwise strand the run
+              // queued forever. Adopted user comments survive the cancel: they
+              // are requeued as a deferred receipt for the current assignee.
+              if (
+                issueId &&
+                readNonEmptyString(context.wakeReason) === "interaction_pending" &&
+                !issueClaim.ownsIssue
+              ) {
+                const stillAddressed = await verifyAddresseeInteractionWake(
+                  tx as unknown as Db,
+                  {
+                    companyId: run.companyId,
+                    issueId,
+                    agentId: run.agentId,
+                    contextSnapshot: context,
+                    lockInteraction: true,
+                  },
+                );
+                if (!stillAddressed) {
+                  const reason =
+                    "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead";
+                  logger.info(
+                    { runId: run.id, issueId, agentId: run.agentId },
+                    "claimQueuedRun: addressee interaction is no longer actionable; cancelling stale queued run",
+                  );
+                  const [cancelled] = await tx
+                    .update(heartbeatRuns)
+                    .set({
+                      status: "cancelled",
+                      finishedAt: claimedAt,
+                      error: reason,
+                      errorCode: "issue_assignee_changed",
+                      resultJson: {
+                        ...parseObject(lockedRun.resultJson),
+                        stopReason: "issue_assignee_changed",
+                        effectiveTimeoutSec: 0,
+                        timeoutConfigured: false,
+                        timeoutSource: "stale_queued_run_gate",
+                        timeoutFired: false,
+                      },
+                      updatedAt: claimedAt,
+                    })
+                    .where(
+                      and(
+                        eq(heartbeatRuns.id, lockedRun.id),
+                        eq(heartbeatRuns.status, "queued"),
+                      ),
+                    )
+                    .returning();
+                  if (!cancelled) return { kind: "stale" as const, run: null };
+                  await requeueAdoptedCommentsForAssignee(tx as unknown as Db, {
+                    companyId: run.companyId,
+                    issueId,
+                    runId: run.id,
+                    source: run.invocationSource,
+                    triggerDetail: run.triggerDetail,
+                    adoptedCommentIds:
+                      queuedCommentIdsFromWakePayload(wake.payload),
+                  });
+                  await tx
+                    .update(agentWakeupRequests)
+                    .set({
+                      status: "skipped",
+                      finishedAt: claimedAt,
+                      error: reason,
+                      updatedAt: claimedAt,
+                    })
+                    .where(eq(agentWakeupRequests.id, wake.id));
+                  await tx
+                    .update(issues)
+                    .set({
+                      executionRunId: null,
+                      executionAgentNameKey: null,
+                      executionLockedAt: null,
+                      updatedAt: claimedAt,
+                    })
+                    .where(
+                      and(
+                        eq(issues.id, issueId),
+                        eq(issues.companyId, run.companyId),
+                        eq(issues.executionRunId, run.id),
+                      ),
+                    );
+                  return { kind: "cancelled" as const, run: cancelled };
+                }
+                logger.info(
+                  { runId: run.id, issueId, agentId: run.agentId },
+                  "claimQueuedRun: addressee interaction verified for queued-comment claim",
+                );
+              }
+
               if (lockedRun.invocationSource === "automation") {
                 const admission = readChatControlRecoveryAdmission(lockedRun);
                 if (admission === "invalid")
@@ -1620,6 +1723,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       void emitAgentTaskRun(db, queuedCommentClaim.run);
       return null;
     }
+    // Holder object (not a bare union): assignments inside the claim
+    // callbacks are invisible to control-flow narrowing, so a bare
+    // `T | null` reads as `null` here and the truthy branch narrows to
+    // `never` (TS2339 build failure). Property narrowing has no such issue.
+    const addresseeStaleCancellation: {
+      run: typeof heartbeatRuns.$inferSelect | null;
+    } = { run: null };
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
@@ -1653,13 +1763,151 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             if (!lockedRun || lockedRun.status !== "queued") return null;
             await withExternalAdmissionGuard(claimTx, run.companyId, run.agentId, () => assertNoExternalOverlap(claimTx, run.companyId, run.agentId));
             await notifyChatRunMilestones(claimTx, { companyId: run.companyId, runId: run.id, issueId: issueId ?? undefined });
+            // Recheck stored interaction authority under the claim transaction.
+            // NOWAIT avoids waiting under the issue lock when verdict submission
+            // already holds the interaction lock. Contention leaves this run queued.
+            if (
+              issueId &&
+              readNonEmptyString(context.wakeReason) === "interaction_pending" &&
+              !issueClaim.ownsIssue
+            ) {
+              const stillAddressed = await verifyAddresseeInteractionWake(
+                claimTx as unknown as Db,
+                {
+                  companyId: run.companyId,
+                  issueId,
+                  agentId: run.agentId,
+                  contextSnapshot: context,
+                  lockInteraction: true,
+                },
+              );
+              if (!stillAddressed) {
+                const reason =
+                  "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead";
+                logger.info(
+                  { runId: run.id, issueId, agentId: run.agentId },
+                  "claimQueuedRun: addressee interaction is no longer actionable; cancelling stale queued run",
+                );
+                const [cancelled] = await claimTx
+                  .update(heartbeatRuns)
+                  .set({
+                    status: "cancelled",
+                    finishedAt: claimedAt,
+                    error: reason,
+                    errorCode: "issue_assignee_changed",
+                    resultJson: {
+                      ...parseObject(run.resultJson),
+                      stopReason: "issue_assignee_changed",
+                      effectiveTimeoutSec: 0,
+                      timeoutConfigured: false,
+                      timeoutSource: "stale_queued_run_gate",
+                      timeoutFired: false,
+                    },
+                    updatedAt: claimedAt,
+                  })
+                  .where(
+                    and(
+                      eq(heartbeatRuns.id, run.id),
+                      eq(heartbeatRuns.status, "queued"),
+                    ),
+                  )
+                  .returning();
+                if (!cancelled) return null;
+                await requeueAdoptedCommentsForAssignee(
+                  claimTx as unknown as Db,
+                  {
+                    companyId: run.companyId,
+                    issueId,
+                    runId: run.id,
+                    source: run.invocationSource,
+                    triggerDetail: run.triggerDetail,
+                    adoptedCommentIds: queuedCommentIdsFromRunContext(
+                      run.contextSnapshot,
+                    ),
+                  },
+                );
+                if (run.wakeupRequestId) {
+                  await claimTx
+                    .update(agentWakeupRequests)
+                    .set({
+                      status: "skipped",
+                      finishedAt: claimedAt,
+                      error: reason,
+                      updatedAt: claimedAt,
+                    })
+                    .where(
+                      and(
+                        eq(agentWakeupRequests.id, run.wakeupRequestId),
+                        eq(agentWakeupRequests.companyId, run.companyId),
+                      ),
+                    );
+                }
+                await claimTx
+                  .update(issues)
+                  .set({
+                    executionRunId: null,
+                    executionAgentNameKey: null,
+                    executionLockedAt: null,
+                    updatedAt: claimedAt,
+                  })
+                  .where(
+                    and(
+                      eq(issues.id, issueId),
+                      eq(issues.companyId, run.companyId),
+                      eq(issues.executionRunId, run.id),
+                    ),
+                  );
+                addresseeStaleCancellation.run = cancelled;
+                return null;
+              }
+              logger.info(
+                { runId: run.id, issueId, agentId: run.agentId },
+                "claimQueuedRun: addressee interaction verified for claim",
+              );
+            }
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
             await bindClaimedIssueExecution(claimTx as unknown as Db, issueClaim.ownsIssue, claimedRun);
             return claimedRun;
+          }).catch((error) => {
+            if (isExternalChatWaitAuthorizationContention(error)) return null;
+            throw error;
           });
         });
+    const staleCancelledRun = addresseeStaleCancellation.run;
+    if (staleCancelledRun) {
+      await appendRunEvent(staleCancelledRun, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message:
+          staleCancelledRun.error ??
+          "Cancelled because issue assignee changed before the queued run could start",
+      });
+      publishLiveEvent({
+        companyId: staleCancelledRun.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: staleCancelledRun.id,
+          agentId: staleCancelledRun.agentId,
+          status: staleCancelledRun.status,
+          invocationSource: staleCancelledRun.invocationSource,
+          triggerDetail: staleCancelledRun.triggerDetail,
+          error: staleCancelledRun.error ?? null,
+          errorCode: staleCancelledRun.errorCode ?? null,
+          startedAt: staleCancelledRun.startedAt
+            ? new Date(staleCancelledRun.startedAt).toISOString()
+            : null,
+          finishedAt: staleCancelledRun.finishedAt
+            ? new Date(staleCancelledRun.finishedAt).toISOString()
+            : null,
+        },
+      });
+      publishRunLifecyclePluginEvent(staleCancelledRun);
+      void emitAgentTaskRun(db, staleCancelledRun);
+      return null;
+    }
     if (!claimed) return null;
 
     publishLiveEvent({
@@ -1915,6 +2163,41 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     for (const { wake } of strandedQueues) {
       if (!queuedCommentIdsFromWakePayload(wake.payload).length &&
           !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
+      const requeuedFromRunId = readNonEmptyString(parseObject(wake.payload?.[DEFERRED_WAKE_CONTEXT_KEY]).requeuedFromRunId);
+      if (requeuedFromRunId && wake.idempotencyKey === `stale-addressee-requeue:${requeuedFromRunId}`) {
+        // A cancelled addressee is not an owner run whose cleanup can promote
+        // this queue. Re-admit the saved comment receipt through ordinary wake
+        // admission instead, including native owners and owners with no history.
+        const [source] = await db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, wake.companyId),
+          sql`${heartbeatRuns.id}::text = ${requeuedFromRunId}`,
+          eq(heartbeatRuns.status, "cancelled"),
+          eq(heartbeatRuns.errorCode, "issue_assignee_changed"),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${String(wake.payload?.issueId)}`,
+          sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'interaction_pending'`,
+        )).limit(1);
+        if (source) {
+          await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+            eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ));
+          await enqueueWakeup(wake.agentId, {
+            source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+            payload: parseObject(wake.payload),
+            contextSnapshot: withQueuedCommentIdsInRunContext({
+              issueId: String(wake.payload?.issueId),
+              source: "stale_addressee_redelivery",
+              requeuedFromRunId,
+            }, queuedCommentIdsFromWakePayload(wake.payload)),
+            requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
+            queuedCommentRequestId: wake.id,
+            issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+            idempotencyKey: `stale-addressee-delivery:${wake.id}`,
+          }, wake.id).catch(err => {
+            logger.warn({ err, queueId: wake.id }, "failed to redeliver stale addressee comments");
+          });
+          continue;
+        }
+      }
       const [latest] = await db.select({
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
@@ -4116,6 +4399,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             );
 
             if (admission.kind === "coalesced") {
+              if (executionWaitRequestId) {
+                // This receipt was revalidated under the issue lock above. Its
+                // comments now belong to the coalesced run; leaving it deferred
+                // would let that run's completion promote a duplicate delivery.
+                await tx.update(agentWakeupRequests).set({
+                  status: "coalesced", runId: String(admission.run.id),
+                  finishedAt: new Date(), updatedAt: new Date(),
+                }).where(and(
+                  eq(agentWakeupRequests.id, executionWaitRequestId),
+                  eq(agentWakeupRequests.companyId, agent.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                ));
+              }
               return {
                 kind: "coalesced" as const,
                 run: admission.run as typeof heartbeatRuns.$inferSelect,
