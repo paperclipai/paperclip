@@ -71,7 +71,7 @@ import {
   reconcileRetainedNativeSessionCleanup,
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
-import { parseObject } from "../../adapters/utils.js";
+import { parseObject, asNumber } from "../../adapters/utils.js";
 import {
   isNativeRunnerOwnershipHeld,
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
@@ -319,7 +319,7 @@ function buildProcessLossMessage(
   if (run.processGroupId) {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
-  return "Process lost -- server may have restarted";
+  return "Process lost -- the Paperclip control plane has no recorded process id for this run and cannot verify it is still running";
 }
 
 function readHotRestartAdoptionMetadata(
@@ -2499,14 +2499,33 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         run.controllerBootId !== legacyControllerBootId &&
         !revokedState.processPid &&
         !revokedState.processGroupId;
+      const executionTimeout = parseObject(parseObject(run.resultJson).executionTimeout);
+      const timeoutSecCeiling = asNumber(executionTimeout.timeoutSec, 0);
+      const executionStartedAtMs = typeof executionTimeout.startedAt === "string"
+        ? Date.parse(executionTimeout.startedAt)
+        : Number.NaN;
+      const elapsedExecutionMs = now.getTime() - executionStartedAtMs;
+      const overTimeoutCeiling =
+        !restartInterruptedBeforeDispatch &&
+        Number.isFinite(timeoutSecCeiling) &&
+        timeoutSecCeiling > 0 &&
+        Number.isFinite(executionStartedAtMs) &&
+        elapsedExecutionMs >= timeoutSecCeiling * 1_000;
       const shouldRetry =
         !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
+        !overTimeoutCeiling &&
         (run.processLossRetryCount ?? 0) < 1 &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||
           restartInterruptedBeforeDispatch ||
           monitorDispatchLostWithoutFutureWake);
-      const baseMessage = buildProcessLossMessage(run);
+      const terminalStatus = overTimeoutCeiling ? "timed_out" : "failed";
+      const terminalErrorCode = overTimeoutCeiling
+        ? "timed_out"
+        : "process_lost";
+      const baseMessage = overTimeoutCeiling
+        ? `Run exceeded its ${timeoutSecCeiling}s timeout ceiling (execution-time reconciliation; elapsed ${Math.round(elapsedExecutionMs / 1000)}s, no live process confirmation available)`
+        : buildProcessLossMessage(run);
       const processLossDiagnostic = buildProcessLossDiagnostic({
         run,
         nowMs: Date.now(),
@@ -2518,31 +2537,54 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
       const failureWrite = await setRunStatusFromLive(
         run.id,
-        "failed",
+        terminalStatus,
         ["running"],
         {
           error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          errorCode: "process_lost",
+          errorCode: terminalErrorCode,
           finishedAt: now,
           resultJson: (() => {
             const result = mergeRunStopMetadataForAgent(
-              { adapterType, adapterConfig },
-              "failed",
+              {
+                adapterType,
+                adapterConfig: adapterConfig,
+              },
+              terminalStatus,
               {
                 conversationContinuationEligible,
                 resultJson: {
                   ...parseObject(run.resultJson),
                   processLossDiagnostic,
+                  ...(overTimeoutCeiling
+                    ? {
+                        timeoutCeilingReconciliation: {
+                          timeoutSec: timeoutSecCeiling,
+                          elapsedMs: elapsedExecutionMs,
+                        },
+                      }
+                    : {}),
                   ...(restartInterruptedBeforeDispatch
                     ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
                     : {}),
                 },
-                errorCode: "process_lost",
+                errorCode: terminalErrorCode,
                 errorMessage: shouldRetry
                   ? `${baseMessage}; retrying once`
                   : baseMessage,
               },
             );
+            if (
+              Number.isFinite(executionStartedAtMs) &&
+              Number.isFinite(timeoutSecCeiling) &&
+              result
+            ) {
+              result.effectiveTimeoutSec = timeoutSecCeiling;
+              result.timeoutConfigured =
+                executionTimeout.timeoutConfigured ?? result.timeoutConfigured;
+              result.timeoutSource =
+                executionTimeout.timeoutSource ?? result.timeoutSource;
+              result.timeoutFired = terminalStatus === "timed_out";
+            }
             return result;
           })(),
         },

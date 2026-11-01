@@ -239,7 +239,7 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     } as unknown as typeof heartbeatRuns.$inferSelect, {}));
     captureRunFailure({
       taskId: "11111111-1111-4111-8111-111111111111", runId: "22222222-2222-4222-8222-222222222222",
-      errorMessage: "Process lost -- server may have restarted", errorCode: "process_lost",
+      errorMessage: "Process lost -- the Paperclip control plane has no recorded process id for this run and cannot verify it is still running", errorCode: "process_lost",
       agentAdapter: "fixture-adapter", runStatus: "failed", exitCode: null, signal: null, diagnostics,
     });
     captureException(new Error("unrelated process-loss fixture"));

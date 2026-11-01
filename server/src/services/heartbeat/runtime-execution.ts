@@ -7,6 +7,7 @@ import { environmentService } from "../environments.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { resolveHeartbeatRunTimeoutPolicy } from "../heartbeat-stop-metadata.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
@@ -46,6 +47,7 @@ import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { registerAdapterExecutionControl } from "../adapter-execution-control.js";
 import { resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
+import { resolveAdapterExecutionTargetTimeout } from "@paperclipai/adapter-utils/execution-target";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
@@ -832,6 +834,27 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       if (managedMcpConfig) {
         adapterContext.paperclipManagedMcp = managedMcpConfig;
       }
+      const timeoutPolicy = (() => {
+        if (["claude_local", "codex_local", "cursor", "cursor_local", "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"].includes(agent.adapterType)) {
+          const resolved = resolveAdapterExecutionTargetTimeout(executionTarget, asNumber(runtimeConfig.timeoutSec, 0));
+          return { effectiveTimeoutSec: resolved.timeoutSec, timeoutConfigured: resolved.source === "configured", timeoutSource: resolved.source };
+        }
+        if (["process", "http", "openclaw_gateway"].includes(agent.adapterType)) {
+          const policy = resolveHeartbeatRunTimeoutPolicy(agent.adapterType, runtimeConfig);
+          return agent.adapterType === "process"
+            ? { ...policy, effectiveTimeoutSec: Math.max(0, asNumber(runtimeConfig.timeoutSec, 0)), timeoutConfigured: asNumber(runtimeConfig.timeoutSec, 0) > 0 }
+            : policy;
+        }
+        return { effectiveTimeoutSec: null, timeoutConfigured: false, timeoutSource: "unknown" };
+      })();
+      const executionTimeout = {
+        ...timeoutPolicy,
+        timeoutSec: timeoutPolicy.effectiveTimeoutSec,
+        startedAt: new Date().toISOString(),
+      };
+      await db.update(heartbeatRuns).set({
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ executionTimeout })}::jsonb`,
+      }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {

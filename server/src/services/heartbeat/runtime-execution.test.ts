@@ -2,6 +2,8 @@ import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-c
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
+import { inspect } from "node:util";
+import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -67,7 +69,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     const [company] = await db.insert(companies).values({ name: "Runtime execution", issuePrefix: "EXE" }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Executing agent", status: "running", adapterType: native ? "paperclip_runner" : "process", adapterConfig: provider === "codex" ? { provider } : { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: true, [provider === "grok_bot" ? "externalBindingId" : "dotBindingId"]: randomUUID() } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Complete this task", assigneeAgentId: agent.id }).returning();
-    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: native ? "native" : "legacy" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: native ? "native" : "legacy", contextSnapshot: { issueId: issue.id } }).returning();
     const state = createHeartbeatRunState(db);
     const executionControl = createAdapterExecutionControl();
     const adapter = { type: "process", label: "Test process", testEnvironment: vi.fn(), execute: vi.fn<HeartbeatRuntimeExecutionInput["runtime"]["adapter"]["execute"]>(async () => ({ exitCode: 0, signal: null, timedOut: false })) };
@@ -141,6 +143,98 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.effects.onLegacyAdapterEntered).not.toHaveBeenCalled();
     expect(await finalizations()).toHaveLength(0);
     expectCleanup(input);
+  });
+
+  it.each(["cancel", "reassign"])("revalidates ownership after timeout persistence pauses: %s", async mode => {
+    const { input, adapter, run } = await fixture();
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, run.issueId!));
+    const gate = createPostgresRunDispatchAdapter(db);
+    input.control.dispatchResolvedInteractionContinuationWithAtomicGate = dispatch => gate.dispatchResolvedInteractionIfCurrent({
+      companyId: run.companyId, runId: run.id, expectedStatus: "running", now: new Date(), dispatch,
+    });
+    let resume!: () => void;
+    let reached!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    const released = new Promise<void>(resolve => { resume = resolve; });
+    const update = db.update.bind(db);
+    const spy = vi.spyOn(db, "update").mockImplementation(((table: any) => {
+      const builder = update(table);
+      const set = builder.set.bind(builder);
+      builder.set = ((values: any) => {
+        const query = set(values);
+        if (inspect(values.resultJson, { depth: 8 }).includes("executionTimeout")) {
+          const where = query.where.bind(query);
+          query.where = ((condition: any) => {
+            spy.mockRestore();
+            reached();
+            return released.then(() => where(condition));
+          }) as typeof query.where;
+        }
+        return query;
+      }) as typeof builder.set;
+      return builder;
+    }) as typeof db.update);
+    const executing = executeHeartbeatRuntime(db, input);
+    try {
+      await paused;
+      if (mode === "cancel") {
+        await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, run.id));
+      } else {
+        const [replacement] = await db.insert(agents).values({ companyId: run.companyId, name: "Replacement agent" }).returning();
+        await db.update(issues).set({ assigneeAgentId: replacement.id, executionRunId: null }).where(eq(issues.id, run.issueId!));
+      }
+    } finally {
+      resume();
+      spy.mockRestore();
+    }
+    expect(await executing).toMatchObject({ dispatched: false });
+    expect(adapter.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["process", { timeoutSec: 0.5 }, null, 0.5, "config", true],
+    ["codex_local", {}, { kind: "remote", transport: "sandbox" }, 14_400, "sandbox_default", false],
+    ["codex_local", { timeoutSec: 0 }, { kind: "remote", transport: "sandbox" }, 14_400, "sandbox_default", false],
+    ["codex_local", { timeoutSec: -1 }, { kind: "remote", transport: "sandbox" }, 0, "configured", true],
+    ["codex_local", { timeoutSec: 0.25 }, null, 0.25, "configured", true],
+    ["http", { timeoutMs: 250 }, null, 0.25, "config", true],
+    ["openclaw_gateway", {}, null, 120, "default", true],
+    ["unknown_adapter", { timeoutSec: 1 }, null, null, "unknown", false],
+  ])("persists the admitted timeout semantics: %s %j", async (type, config, target, timeoutSec, timeoutSource, timeoutConfigured) => {
+    const { input, adapter, run } = await fixture();
+    input.agent.adapterType = type as string;
+    input.config.runtimeConfig = config as Record<string, unknown>;
+    input.workspace.executionTarget = target as typeof input.workspace.executionTarget;
+    adapter.execute.mockImplementationOnce(async () => {
+      expect((await read(run.id)).resultJson).toMatchObject({ executionTimeout: {
+        timeoutSec, effectiveTimeoutSec: timeoutSec, timeoutSource, timeoutConfigured,
+      } });
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute).toHaveBeenCalledOnce();
+  });
+
+  it("persists the effective timeout before entering the legacy adapter", async () => {
+    const { input, adapter, run } = await fixture();
+    input.agent.adapterConfig = { timeoutSec: 60 };
+    input.config.runtimeConfig = { timeoutSec: 600 };
+    await db.update(heartbeatRuns).set({ resultJson: { retained: true } }).where(eq(heartbeatRuns.id, run.id));
+    const before = Date.now();
+    adapter.execute.mockImplementationOnce(async () => {
+      const saved = await read(run.id);
+      expect(saved.resultJson).toMatchObject({
+        retained: true,
+        executionTimeout: { timeoutSec: 600, startedAt: expect.any(String) },
+      });
+      const policy = saved.resultJson!.executionTimeout as { startedAt: string };
+      expect(Date.parse(policy.startedAt)).toBeGreaterThanOrEqual(before);
+      expect(Date.parse(policy.startedAt)).toBeLessThanOrEqual(Date.now());
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute).toHaveBeenCalledOnce();
   });
 
   it("captures usage and live instruction saves before finalizing a legacy workspace", async () => {

@@ -3514,7 +3514,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(reaped).toMatchObject({
       status: "failed",
       errorCode: "process_lost",
-      error: "Process lost -- server may have restarted; retrying once",
+      error: "Process lost -- the Paperclip control plane has no recorded process id for this run and cannot verify it is still running; retrying once",
     });
     expect(reaped?.resultJson).toMatchObject({
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
@@ -3540,7 +3540,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(reaped).toMatchObject({
       status: "failed",
       errorCode: "process_lost",
-      error: "Process lost -- server may have restarted",
+      error: "Process lost -- the Paperclip control plane has no recorded process id for this run and cannot verify it is still running",
     });
     expect(reaped?.resultJson).not.toHaveProperty("executionRecovery");
     expect(await db.select().from(heartbeatRuns).where(and(
@@ -3551,6 +3551,134 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([
       expect.objectContaining({ cause: "legacy_execution_requires_reconciliation" }),
     ]);
+  });
+
+  it.each([600, 0, 30])("respects the admitted timeout instead of current agent defaults: %s", async (timeoutSec) => {
+    const { agentId, runId } = await seedRestartOrphanedLegacySetup("dispatching");
+    const startedAt = new Date(Date.now() - 120_000);
+    await db.update(agents).set({ adapterConfig: { timeoutSec: 60 } }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({
+      startedAt,
+      resultJson: { executionTimeout: { timeoutSec, startedAt: startedAt.toISOString() } },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject(timeoutSec === 30
+      ? { status: "timed_out", errorCode: "timed_out" }
+      : { status: "failed", errorCode: "process_lost" });
+    if (timeoutSec === 30) {
+      expect(reaped?.resultJson).toMatchObject({
+        effectiveTimeoutSec: 30,
+        timeoutConfigured: true,
+        timeoutSource: "config",
+        timeoutFired: true,
+        timeoutCeilingReconciliation: { timeoutSec: 30 },
+      });
+    } else {
+      expect(reaped?.resultJson).not.toHaveProperty("timeoutCeilingReconciliation");
+      expect(reaped?.resultJson).toMatchObject({
+        effectiveTimeoutSec: timeoutSec,
+        timeoutFired: false,
+      });
+    }
+  });
+
+  it("excludes queue waiting time from orphan timeout reconciliation", async () => {
+    const { agentId, runId } = await seedRestartOrphanedLegacySetup("dispatching");
+    await db.update(agents).set({ adapterConfig: { timeoutSec: 60 } }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({
+      createdAt: new Date(Date.now() - 3_600_000),
+      startedAt: new Date(),
+      resultJson: { executionTimeout: { timeoutSec: 60, startedAt: new Date().toISOString() } },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(reaped?.resultJson).not.toHaveProperty("timeoutCeilingReconciliation");
+  });
+
+  it("settles an orphaned run as timed_out once past its admitted execution timeout", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRestartOrphanedLegacySetup("dispatching");
+    await db.update(agents).set({ adapterConfig: { timeoutSec: 60 } }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      resultJson: { executionTimeout: { timeoutSec: 60, startedAt: new Date(Date.now() - 120_000).toISOString() } },
+    })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "timed_out", errorCode: "timed_out" });
+    expect(reaped?.error).toContain("exceeded its 60s timeout ceiling");
+    expect(reaped?.resultJson).toMatchObject({
+      timeoutCeilingReconciliation: { timeoutSec: 60 },
+    });
+    await heartbeat.reapOrphanedRuns();
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId),
+    ))).toEqual([]);
+    void issueId;
+  });
+
+  it("preserves restart retry eligibility before dispatch even with an old timeout record", async () => {
+    const { companyId, agentId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    await db.update(agents).set({ adapterConfig: { timeoutSec: 60 } }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({
+      createdAt: new Date(Date.now() - 3_600_000),
+      resultJson: { executionTimeout: { timeoutSec: 60, startedAt: new Date(Date.now() - 120_000).toISOString() } },
+    }).where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reapOrphanedRuns();
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(reaped?.resultJson).toMatchObject({ executionRecovery: { providerWorkStarted: false } });
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId),
+    ))).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+  });
+
+  it.each([
+    null,
+    { timeoutSec: 60 },
+    { timeoutSec: 60, startedAt: "invalid" },
+  ])("does not infer a timeout without a complete admitted policy: %j", async (executionTimeout) => {
+    const { agentId, runId } = await seedRestartOrphanedLegacySetup("dispatching");
+    await db.update(agents).set({ adapterConfig: { timeoutSec: 1 } }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({
+      createdAt: new Date(Date.now() - 3_600_000),
+      startedAt: null,
+      resultJson: { executionTimeout },
+    }).where(eq(heartbeatRuns.id, runId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost" });
+  });
+
+  it("still reports a run under its timeoutSec ceiling as process_lost, not timed_out", async () => {
+    const { agentId, runId } = await seedRestartOrphanedLegacySetup("dispatching");
+    await db.update(agents).set({ adapterConfig: { timeoutSec: 999_999_999 } }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({
+      resultJson: { executionTimeout: { timeoutSec: 999_999_999, startedAt: new Date().toISOString() } },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+      error: "Process lost -- the Paperclip control plane has no recorded process id for this run and cannot verify it is still running",
+    });
   });
 
   async function withTempPaperclipHome<T>(
