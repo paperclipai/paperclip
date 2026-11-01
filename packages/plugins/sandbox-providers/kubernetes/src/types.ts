@@ -28,6 +28,32 @@ export const kubernetesProviderConfigSchema = z
       .optional(),
 
     runtimeClassName: z.string().optional(),
+
+    /** Copied verbatim into every agent pod spec. Empty = scheduler default. */
+    nodeSelector: z.record(z.string()).default({}),
+    tolerations: z
+      .array(
+        z
+          .object({
+            key: z.string().optional(),
+            operator: z.enum(["Exists", "Equal"]).optional(),
+            value: z.string().optional(),
+            effect: z.enum(["NoSchedule", "PreferNoSchedule", "NoExecute"]).optional(),
+            tolerationSeconds: z.number().int().optional(),
+          })
+          .strict()
+          // Same combinations the Kubernetes API server rejects, caught at save time.
+          .refine((t) => t.key || t.operator === "Exists", {
+            message: "a toleration without a key must use operator Exists",
+          })
+          .refine((t) => t.operator !== "Exists" || !t.value, {
+            message: "a toleration with operator Exists must not set a value",
+          })
+          .refine((t) => t.tolerationSeconds === undefined || t.effect === "NoExecute", {
+            message: "tolerationSeconds requires effect NoExecute",
+          }),
+      )
+      .default([]),
     serviceAccountAnnotations: z.record(z.string()).default({}),
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
