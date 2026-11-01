@@ -9,6 +9,11 @@ import { parseOfficialBootstrapContext } from './testops-chat-reporter.mjs';
 import { exportPilotAllure, readPilotExport } from './chat-completion-testops-results.mjs';
 
 const execute = promisify(execFile);
+const fullCatalogFailureCodes = new Set([
+  'case_alias_conflict', 'case_identity', 'case_metadata', 'catalog_case', 'catalog_identity',
+  'catalog_incomplete', 'catalog_page', 'created_case', 'created_plan', 'manifest', 'manifest_alias',
+  'mutation_marker', 'plan_conflict', 'plan_identity', 'plan_page', 'plan_scope', 'reconciliation_changed',
+].map(code => `chat_full_catalog_testops_${code}`));
 function compactCase(row) {
   return Object.fromEntries(['key', 'scenario', 'executionId', 'fullName', 'registeredFullName', 'caseId'].filter(key => row[key] !== undefined).map(key => [key, row[key]]));
 }
@@ -153,7 +158,8 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
     const verification = await verifyPilotUpload(api, selected, context, exported);
     await writeReceipt(state, 'verification.json', verification); return 0;
   } catch (error) {
-    const code = /^(chat_completion_testops_[a-z_]{1,80}|testops_(?:api|auth)_http(?:_[1-5][0-9]{2})?)$/.test(error?.message ?? '') ? error.message : 'chat_completion_testops_unknown';
+    const code = fullCatalogFailureCodes.has(error?.message)
+      || /^(chat_completion_testops_[a-z_]{1,80}|testops_(?:api|auth)_http(?:_[1-5][0-9]{2})?)$/.test(error?.message ?? '') ? error.message : 'chat_completion_testops_unknown';
     const receipt = { command, code, httpStatus: Number.isInteger(error?.status) ? error.status : null };
     if (state) await writeReceipt(state, 'failure.json', receipt).catch(() => {});
     process.stderr.write(`Chat completion TestOps stopped: ${JSON.stringify(receipt)}\n`); return 1;

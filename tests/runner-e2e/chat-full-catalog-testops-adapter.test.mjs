@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { fullCatalogCases, fullCatalogPlanName, catalogTargetSha } from './chat-full-catalog-testops-manifest.mjs';
 import { admitDispatch, validateSelection, evidencePolicy, catalogWorkflow, catalogDefinition } from './chat-completion-testops-contract.mjs';
 import { bindingFromEnv, validatePilotSelection, verifyPilotUpload, completePilotRegistration } from './chat-completion-testops-api.mjs';
-import { executionMatrix, executionPartition } from './chat-completion-testops-cli.mjs';
+import { executionMatrix, executionPartition, run } from './chat-completion-testops-cli.mjs';
+import { mkdtemp, writeFile, readFile, readdir, rm, realpath } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 const context = { catalog: 'full', runId: '123', attempt: '1', workflowSha: 'a'.repeat(40), targetSha: catalogTargetSha };
 const runUrl = 'https://github.com/paperclipai/paperclip/actions/runs/123';
@@ -129,4 +132,38 @@ test('an incomplete last page and a wrong registered selector cannot qualify a f
   await assert.rejects(verifyPilotUpload(missing.get, selection, context, exported), /result_page/);
   const wrong = api({ '/api/jobrun/77/plan?expected=true': [{ id: 388, selector: fullCatalogCases[0].fullName }] });
   await assert.rejects(validatePilotSelection(wrong.get, env, context, 99), /foreign_selection/);
+});
+
+test('the real bootstrap facade preserves fixed reconciliation failures and discards unknown lookalike messages', async t => {
+  for (const unknown of [false, true]) {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'catalog-bootstrap-failure-')));
+    let stderr = ''; const capture = t.mock.method(process.stderr, 'write', value => { stderr += value; return true; });
+    try {
+      const event = { repository: { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' },
+        ref: 'refs/heads/master', sender: { id: 42 }, inputs: { operation: 'bootstrap' } };
+      const eventPath = path.join(root, 'event.json'); await writeFile(eventPath, JSON.stringify(event));
+      const runtime = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REPOSITORY: event.repository.full_name,
+        GITHUB_REF: event.ref, GITHUB_WORKFLOW_REF: `paperclipai/paperclip/${catalogWorkflow}@refs/heads/master`, GITHUB_SHA: context.workflowSha,
+        GITHUB_RUN_ATTEMPT: '1', GITHUB_RUN_ID: '123', GITHUB_ACTOR_ID: '42', TESTOPS_ALLOWED_ACTOR_IDS: '[42]', GITHUB_RUN_NUMBER: '1',
+        GITHUB_EVENT_PATH: eventPath, GH_TOKEN: 'SYNTHETIC_GITHUB_SECRET', ALLURE_TOKEN: 'SYNTHETIC_REPORTING_SECRET',
+        RUNNER_TEMP: root, GITHUB_WORKSPACE: root, CHAT_TESTOPS_INTEGRATION_ID: '1' };
+      const exec = async () => ({ stdout: JSON.stringify({ id: 123, run_attempt: 1, run_number: 1, workflow_id: 99,
+        head_sha: context.workflowSha, head_branch: 'master', event: 'workflow_dispatch', path: catalogWorkflow,
+        repository: event.repository, actor: { id: 42 }, triggering_actor: { id: 42 } }) });
+      const fetchImpl = async (url, options) => {
+        if (unknown) throw new Error('chat_full_catalog_testops_catalog_page_private_body');
+        if (url.endsWith('/api/uaa/oauth/token')) return Response.json({ access_token: 'SYNTHETIC_BEARER_SECRET' });
+        assert.equal(options.method, 'GET');
+        if (url.endsWith('/api/integration/1/project/1')) return Response.json({ id: 1, projectId: 1, info: { type: 'github' }, disabled: false });
+        assert.ok(url.includes('/api/testcase?'));
+        return Response.json({ content: [], number: 0, totalPages: 2, totalElements: 0, private: 'SYNTHETIC_PRIVATE_BODY' });
+      };
+      assert.equal(await run('bootstrap', undefined, runtime, { exec, fetchImpl }), 1);
+      const state = path.join(root, 'chat-completion-testops-bootstrap');
+      const failure = JSON.parse(await readFile(path.join(state, 'failure.json'), 'utf8'));
+      assert.equal(failure.code, unknown ? 'chat_completion_testops_unknown' : 'chat_full_catalog_testops_catalog_page');
+      assert.deepEqual(await readdir(state), ['failure.json']);
+      assert.doesNotMatch(stderr + JSON.stringify(failure), /SYNTHETIC_|PRIVATE_BODY|catalog_page_private_body/);
+    } finally { capture.mock.restore(); await rm(root, { recursive: true, force: true }); }
+  }
 });
