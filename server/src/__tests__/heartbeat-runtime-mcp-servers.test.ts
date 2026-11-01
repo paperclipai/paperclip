@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   activityLog,
@@ -33,6 +33,7 @@ import {
   configuredPaperclipMcpBaseUrl,
   createManagedMcpRunConfig,
 } from "../services/heartbeat.js";
+import { createAdapterRuntimeToolAccess } from "../services/heartbeat/run-preparation.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 import { toolAccessService } from "../services/tool-access.js";
@@ -66,6 +67,27 @@ describe("heartbeat runtime URL configuration", () => {
       else process.env.PAPERCLIP_API_URL = previousApiUrl;
       if (previousPublicUrl === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
       else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
+  it("advertises the public base for the MCP endpoint and the API base for REST URLs", () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-runtime-tools-secret");
+    vi.stubEnv("PAPERCLIP_API_URL", "http://192.168.1.212:3100/api/");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example.test/api/");
+    try {
+      const access = createAdapterRuntimeToolAccess({
+        agentId: "agent-1",
+        companyId: "company-1",
+        runId: "run-1",
+        responsibleUserId: "user-1",
+      });
+      expect(access?.mcpEndpoint).toBe("https://paperclip.example.test/mcp/runtime-tools");
+      expect(access?.rest).toEqual({
+        connectionsSearch: "http://192.168.1.212:3100/runtime-tools/connections/search",
+        connectionRequest: "http://192.168.1.212:3100/runtime-tools/connections/request",
+      });
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });
