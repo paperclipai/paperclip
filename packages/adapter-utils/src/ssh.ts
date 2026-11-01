@@ -396,7 +396,7 @@ async function createSshAuthArgs(
   if (config.privateKey) {
     const privateKey = await withTempFile("paperclip-ssh-key-", config.privateKey, 0o600);
     tempFiles.push(privateKey.cleanup);
-    sshArgs.push("-i", privateKey.path);
+    sshArgs.push("-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", privateKey.path);
   }
 
   return {
