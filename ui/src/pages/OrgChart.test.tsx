@@ -281,6 +281,45 @@ describe("OrgChart mobile gestures", () => {
     expect(layer.style.transform).toBe("translate(0px, 0px) scale(1)");
   });
 
+  it("keeps the embedded chart's zoom when the parent passes an equivalent new tree", async () => {
+    root = createRoot(container);
+    const renderEmbedded = async (tree: typeof orgTree) => {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <OrgChart embedded orgTree={tree as any} agents={agents as any} />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+    };
+
+    await renderEmbedded(structuredClone(orgTree));
+    const viewport = container.querySelector('[data-testid="org-chart-viewport"]') as HTMLDivElement;
+    const layer = container.querySelector('[data-testid="org-chart-card-layer"]') as HTMLDivElement;
+
+    await act(async () => {
+      viewport.dispatchEvent(createTouchEvent("touchstart", [
+        { clientX: 100, clientY: 100 },
+        { clientX: 200, clientY: 100 },
+      ]));
+      viewport.dispatchEvent(createTouchEvent("touchmove", [
+        { clientX: 75, clientY: 100 },
+        { clientX: 225, clientY: 100 },
+      ]));
+      viewport.dispatchEvent(createTouchEvent("touchend", []));
+    });
+    const zoomedTransform = layer.style.transform;
+    expect(zoomedTransform).toBe("translate(-45px, 40px) scale(1.5)");
+
+    await renderEmbedded(structuredClone(orgTree));
+    expect(layer.style.transform).toBe(zoomedTransform);
+
+    await renderEmbedded([{ ...orgTree[0], reports: [] }]);
+    expect(layer.style.transform).not.toBe(zoomedTransform);
+  });
+
   it("shows both portability buttons on self-hosted instances", async () => {
     await renderOrgChart();
 

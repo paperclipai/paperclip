@@ -285,9 +285,10 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
 
   // Center the chart on first load
   const hasInitialized = useRef(false);
+  const nodeIdsKey = useMemo(() => allNodes.map((n) => n.id).sort().join(","), [allNodes]);
   useEffect(() => {
     hasInitialized.current = false;
-  }, [orgTree]);
+  }, [nodeIdsKey]);
 
   useEffect(() => {
     if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
