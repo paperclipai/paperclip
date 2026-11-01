@@ -92,6 +92,9 @@ function firstNonEmptyLine(text: string): string {
 
 function toModelSelection(rawModel: string): ModelSelection | undefined {
   const model = rawModel.trim();
+  if (model === "composer-2.5") {
+    return { id: model, params: [{ id: "fast", value: "false" }] };
+  }
   return model ? { id: model } : undefined;
 }
 
