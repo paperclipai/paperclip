@@ -17417,6 +17417,7 @@ export function issueRoutes(
         await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           userId: actor.actorType === "user" ? actor.actorId : null,
           resolverPolicyRestriction:
             resolutionAuthorization.resolverPolicyRestriction,
