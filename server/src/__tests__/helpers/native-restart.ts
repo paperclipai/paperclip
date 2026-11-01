@@ -1,4 +1,4 @@
-import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
+import { recoveryPostgresSupport, startRecoveryPostgres } from "./recovery-postgres.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -9,12 +9,12 @@ import { eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startEmbeddedPostgresTestDatabase } from "./embedded-postgres.js";
 import { registerRunnerPrpAuthority, runnerPrpWebSocketInternals, setupRunnerPrpWebSocketServer } from "../../realtime/runner-prp-ws.js";
-import { readProcessStartedAt } from "../hot-restart.js";
-import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
-import { type NativeControllerIdentity } from "./native-restart-recovery.js";
+import { readProcessStartedAt } from "../../services/hot-restart.js";
+import { prepareNativeHeartbeatRun } from "../../services/native-runtime/prepare-native-run.js";
+import { createIsolatedTestHome } from "./isolated-test-home.js";
+import { type NativeControllerIdentity } from "../../services/native-runtime/native-restart-recovery.js";
 
 // An explicitly supplied disposable database also permits qualification on hosts
 // where native Postgres cannot allocate semaphores. Never fall back silently.

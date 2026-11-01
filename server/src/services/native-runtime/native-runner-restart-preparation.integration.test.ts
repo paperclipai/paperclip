@@ -10,7 +10,7 @@ import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { registerNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
-import { remotePreparedWorkspace, nativeRestartFixture, describeEmbeddedPostgres } from "./native-restart.test-fixture.js";
+import { remotePreparedWorkspace, nativeRestartFixture, describeEmbeddedPostgres } from "../../__tests__/helpers/native-restart.js";
 
 describeEmbeddedPostgres("native runner restart recovery: preparation", () => {
   const environment = nativeRestartFixture();

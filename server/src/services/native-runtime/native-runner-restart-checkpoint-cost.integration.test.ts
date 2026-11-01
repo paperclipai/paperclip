@@ -7,7 +7,7 @@ import { beforeAll, expect } from "vitest";
 import { createRunnerdCodexTransport, DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
-import { nativeRestartFixture, describeEmbeddedPostgres, realProcessIt, waitForCondition } from "./native-restart.test-fixture.js";
+import { nativeRestartFixture, describeEmbeddedPostgres, realProcessIt, waitForCondition } from "../../__tests__/helpers/native-restart.js";
 
 describeEmbeddedPostgres("native runner restart recovery: checkpoint-cost", () => {
   const environment = nativeRestartFixture();

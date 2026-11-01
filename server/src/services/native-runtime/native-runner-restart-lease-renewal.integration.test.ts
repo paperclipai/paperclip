@@ -2,7 +2,7 @@ import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenew
 import { eq } from "drizzle-orm";
 import { createDb, closeLivenessDb, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
 import { beforeAll, expect, it, vi } from "vitest";
-import { nativeRestartFixture, describeEmbeddedPostgres } from "./native-restart.test-fixture.js";
+import { nativeRestartFixture, describeEmbeddedPostgres } from "../../__tests__/helpers/native-restart.js";
 
 describeEmbeddedPostgres("native runner restart recovery: lease-renewal", () => {
   const environment = nativeRestartFixture();

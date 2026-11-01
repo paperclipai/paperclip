@@ -100,7 +100,7 @@ import {
   processAlive,
   waitForCondition,
   stopOwnedProcessGroup,
-} from "./native-restart.test-fixture.js";
+} from "../../__tests__/helpers/native-restart.js";
 
 describeEmbeddedPostgres("native runner restart recovery with real processes", () => {
   const environment = nativeRestartFixture();
