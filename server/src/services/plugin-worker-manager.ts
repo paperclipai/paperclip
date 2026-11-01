@@ -438,6 +438,7 @@ export interface WorkerStartOptions {
    * constructs a handle this way).
    */
   duplexRouteSlots?: DuplexRouteSlotController | null;
+  isStartAdmitted?: () => boolean;
   /**
    * Companies this worker may act on from proactive (no-invocation) worker→host
    * calls — the plugin's configured companies. Seeded onto the handle at
@@ -704,6 +705,8 @@ export interface PluginWorkerHandle {
    */
   restart(): Promise<void>;
 
+  revokeStarts?(): void;
+
   /**
    * Send a typed host→worker RPC call.
    *
@@ -819,6 +822,10 @@ export interface PluginWorkerManager {
    */
   stopWorker(pluginId: string): Promise<void>;
 
+  revokeStarts?(pluginId: string): void;
+
+  allowStarts?(pluginId: string): void;
+
   /**
    * Get the worker handle for a plugin.
    */
@@ -868,6 +875,13 @@ export interface PluginWorkerManager {
     pluginId: string,
     input: LoginPtyOpenInput,
   ): Promise<LoginPtyHostSession>;
+}
+
+export class PluginWorkerStopError extends Error {
+  constructor(readonly pluginId: string, readonly pid: number | undefined) {
+    super(`Worker for plugin "${pluginId}" is still alive after SIGKILL (pid=${pid ?? "unknown"})`);
+    this.name = "PluginWorkerStopError";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1061,11 @@ export function createPluginWorkerHandle(
 
   // Shutdown coordination
   let intentionalStop = false;
+  let startToken = 0;
+  let startInFlight: Promise<void> | null = null;
+  let stopInFlight: Promise<void> | null = null;
+  let stopRequests = 0;
+  const isStartAdmitted = options.isStartAdmitted ?? (() => true);
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const autoRestart = options.autoRestart ?? true;
@@ -3092,7 +3111,7 @@ export function createPluginWorkerHandle(
     );
 
     const willRestart =
-      autoRestart && consecutiveCrashes <= MAX_CONSECUTIVE_CRASHES;
+      autoRestart && consecutiveCrashes <= MAX_CONSECUTIVE_CRASHES && isStartAdmitted();
 
     setStatus("crashed");
     emitter.emit("crash", { pluginId, code, signal, willRestart });
@@ -3149,9 +3168,11 @@ export function createPluginWorkerHandle(
       "scheduling restart with backoff",
     );
 
+    const token = startToken;
     backoffTimer = setTimeout(async () => {
       backoffTimer = null;
       nextRestartAt = null;
+      if (token !== startToken || !isStartAdmitted()) return;
       // A temporary idle hold must not consume the crash-recovery attempt.
       // Keep the bounded backoff until admission reopens.
       if (readTaskDrain(new Date())?.ownerId) {
@@ -3181,11 +3202,26 @@ export function createPluginWorkerHandle(
   // Start / Stop
   // -----------------------------------------------------------------------
 
-  async function startInternal(): Promise<void> {
-    if (status === "running" || status === "starting") {
-      throw new Error(`Worker for plugin "${pluginId}" is already ${status}`);
+  function startInternal(): Promise<void> {
+    if (status === "running" || status === "starting" || startInFlight) {
+      return Promise.reject(new Error(`Worker for plugin "${pluginId}" is already ${startInFlight ? "starting" : status}`));
     }
+    if (!isStartAdmitted()) {
+      return Promise.reject(new Error(`Worker starts for plugin "${pluginId}" are revoked`));
+    }
+    const run = startOnce(startToken);
+    startInFlight = run;
+    void run.finally(() => {
+      if (startInFlight === run) startInFlight = null;
+    }).catch(() => undefined);
+    return run;
+  }
 
+  function startSuperseded(token: number): boolean {
+    return token !== startToken || !isStartAdmitted();
+  }
+
+  async function startOnce(token: number): Promise<void> {
     intentionalStop = false;
     setStatus("starting");
     stderrExcerpt = "";
@@ -3215,12 +3251,20 @@ export function createPluginWorkerHandle(
       }
       supportedMethods = result.supportedMethods ?? [];
     } catch (err) {
-      // Initialize failed — kill the process and propagate
       const msg = err instanceof Error ? err.message : String(err);
-      log.error({ err: msg }, "worker initialize failed");
-      await killProcess();
+      const supersededBeforeKill = startSuperseded(token);
+      if (!supersededBeforeKill) log.error({ err: msg }, "worker initialize failed");
+      await killOwnChild(child);
+      if (supersededBeforeKill || startSuperseded(token)) {
+        throw new Error(`Worker start for "${pluginId}" was superseded: ${msg}`);
+      }
       setStatus("crashed");
       throw new Error(`Worker initialize failed for "${pluginId}": ${msg}`);
+    }
+
+    if (startSuperseded(token)) {
+      await killOwnChild(child);
+      throw new Error(`Worker start for "${pluginId}" was superseded after initialize`);
     }
 
     // Reset crash counter on successful start
@@ -3230,20 +3274,47 @@ export function createPluginWorkerHandle(
     log.info({ pid: child.pid }, "worker process started and initialized");
   }
 
-  async function stopInternal(): Promise<void> {
+  function revokeStarts(): void {
+    startToken++;
     cancelPendingRestart();
+    if (status === "backoff") setStatus("crashed");
+  }
 
-    if (status === "stopped" || status === "stopping") {
+  function stopInternal(): Promise<void> {
+    stopRequests++;
+    if (stopInFlight) return stopInFlight;
+    const run = stopOnce();
+    stopInFlight = run;
+    void run.finally(() => {
+      if (stopInFlight === run) stopInFlight = null;
+    }).catch(() => undefined);
+    return run;
+  }
+
+  async function stopOnce(): Promise<void> {
+    revokeStarts();
+    const pendingStart = startInFlight;
+
+    if (status === "stopped" && !childProcess && !pendingStart) {
       return;
     }
 
     intentionalStop = true;
     setStatus("stopping");
 
-    if (!childProcess) {
-      setStatus("stopped");
-      return;
+    if (childProcess) {
+      await escalateStop();
     }
+    if (pendingStart) {
+      await pendingStart.catch(() => undefined);
+    }
+    if (childProcess) {
+      throw new PluginWorkerStopError(pluginId, childProcess.pid);
+    }
+    setStatus("stopped");
+  }
+
+  async function escalateStop(): Promise<void> {
 
     // Step 1: Send shutdown RPC and wait for the worker to exit gracefully.
     // We race the shutdown call against a timeout. The worker should process
@@ -3264,19 +3335,13 @@ export function createPluginWorkerHandle(
     }
 
     // Check if process already exited
-    if (!childProcess) {
-      setStatus("stopped");
-      return;
-    }
+    if (!childProcess) return;
 
     // Step 2: Send SIGTERM and wait
     log.info("worker did not exit after shutdown RPC, sending SIGTERM");
     await killWithSignal("SIGTERM", SIGTERM_GRACE_MS);
 
-    if (!childProcess) {
-      setStatus("stopped");
-      return;
-    }
+    if (!childProcess) return;
 
     // Step 3: Forcefully kill with SIGKILL
     log.warn("worker did not exit after SIGTERM, sending SIGKILL");
@@ -3285,8 +3350,6 @@ export function createPluginWorkerHandle(
     if (childProcess) {
       log.error("worker process still alive after SIGKILL — this should not happen");
     }
-
-    setStatus("stopped");
   }
 
   /**
@@ -3342,6 +3405,11 @@ export function createPluginWorkerHandle(
         resolve();
       }
     });
+  }
+
+  async function killOwnChild(child: ChildProcess): Promise<void> {
+    if (childProcess !== child) return;
+    await killProcess();
   }
 
   async function killProcess(): Promise<void> {
@@ -3571,8 +3639,17 @@ export function createPluginWorkerHandle(
     },
 
     async restart() {
-      await stopInternal();
+      const stopping = stopInternal();
+      const requests = stopRequests;
+      await stopping;
+      if (stopRequests !== requests) {
+        throw new Error(`Worker restart for plugin "${pluginId}" was superseded by a stop`);
+      }
       await startInternal();
+    },
+
+    revokeStarts() {
+      revokeStarts();
     },
 
     call<M extends HostToWorkerMethodName>(
@@ -3790,6 +3867,7 @@ export function createPluginWorkerManager(
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  const startsRevoked = new Set<string>();
   // The one shared, process-scoped aggregate route-slot controller. The manager
   // injects it into every worker handle, so the duplex route ceiling counts every
   // concurrent route across the process, not one agent's setting.
@@ -3820,6 +3898,9 @@ export function createPluginWorkerManager(
       pluginId: string,
       options: WorkerStartOptions,
     ): Promise<PluginWorkerHandle> {
+      if (startsRevoked.has(pluginId)) {
+        throw new Error(`Worker starts for plugin "${pluginId}" are revoked`);
+      }
       // Mutex: if a start is already in-flight for this plugin, wait for it
       const inFlight = startupLocks.get(pluginId);
       if (inFlight) {
@@ -3839,6 +3920,7 @@ export function createPluginWorkerManager(
         // caller already supplied its own (a test may inject its own).
         duplexRouteSlots,
         ...options,
+        isStartAdmitted: () => !startsRevoked.has(pluginId) && (options.isStartAdmitted?.() ?? true),
       });
       workers.set(pluginId, handle);
 
@@ -3886,7 +3968,16 @@ export function createPluginWorkerManager(
 
       log.info({ pluginId }, "stopping plugin worker");
       await trackIdleWork(handle.stop());
-      workers.delete(pluginId);
+      if (workers.get(pluginId) === handle) workers.delete(pluginId);
+    },
+
+    revokeStarts(pluginId: string): void {
+      startsRevoked.add(pluginId);
+      workers.get(pluginId)?.revokeStarts?.();
+    },
+
+    allowStarts(pluginId: string): void {
+      startsRevoked.delete(pluginId);
     },
 
     getWorker(pluginId: string): PluginWorkerHandle | undefined {

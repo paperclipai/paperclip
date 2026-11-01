@@ -2177,32 +2177,28 @@ export function pluginLoader(
       toolDispatcher,
     } = runtimeServices;
 
-    // 1. Unregister from job scheduler (cancels in-flight runs)
-    try {
-      await jobScheduler.unregisterPlugin(pluginId);
-    } catch (err) {
-      log.warn(
-        { pluginId, err: err instanceof Error ? err.message : String(err) },
-        "plugin-loader: failed to unregister from job scheduler (best-effort)",
-      );
-    }
-
-    // 2. Clear event subscriptions
-    eventBus.clearPlugin(pluginKey);
-
-    // 3. Unregister agent tools
-    toolDispatcher.unregisterPluginTools(pluginKey);
-
-    // 4. Stop the worker process
-    try {
-      if (workerManager.isRunning(pluginId)) {
-        await workerManager.stopWorker(pluginId);
+    const failures: unknown[] = [];
+    const attempt = async (step: () => unknown) => {
+      try {
+        await step();
+      } catch (err) {
+        failures.push(err);
       }
-    } catch (err) {
+    };
+
+    await attempt(() => jobScheduler.unregisterPlugin(pluginId));
+    await attempt(() => eventBus.clearPlugin(pluginKey));
+    await attempt(() => toolDispatcher.unregisterPluginTools(pluginKey));
+    await attempt(async () => {
+      if (workerManager.getWorker(pluginId)) await workerManager.stopWorker(pluginId);
+    });
+
+    if (failures.length > 0) {
       log.warn(
-        { pluginId, err: err instanceof Error ? err.message : String(err) },
-        "plugin-loader: failed to stop worker during unload (best-effort)",
+        { pluginId, pluginKey, errors: failures.map((err) => (err instanceof Error ? err.message : String(err))) },
+        "plugin-loader: plugin runtime teardown failed",
       );
+      throw new AggregateError(failures, `Failed to tear down plugin runtime for ${pluginKey}`);
     }
   }
 
