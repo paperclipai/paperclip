@@ -342,8 +342,40 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 // Main execute
 // ---------------------------------------------------------------------------
 
+type HermesProviderDispatch = { providerDispatchStarted: boolean };
+
+function hermesPreProviderFailure(
+  error: unknown,
+  config: Record<string, unknown>,
+): AdapterExecutionResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    provider: cfgString(config.provider) || null,
+    model: cfgString(config.model) || DEFAULT_MODEL,
+    errorMessage: message,
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+  };
+}
+
 export async function execute(
   ctx: AdapterExecutionContext,
+): Promise<AdapterExecutionResult> {
+  const dispatch: HermesProviderDispatch = { providerDispatchStarted: false };
+  try {
+    return await executeProviderWork(ctx, dispatch);
+  } catch (error) {
+    if (dispatch.providerDispatchStarted) throw error;
+    const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
+    return hermesPreProviderFailure(error, config);
+  }
+}
+
+async function executeProviderWork(
+  ctx: AdapterExecutionContext,
+  dispatch: HermesProviderDispatch,
 ): Promise<AdapterExecutionResult> {
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
 
@@ -582,13 +614,22 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
+  const trackProviderDispatch = async (meta: {
+    pid: number;
+    processGroupId: number | null;
+    startedAt: string;
+  }) => {
+    dispatch.providerDispatchStarted = true;
+    await ctx.onSpawn?.(meta);
+  };
+
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
     timeoutSec,
     graceSec,
     onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
+    onSpawn: trackProviderDispatch,
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
