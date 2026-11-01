@@ -77,7 +77,7 @@
     "react-resizable-panels": "^4.12.3",
     "react-router-dom": "^7.18.4",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.6.0",
+    "tailwind-merge": "^3.7.0",
     "yaml": "^2.8.1",
     "yjs": "13.6.32"
   },
