@@ -437,6 +437,45 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     } finally { release(); await deleted; await handoff?.catch(() => {}); spy.mockRestore(); }
   });
 
+  it("finishes deletion while binding admission waits with a one-connection application pool", async () => {
+    const f = await fixture([]);
+    const [pending] = await db.update(connectionGrants).set({ providerTenant: {
+      ...f.grant.providerTenant, github: { ...f.grant.providerTenant!.github!,
+        bindingSync: { id: randomUUID(), removeInstallationIds: ["101"] } },
+    } }).where(eq(connectionGrants.id, f.grant.id)).returning();
+    const single = createDb(databaseUrl ?? temporaryDatabase!.connectionString, { maxConnections: 1 });
+    const service = createGitHubGrantContinuity(single, f.dependencies);
+    let entered!: () => void, release!: () => void;
+    const arrived = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const deletion = deleteCompany(single, f.company.id, async () => { entered(); await gate; });
+    const deleted = Promise.allSettled([deletion]);
+    let handoff: Promise<unknown> | undefined;
+    try {
+      await arrived;
+      handoff = service.syncGitHubGrantBindings(f.connection, pending!);
+      const completed = Promise.allSettled([deletion, handoff]);
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and query like '%pg_advisory_xact_lock_shared%'
+            and cardinality(pg_blocking_pids(pid)) > 0`);
+        expect(waiting).toHaveLength(1);
+      }, { timeout: 5_000, interval: 20 });
+      release();
+      let results: Awaited<typeof completed> | undefined;
+      void completed.then(value => { results = value; });
+      await vi.waitFor(() => expect(results?.map(row => row.status)).toEqual(["fulfilled", "fulfilled"]), { timeout: 5_000 });
+      expect(await db.select().from(companies).where(eq(companies.id, f.company.id))).toHaveLength(0);
+      expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id))).toHaveLength(0);
+      expect(bindings).toHaveLength(0);
+    } finally {
+      release();
+      await single.$client.end({ timeout: 1 });
+      await deleted;
+      await handoff?.catch(() => {});
+    }
+  });
+
   it("lets an admitted binding finish before canonical company deletion", async () => {
     const f = await fixture([]);
     const [pending] = await db.update(connectionGrants).set({ providerTenant: {

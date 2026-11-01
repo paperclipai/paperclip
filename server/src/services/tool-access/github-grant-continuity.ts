@@ -7,7 +7,7 @@ import { measureRunPhase } from "../execution-preparation-timing.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, connectionGrants, toolConnections } from "@paperclipai/db";
+import { companies, connectionGrants, toolConnections, withDedicatedDbConnection } from "@paperclipai/db";
 import { conflict, HttpError, notFound, unprocessable } from "../../errors.js";
 import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../paperclip-cloud-connector.js";
 
@@ -234,7 +234,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     const token = accessToken ?? (accessRef ? (await resolveOAuthGrantSecret(connection, grant, accessRef, actor, undefined)).value : undefined);
     // Serialize external binding changes with grant/connection lifecycle writes.
     // Requests occur only for saved debt; no idle lock or connection is retained.
-    return db.transaction(async tx => {
+    return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
       await lockCompanyLifecycle(tx, connection.companyId);
       // Company deletion locks its parent before cascading to grants/connections.
       // Keep that order while retaining admission through the external handoff.
@@ -277,7 +277,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         updatedAt: now(),
       }).where(and(eq(connectionGrants.id, current.id), eq(connectionGrants.companyId, connection.companyId))).returning();
       return settled!;
-    });
+    }));
   }
 
   async function retainRetry(connection: typeof toolConnections.$inferSelect, grantId: string, attemptedRevision: string, error?: unknown, minimumMs = 30_000) {
