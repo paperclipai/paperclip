@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 // The catalog remains on its preservation/integration branch. Updating this
 // immutable source pin requires a reviewed source change.
-export const targetSha = 'e432f4b19780a88c9c76b357fda467c749194201';
+export const targetSha = 'de0941835cc8f0d01c982574ee258e110babdbeb';
 export const launchSha256 = 'f2e69957c350b220b06edca49194a4bd07d70bc882f80838eeb7203184c0bd0d';
 export const workflow = '.github/workflows/chat-completion-testops.yml';
 export const planName = 'Chat completion pilot — OpenCode 1017';
