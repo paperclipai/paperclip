@@ -87,6 +87,14 @@ These adapters ship as standalone npm packages and are installed via the plugin 
 |---------|---------|----------|-------------|
 | Droid | `@henkey/droid-paperclip-adapter` | `droid_local` | Runs Factory Droid locally |
 
+### Qoder CLI candidate
+
+[Qoder CLI](https://github.com/kobe-yang/paperclip-adapter-qoder) is a community external adapter candidate with type key `qoder_local`. It runs the authenticated local CLI on the Paperclip server host. It is not built in, and its package is not published to npm.
+
+Qualification is limited to local macOS with Paperclip `2026.1023.0` and Qoder CLI `1.1.80`. See the [acceptance record and limits](https://github.com/kobe-yang/paperclip-adapter-qoder/blob/1837d1799ede3601a97a69a55024c0eb9dd84ff1/ACCEPTANCE.md). Typed transcripts on that host baseline need the Worker fix tracked in [#16143](https://github.com/paperclipai/paperclip/issues/16143). The candidate does not change the installed host or provide remote execution.
+
+Follow the [integration proposal](https://github.com/paperclipai/paperclip/issues/18130) for review. This local CLI adapter is separate from the Qoder Cloud Agents work in [#16146](https://github.com/paperclipai/paperclip/pull/16146).
+
 ## External Adapters
 
 You can build and distribute adapters as standalone packages — no changes to Paperclip's source code required. External adapters are loaded at startup via the plugin system.
