@@ -142,6 +142,7 @@ conditions before model disposition:
 | Runner reports a task-wide blocker | `blocked` | Persist blocker owner and unblock action |
 | Runner reports a current-track blocker | `in_progress` | Enqueue another productive track |
 | Runner reports `yielded` with a valid continuation | `in_progress` | Enqueue the declared continuation |
+| Ordinary task reports `response_wake` and blocking remaining work, without a real wait | `in_progress` | Use the bounded incomplete-work continuation, then a visible recovery error if repair was already used |
 | Completion evidence is incomplete and continuation is forbidden | Preserve | Record a finalization error and named next action |
 | Completion evidence is otherwise incomplete | `in_progress` | Enqueue a bounded, idempotent continuation |
 
@@ -154,6 +155,21 @@ The output is a `NativeStatusDecision` containing:
 - declarative side effects.
 
 The pure arbiter performs no database or network writes.
+
+A response to a Board comment does not by itself justify parking unfinished
+work. When a `yielded` / `response_wake` result contains
+`remainingWork[].blocksCompletion: true`, `paperclip_finish` rejects the report
+unless a real wait owns the next action. The agent can correct it in the same
+turn. Finalization also checks accepted reports and uses the existing
+`native-completion-incomplete` one-follow-up budget. Model-selected retry keys
+cannot reset that budget. Pending interactions, approvals, dependencies, pause
+holds, and conversation lifecycles retain their authority.
+
+The current Board source is rechecked in the status transaction before a repair
+is queued. Edited, deleted, or superseded comments do not authorize replay of an
+old response. Recovery no longer treats an old committed passive wait as healthy
+when its report admits blocking work and its Board source is still current.
+Existing recovery gates continue to protect pauses, budgets, and ownership.
 
 ## Transactional decision commit
 
@@ -214,7 +230,10 @@ commit, and retryable or terminal failure.
 
 Examples:
 
-- a workspace-finalization failure preserves the claim and records a retryable
+- an unsafe workspace archive triggers one automatic export of confined entries,
+  omitting unsafe links; if it remains unsafe, discard the export and settle the saved
+  result with an informational run-log entry and no task warning or repair action;
+- other workspace-finalization failures preserve the claim and record a retryable
   error rather than falsely completing the issue;
 - a failed provider run preserves partial evidence and schedules recovery;
 - a status-version race causes bounded reassessment against current issue
@@ -355,3 +374,27 @@ and records a recovery action for the reviewer without an automatic retry loop.
 Both Codex and ACPX providers wait for server completion feedback before their
 terminal tool call succeeds. A rejected completion report stays correctable in
 the same provider turn. The runner does not latch it as an accepted result.
+
+## Completed runs with saved monitors
+
+A successful accepted result can report a monitor wait after the run has
+already released execution and checkout. Finalization can preserve that wait
+when the same agent still owns a valid ordinary task monitor and the completed
+run has a server-recorded `set_task_monitor` receipt for the task. The current
+monitor can have a later deadline; finalization does not restore an older timer.
+
+The server rechecks the accepted source, current monitor, empty execution and
+checkout slots, and governance under the coordinator and task locks. The
+`scheduled_monitor_preserved` decision keeps task status and has no task effects.
+It records the completed result without dispatching another provider turn.
+The existing monitor scheduler receives a transaction-aware notification when
+this finalization blocker clears. Replaying the committed decision sends no
+second notification.
+Live response selection and committed response repair retain the accepted
+monitor explanation under the existing reply and publication authorization rules.
+
+Missing receipts, changed ownership, cancellation intents, cleared or quota
+monitors, and unfinished workspace finalization retain their recovery paths.
+Due and exhausted monitors still belong to the scheduler. This does not change
+their deadlines or attempts, clear unrelated recovery holds, or relax the
+Cloud sleep and wake contract.

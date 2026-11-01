@@ -207,14 +207,20 @@ function priorityRank(priority: string | null | undefined) {
   return index >= 0 ? index : ISSUE_PRIORITIES.length;
 }
 
-function updatedWithinStart(value: string | undefined, now = new Date()): Date | null {
+/** Duration used by saved search membership and its deadline consumers. */
+export function companySearchUpdatedWithinMs(value: string | undefined): number | null {
   if (!value) return null;
   const match = /^(\d+)(h|d|w|m)$/.exec(value);
   if (!match) return null;
   const amount = Number.parseInt(match[1]!, 10);
   const unit = match[2];
   const hours = unit === "h" ? amount : unit === "d" ? amount * 24 : unit === "w" ? amount * 24 * 7 : amount * 24 * 30;
-  return new Date(now.getTime() - hours * 60 * 60 * 1000);
+  return hours * 60 * 60 * 1000;
+}
+
+function updatedWithinStart(value: string | undefined, now = new Date()): Date | null {
+  const duration = companySearchUpdatedWithinMs(value);
+  return duration === null ? null : new Date(now.getTime() - duration);
 }
 
 function issueOnlyFiltersActive(query: CompanySearchQuery) {
@@ -539,7 +545,13 @@ export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
     extract: extractService.extract,
-    search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
+    search: async (
+      companyId: string,
+      query: CompanySearchQuery,
+      options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean>; onNextMembershipChange?: (at: Date | null) => void;
+        /** Restrict result kinds before pagination; retain the requested text-match scope. */
+        issueResultsOnly?: boolean },
+    ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
       const hasSearchText = normalizedQuery.length > 0;
@@ -548,7 +560,8 @@ export function companySearchService(db: Db) {
       const sort = query.sort;
       const limit = query.limit;
       const offset = query.offset;
-      if (!hasSearchText && !issueOnlyFiltersActive(query)) {
+      if ((!hasSearchText && !issueOnlyFiltersActive(query)) || (options?.issueResultsOnly && !scopeIncludesIssues(scope))) {
+        options?.onNextMembershipChange?.(null);
         return {
           query: query.q,
           normalizedQuery,
@@ -717,8 +730,15 @@ export function companySearchService(db: Db) {
           }
         }
 
+        const membershipWindow = companySearchUpdatedWithinMs(query.updatedWithin);
+        if (options?.onNextMembershipChange && membershipWindow !== null && scopeIncludesIssues(scope)) {
+          // Includes rows outside the visible page: their expiry can move an
+          // offset/priority-ranked result into the watched set without a write.
+          branches.push(sql`SELECT 'membership-expiry' AS kind, min(m.updated_at)::text AS value,
+            0::int AS count ${countTail} FROM matched m ${branchWhere([scopeCond, ...facetsAll])}`);
+        }
         const resultRows = await db.execute(sql`
-          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters))}
+          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters), options?.issueReadCondition)}
           ${sql.join(branches, sql` UNION ALL `)}
         `) as unknown as Array<SearchAggregateRow & Omit<IssueSearchRow, "commentSnippet" | "commentId" | "documentSnippet" | "documentTitle" | "documentKey">>;
 
@@ -728,6 +748,7 @@ export function companySearchService(db: Db) {
           totals: { current: 0, unfiltered: 0, omit: {} },
         };
         const issueRowsRaw: IssueSearchRow[] = [];
+        let nextMembershipChange: Date | null = null;
         for (const row of resultRows) {
           if (row.kind === "result") {
             issueRowsRaw.push({
@@ -752,6 +773,9 @@ export function companySearchService(db: Db) {
             });
             continue;
           }
+          if (row.kind === "membership-expiry" && row.value && membershipWindow !== null) {
+            nextMembershipChange = new Date(new Date(row.value).getTime() + membershipWindow + 1);
+          }
           const count = Number(row.count ?? 0);
           if (row.kind === "type:issue") aggregates.typeCounts.issue = count;
           else if (row.kind === "type:comment") aggregates.typeCounts.comment = count;
@@ -772,6 +796,7 @@ export function companySearchService(db: Db) {
             aggregates.totals.omit[row.kind.slice("total:omit:".length) as CompanySearchIssueFilterKey] = count;
           }
         }
+        options?.onNextMembershipChange?.(nextMembershipChange);
         return { rows: await enrichIssueSnippets(issueRowsRaw), aggregates };
       }
 
@@ -868,9 +893,10 @@ export function companySearchService(db: Db) {
         sql`${projects.name}`,
         sql`${projects.description}`,
       ], containsPattern, tokenPatternArray);
+      const projectReadCondition = options?.projectReadCondition ?? sql<boolean>`true`;
 
       async function fetchAgentRows() {
-        if (!hasSearchText || !scopeIncludesAgents(scope) || hasIssueOnlyFilters) return [];
+        if (options?.issueResultsOnly || !hasSearchText || !scopeIncludesAgents(scope) || hasIssueOnlyFilters) return [];
         return db
           .select({
             id: agents.id,
@@ -887,7 +913,7 @@ export function companySearchService(db: Db) {
       }
 
       async function fetchProjectRows() {
-        if (!hasSearchText || !scopeIncludesProjects(scope) || hasIssueOnlyFilters) return [];
+        if (options?.issueResultsOnly || !hasSearchText || !scopeIncludesProjects(scope) || hasIssueOnlyFilters) return [];
         return db
           .select({
             id: projects.id,
@@ -897,13 +923,13 @@ export function companySearchService(db: Db) {
             updatedAt: projects.updatedAt,
           })
           .from(projects)
-          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition))
+          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition))
           .orderBy(desc(projects.updatedAt), desc(projects.id))
           .limit(fetchLimit);
       }
 
       async function countArtifacts(filters: CompanySearchQuery = query) {
-        if (!hasSearchText) return 0;
+        if (options?.issueResultsOnly || !hasSearchText) return 0;
         const artifactIssueFilters = issueFilterConditions(companyId, filters);
         const artifactIssueConditions = [
           eq(issues.companyId, companyId),
@@ -971,7 +997,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countAgents(filters: CompanySearchQuery = query) {
-        if (!hasSearchText || issueOnlyFiltersActive(filters)) return 0;
+        if (options?.issueResultsOnly || !hasSearchText || issueOnlyFiltersActive(filters)) return 0;
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(agents)
@@ -980,16 +1006,16 @@ export function companySearchService(db: Db) {
       }
 
       async function countProjects(filters: CompanySearchQuery = query) {
-        if (!hasSearchText || issueOnlyFiltersActive(filters)) return 0;
+        if (options?.issueResultsOnly || !hasSearchText || issueOnlyFiltersActive(filters)) return 0;
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(projects)
-          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition));
+          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition));
         return Number(rows[0]?.count ?? 0);
       }
 
       async function fetchArtifactRows() {
-        if (!hasSearchText || !scopeIncludesArtifacts(scope)) return [];
+        if (options?.issueResultsOnly || !hasSearchText || !scopeIncludesArtifacts(scope)) return [];
         const result = await companyArtifactsService(db).list(companyId, {
           q: normalizedQuery.slice(0, COMPANY_ARTIFACTS_MAX_QUERY_LENGTH),
           limit: Math.min(fetchLimit, COMPANY_ARTIFACTS_MAX_LIMIT),

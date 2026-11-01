@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GROK_SYNC_ALLOWLIST, stageGrokHomeForSync } from "./grok-home.js";
+import { GROK_SYNC_ALLOWLIST, grokHomeHasSession, stageGrokHomeForSync } from "./grok-home.js";
 
 describe("GROK_SYNC_ALLOWLIST", () => {
   it("holds exactly one name: auth.json", () => {
@@ -28,6 +28,16 @@ describe("stageGrokHomeForSync", () => {
     cleanupDirs.push(root);
     return root;
   }
+
+  it("starts fresh instead of throwing when private history exceeds the lookup bound", async () => {
+    const root = await makeRoot("paperclip-grok-large-history-");
+    const sessions = path.join(root, "sessions");
+    await fs.mkdir(sessions);
+    for (let offset = 0; offset < 5001; offset += 100) {
+      await Promise.all(Array.from({ length: Math.min(100, 5001 - offset) }, (_, index) => fs.writeFile(path.join(sessions, `other-${offset + index}.json`), "{}")));
+    }
+    await expect(grokHomeHasSession(root, "requested-session")).resolves.toBe(false);
+  });
 
   it("stages auth.json and stages no other file", async () => {
     const root = await makeRoot("paperclip-grok-stage-");

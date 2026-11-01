@@ -103,7 +103,7 @@ async function createApp(storage: ReturnType<typeof createStorageService>) {
     };
     next();
   });
-  app.use("/api", assetRoutes({} as any, storage));
+  app.use("/api", assetRoutes({ select: () => ({ from: () => ({ leftJoin: () => ({ where: async () => [] }), where: async () => [] }) }) } as any, storage));
   return app;
 }
 
@@ -419,6 +419,29 @@ describe("GET /api/assets/:assetId/content", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     getAssetByIdMock.mockReset();
+  });
+
+  it("reads only the requested storage range for a large asset", async () => {
+    const storage = createStorageService("text/plain");
+    getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain", byteSize: 10 * 1024 * 1024 });
+    vi.mocked(storage.getObject).mockImplementation(async (_company, _key, options) => {
+      expect(options).toEqual({ range: { start: 8192, end: 12288 } });
+      return { stream: Readable.from(Buffer.alloc(4097, 65)), contentLength: 4097 };
+    });
+    const res = await requestApp(await createApp(storage), baseUrl => request(baseUrl).get("/api/assets/asset-1/content").set("Range", "bytes=8192-12288"));
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe("bytes 8192-12288/10485760");
+    expect(res.headers["content-length"]).toBe("4097");
+    expect(res.text).toBe("A".repeat(4097));
+  });
+
+  it.each(["bytes=999-1000", "bytes=0-1,3-4", "bytes=1x-3", "bytes=-", "items=0-3"])("rejects invalid asset ranges before storage reads: %s", async range => {
+    const storage = createStorageService();
+    getAssetByIdMock.mockResolvedValue(createAsset());
+    const res = await requestApp(await createApp(storage), baseUrl => request(baseUrl).get("/api/assets/asset-1/content").set("Range", range));
+    expect(res.status).toBe(416);
+    expect(res.headers["content-range"]).toBe("bytes */40");
+    expect(storage.getObject).not.toHaveBeenCalled();
   });
 
   it("downloads script-capable HTML with nosniff and a sandbox CSP", async () => {

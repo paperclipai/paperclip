@@ -152,7 +152,7 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/release": {
     "section": "Issues (Tasks)",
-    "description": "Release task ownership"
+    "description": "Release execution locks; preserve terminal task ownership"
   },
   "GET /api/issues/{}/comments": {
     "section": "Issues (Tasks)",
@@ -164,11 +164,11 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/comments": {
     "section": "Issues (Tasks)",
-    "description": "Add comment (@-mentions trigger wakeups)",
+    "description": "Add comment (@-mentions provide context)",
     "examples": [
       {
         "body": {
-          "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation."
+          "body": "[@QA Reviewer](agent://qa-agent-id) has relevant testing context."
         }
       }
     ]
@@ -198,21 +198,6 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "continuationPolicy": "wake_assignee",
           "payload": {
             "version": 1,
-            "questions": [
-              {
-                "id": "responsibility",
-                "prompt": "What should the new agent be responsible for?",
-                "selectionMode": "single",
-                "required": true,
-                "options": [
-                  {
-                    "id": "describe",
-                    "label": "I'll describe it",
-                    "freeText": true
-                  }
-                ]
-              }
-            ],
             "questionSet": {
               "schema": "paperclip.question_set.v1",
               "questions": [
@@ -236,27 +221,32 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "continuationPolicy": "wake_assignee",
           "payload": {
             "version": 1,
-            "questions": [
-              {
-                "id": "responsibility",
-                "prompt": "What should the new agent be responsible for?",
-                "selectionMode": "single",
-                "required": true,
-                "allowOther": true,
-                "options": [
-                  {
-                    "id": "research",
-                    "label": "Research",
-                    "description": "Find and summarize information."
+            "questionSet": {
+              "schema": "paperclip.question_set.v1",
+              "questions": [
+                {
+                  "id": "responsibility",
+                  "prompt": "What should the new agent be responsible for?",
+                  "answerMode": "single_select",
+                  "required": true,
+                  "customAnswer": {
+                    "enabled": true
                   },
-                  {
-                    "id": "writing",
-                    "label": "Writing",
-                    "description": "Draft and edit content."
-                  }
-                ]
-              }
-            ]
+                  "options": [
+                    {
+                      "id": "research",
+                      "label": "Research",
+                      "description": "Find and summarize information."
+                    },
+                    {
+                      "id": "writing",
+                      "label": "Writing",
+                      "description": "Draft and edit content."
+                    }
+                  ]
+                }
+              ]
+            }
           }
         }
       },
@@ -372,6 +362,10 @@ export const runnerApiReference: Record<string, { section: string; description?:
         }
       }
     ]
+  },
+  "POST /api/issues/{}/interactions/{}/resolve-from-comment": {
+    "section": "Issues (Tasks)",
+    "description": "Resolve a confirmation from the latest user reply; body: commentId, decision (accept/reject), selectedOptionIds for checkbox acceptance, optional reason"
   },
   "POST /api/issues/{}/interactions/{}/accept": {
     "section": "Issues (Tasks)",

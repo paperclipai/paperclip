@@ -28,10 +28,16 @@ Drivers that omit the declaration keep the existing fallback. The host does not
 infer this budget from config-schema defaults: a field named `timeoutMs` can
 describe sandbox lifetime instead of the time needed to acquire it.
 
-This declaration does not change provider config, lease expiry, the resume
-deadline, or other lifecycle calls. Providers must still enforce their operation
-timeouts and report uncertain allocations for cleanup. A bundled plugin must bump
-its manifest version when adding the field so existing installations receive it.
+For reusable sandbox acquisition, the host also uses this budget for
+`environmentResumeLease`, with the same explicit-config precedence, bridge
+extension, and RPC margin. Resume attempts and transient retries share one
+deadline. Without a configured or declared budget, resume keeps its one-minute
+host default. Generic plugin-driver resume keeps its existing behavior.
+
+This declaration does not change provider config, lease expiry, or other
+lifecycle calls. Providers must still enforce their operation timeouts and
+report uncertain allocations for cleanup. A bundled plugin must bump its
+manifest version when adding the field so existing installations receive it.
 
 ## How the host resolves an effective capability
 
@@ -201,3 +207,9 @@ Earlier drafts listed two concurrency keys, `concurrentSyncAndExec` and
 read either key, so a declaration had no effect. The host removed both keys. The
 strict capability validator now rejects them as unknown keys. The host can
 reintroduce a concurrency capability when a runtime path enforces it.
+
+### Preserving an unexported workspace
+
+Native export recovery requires the separately discovered `environmentStopLease` RPC (`onEnvironmentStopLease`). It stops the exact allocation and preserves files regardless of its normal release policy. A failed or unconfirmed stop must throw and must never fall back to deletion. The host uses the recorded plugin ID and defers when that worker does not advertise the hook; a generic release method is insufficient evidence of stop-only support. Normal successful ephemeral release remains destructive after verified copyback.
+
+Daytona stop-only preservation disables provider auto-delete and refreshes the provider record to confirm the disabled policy before stopping. An unavailable or unconfirmed policy leaves cleanup pending; it never falls back to stop or delete. The original ephemeral destroy policy applies only after exact accepted-result copyback and commitment.

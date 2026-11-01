@@ -1,3 +1,5 @@
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import {
   enrichWorkProductMetadataWithDiff,
@@ -31,6 +33,18 @@ function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) 
     updatedAt: now,
     ...overrides,
   };
+}
+
+function retentionReads(insideTransaction: () => boolean) {
+  return vi.fn(async (query: SQL) => {
+    const statement = new PgDialect().sqlToQuery(query);
+    expect(insideTransaction()).toBe(true);
+    expect(statement.params).toContain("company-1");
+    expect(statement.params).toContain("issue-1");
+    if (statement.sql.includes("origin_kind")) return [{ id: "issue-1", originKind: null, originId: null }];
+    if (statement.sql.includes("with recursive affected")) return [{ issueId: "issue-1" }];
+    throw new Error(`Unexpected work-product fixture query: ${statement.sql}`);
+  });
 }
 
 describe("workProductService", () => {
@@ -110,6 +124,27 @@ describe("workProductService", () => {
     expect(product.metadata.state).toBe("open");
   });
 
+  it.each([
+    { url: "https://github.com/example/private-repo/pull/42" },
+    { repository: "example/private-repo", number: 42 },
+  ])("refreshes a PR whose identity is stored only in metadata: %j", async (metadata) => {
+    const product = createWorkProductRow({ url: null, metadata }) as any;
+    const resolve = vi.fn(async () => ({ state: "merged" as const, workProductState: "merged" as const, headRef: null, headSha: null }));
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+    expect(resolve).toHaveBeenCalledWith("company-1", {
+      host: "github.com", owner: "example", repo: "private-repo", number: 42,
+    });
+    expect(refreshed.metadata).toMatchObject({ state: "merged" });
+    expect(product.metadata).toEqual(metadata);
+  });
+
+  it("retains the saved PR when the provider cannot access it", async () => {
+    const product = createWorkProductRow({ url: null, metadata: { url: "https://github.com/example/private-repo/pull/42" } }) as any;
+    const resolve = vi.fn(async () => { throw new Error("Not found"); });
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+    expect(refreshed).toBe(product);
+  });
+
   it("resolves GitHub commit stats when runner diff events are unavailable", async () => {
     const resolveCommitDetails = vi.fn(async () => ({ additions: 13, deletions: 2, changedFiles: 3 }));
     const svc = workProductService({} as any, { resolveCommitDetails });
@@ -137,11 +172,16 @@ describe("workProductService", () => {
     const insertValues = vi.fn(() => ({ returning: insertReturning }));
     const txInsert = vi.fn(() => ({ values: insertValues }));
 
+    let transactionOpen = false;
     const tx = {
+      execute: retentionReads(() => transactionOpen),
       update: txUpdate,
       insert: txInsert,
     };
-    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
 
     const svc = workProductService({ transaction } as any);
     const result = await svc.createForIssue("issue-1", "company-1", {
@@ -173,11 +213,16 @@ describe("workProductService", () => {
     const updateSet = vi.fn(() => ({ where: updateWhere }));
     const txUpdate = vi.fn(() => ({ set: updateSet }));
 
+    let transactionOpen = false;
     const tx = {
+      execute: retentionReads(() => transactionOpen),
       select: txSelect,
       update: txUpdate,
     };
-    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
 
     const svc = workProductService({ transaction } as any);
     const result = await svc.update("work-product-1", {

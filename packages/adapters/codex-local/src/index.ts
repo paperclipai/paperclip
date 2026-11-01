@@ -1,6 +1,7 @@
 import {
   PAPERCLIP_RUNNER_DEFAULT_MODELS,
 } from "@paperclipai/adapter-utils";
+import { PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION } from "@paperclipai/shared";
 
 export const type = "codex_local";
 export const label = "Codex";
@@ -12,8 +13,32 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 // Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
 export const DEFAULT_CODEX_LOCAL_MODEL = PAPERCLIP_RUNNER_DEFAULT_MODELS.codex;
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+
+export function resolveCodexLocalCliPolicy(config: unknown, options: { networkAccess?: boolean } = {}) {
+  const record = typeof config === "object" && config !== null && !Array.isArray(config)
+    ? config as Record<string, unknown> : {};
+  const stringArgs = (value: unknown): string[] => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string") : [];
+  const configuredExtraArgs = stringArgs(record.extraArgs);
+  const extraArgs = configuredExtraArgs.length > 0 ? configuredExtraArgs : stringArgs(record.args);
+  const explicitSandbox = extraArgs.some((arg) =>
+    /^(--sandbox(?:=|$)|-s|--profile(?:=|$)|-p|--full-auto$|--yolo$|--dangerously-bypass-approvals-and-sandbox$)/.test(arg)
+    || /^(?:(?:--config=|-c=?)\s*)?(?:sandbox_mode|profile)\s*=/.test(arg),
+  );
+  const explicitPermissionRestriction = extraArgs.some((arg) =>
+    /^(?:(?:--config=|-c=?)\s*)?(?:approval_policy\s*=|sandbox_workspace_write\.network_access\s*=\s*false)/.test(arg),
+  );
+  const defaultBypass = !explicitSandbox && !explicitPermissionRestriction
+    && options.networkAccess !== false && DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+  const bypass = typeof record.dangerouslyBypassApprovalsAndSandbox === "boolean"
+    ? record.dangerouslyBypassApprovalsAndSandbox
+    : typeof record.dangerouslyBypassSandbox === "boolean" ? record.dangerouslyBypassSandbox : defaultBypass;
+  return { extraArgs, explicitSandbox, bypass };
+}
+
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
   "gpt-6-astra",
+  "gpt-6.1-sol",
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-5.6-sol",
@@ -71,6 +96,7 @@ export function codexLocalReasoningEffortsForModel(
   const normalizedModel = normalizeCodexModel(model);
   switch (normalizedModel) {
     case "gpt-6-astra":
+    case "gpt-6.1-sol":
     case "gpt-6-sol":
     case "gpt-5.6-sol":
     case "gpt-5.6-terra":
@@ -82,6 +108,85 @@ export function codexLocalReasoningEffortsForModel(
       return CODEX_LOCAL_DEFAULT_REASONING_EFFORTS;
   }
 }
+
+// The Codex backend accepts a model for ChatGPT sign-in only from a client that identifies as a
+// recent enough CLI (the request carries the CLI version). An older `codex` fails every turn with
+// "The '<model>' model is not supported when using Codex with a ChatGPT account.", which reads
+// like an account problem when it is really a stale install, typically a sandbox image baked
+// before the catalog gained the model. Record the oldest stable release verified to work so the
+// Test and the remote runner can name the actual gap. Omit models with no verified floor; the
+// install pin in the runner and images is always at or above every floor listed here.
+const CODEX_LOCAL_MODEL_MINIMUM_CLI_VERSIONS: Readonly<Record<string, string>> = {
+  // 0.156.1 and older are rejected (openai/codex#49396); 0.159.0 and 0.159.2 are accepted
+  // (openai/codex#49464). No stable release between those was verified either way.
+  "gpt-6.1-sol": "0.159.0",
+  // Codex 0.157.0 release notes: "Add GPT-6 Sol and Luna to the model catalog".
+  "gpt-6-sol": "0.157.0",
+  "gpt-6-luna": "0.157.0",
+};
+
+export function minimumCodexCliVersionForModel(model: string | null | undefined): string | null {
+  return CODEX_LOCAL_MODEL_MINIMUM_CLI_VERSIONS[normalizeCodexModel(model)] ?? null;
+}
+
+export interface CodexChatGptRetirement {
+  retiredOn: string;
+  replacement: string;
+}
+
+// Models OpenAI retired from Codex with ChatGPT sign-in (https://learn.chatgpt.com/docs/models).
+// The OpenAI API and API-key Codex sessions still serve them, so they stay in the picker; the
+// Test names the retirement instead of suggesting a stale CLI or a plan restriction.
+const CODEX_LOCAL_CHATGPT_RETIRED_MODELS: Readonly<Record<string, CodexChatGptRetirement>> = {
+  "gpt-5.5": { retiredOn: "2026-10-14", replacement: "gpt-6.1-sol (gpt-6-luna on Free and Go plans)" },
+  "gpt-5.4": { retiredOn: "2026-08-31", replacement: "gpt-6-sol" },
+  "gpt-5.4-mini": { retiredOn: "2026-08-31", replacement: "gpt-6-luna" },
+};
+
+export function codexChatGptRetirementForModel(model: string | null | undefined): CodexChatGptRetirement | null {
+  return CODEX_LOCAL_CHATGPT_RETIRED_MODELS[normalizeCodexModel(model)] ?? null;
+}
+
+/** Test hint for a ChatGPT-account rejection of a retired model; shared by the legacy and native Tests. */
+export function codexChatGptRetirementHint(model: string | null | undefined): string | null {
+  const retirement = codexChatGptRetirementForModel(model);
+  if (!retirement) return null;
+  return `OpenAI retired ${normalizeCodexModel(model)} from Codex with ChatGPT sign-in on ${retirement.retiredOn}. Choose ${retirement.replacement}, or use an OpenAI API key; API-key sessions are not affected.`;
+}
+
+const STABLE_CODEX_CLI_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+function stableCodexCliVersionParts(version: string): number[] | null {
+  const match = STABLE_CODEX_CLI_VERSION.exec(version.trim());
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every(Number.isSafeInteger) ? parts : null;
+}
+
+/** Read the version from `codex --version` output; prerelease or ambiguous output yields null. */
+export function parseCodexCliVersionOutput(output: string): string | null {
+  const versions = output
+    .split(/\r?\n/)
+    .map((line) => /^codex-cli (\S+)$/.exec(line.trim())?.[1])
+    .filter((version): version is string => version !== undefined);
+  if (versions.length !== 1 || !stableCodexCliVersionParts(versions[0]!)) return null;
+  return versions[0]!;
+}
+
+export function codexCliVersionAtLeast(version: string, minimum: string): boolean {
+  const parsedVersion = stableCodexCliVersionParts(version);
+  const parsedMinimum = stableCodexCliVersionParts(minimum);
+  if (!parsedVersion || !parsedMinimum) return false;
+  for (let index = 0; index < parsedMinimum.length; index += 1) {
+    if (parsedVersion[index] !== parsedMinimum[index]) {
+      return parsedVersion[index]! > parsedMinimum[index]!;
+    }
+  }
+  return true;
+}
+
+export const CODEX_CHATGPT_MODEL_REJECTION_RE =
+  /The '([^']+)' model is not supported when using Codex with a ChatGPT account\./;
 
 export function isCodexLocalKnownModel(model: string | null | undefined): boolean {
   const normalizedModel = normalizeModelId(model);
@@ -106,26 +211,35 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
   );
 }
 
+// Ordered the way the ChatGPT app orders Codex models (#14878): newest model version first,
+// then by decreasing capability inside each version, older models at the end. The server
+// returns this list as written and the model dropdown keeps its order.
 export const models = [
-  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, so it doubles as the first (default) 5.6 entry.
-  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-6.1-sol", label: "gpt-6.1-sol" },
   { id: "gpt-6-astra", label: "gpt-6-astra" },
   { id: "gpt-6-sol", label: "gpt-6-sol" },
   { id: "gpt-6-luna", label: "gpt-6-luna" },
+  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, the first 5.6 entry.
+  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
+  { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },
-  { id: "o3", label: "o3" },
-  { id: "o4-mini", label: "o4-mini" },
   { id: "gpt-5-mini", label: "gpt-5-mini" },
   { id: "gpt-5-nano", label: "gpt-5-nano" },
+  { id: "o3", label: "o3" },
+  { id: "o4-mini", label: "o4-mini" },
   { id: "o3-mini", label: "o3-mini" },
   { id: "codex-mini-latest", label: "Codex Mini" },
 ];
 
 export const agentConfigurationDoc = `# codex_local agent configuration
+
+New agents select the Codex harness with adapterType: codex_local and an optional request-level runner: auto, paperclip, or legacy. Automatic selection uses Paperclip Runner on qualified Linux x64/ARM64 targets with GNU libc ${PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION} or newer and macOS arm64/x64 targets. It stores adapterType: paperclip_runner with provider: codex. Windows, 32-bit ARM, Alpine/musl, and older or unknown Linux libc retain automatic legacy selection. Qualification and artifact checks use the selected execution environment, including its architecture, rather than the controller's platform. Other harness defaults are unchanged.
+
+Set runner: legacy to retain this adapter's execution and custom settings. Explicit runner: paperclip requires a qualified target. Existing agents and reviewed pending hires retain their saved runner; authentication, model, dependency, and runtime errors never silently switch runners. The fields below describe legacy codex_local execution. Native creation translates supported settings and rejects unsupported settings with the explicit Legacy runner option.
 
 Adapter: codex_local
 
@@ -134,10 +248,10 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
-- modelReasoningEffort (string, optional): reasoning effort override passed via -c model_reasoning_effort=...; GPT-6 Astra/Sol and GPT-5.6 Sol/Terra support low|medium|high|xhigh|max|ultra; GPT-6 Luna and GPT-5.6 Luna support low|medium|high|xhigh|max
+- modelReasoningEffort (string, optional): reasoning effort override passed via -c model_reasoning_effort=...; GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-5.6 Sol/Terra support low|medium|high|xhigh|max|ultra; GPT-6 Luna and GPT-5.6 Luna support low|medium|high|xhigh|max
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-6.1 Sol, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -168,7 +282,9 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
-- Fast mode is supported on GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- OpenAI retired gpt-5.5 (October 14, 2026), gpt-5.4 and gpt-5.4-mini (August 31, 2026) from Codex with ChatGPT sign-in. They remain selectable for OpenAI API-key sessions; with ChatGPT sign-in the Test names the retirement and its replacement.
+- With ChatGPT sign-in, model availability depends on the installed Codex capabilities. Legacy setup reports known model/version mismatches. Native setup tests the actual app-server and selected model; a version number alone does not reject or replace an installed CLI. If the provider rejects the model, select an available model or update Codex in the execution environment.
+- Fast mode is supported on GPT-6 (astra/sol/luna), GPT-6.1 Sol, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - The ACP engine keeps its workspace sandbox and enables network access on each turn. Explicit sandbox_workspace_write.network_access overrides in extraArgs (or env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false") disable it; execution-target network denial wins. The bundled ACP patch is needed because upstream mode presets override Codex config.toml on every turn.
 - The CLI engine defaults to a writable workspace sandbox with network access for unattended work and Paperclip API calls. It does not enable the dangerous bypass flag. Explicit sandbox modes/profiles and network overrides in extraArgs retain their meaning. An execution-target network denial remains enforced.

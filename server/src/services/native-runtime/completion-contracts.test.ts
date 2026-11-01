@@ -2,11 +2,63 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildNativeCompletionContract,
+  buildNativeCompletionContractSources,
+  nativeCompletionRequestsWithSources,
+  nativeCompletionSource,
+  nativeImmediateObjectiveSource,
   nativeCompletionRequestsForComments,
   resolveNativeCompletionPolicy,
 } from "./completion-contracts.js";
 
 describe("buildNativeCompletionContract", () => {
+  it("scopes standing-chat criteria to the response while preserving every current request and source", () => {
+    const issue = { id: "chat", title: "Chat with CEO", description: null, conversationAgentId: "ceo", conversationUserId: "operator" };
+    const comments = [
+      { id: "operator-request", body: "Restart this instance." },
+      { id: "handoff-request", body: "Have Morgan draft the update and send it here when finished." },
+    ];
+    const pending = nativeCompletionRequestsWithSources(comments);
+    const contract = buildNativeCompletionContract(issue, { immediateRequests: pending.requests, humanResponseId: "answer" });
+    expect(contract.objective).toMatch(/conversation response/i);
+    expect(contract.objective).toMatch(/verified|verify/i);
+    expect(contract.objective).toMatch(/delegated/i);
+    expect(contract.objective).toMatch(/unavailable/i);
+    expect(contract.criteria.map(row => row.id)).toEqual(["pending_comment_1", "pending_comment_2", "human_response"]);
+    for (const [index, comment] of comments.entries()) {
+      const requirement = contract.criteria[index]!.requirement;
+      expect(requirement).not.toBe(comment.body);
+      expect(requirement).toContain(comment.body);
+      expect(requirement).toMatch(/current authorized conversation response/i);
+      expect(requirement.split(comment.body)).toHaveLength(2);
+    }
+    expect(contract.criteria[2]!.requirement).toContain('"answer"');
+    expect(buildNativeCompletionContractSources({ issue, immediateRequests: pending.requests, immediateRequestSources: pending.sources }))
+      .toEqual(comments.map((comment, index) => ({ id: `pending_comment_${index + 1}`, source: nativeCompletionSource("comment", comment.id, comment.body) })));
+  });
+
+  it.each([undefined, null])("keeps an ordinary task's action criterion strict even with a chat-like title (%s)", (conversationAgentId) => {
+    const issue = { title: "Chat with CEO", description: null, conversationAgentId };
+    const request = "Restart this instance.";
+    expect(buildNativeCompletionContract(issue, { immediateRequest: request }).criteria)
+      .toEqual([{ id: "objective", requirement: request }]);
+  });
+
+  it.each([undefined, null])("keeps an agent-only issue in task and plan scope when its conversation user is %s", conversationUserId => {
+    const request = "Write the launch plan and wait for approval.";
+    const contract = buildNativeCompletionContract({ title: "Chat with CEO", description: null,
+      conversationAgentId: "ceo", conversationUserId }, { immediateRequest: request });
+    expect(contract.criteria).toEqual([{ id: "objective", requirement: request }]);
+    expect(contract.objective).toContain("propose or save the requested plan and wait before executing");
+  });
+
+  it.each(["  Help plan the launch.  ", null])("scopes a conversation's first turn without a follow-up (%s)", description => {
+    const contract = buildNativeCompletionContract({ title: "Chat with CEO", description,
+      conversationAgentId: "ceo", conversationUserId: "operator" });
+    expect(contract.objective).toMatch(/current conversation response/i);
+    expect(contract.criteria).toEqual([{ id: "objective", requirement:
+      `Address this request in the current authorized conversation response: ${description?.trim() || "Respond to the current conversation context."}` }]);
+  });
+
   it("uses the task description as the single initial criterion", () => {
     expect(buildNativeCompletionContract({
       title: "Ship the runner",
@@ -173,5 +225,50 @@ describe("resolveNativeCompletionPolicy", () => {
         completionAuthority: "server_arbiter",
       });
     }
+  });
+});
+
+
+describe("completion source ownership", () => {
+  it("selects only an explicitly bound initial description objective", () => {
+    const source = nativeCompletionSource("description", "task", "Same text");
+    expect(nativeImmediateObjectiveSource({ issueId: "task", objectiveSource: source, excluded: false })).toEqual(source);
+    expect(nativeImmediateObjectiveSource({ issueId: "other-task", objectiveSource: source, excluded: false })).toBeNull();
+    expect(nativeImmediateObjectiveSource({ issueId: "task", objectiveSource: source, excluded: true })).toBeNull();
+    expect(nativeImmediateObjectiveSource({ issueId: "task", objectiveSource: nativeCompletionSource("comment", "comment", "Same text"), excluded: false })).toBeNull();
+  });
+
+  it("preserves separate identical comment sources and their criterion order", () => {
+    const comments = [{ id: "first", body: " Repeat. Repeat. " }, { id: "second", body: " Repeat. Repeat. " }];
+    const { requests, sources } = nativeCompletionRequestsWithSources(comments);
+    const issue = { id: "task", title: "Task", description: "Brief" };
+    const contract = buildNativeCompletionContract(issue, { immediateRequests: requests });
+    expect(contract.criteria).toEqual([
+      { id: "pending_comment_1", requirement: "Repeat. Repeat." },
+      { id: "pending_comment_2", requirement: "Repeat. Repeat." },
+    ]);
+    expect(buildNativeCompletionContractSources({ issue, immediateRequests: requests, immediateRequestSources: sources })).toEqual([
+      { id: "pending_comment_1", source: nativeCompletionSource("comment", "first", comments[0]!.body) },
+      { id: "pending_comment_2", source: nativeCompletionSource("comment", "second", comments[1]!.body) },
+    ]);
+  });
+
+  it("does not infer comment provenance from identical requirement text", () => {
+    const issue = { id: "task", title: "Task", description: "Same text" };
+    expect(buildNativeCompletionContractSources({ issue, immediateRequests: ["Same text"] })).toEqual([]);
+    expect(buildNativeCompletionContractSources({ issue, immediateRequest: "Same text" })).toEqual([]);
+    expect(buildNativeCompletionContractSources({
+      issue,
+      immediateRequest: "Same text",
+      immediateRequestSource: nativeCompletionSource("description", "task", "Same text"),
+    })).toEqual([{ id: "objective", source: nativeCompletionSource("description", "task", "Same text") }]);
+    expect(buildNativeCompletionContractSources({ issue })).toEqual([{ id: "objective", source: nativeCompletionSource("description", "task", "Same text") }]);
+    expect(buildNativeCompletionContractSources({ issue, humanResponseId: "answer" })).toEqual([]);
+  });
+
+  it("keeps attachment-only and incomplete-wake requirements independent", () => {
+    const comments = [{ id: "file", body: "", attachments: [{ id: "attachment" }] }];
+    expect(nativeCompletionRequestsWithSources(comments).sources).toEqual([null]);
+    expect(nativeCompletionRequestsWithSources(comments, { requiredFullWakeCommentCount: 8 }).sources).toEqual([null]);
   });
 });

@@ -196,4 +196,26 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
       expect(nativeRows.every((rows) => rows.length === 0)).toBe(true);
     },
   );
+
+  it("retains an unsolicited provider cancellation through finalization", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    execute.mockImplementation(async (context) => {
+      expect(context.signal?.aborted).toBe(false);
+      return { exitCode: 1, signal: null, timedOut: false, errorMessage: "ACP turn cancelled",
+        resultJson: { status: "cancelled", acpToolInventoryComplete: true, acpPendingToolCount: 0 } };
+    });
+    await db.insert(companies).values({ id: companyId, name: "Provider stop",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Claude", role: "engineer", status: "idle",
+      adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished).toMatchObject({ status: "cancelled", runtimeMode: "legacy", resultJson: {
+      cancellation: { source: "provider", expected: false, initiator: { type: "provider" },
+        reason: expect.stringContaining("Provider cancelled execution") },
+      acpToolInventoryComplete: true, acpPendingToolCount: 0,
+    } });
+    expect(execute).toHaveBeenCalledOnce();
+  });
 });

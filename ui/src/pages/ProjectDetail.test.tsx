@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { queryKeys } from "../lib/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import type { ReactNode } from "react";
@@ -83,7 +84,7 @@ vi.mock("@/plugins/slots", () => ({
 }));
 vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: () => null }));
 vi.mock("../components/ProjectProperties", () => ({
-  ProjectProperties: () => <div data-testid="project-properties"><input aria-label="Unsaved project field" /></div>,
+  ProjectProperties: ({ onFieldUpdate }: { onFieldUpdate: (field: string, data: Record<string, unknown>) => void }) => <div data-testid="project-properties"><input aria-label="Unsaved project field" /><button onClick={() => onFieldUpdate("visibility", { visibility: "open" })}>Open project through autosave</button></div>,
 }));
 vi.mock("../components/BudgetPolicyCard", () => ({
   BudgetPolicyCard: () => <div data-testid="budget-policy-card" />,
@@ -113,6 +114,10 @@ vi.mock("../components/IssuesList", () => ({
     return <div data-testid="issues-list" />;
   },
 }));
+
+async function settle() {
+  for (let i = 0; i < 8; i++) { await new Promise(resolve => setTimeout(resolve, 0)); flushSync(() => {}); }
+}
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -239,6 +244,22 @@ describe("ProjectDetail", () => {
       expect(after).toBeNull();
     }
     await act(() => queryClient.clear());
+  });
+
+  it("refreshes cached task audiences when visibility is saved through the field autosave path", async () => {
+    mockLocation.pathname = "/projects/project-1/configuration";
+    mockProjectsApi.update.mockResolvedValue(project({ visibility: "open" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = queryKeys.issues.accessGrants("cached-task");
+    queryClient.setQueryData(key, [{ source: "project" }]);
+    root = createRoot(container);
+    await act(() => root!.render(<QueryClientProvider client={queryClient}><ProjectDetail /></QueryClientProvider>));
+    await settle();
+    await act(() => [...container.querySelectorAll("button")].find(button => button.textContent === "Open project through autosave")!.click());
+    await settle();
+    expect(mockProjectsApi.update).toHaveBeenCalledWith("project-1", { visibility: "open" }, "company-1");
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    queryClient.clear();
   });
 
   it("shows managed plugin affordances and filters the operations tab by plugin origin", async () => {

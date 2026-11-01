@@ -191,6 +191,16 @@ export interface SandboxProviderCapabilities {
 }
 
 export interface PluginEnvironmentDriverDeclaration {
+  /** Plugin-managed skill keys automatically included when this environment is selected. */
+  skillKeys?: string[];
+  /** Leases require a saved agent and its lifecycle preparation, including during setup. */
+  requiresAgent?: boolean;
+  /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
+  supportsTasks?: boolean;
+  freshWorkspaceVersion?: 1;
+  creationOperationVersion?: 1;
+  /** Codex task retention and authorized run attachment, version 1. */
+  warmTaskVersion?: 1;
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**
@@ -490,6 +500,19 @@ export interface PluginUiSlotDeclaration {
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
    */
   entityTypes?: PluginUiSlotEntityType[];
+  /** Also offer this agent detail tab for manual selection beside a task.
+   * It uses the running agent, or the assigned agent while idle.
+   * Matching run activity and readiness also open the panel automatically.
+   * GET this plugin-relative path with :entityId replaced by the agent ID,
+   * and runId/issueId query parameters for the active task.
+   * The board-only, agent-scoped route returns { available: boolean }.
+   */
+  taskSidePanel?: {
+    availabilityPath: string;
+    /** Runtime activity that requests automatic opening; manual selection needs no mapping. */
+    activation?: { namespace: string; activityKey: string };
+  };
+
   /**
    * Optional company-scoped route segment for page, routeSidebar, and
    * companySettingsPage slots.
@@ -608,13 +631,16 @@ export interface PluginDatabaseDeclaration {
 export type PluginApiRouteCompanyResolution =
   | { from: "body"; key: string }
   | { from: "query"; key: string }
-  | { from: "issue"; param: string };
+  | { from: "issue"; param: string }
+  | { from: "agent"; param: string };
 
 export interface PluginApiRouteDeclaration {
   /** Stable plugin-defined route key passed to the worker. */
   routeKey: string;
   /** HTTP method accepted by this route. */
   method: PluginApiRouteMethod;
+  /** Browser WebSocket upgrade, authorized through the ordinary HTTP middleware. */
+  transport?: "websocket";
   /** Plugin-local path under `/api/plugins/:pluginId/api`, e.g. `/issues/:issueId/smoke`. */
   path: string;
   /** Actor class allowed to call the route. */
@@ -687,6 +713,25 @@ export interface PaperclipPluginManifestV1 {
   minimumPaperclipVersion?: PluginMinimumHostVersion;
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
+  /** Required participant in agent preparation, stop, resume, and cleanup. */
+  agentLifecycle?: true;
+  /** Own project storage and durable workspace operations as one contract. */
+  workspaceProvider?: {
+    /** Supports bounded run completion separately from removal-safety inspection. */
+    finalizationVersion?: 1;
+    supportsMergeAncestry?: boolean;
+    freshWorkspaceVersion?: 1;
+    modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
+    strategies: Array<"project_primary" | "git_worktree">;
+    defaultForProjects?: {
+      mode: "shared_workspace" | "isolated_workspace" | "operator_branch";
+      strategy: "project_primary" | "git_worktree";
+    };
+  };
+  /** Durable, acknowledged resource events delivered to onResourceLifecycle. Requires events.subscribe. */
+  resourceLifecycle?: Array<"agent" | "project" | "agent_runtime">;
+  /** Opt into the native pooled-connection catalog, setup, and management UI. */
+  aiConnectionRouter?: { name: string; description: string };
   /** Entrypoint paths relative to the package root. */
   entrypoints: {
     /** Path to the worker entrypoint (required). */

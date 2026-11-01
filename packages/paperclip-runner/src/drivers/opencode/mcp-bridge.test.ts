@@ -1,4 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../../contracts/completion-result.js";
 
 import { canonicalOpenCodeMcpToolName, startOpenCodeMcpBridge, type OpenCodeMcpBridge } from "./mcp-bridge.js";
 
@@ -38,10 +44,69 @@ describe("OpenCode MCP bridge", () => {
     expect(await listed.json()).toMatchObject({
       result: { tools: [
         { name: "documents.read" },
-        { name: "paperclip_finish" },
-        { name: "paperclip_block" },
+        { name: "paperclip_finish", description: PRP_COMPLETION_TOOL_DESCRIPTION, inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA },
+        { name: "paperclip_block", description: PRP_BLOCK_TOOL_DESCRIPTION, inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA },
       ] },
     });
+  });
+
+  it("delivers a complete large assigned-tool result and replays its receipt without repeating the action", async () => {
+    const files = Array.from({ length: 27 }, (_, index) => ({
+      filename: `src/public-fixture-${index}.ts`,
+      patch: `@@ synthetic public fixture ${index} @@\n${"+ documented change\n".repeat(220)}`,
+    }));
+    const data = { items: files, page: 1, hasMore: false, receipt: "LAST_FILE_AND_RECEIPT_INTACT" };
+    const result = { content: [{ type: "text", text: JSON.stringify(data) }], data };
+    expect(JSON.stringify(result).length).toBeGreaterThan(111_877);
+    const handler = vi.fn(async () => result);
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "paperclip_call_assigned_tool", inputSchema: { type: "object" } }], handler,
+    });
+    bridges.push(bridge);
+    const request = { id: "large-result", method: "tools/call", params: { name: "paperclip_call_assigned_tool", arguments: {} } };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await (await rpc(bridge, request)).json() as { result: { content: Array<{ text: string }> } };
+      expect(JSON.parse(response.result.content[0]!.text)).toEqual(result);
+    }
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves producer-sized pages with UTF-8 and heavily escaped nested data", async () => {
+    const chunk = '\"\\\n\t\u0000😀';
+    const result = { responseText: { nextOffsetBytes: 300_000, totalBytes: 600_000 }, data: chunk.repeat(25_000) };
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(500_000);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(64 * 1024);
+    // The driver returns a controller text item, not the raw app page. Its
+    // encoded JSON must survive a second layer of escaping at this boundary.
+    const controllerResult = { text: JSON.stringify(result), type: "inputText" };
+    expect(Buffer.byteLength(JSON.stringify(controllerResult))).toBeGreaterThan(500_000);
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "read_tool_result", inputSchema: { type: "object" } }], handler: async () => controllerResult,
+    });
+    bridges.push(bridge);
+    const response = await (await rpc(bridge, { id: "page", method: "tools/call", params: { name: "read_tool_result", arguments: {} } })).json() as { result: { content: Array<{ text: string }> } };
+    const delivered = JSON.parse(response.result.content[0]!.text) as typeof controllerResult;
+    expect(delivered).toEqual(controllerResult);
+    expect(JSON.parse(delivered.text)).toEqual(result);
+  });
+
+  it.each([
+    ["UTF-8 scalar", () => ({ data: "😀".repeat(300_000) })],
+    ["escaped scalar", () => ({ data: "\u0000".repeat(200_000) })],
+    ["many fields", () => Array.from({ length: 600_000 }, () => 0)],
+  ])("rejects an oversized %s without a partial success or repeating the completed call", async (_name, makeResult) => {
+    const handler = vi.fn(async () => makeResult());
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "assigned.write", inputSchema: { type: "object" } }], handler,
+    });
+    bridges.push(bridge);
+    const request = { id: "write-receipt", method: "tools/call", params: { name: "assigned.write", arguments: {} } };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await (await rpc(bridge, request)).json()).toMatchObject({
+        result: { isError: true, content: [{ text: expect.stringContaining("may already have completed; do not repeat it") }] },
+      });
+    }
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("admits runner-private extension operations without advertising them to the model", async () => {
@@ -86,6 +151,33 @@ describe("OpenCode MCP bridge", () => {
     expect(await failed.json()).toMatchObject({ result: { isError: true, content: [{ text: "denied" }] } });
     const conflict = await rpc(bridge, { id: "call-2", method: "tools/call", params: { name: "documents.read", arguments: { id: "b" } } });
     expect(await conflict.json()).toMatchObject({ result: { isError: true, content: [{ text: "Duplicate call identity conflict." }] } });
+  });
+
+  it("preserves declared prefixed operation IDs through HTTP MCP and rejects undeclared aliases", async () => {
+    const names = ["paperclip_search_assigned_tools", "paperclip_call_assigned_tool", "search_assigned_tools"];
+    const handler = vi.fn(async call => ({ operation: call.tool }));
+    const bridge = await startOpenCodeMcpBridge({ tools: names.map(name => ({ name, inputSchema: { type: "object" } })), handler });
+    bridges.push(bridge);
+    const listed = await (await rpc(bridge, { id: "list", method: "tools/list" })).json() as { result: { tools: Array<{ name: string }> } };
+    expect(listed.result.tools.map(tool => tool.name)).toEqual([...names, "paperclip_finish", "paperclip_block"]);
+    for (const [i, name] of names.entries()) {
+      for (const [j, prefix] of ["", "paperclip_", "paperclip__", "paperclip."].entries()) {
+        const called = prefix === "paperclip_" && name === "search_assigned_tools" ? name : prefix + name;
+        const result = await (await rpc(bridge, { id: `call-${i}-${j}`, method: "tools/call", params: { name: called, arguments: {} } })).json();
+        expect(result).toMatchObject({ result: { content: [{ text: JSON.stringify({ operation: name }) }] } });
+      }
+    }
+    const before = handler.mock.calls.length;
+    expect(await (await rpc(bridge, { id: "unknown", method: "tools/call", params: { name: "paperclip_unassigned_tool", arguments: {} } })).json()).toMatchObject({ result: { isError: true } });
+    expect(handler).toHaveBeenCalledTimes(before);
+  });
+
+  it("does not authorize a shortened operation when only its prefixed name is declared", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startOpenCodeMcpBridge({ tools: [{ name: "paperclip_search_assigned_tools", inputSchema: { type: "object" } }], handler });
+    bridges.push(bridge);
+    expect(await (await rpc(bridge, { id: "short", method: "tools/call", params: { name: "search_assigned_tools", arguments: {} } })).json()).toMatchObject({ result: { isError: true } });
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it("normalizes all supported OpenCode MCP prefixes", () => {

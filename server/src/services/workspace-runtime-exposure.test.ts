@@ -384,7 +384,12 @@ describe("workspace runtime tailscale_https lifecycle", () => {
       },
     });
 
-    const [runtime] = await startRuntimeServicesForWorkspaceControl(startInput());
+    const input = startInput();
+    // The first real child pays cold shell/Node startup on CI; its first log
+    // can arrive near the old 10s cutoff. Use the normal 30s readiness budget
+    // for this lifecycle assertion while still requiring a live HTTP listener.
+    input.config.workspaceRuntime.services[0]!.readiness.timeoutSec = 30;
+    const [runtime] = await startRuntimeServicesForWorkspaceControl(input);
     expect(calls.slice(0, 2)).toEqual(["reserve", "expose"]);
     expect(runtime.port).toBeGreaterThanOrEqual(42000);
     expect(runtime.url).toBe(`https://runner.tail123.ts.net:${runtime.port}`);
@@ -396,7 +401,7 @@ describe("workspace runtime tailscale_https lifecycle", () => {
     });
     expect(calls).toEqual(["reserve", "expose", "remove"]);
     for (const port of reservedPorts) expect(await isLoopbackPortFree(port)).toBe(true);
-  }, 15_000);
+  }, 35_000);
 
   it("fails closed and removes the mapping when external HTTPS validation fails", async () => {
     const { broker, calls } = createBroker();

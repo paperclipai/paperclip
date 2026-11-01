@@ -1,3 +1,7 @@
+import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
+import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
+import { includeIssueHierarchyContext } from "../lib/issue-hierarchy-context";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
@@ -29,6 +33,7 @@ import {
 import { groupBy } from "../lib/groupBy";
 import {
   applyIssueFilters,
+  issueCreationRequestFilters,
   countActiveIssueFilters,
   defaultIssueFilterState,
   issueFilterLabel,
@@ -81,7 +86,6 @@ import {
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { getInboxKeyboardSelectionIndex } from "../lib/inbox";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
-import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
@@ -199,6 +203,7 @@ function getViewState(key: string): IssueViewState {
         ...defaultViewState,
         ...parsed,
         ...normalizeIssueFilterState(parsed),
+        workspaces: [],
         boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
         boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
         boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
@@ -206,10 +211,6 @@ function getViewState(key: string): IssueViewState {
     }
   } catch { /* ignore */ }
   return { ...defaultViewState };
-}
-
-function saveViewState(key: string, state: IssueViewState) {
-  localStorage.setItem(key, JSON.stringify(state));
 }
 
 function getInitialViewState(
@@ -266,17 +267,6 @@ function loadIssueColumns(key: string): InboxIssueColumn[] {
     return normalizeInboxIssueColumns(parsed);
   } catch {
     return DEFAULT_INBOX_ISSUE_COLUMNS;
-  }
-}
-
-function saveIssueColumns(key: string, columns: InboxIssueColumn[]) {
-  try {
-    localStorage.setItem(
-      getIssueColumnsStorageKey(key),
-      JSON.stringify(normalizeInboxIssueColumns(columns)),
-    );
-  } catch {
-    // Ignore localStorage failures.
   }
 }
 
@@ -476,6 +466,8 @@ interface IssuesListProps {
   issueLinkState?: unknown;
   initialAssignees?: string[];
   initialWorkspaces?: string[];
+  routineTasksOnly?: boolean;
+  onRoutineTasksOnlyChange?: (checked: boolean) => void;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   searchWithinLoadedIssues?: boolean;
@@ -489,7 +481,7 @@ interface IssuesListProps {
    * tokens + wall-clock runtime for every run in the tree.
    */
   parentIssueIdForCostSummary?: string;
-  enableRoutineVisibilityFilter?: boolean;
+  enableAgentCreatedVisibilityFilter?: boolean;
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
   mutedIssueIds?: Set<string>;
@@ -692,6 +684,8 @@ export function IssuesList({
   issueLinkState,
   initialAssignees,
   initialWorkspaces,
+  routineTasksOnly,
+  onRoutineTasksOnlyChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -700,7 +694,7 @@ export function IssuesList({
   defaultSortField,
   showProgressSummary = false,
   parentIssueIdForCostSummary,
-  enableRoutineVisibilityFilter = false,
+  enableAgentCreatedVisibilityFilter = false,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
   mutedIssueIds,
@@ -712,7 +706,6 @@ export function IssuesList({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { keyboardShortcutsEnabled } = useGeneralSettings();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
   // doesn't hand the selection to whatever row lands under the cursor.
@@ -764,13 +757,22 @@ export function IssuesList({
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
 
-  const [viewState, setViewState] = useState<IssueViewState>(() =>
+  const [savedViewState, setViewState] = useState<IssueViewState>(() =>
     getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
   );
+  // The Tasks URL owns this filter; other collections keep their saved state.
+  const viewState = useMemo(() => routineTasksOnly === undefined ? savedViewState : { ...savedViewState, routineTasksOnly }, [savedViewState, routineTasksOnly]);
+  const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
+  useEffect(() => {
+    if (!enableAgentCreatedVisibilityFilter) return;
+    setViewState((previous) => previous.showAgentCreatedTasks === showAgentCreatedTasks
+      ? previous : { ...previous, showAgentCreatedTasks });
+  }, [enableAgentCreatedVisibilityFilter, showAgentCreatedTasks]);
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
+  const [hierarchyRowBudget, setHierarchyRowBudget] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
@@ -800,12 +802,16 @@ export function IssuesList({
   }, [scopedKey]);
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
+    if (patch.routineTasksOnly !== undefined) onRoutineTasksOnlyChange?.(patch.routineTasksOnly);
     setViewState((prev) => {
       const next = { ...prev, ...patch };
-      saveViewState(scopedKey, next);
+      saveTaskCollectionPreferences({
+        companyId: selectedCompanyId ?? "__unscoped__", collectionKey: viewStateKey,
+        legacyViewStorageKey: scopedKey, legacyColumnsStorageKey: getIssueColumnsStorageKey(scopedKey),
+      }, { viewState: next, columns: visibleIssueColumns });
       return next;
     });
-  }, [scopedKey]);
+  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
@@ -816,6 +822,8 @@ export function IssuesList({
   // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
   // the stored array bounded to only current parent IDs.
   useEffect(() => {
+    // Contextual children are loaded separately from independent results.
+    if (enableAgentCreatedVisibilityFilter) return;
     const parentIds = new Set(issues.map((i) => i.parentId).filter(Boolean) as string[]);
     const pruned = viewState.collapsedParents.filter((id) => parentIds.has(id));
     if (pruned.length !== viewState.collapsedParents.length) {
@@ -824,13 +832,14 @@ export function IssuesList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issues]);
 
+  const creationRequestFilters = issueCreationRequestFilters(viewState, enableAgentCreatedVisibilityFilter);
   const { data: searchedIssues = [] } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
+      creationRequestFilters,
       "compact",
       ISSUE_SEARCH_RESULT_LIMIT,
-      enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
     ],
     queryFn: ({ signal }) =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -838,7 +847,7 @@ export function IssuesList({
         projectId,
         limit: ISSUE_SEARCH_RESULT_LIMIT,
         ...searchFilters,
-        ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+        ...creationRequestFilters,
       }, { signal }).then((rows) => rows as Issue[]),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
@@ -852,9 +861,9 @@ export function IssuesList({
         normalizedIssueSearch,
         projectId ?? "__all-projects__",
         searchFilters ?? {},
+        creationRequestFilters,
         "compact",
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
-        enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
       ],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         issuesApi.listCompact(selectedCompanyId!, {
@@ -863,7 +872,7 @@ export function IssuesList({
           projectId,
           status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
-          ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+          ...creationRequestFilters,
         }, { signal }).then((rows) => rows as Issue[]),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
@@ -966,16 +975,6 @@ export function IssuesList({
     }
     return map;
   }, [defaultProjectWorkspaceIds, executionWorkspaceById, projectWorkspaceById]);
-
-  const workspaceOptions = useMemo(() => {
-    const options = new Map<string, string>();
-    for (const [workspaceId, workspaceName] of workspaceNameMap) {
-      options.set(workspaceId, workspaceName);
-    }
-    return [...options.entries()]
-      .sort((a, b) => a[1].localeCompare(b[1]))
-      .map(([id, name]) => ({ id, name }));
-  }, [workspaceNameMap]);
 
   const creatorOptions = useMemo<CreatorOption[]>(() => {
     const options = new Map<string, CreatorOption>();
@@ -1129,7 +1128,7 @@ export function IssuesList({
       searchScopedIssues,
       viewState,
       currentUserId,
-      enableRoutineVisibilityFilter,
+      enableAgentCreatedVisibilityFilter,
       liveIssueIds,
       issueFilterContext,
     );
@@ -1138,7 +1137,7 @@ export function IssuesList({
     searchScopedIssues,
     viewState,
     currentUserId,
-    enableRoutineVisibilityFilter,
+    enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
   ]);
@@ -1196,7 +1195,7 @@ export function IssuesList({
     enabled: !!selectedCompanyId,
   });
 
-  const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const activeFilterCount = countActiveIssueFilters(viewState, enableAgentCreatedVisibilityFilter);
   const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
   const boardCompactCards =
     viewState.boardCardDensity === "compact"
@@ -1214,7 +1213,13 @@ export function IssuesList({
     || viewState.boardColdLaneMode !== "auto"
     || viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 
-  const groupedContent = useMemo(() => {
+  const hierarchyEnabled = enableAgentCreatedVisibilityFilter && !viewState.showAgentCreatedTasks && !viewState.routineTasksOnly && viewState.nestingEnabled && viewState.viewMode === "list";
+  const hierarchy = useIssueHierarchyContext(
+    selectedCompanyId, filtered.slice(0, renderedIssueRowLimit), viewState.collapsedParents,
+    hierarchyEnabled,
+    hierarchyRowBudget,
+  );
+  const baseGroupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
       return [{ key: "__all", label: null as string | null, items: filtered }];
     }
@@ -1306,6 +1311,14 @@ export function IssuesList({
     companyUserLabelMap,
     projectById,
   ]);
+  const groupedContent = useMemo(() => baseGroupedContent.map((group) => ({
+    ...group,
+    items: enableAgentCreatedVisibilityFilter && !viewState.showAgentCreatedTasks && !viewState.routineTasksOnly && viewState.nestingEnabled && viewState.viewMode === "list"
+      ? includeIssueHierarchyContext(group.items, [...issues, ...hierarchy.issues])
+      : group.items,
+  })), [baseGroupedContent, hierarchy.issues, issues, enableAgentCreatedVisibilityFilter, viewState.showAgentCreatedTasks, viewState.routineTasksOnly, viewState.nestingEnabled, viewState.viewMode]);
+  const visibleListRowCount = groupedContent.reduce((total, group) => total + group.items.length, 0);
+
 
   // Flattened visible order (group headers, then tree DFS per group —
   // collapsed groups keep their header entry but skip their rows) — must
@@ -1382,7 +1395,6 @@ export function IssuesList({
   }, []);
 
   useEffect(() => {
-    if (!keyboardShortcutsEnabled) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const target = e.target;
@@ -1480,7 +1492,7 @@ export function IssuesList({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [keyboardShortcutsEnabled, navigate, queryClient]);
+  }, [navigate, queryClient]);
 
   // Keep the keyboard selection visible while navigating. Depends on the
   // render budget too: a selection past the mounted batch scrolls once its
@@ -1496,31 +1508,41 @@ export function IssuesList({
     const previousIssueIds = renderedIssueIdsRef.current;
     renderedIssueIdsRef.current = nextIssueIds;
 
+    const sameResultsOrAppend = previousIssueIds.length > 0 && nextIssueIds.startsWith(previousIssueIds);
+    if (!sameResultsOrAppend) setHierarchyRowBudget(INITIAL_ISSUE_ROW_RENDER_LIMIT);
     setRenderedIssueRowLimit((current) => {
-      const nextInitialLimit = Math.min(filtered.length, INITIAL_ISSUE_ROW_RENDER_LIMIT);
-      const listAppended = previousIssueIds.length > 0
-        && nextIssueIds.startsWith(previousIssueIds)
-        && filtered.length >= current;
-      if (listAppended) return Math.min(filtered.length, Math.max(current, nextInitialLimit));
+      const nextInitialLimit = Math.min(visibleListRowCount, INITIAL_ISSUE_ROW_RENDER_LIMIT);
+      // Context arrives asynchronously and must not undo a reveal request.
+      if (hierarchyEnabled && sameResultsOrAppend) return Math.max(current, nextInitialLimit);
+      const listAppended = sameResultsOrAppend && visibleListRowCount >= current;
+      if (listAppended) return Math.min(visibleListRowCount, Math.max(current, nextInitialLimit));
       return nextInitialLimit;
     });
-  }, [filtered, viewState.viewMode]);
+  }, [filtered, visibleListRowCount, viewState.viewMode, hierarchyEnabled]);
 
-  const hasMoreRenderedRows = viewState.viewMode === "list" && renderedIssueRowLimit < filtered.length;
-  const remainingIssueRowCount = Math.max(filtered.length - renderedIssueRowLimit, 0);
+  const hasMoreHierarchyRows = hierarchyEnabled && hierarchy.hasMore;
+  const hasMoreRenderedRows = viewState.viewMode === "list" && renderedIssueRowLimit < visibleListRowCount;
+  const remainingIssueRowCount = Math.max(visibleListRowCount - renderedIssueRowLimit, 0);
   const loadMoreIssueRows = useCallback(() => {
     if (viewState.viewMode !== "list") return;
+    if (hasMoreHierarchyRows && !hierarchy.isFetching) {
+      setHierarchyRowBudget((current) => current + ISSUE_ROW_RENDER_BATCH_SIZE);
+      setRenderedIssueRowLimit((current) => current + ISSUE_ROW_RENDER_BATCH_SIZE);
+      return;
+    }
     if (hasMoreRenderedRows) {
-      setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
+      setRenderedIssueRowLimit((current) => Math.min(visibleListRowCount, current + ISSUE_ROW_RENDER_BATCH_SIZE));
       return;
     }
     if (hasMoreIssues && !isLoadingMoreIssues) {
       onLoadMoreIssues?.();
     }
   }, [
-    filtered.length,
+    visibleListRowCount,
     hasMoreIssues,
     hasMoreRenderedRows,
+    hasMoreHierarchyRows,
+    hierarchy.isFetching,
     isLoadingMoreIssues,
     onLoadMoreIssues,
     viewState.viewMode,
@@ -1528,7 +1550,7 @@ export function IssuesList({
 
   const canLoadMoreIssues = viewState.viewMode === "list"
     && !isLoading
-    && (hasMoreRenderedRows || (hasMoreIssues && !isLoadingMoreIssues));
+    && (hasMoreRenderedRows || (hasMoreHierarchyRows && !hierarchy.isFetching) || (hasMoreIssues && !isLoadingMoreIssues));
 
   useEffect(() => {
     if (!canLoadMoreIssues) return;
@@ -1636,8 +1658,11 @@ export function IssuesList({
   const setIssueColumns = useCallback((next: InboxIssueColumn[]) => {
     const normalized = normalizeInboxIssueColumns(next);
     setVisibleIssueColumns(normalized);
-    saveIssueColumns(scopedKey, normalized);
-  }, [scopedKey]);
+    saveTaskCollectionPreferences({
+      companyId: selectedCompanyId ?? "__unscoped__", collectionKey: viewStateKey,
+      legacyViewStorageKey: scopedKey, legacyColumnsStorageKey: getIssueColumnsStorageKey(scopedKey),
+    }, { viewState, columns: normalized });
+  }, [scopedKey, selectedCompanyId, viewStateKey, viewState]);
 
   const toggleIssueColumn = useCallback((column: InboxIssueColumn, enabled: boolean) => {
     if (enabled) {
@@ -1804,6 +1829,7 @@ export function IssuesList({
           />
 
           <IssueFiltersPopover
+            enableRoutineTasksFilter={routineTasksOnly !== undefined}
             presentation="legacy"
             state={viewState}
             onChange={updateView}
@@ -1815,9 +1841,8 @@ export function IssuesList({
             labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
             enableExternalObjectFilters={externalObjectsEnabled}
-            enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
+            enableAgentCreatedVisibilityFilter={enableAgentCreatedVisibilityFilter}
             iconOnly
-            workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
           />
 
           {/* Sort (list view only) */}
@@ -1919,7 +1944,8 @@ export function IssuesList({
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
-      {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {hierarchy.error ? <p className="text-sm text-destructive">Failed to load task hierarchy: {hierarchy.error.message}</p> : null}
+      {!isLoading && !externalObjectFilterLoading && visibleListRowCount === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
           message="No tasks match the current filters or search."
@@ -2362,13 +2388,13 @@ export function IssuesList({
           </Collapsible>
           );
           })}
-          {(remainingIssueRowCount > 0 || hasMoreIssues || isLoadingMoreIssues) && (
+          {(remainingIssueRowCount > 0 || hasMoreHierarchyRows || hasMoreIssues || isLoadingMoreIssues) && (
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
-                {isLoadingMoreIssues
+                {isLoadingMoreIssues || (hierarchyEnabled && hierarchy.isFetching)
                   ? "Loading more tasks..."
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} tasks`
+                    ? `Rendering ${Math.min(renderedIssueRowLimit, visibleListRowCount)} of ${visibleListRowCount} tasks`
                     : "Scroll to load more tasks"}
               </p>
             </div>

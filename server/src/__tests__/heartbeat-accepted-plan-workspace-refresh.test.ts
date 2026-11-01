@@ -7,12 +7,15 @@ import { promisify } from "node:util";
 import { eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   documentRevisions,
@@ -106,6 +109,17 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const tempRoots: string[] = [];
 
+  async function grantResponsibleUser(companyId: string) {
+    await db.insert(authUsers).values({
+      id: "responsible-user", name: "Responsible user", email: "accepted-plan@example.test",
+      createdAt: new Date(), updatedAt: new Date(),
+    }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "responsible-user",
+      status: "active", membershipRole: "member",
+    });
+  }
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accepted-plan-workspace-");
     db = createDb(tempDb.connectionString);
@@ -136,6 +150,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       await db.delete(activityLog);
       await db.delete(heartbeatRunEvents);
       try {
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         break;
       } catch (error) {
@@ -152,6 +167,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     await db.delete(agents);
     await db.delete(workspaceOperations);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -300,6 +316,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -474,6 +491,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -710,6 +728,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -869,6 +888,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -1008,7 +1028,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
   }, 20_000);
 
-  it("preserves accepted-plan continuation resume state when the wake issue owns the in-flight claim", async () => {
+  it("preserves accepted-plan instructions but replaces a pre-identity session when the wake issue owns the in-flight claim", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -1029,6 +1049,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    await grantResponsibleUser(companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -1138,7 +1159,8 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
       context: Record<string, unknown>;
     };
-    expect(adapterInput.runtime.sessionId).toBe("accepted-plan-retry-session");
+    // The old process predates identity injection and must be replaced.
+    expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain(
       "Implement the accepted plan on this issue when the work is small and cohesive.",

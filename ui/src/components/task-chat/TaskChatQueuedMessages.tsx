@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -29,6 +29,7 @@ import type {
   IssueQueuedCommentQueue,
 } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { TaskChatComposerBar } from "./TaskChatComposerBar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,7 +71,7 @@ export interface TaskChatQueuedMessagesProps {
   onEdit: (commentId: string) => void;
   onReorder: (orderedCommentIds: string[], revision: string) => Promise<void>;
   onSteer: (commentId: string, revision: string) => Promise<void>;
-  onInterrupt?: () => Promise<void>;
+  onInterrupt?: () => Promise<IssueQueuedCommentQueue | void>;
   onDiscard: (commentId: string, revision: string) => Promise<void>;
 }
 
@@ -145,10 +146,11 @@ function SortableQueuedMessage({
         {label}
       </span>
 
-      {queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
+      {(queue.targetRunId || queue.state === "deferred") && (!queue.targetRunId || queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
         <button
           type="button"
           onClick={onInterrupt}
+          aria-label={!queue.targetRunId ? "Send queued messages" : undefined}
           disabled={busy || !queue.queueId || !onInterrupt}
           title={queue.targetRunId ? "Interrupt the active turn and send queued messages" : "Send queued messages now"}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
@@ -159,7 +161,7 @@ function SortableQueuedMessage({
           ) : (
             <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
           )}
-          Interrupt
+          {queue.targetRunId ? "Interrupt" : "Send"}
         </button>
       ) : (
         <button
@@ -177,7 +179,7 @@ function SortableQueuedMessage({
           )}
           Steer
         </button>
-      )}
+      ))}
 
       <button
         type="button"
@@ -232,6 +234,9 @@ export function TaskChatQueuedMessages({
   onDiscard,
 }: TaskChatQueuedMessagesProps) {
   const [entries, setEntries] = useState(queue.entries);
+  const latestQueue = useRef(queue);
+  latestQueue.current = queue;
+  const optimisticDeliveryIds = useRef(new Set<string>());
   const [pending, setPending] = useState<{
     commentId: string;
     action: Exclude<QueueAction, null>;
@@ -239,6 +244,7 @@ export function TaskChatQueuedMessages({
   const [reordering, setReordering] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const [visibleError, setVisibleError] = useState<string | null>(null);
+  const [deferredStatus, setDeferredStatus] = useState<{ queueId: string | null; message: string } | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, {
@@ -247,8 +253,20 @@ export function TaskChatQueuedMessages({
   );
 
   useEffect(() => {
-    setEntries(queue.entries);
+    // Polling can return the old queue while delivery is still in flight.
+    setEntries(queue.entries.filter(
+      (entry) => !optimisticDeliveryIds.current.has(entry.comment.id),
+    ));
   }, [queue.entries, queue.revision]);
+
+  useEffect(() => {
+    setDeferredStatus(current => {
+      if (!current) return null;
+      if (queue.state !== "deferred" || queue.queueId !== current.queueId || !queue.entries.length) return null;
+      const message = queue.executionWait?.message ?? "Messages are still queued. They will send when the task is ready.";
+      return current.message === message ? current : { ...current, message };
+    });
+  }, [queue.state, queue.queueId, queue.entries.length, queue.executionWait?.message]);
 
   const ids = useMemo(
     () => entries.map((entry) => entry.comment.id),
@@ -309,9 +327,17 @@ export function TaskChatQueuedMessages({
     ) {
       return;
     }
-    const previous = entries;
+    const deliveredIds = action === "interrupt"
+      ? entries.map((entry) => entry.comment.id)
+      : action === "steer" ? [commentId] : [];
+    for (const id of deliveredIds) optimisticDeliveryIds.current.add(id);
+    if (deliveredIds.length) {
+      setEntries((current) => current.filter(
+        (entry) => !optimisticDeliveryIds.current.has(entry.comment.id),
+      ));
+    }
     setPending({ commentId, action });
-    setVisibleError(null);
+    setVisibleError(null); setDeferredStatus(null);
     setAnnouncement(
       action === "steer"
         ? "Steering queued message."
@@ -319,14 +345,18 @@ export function TaskChatQueuedMessages({
           ? "Sending queued messages."
           : "Discarding queued message.",
     );
-    if (action === "steer") {
-      setEntries((current) =>
-        current.filter((entry) => entry.comment.id !== commentId),
-      );
-    }
     try {
       if (action === "steer") await onSteer(commentId, queue.revision);
-      else if (action === "interrupt") await onInterrupt?.();
+      else if (action === "interrupt") {
+        const updatedQueue = await onInterrupt?.();
+        if (updatedQueue?.state === "deferred") {
+          for (const entry of updatedQueue.entries) optimisticDeliveryIds.current.delete(entry.comment.id);
+          setEntries(updatedQueue.entries.filter(entry => !optimisticDeliveryIds.current.has(entry.comment.id)));
+          setDeferredStatus({ queueId: updatedQueue.queueId, message: updatedQueue.executionWait?.message ?? "Messages are still queued. They will send when the task is ready." });
+          setAnnouncement("Messages are still queued.");
+          return;
+        }
+      }
       else await onDiscard(commentId, queue.revision);
       if (action === "discard") {
         setEntries((current) =>
@@ -337,11 +367,18 @@ export function TaskChatQueuedMessages({
         action === "steer"
           ? "Message steered into the active turn."
           : action === "interrupt"
-            ? "Queued messages will be sent when the previous run has stopped."
+            ? queue.targetRunId
+              ? "Queued messages will be sent when the previous run has stopped."
+              : "Queued messages submitted. Waiting for the agent."
             : "Queued message discarded.",
       );
     } catch (error) {
-      if (action === "steer") setEntries(previous);
+      for (const id of deliveredIds) optimisticDeliveryIds.current.delete(id);
+      if (deliveredIds.length) {
+        setEntries(latestQueue.current.entries.filter(
+          (entry) => !optimisticDeliveryIds.current.has(entry.comment.id),
+        ));
+      }
       setAnnouncement("");
       const code = queueActionErrorCode(error);
       setVisibleError(
@@ -350,7 +387,7 @@ export function TaskChatQueuedMessages({
           : action === "steer"
             ? "Couldn’t steer. Message is still queued."
             : action === "interrupt"
-              ? "Couldn’t interrupt. Message is still queued."
+              ? queue.targetRunId ? "Couldn’t interrupt. Message is still queued." : "Couldn’t send. Message is still queued."
               : code === "queued_comment_revision_conflict"
                 ? "The queue changed in another session. Review it and try again."
                 : "Couldn’t discard. Message is still queued.",
@@ -360,19 +397,13 @@ export function TaskChatQueuedMessages({
     }
   }
 
-  if (entries.length === 0) return null;
+  if (entries.length === 0 && !visibleError && !deferredStatus) return null;
 
   return (
-    <div
-      className="relative z-0 mx-3 -mb-px overflow-hidden rounded-t-xl rounded-b-none border border-b-0 border-border/75 bg-card shadow-sm"
+    <TaskChatComposerBar
       data-testid="task-chat-queued-messages"
       aria-label="Queued messages"
     >
-      {queue.executionWait && (
-        <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
-          {queue.executionWait.message}
-        </div>
-      )}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -407,6 +438,7 @@ export function TaskChatQueuedMessages({
           })}
         </SortableContext>
       </DndContext>
+      {deferredStatus ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{deferredStatus.message}</p> : null}
       {visibleError ? (
         <div
           role="status"
@@ -419,6 +451,6 @@ export function TaskChatQueuedMessages({
       <div className="sr-only" aria-live="polite" aria-atomic="true">
         {announcement}
       </div>
-    </div>
+    </TaskChatComposerBar>
   );
 }

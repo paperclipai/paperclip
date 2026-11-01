@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { contextIntegrityTasks } from "./context-integrity-cases.js";
 import { normalizePrpResultSignals } from "../../packages/paperclip-runner/src/protocol/result-normalization.js";
 import {
   connectionReviewSuite,
@@ -8,16 +10,21 @@ import {
   openRouterBreadthExcludedModelIds,
   openRouterBreadthProfiles,
   openRouterBreadthTasks,
+  contextIntegrityProfiles,
   localIntegrityTasks,
   runnerProfiles,
   runnerSuites,
   runnerTasks,
   daytonaWarmContinuityTask,
+  daytonaLargeJournalTask,
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
+  pendingContextIntegrityProfiles,
+  productJourneys,
   suiteDefinitionHash,
   validateRunnerCatalog,
 } from "./catalog.js";
+import { assertRunnerE2EPrerequisites, UNQUALIFIED_PROFILE_GAPS } from "./prerequisites.js";
 import {
   buildMatrixJobs,
   parseRunnerSelectors,
@@ -26,6 +33,186 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("keeps the Daytona controller outage on a reusable warm sandbox inside its idle lifetime", () => {
+    const suite = runnerSuites.find(candidate => candidate.id === "daytona-restart-continuity")!;
+    const secretRefs = {
+      OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const },
+      ANTHROPIC_API_KEY: { type: "secret_ref" as const, secretId: "33333333-3333-4333-8333-333333333333", version: "latest" as const },
+      DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "44444444-4444-4444-8444-444444444444", version: "latest" as const },
+    };
+    const environmentInput = { executionId: "controller-outage", secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+    const base = runnerEnvironments.find(environment => environment.id === "daytona")!;
+    const baseConfig = base.buildEnvironment(environmentInput).config as Record<string, unknown>;
+    const warmConfig = daytonaWarmEnvironment.buildEnvironment(environmentInput).config as Record<string, unknown>;
+    const cells = runnerMatrix.filter(entry => entry.suite.id === suite.id);
+    expect(cells).toHaveLength(2);
+    expect(cells.map(cell => cell.id)).toEqual([
+      "daytona-restart-continuity.runner-codex.daytona.recover-controller",
+      "daytona-restart-continuity.runner-acpx-claude.daytona.recover-controller",
+    ]);
+    for (const cell of cells) {
+      const config = cell.environment.buildEnvironment(environmentInput).config as Record<string, unknown>;
+      expect(config).toMatchObject({ reuseLease: true, runnerLifecycleMode: "warm" });
+      expect(config.autoStopInterval).toBe(15);
+      expect(Number(config.autoStopInterval) * 60_000).toBeGreaterThan(420_000);
+      expect(config).toEqual({ ...warmConfig, autoStopInterval: 15 });
+      expect(cell.environment.configurationKey).toBe("warm-controller-outage-v1");
+      expect(cell.environment.label).toContain("warm reusable");
+      const agentInput = { ...environmentInput, environmentId: "env-1", environmentFixtureId: "daytona" as const, workspacePath: "/workspace" };
+      const adapterConfig = cell.profile.buildAgent(agentInput).adapterConfig as Record<string, unknown>;
+      const original = runnerProfiles.find(profile => profile.id === cell.profile.id)!.buildAgent(agentInput).adapterConfig as Record<string, unknown>;
+      expect(adapterConfig.idleTimeoutMs).toBe(300_000);
+      expect(adapterConfig.lifecycleMode).toBe(original.lifecycleMode);
+      expect(cell.suite.manualOnly).toBe(true);
+      expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
+      expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(entry => entry.id)).toEqual([cell.id]);
+      expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(entry => entry.id === cell.id)).toBe(false);
+    }
+    expect(baseConfig).toMatchObject({ autoStopInterval: 5, reuseLease: false, runnerLifecycleMode: "per_turn" });
+    expect(warmConfig).toMatchObject({ autoStopInterval: 5, reuseLease: true, runnerLifecycleMode: "warm" });
+    expect(suite.definitionMetadata).toMatchObject({ version: 7, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
+      retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api", maximumAttemptsPerCell: 1 });
+  });
+
+  it("selects non-reused Kimi lifecycle leases without changing its warm or local cases", () => {
+    const suite = runnerSuites.find(row => row.id === "kimi-qualification")!;
+    const cells = runnerMatrix.filter(row => row.suite.id === suite.id);
+    const input = { secretRefs: { DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "fixture-secret", version: "latest" as const } },
+      daytonaImage: `registry.example.test/runtime@sha256:${"a".repeat(64)}`, executionId: "fixture" };
+    expect(cells).toHaveLength(20);
+    for (const cell of cells) {
+      if (cell.environment.id === "local") {
+        expect(cell.environment).toBe(suite.environments.find(environment => environment.id === "local"));
+        continue;
+      }
+      const lifecycle = cell.task.flow === "kimi_native_lifecycle";
+      expect(cell.environment.buildEnvironment(input).config).toMatchObject({ reuseLease: !lifecycle, runnerLifecycleMode: lifecycle ? "per_turn" : "warm" });
+      expect(cell.groups.includes("warm")).toBe(!lifecycle);
+    }
+    expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, environmentOverrides: undefined }));
+  });
+
+  it.each([
+    ["runner-codex-subscription", "CODEX_AUTH_JSON"], ["runner-codex", "OPENAI_API_KEY"],
+  ])("keeps %s receipt smoke separately selectable with exactly four bounded native turns", (profile, credential) => {
+    const id = `case-handoffs.${profile}.local.receipt-smoke`;
+    const cell = runnerMatrix.find(entry => entry.id === id)!;
+    expect(cell.suite.manualOnly).toBe(true);
+    expect(cell.requiredCredentials).toEqual([credential]);
+    expect(cell.task).toMatchObject({ flow: "case_handoff", expectedRunCount: 4, minimumExpectedRunCount: 4,
+      turnTimeoutMs: 90_000, attemptTimeoutMs: { local: 300_000 }, automaticRetryPolicy: "single_attempt" });
+    expect(cell.suite.definitionMetadata).toMatchObject({ version: 4, scheduling: "explicit-only",
+      credentialModes: ["isolated-company-subscription-login", "company-encrypted-api-secret-reference"],
+      cases: { "receipt-smoke": { budgetMonthlyCents: 100, maximumProviderTurns: 4, minimumProviderTurns: 4,
+        runTimeoutMs: 90_000, reasoningEffort: "low", agentDailyRunCaps: { triage: 1, builder: 2, verifier: 1 } },
+      "same-task-roundtrip": { budgetMonthlyCents: 1_000, maximumProviderTurns: 6 } } });
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--id", id])).map(entry => entry.id)).toEqual([id]);
+    for (const args of [["--all"], ["--environment", "local"]]) {
+      expect(selectRunnerExecutions(parseRunnerSelectors(args)).some(entry => entry.id === id)).toBe(false);
+    }
+    if (profile === "runner-codex-subscription") {
+      expect(() => selectRunnerExecutions(parseRunnerSelectors(["--profile", cell.profile.id]))).toThrow("zero executions");
+    }
+    expect(suiteDefinitionHash({ ...cell.suite, tasks: cell.suite.tasks.map(task => task.id === cell.task.id
+      ? { ...task, expectedRunCount: 5 } : task) })).not.toBe(cell.suiteDefinitionHash);
+  });
+
+  it("exports deployment journeys separately from the model matrix and default selection", () => {
+    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "cloud-onboarding"]);
+    expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
+    expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
+  });
+
+  it("keeps the single managed onboarding variant explicit-only without changing local onboarding coverage", () => {
+    const id = "confirmation-replies.runner-codex.daytona.task-card-accept";
+    const suite = runnerSuites.find(candidate => candidate.id === "confirmation-replies")!;
+    const remote = runnerMatrix.filter(entry => entry.suite.id === suite.id && entry.environment.id === "daytona");
+    expect(remote.map(entry => entry.id)).toEqual([id]);
+    expect(suite.manualOnly).toBe(true);
+    expect(remote[0]!.task.flow).toBe("first_task");
+    expect(remote[0]!.task.expectedRunCount).toBe(4);
+    expect(remote[0]!.task.automaticRetryPolicy).toBe("single_attempt");
+    expect(remote[0]!.requiredCredentials).toEqual(["OPENAI_API_KEY", "DAYTONA_API_KEY"]);
+    expect(runnerMatrix.filter(entry => entry.suite.id === "first-task")).toHaveLength(52);
+    expect(runnerMatrix.filter(entry => entry.suite.id === suite.id && entry.environment.id === "local")).toHaveLength(12);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--id", id])).map(entry => entry.id)).toEqual([id]);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(entry => entry.id === id)).toBe(false);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--profile", "runner-codex", "--environment", "daytona"])).some(entry => entry.id === id)).toBe(false);
+  });
+
+  it("keeps private repository skill delivery explicit and bounded in both environments", () => {
+    const cases = runnerMatrix.filter(entry => entry.suite.id === "repository-skills");
+    expect(cases).toHaveLength(2);
+    expect(cases.map(entry => entry.environment.id)).toEqual(["local", "daytona"]);
+    for (const entry of cases) {
+      expect(entry.suite.manualOnly).toBe(true);
+      expect(entry.task.automaticRetryPolicy).toBe("single_attempt");
+      expect(entry.task.expectedRunCount).toBe(1);
+      expect(entry.requiredCredentials).toContain("GITHUB_TOKEN");
+      expect(entry.requiredCredentials).toContain("OPENAI_API_KEY");
+      expect(entry.requiredCredentials.includes("DAYTONA_API_KEY")).toBe(entry.environment.id === "daytona");
+    }
+  });
+  it.each(["daytona-journal-continuity"])(
+    "%s retains native processes with fixed external instructions",
+    (suiteId) => {
+      const suite = runnerSuites.find(suite => suite.id === suiteId)!;
+      const input = {
+        executionId: "warm-instructions", environmentId: "env-1",
+        environmentFixtureId: "daytona" as const, workspacePath: "/workspace",
+        secretRefs: { OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const } },
+      };
+      const profile = suite.profiles.find(profile => profile.id === "runner-codex")!;
+      const config = profile.buildAgent(input).adapterConfig as Record<string, unknown>;
+      expect(config).toMatchObject({
+        instructionsBundleMode: "external", instructionsEntryFile: "AGENTS.md", idleTimeoutMs: 300_000,
+      });
+      expect(readFileSync(String(config.instructionsFilePath), "utf8")).toContain("Preserve the workspace files across turns");
+      expect(suite.definitionMetadata).toMatchObject({ nativeInstructions: "fixed-external" });
+      expect(runnerProfiles.find(profile => profile.id === "runner-codex")!.buildAgent(input).adapterConfig)
+        .not.toHaveProperty("instructionsBundleMode", "external");
+      const legacy = suite.profiles.find(profile => profile.id === "legacy-codex");
+      if (legacy) expect(legacy.buildAgent(input).adapterConfig).not.toHaveProperty("instructionsBundleMode", "external");
+    },
+  );
+
+  it("keeps the large Git filename workload explicit-only with three real turns", () => {
+    const suite = runnerSuites.find(suite => suite.id === "daytona-git-streaming")!;
+    expect(suite.manualOnly).toBe(true);
+    expect(runnerMatrix.filter(entry => entry.suite.id === suite.id)).toHaveLength(1);
+    expect(suite.tasks[0]).toMatchObject({ expectedRunCount: 3, flow: "warm_three_turn", turnTimeoutMs: 15 * 60_000, attemptTimeoutMs: { daytona: 50 * 60_000 } });
+    expect(daytonaWarmContinuityTask).toMatchObject({ turnTimeoutMs: 10 * 60_000, attemptTimeoutMs: { daytona: 30 * 60_000 } });
+    expect(suite.definitionMetadata).toMatchObject({ generatedFileCount: 60_000, filenameBytes: 39_828_890, nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25 });
+    const secretRefs = {
+      OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const },
+      DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "33333333-3333-4333-8333-333333333333", version: "latest" as const },
+    };
+    const buildInput = { executionId: "heavy-git", environmentId: "env-1", environmentFixtureId: "daytona" as const, workspacePath: "/workspace", secretRefs };
+    const adapterConfig = suite.profiles[0]!.buildAgent(buildInput).adapterConfig as Record<string, unknown>;
+    expect(adapterConfig).toMatchObject({ idleTimeoutMs: 1_200_000, instructionsBundleMode: "external", instructionsEntryFile: "AGENTS.md" });
+    expect(readFileSync(String(adapterConfig.instructionsFilePath), "utf8").trim()).not.toBe("");
+    expect(runnerProfiles.find(profile => profile.id === "runner-codex")!.buildAgent(buildInput).adapterConfig).toMatchObject({ idleTimeoutMs: 300_000 });
+    const environmentInput = { executionId: "heavy-git", secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+    expect(suite.environments[0]!.buildEnvironment(environmentInput).config).toMatchObject({ runnerIdleTimeoutMs: 1_200_000, autoStopInterval: 25, autoArchiveInterval: 30 });
+    expect(daytonaWarmEnvironment.buildEnvironment(environmentInput).config).toMatchObject({ autoStopInterval: 5 });
+  });
+  it("validates context-integrity task IDs and selectable groups", () => {
+    const task = contextIntegrityTasks[0]!;
+    const originalId = task.id;
+    const originalGroups = task.groups;
+    try {
+      task.id = runnerTasks[0]!.id;
+      expect(() => validateRunnerCatalog()).toThrow("Duplicate task fixture ids");
+      task.id = originalId;
+      task.groups = ["not-a-selectable-group" as typeof task.groups[number]];
+      expect(() => validateRunnerCatalog()).toThrow("declares unknown groups");
+    } finally {
+      task.id = originalId;
+      task.groups = originalGroups;
+    }
+  });
+
   it("supplies an actionable human review in native warm completion examples", () => {
     const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
     for (const [index, prompt] of prompts.entries()) {
@@ -39,6 +226,26 @@ describe("runner E2E catalog", () => {
     }
   });
 
+  it("specifies real LF bytes in every managed warm turn", () => {
+    const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
+    for (const prompt of prompts) {
+      expect(prompt).toContain("actual LF character (byte 10)");
+      expect(prompt).toContain("independently of the string expression used to write them");
+    }
+    expect(prompts[2]).toContain("T1-nonce | T2-nonce");
+    expect(prompts[2]).not.toContain("T1-nonce\\nT2-nonce");
+  });
+
+  it("keeps paid public MCP journeys explicit and fingerprints the shipped workflow instructions", () => {
+    const suite = runnerSuites.find(suite => suite.id === "public-mcp")!;
+    expect(suite.manualOnly).toBe(true);
+    expect(suite.environments.map(environment => environment.id)).toEqual(["local"]);
+    expect(suite.profiles.map(profile => profile.model)).toEqual(["gpt-5.4-mini", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"]);
+    expect(suite.tasks).toHaveLength(21);
+    expect(suite.tasks.every(task => task.flow === "public_mcp" && task.expectedRunCount === 1)).toBe(true);
+    expect(suite.definitionMetadata?.workflowDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "public-mcp")).toBe(false);
+  });
   it("defines sixteen local connection-review journeys without expanding the default matrix", () => {
     expect(connectionReviewSuite.expectedMatrixSize).toBe(16);
     expect(new Set(connectionReviewSuite.profiles.map(profile => profile.id))).toEqual(new Set(["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"]));
@@ -64,25 +271,25 @@ describe("runner E2E catalog", () => {
   });
 
   it("validates the core, local-integrity, breadth, and warm suites", () => {
-    expect(runnerProfiles).toHaveLength(7);
+    expect(runnerProfiles).toHaveLength(8);
     expect(openRouterBreadthProfiles).toHaveLength(4);
     expect(runnerEnvironments).toHaveLength(2);
     expect(runnerTasks).toHaveLength(3);
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      8, 46, 23, 47, 52, 28, 18, 6, 6, 42, 14, 10, 2,
+      1, 2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(302);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(302);
+    expect(validateRunnerCatalog()).toHaveLength(796);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(796);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
-    ).toHaveLength(42);
+    ).toHaveLength(48);
     expect(
       runnerMatrix.filter(
         (entry) => entry.suite.id === "local-session-integrity",
       ),
-    ).toHaveLength(14);
+    ).toHaveLength(16);
     expect(
       runnerMatrix.filter(
         (entry) => entry.suite.id === "openrouter-model-breadth",
@@ -98,11 +305,27 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(371);
+    ).toBe(385);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
     ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
+  });
+
+  it("bounds ephemeral Daytona lifetime beyond each declared attempt and acquire budget", () => {
+    const environment = runnerEnvironments.find(entry => entry.id === "daytona")!;
+    const payload = environment.buildEnvironment({
+      executionId: "bounded-lifetime", daytonaImage: `runner@sha256:${"a".repeat(64)}`,
+      secretRefs: { DAYTONA_API_KEY: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" } },
+    });
+    const config = payload.config as Record<string, unknown>;
+    const lifetimeMs = Number(config.ttlMinutes) * 60_000;
+    expect(Number.isFinite(lifetimeMs)).toBe(true);
+    const cells = runnerMatrix.filter(entry => entry.environment === environment);
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) {
+      expect(lifetimeMs, cell.id).toBeGreaterThan(cell.task.attemptTimeoutMs.daytona + Number(config.timeoutMs));
+    }
   });
 
   it("defines the warm Daytona continuity fixture as exactly two Codex cells", () => {
@@ -184,6 +407,28 @@ describe("runner E2E catalog", () => {
         ],
       }),
     ).not.toBe(suiteDefinitionHash(suite));
+  });
+
+  it("gives repaired LF warm prompts a distinct definition from retained results", () => {
+    for (const [id, priorHash, version] of [["rich-acp-warm-continuity", "331b88d9538a132670789fb7864df7df5f4bf294ae19b62f53d8a02f901774f0", 3], ["daytona-journal-continuity", "8713942d662d4013f59ce57ec9497d890e37c08888a8edbb4a610dd82e65bc9e", 6]] as const) {
+      const suite = runnerSuites.find(candidate => candidate.id === id)!;
+      expect(suite.definitionMetadata).toMatchObject({ version, warmPromptDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+      expect(suiteDefinitionHash(suite)).not.toBe(priorHash);
+    }
+  });
+
+  it("keeps large-journal stress explicit-only and uses the ordinary warm workflow", () => {
+    const suite = runnerSuites.find((candidate) => candidate.id === "daytona-journal-continuity")!;
+    expect(suite.manualOnly).toBe(true);
+    expect(suite.expectedMatrixSize).toBe(1);
+    expect(suite.profiles.map((profile) => profile.id)).toEqual(["runner-codex"]);
+    expect(daytonaLargeJournalTask.flow).toBe("warm_three_turn");
+    expect(daytonaLargeJournalTask.buildPrompt("nonce")).toContain("240 separate execution-tool calls");
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce")).toHaveLength(2);
+    expect(daytonaLargeJournalTask.buildFollowupMessages!("nonce").join("\n")).not.toContain("notes/warm-memory.txt");
+    expect(daytonaWarmContinuityTask.buildPrompt("nonce")).toContain("notes/warm-memory.txt");
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"]))
+      .some((cell) => cell.suite.id === suite.id)).toBe(false);
   });
 
   it("derives the qualified local native OpenCode profiles from the ranked snapshot", () => {
@@ -349,17 +594,58 @@ describe("runner E2E catalog", () => {
 
   it("uses only declared secret references in generated payloads", () => {
     expect(
-      runnerMatrix.every((entry) =>
+      runnerMatrix.filter(entry => !["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(entry.task.flow)).every((entry) =>
         entry.requiredCredentials.includes(entry.profile.credential),
       ),
     ).toBe(true);
     expect(
       runnerMatrix
-        .filter((entry) => entry.environment.id === "daytona")
+        .filter((entry) => entry.environment.id === "daytona" && !["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(entry.task.flow))
         .every((entry) =>
           entry.requiredCredentials.includes("DAYTONA_API_KEY"),
         ),
     ).toBe(true);
+  });
+
+  it("lists pending Kimi and Grok context profiles without treating them as qualified", () => {
+    expect(pendingContextIntegrityProfiles.map((profile) => profile.id)).toEqual([
+      "legacy-kimi-cli",
+      "legacy-kimi-acp",
+      "legacy-grok",
+    ]);
+    expect(contextIntegrityProfiles.map((profile) => profile.id)).toEqual(
+      expect.arrayContaining(pendingContextIntegrityProfiles.map((profile) => profile.id)),
+    );
+    expect(UNQUALIFIED_PROFILE_GAPS).not.toHaveProperty("pi");
+  });
+
+  it("blocks pending profiles before provider admission", () => {
+    const pending = runnerMatrix.filter((entry) =>
+      pendingContextIntegrityProfiles.some((profile) => profile.id === entry.profile.id),
+    );
+    expect(pending.length).toBeGreaterThan(0);
+    expect(() => assertRunnerE2EPrerequisites(pending)).toThrow(/No provider credentials were loaded or sent/);
+  });
+
+  it("binds pending provider credentials through secret references only", () => {
+    for (const profile of pendingContextIntegrityProfiles) {
+      const payload = profile.buildAgent({
+        environmentId: "fixture-company",
+        environmentFixtureId: "local",
+        workspacePath: "/tmp/runner-e2e-workspace",
+        secretRefs: {
+          [profile.credential]: {
+            type: "secret_ref",
+            secretId: "22222222-2222-4222-8222-222222222222",
+            version: "latest",
+          },
+        },
+        executionId: `pending-${profile.id}`,
+      });
+      expect(payload.adapterConfig).toMatchObject({
+        env: { [profile.credential]: { type: "secret_ref" } },
+      });
+    }
   });
 
   it("pins legacy Codex and Claude to their classic CLI engines", () => {
@@ -550,6 +836,31 @@ describe("runner E2E selectors", () => {
     ]);
   });
 
+  it("keeps Grok artifact and stop/resume qualification explicit in both environments", () => {
+    const selected = selectRunnerExecutions(parseRunnerSelectors(["--suite", "grok-qualification"]));
+    expect(selected).toHaveLength(16);
+    for (const environment of ["local", "daytona"]) {
+      for (const task of ["build-revise", "stop-new-resume", "continuity-restart"]) {
+        expect(selected.some(execution => execution.id === `grok-qualification.runner-acpx-grok.${environment}.${task}`)).toBe(true);
+      }
+    }
+  });
+
+  it("keeps subscription qualification separate and never injects an API key", () => {
+    const selected = selectRunnerExecutions(parseRunnerSelectors(["--suite", "grok-subscription-qualification"]));
+    expect(selected).toHaveLength(16);
+    const all = selectRunnerExecutions(parseRunnerSelectors(["--all"]));
+    for (const execution of selected) {
+      expect(all.some(candidate => candidate.id === execution.id)).toBe(false);
+      expect(execution.requiredCredentials).toEqual(execution.environment.id === "daytona"
+        ? ["GROK_AUTH_JSON", "DAYTONA_API_KEY"] : ["GROK_AUTH_JSON"]);
+      expect(execution.profile.buildAgent({
+        environmentId: "env", environmentFixtureId: execution.environment.id,
+        workspacePath: "/tmp/workspace", secretRefs: {}, executionId: "subscription",
+      })).toMatchObject({ adapterConfig: { provider: "acpx", acpxAgent: "grok", env: {} } });
+    }
+  });
+
   it("selects a suite without exploding its environment matrix", () => {
     const selected = selectRunnerExecutions(
       parseRunnerSelectors(["--suite", "openrouter-model-breadth"]),
@@ -572,7 +883,7 @@ describe("runner E2E selectors", () => {
       "daytona",
     ]);
     const selected = selectRunnerExecutions(options);
-    expect(selected).toHaveLength(13);
+    expect(selected).toHaveLength(16);
     expect(
       selected.every(
         (entry) =>
@@ -591,10 +902,10 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(171);
-    expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(23);
-    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(148);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(171);
+    expect(jobs).toHaveLength(179);
+    expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(26);
+    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(153);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(179);
     expect(
       jobs.find(
         (job) =>
@@ -627,5 +938,23 @@ describe("runner E2E selectors", () => {
     expect(() =>
       parseRunnerSelectors(["--all", "--max-parallel", "0"]),
     ).toThrow("positive integer");
+  });
+
+  it("accepts an explicit zero or one automatic retry", () => {
+    expect(parseRunnerSelectors(["--all"]).maxAutomaticRetries).toBe(1);
+    expect(
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "0"])
+        .maxAutomaticRetries,
+    ).toBe(0);
+    expect(
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "1"])
+        .maxAutomaticRetries,
+    ).toBe(1);
+    expect(() =>
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "2"]),
+    ).toThrow("0 or 1");
+    expect(() =>
+      parseRunnerSelectors(["--all", "--max-automatic-retries", "-1"]),
+    ).toThrow("0 or 1");
   });
 });

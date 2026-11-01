@@ -1,12 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { QUALIFIED_ACPX_PROFILES, resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as codexSecurity from "../drivers/codex/codex-security-config.js";
 
-import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
+import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions } from "../contracts/runtime-context.js";
+
+const contextRoots: string[] = [];
+afterEach(() => { for (const root of contextRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+function preparedExecution(base: NativeExecutionInput, version: "v5" | "v7" | "v9" = "v5"): NativeExecutionInput {
+  const root = mkdtempSync(join(tmpdir(), "paperclip-prepared-backend-"));
+  contextRoots.push(root);
+  writeFileSync(join(root, "AGENTS.md"), "Keep assigned instructions.");
+  const digest = "0".repeat(64);
+  const context = {
+    prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: root, fileCount: 1, totalBytes: 27 } },
+    skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null },
+  };
+  return parseNativeExecutionInput({
+    ...base, schema: `paperclip.native-execution-input.${version}`, ...(version === "v5" ? {} : { homeMode: "isolated" }), executionMode: "default", planningContext: null,
+    runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
+    completionContract: { ...base.completionContract, contract: { ...base.completionContract.contract, criteria: [{ id: "objective", requirement: "Complete the task." }] } },
+  });
+}
 import {
   FakeCodexTransport,
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
-import { createCodexNativeSessionBackend } from "./codex-native-backend.js";
+import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
+import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
 function execution(
   provider: NativeExecutionInput["provider"] = {
@@ -73,42 +100,9 @@ function acpxExecution(
     provider: {
       kind: "acpx",
       agent,
-      model:
-        agent === "codex"
-          ? "gpt-5.6-sol"
-          : agent === "pi"
-            ? "openrouter/deepseek/deepseek-v4-flash-0731"
-            : "claude-sonnet-5",
+      model: "explicit-test-model",
       permissionPolicy: "interactive",
-      profile: {
-        driverKind: "acpx_runtime",
-        protocolVersion: 1,
-        acpxVersion: "0.13.1",
-        agent,
-        agentProfileVersion: 1,
-        agentServerPackage:
-          agent === "codex"
-            ? "@agentclientprotocol/codex-acp"
-            : agent === "pi"
-              ? "pi-acp"
-              : "@agentclientprotocol/claude-agent-acp",
-        agentServerVersion:
-          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.73.0",
-        agentRuntimePackage:
-          agent === "pi"
-            ? "@earendil-works/pi-coding-agent"
-            : agent === "codex"
-              ? "@openai/codex"
-              : "@anthropic-ai/claude-agent-sdk",
-        agentRuntimeVersion:
-          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.156.0" : "0.3.280",
-        commandDigest:
-          agent === "codex"
-            ? "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3"
-            : agent === "pi"
-              ? "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f"
-              : "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
-      },
+      profile: resolveQualifiedAcpxProfile(agent, "explicit-test-model"),
     },
   };
 }
@@ -217,6 +211,26 @@ function managedExecution(
 }
 
 describe("native backend factory", () => {
+  it.each([undefined, "disabled"] as const)("honors saved webSearch=%s with the default process transport", async webSearch => {
+    const input = preparedExecution(execution());
+    if (input.provider.kind !== "codex") throw new Error("Codex fixture required");
+    if (webSearch) Object.assign(input.provider, { webSearch });
+    const buildArgs = codexSecurity.createIsolatedCodexAppServerArgs;
+    let generated: string[] | undefined;
+    const spy = vi.spyOn(codexSecurity, "createIsolatedCodexAppServerArgs").mockImplementation((...args) => {
+      generated = buildArgs(...args);
+      throw new Error("offline-stop-before-process-spawn");
+    });
+    try {
+      const backend = createNativeSessionBackend(input, { environment: {} });
+      await expect(backend.openSession({ identity: { runId: "run", sessionId: "session", companyId: "company", agentId: "agent" },
+        workingDirectory: WORKSPACE })).rejects.toThrow("offline-stop-before-process-spawn");
+      expect(generated).toBeDefined();
+      if (webSearch) expect(generated?.slice(-3)).toEqual(["-c", 'web_search="disabled"', "app-server"]);
+      else expect(generated).not.toContain('web_search="disabled"');
+    } finally { spy.mockRestore(); }
+  });
+
   it("constructs the Codex backend without starting its transport", async () => {
     const backend = createNativeSessionBackend(execution(), {
       codexTransportFactory: () => {
@@ -266,12 +280,13 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.32",
+      version: "1.18.34",
       capabilities: {
         steering: false,
         resume: true,
         interruption: true,
         dynamicTools: true,
+        toolRefreshOnResume: true,
         collaborationModes: ["default", "plan"],
       },
     });
@@ -320,6 +335,123 @@ describe("native backend factory", () => {
       transport.calls.find((call) => call.method === "thread/start")?.params,
     ).toMatchObject({ cwd: remoteWorkspace });
     await session.close({ reason: "test complete" });
+  });
+
+  it("supplies freshly composed instructions before the transport can read a recovered thread", async () => {
+    const prepared = preparedExecution(execution());
+    if (!("runtimeContext" in prepared)) throw new Error("fixture requires runtime context");
+    const input = { ...acpxExecution("codex"), runtimeContext: prepared.runtimeContext };
+    writeFileSync(join(input.runtimeContext.instructions.bundle.rootPath, "AGENTS.md"), "Updated custom entry.");
+    const transport = new FakeCodexTransport();
+    let captured: string | undefined;
+    const backend = createNativeSessionBackend(input, {
+      codexTransportFactory: (context) => {
+        expect(transport.calls).toHaveLength(0);
+        captured = context?.baseInstructions;
+        return transport;
+      },
+      environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+    const session = await backend.openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+      workingDirectory: WORKSPACE,
+    });
+    expect(captured).toBe(composeNativeSystemInstructions(input.runtimeContext, "Updated custom entry."));
+    await session.close({ reason: "test complete" });
+  });
+
+  describe("runner-prepared launch working directory", () => {
+    // The transport reports the prepared directory; it exists only on the VM.
+    class PreparedLaunchTransport extends FakeCodexTransport {
+      constructor(readonly preparedCwd: unknown) { super(); }
+      override async request(method: string, params: Record<string, unknown>) {
+        const response = await super.request(method, params);
+        if (method === "thread/start" || method === "thread/resume") {
+          const { cwd: _cwd, ...rest } = response;
+          return this.preparedCwd === undefined ? rest : { ...rest, cwd: this.preparedCwd };
+        }
+        return response;
+      }
+    }
+    const identity = { runId: "run", sessionId: "session", companyId: "company", agentId: "agent" };
+    const providers = [
+      ["Codex", execution()],
+      ["OpenCode", opencodeExecution()],
+      ["ACPX Claude", acpxExecution("claude")],
+    ] as const;
+
+    it.each(providers.flatMap(([label, input]) => [
+      [label, input, "/home/agent"],
+      [label, input, "/projects/0b0e7a4e-8c8e-4b8a-9f3e-0e5d2a6c1f00/worktrees/ws-1"],
+    ] as const))("records the %s prepared cwd %s without a Core workspace", async (_label, input, cwd) => {
+      const transport = new PreparedLaunchTransport(cwd);
+      const backend = createNativeSessionBackend(input, {
+        codexTransportFactory: () => transport, workingDirectoryAuthority: "runner_prepared_launch", environment: {},
+      });
+      const session = await backend.openSession({ identity, workingDirectory: "/controller/caller-choice" });
+      const start = transport.calls.find(call => call.method === "thread/start")!.params;
+      expect(start).not.toHaveProperty("cwd");
+      expect(start).not.toHaveProperty("runtimeWorkspaceRoots");
+      const snapshot = await session.snapshot();
+      expect(snapshot.workingDirectory).toBe(cwd);
+      await session.startTurn({ message: { role: "user", text: "Begin." } });
+      expect(transport.calls.find(call => call.method === "turn/start")?.params).toMatchObject({ cwd });
+      await session.close({ reason: "test complete" });
+
+      const resumed = new PreparedLaunchTransport(cwd);
+      resumed.readResponse = { thread: { id: resumed.threadId, sessionId: resumed.providerSessionId, cwd, turns: [] } };
+      const recovered = await createNativeSessionBackend(input, {
+        codexTransportFactory: () => resumed, workingDirectoryAuthority: "runner_prepared_launch", environment: {},
+      }).recoverSession!({ ...snapshot, activeTurnId: null }, { signal: new AbortController().signal });
+      expect(recovered).toMatchObject({ recovered: true });
+      if (recovered.recovered) {
+        expect((await recovered.session.snapshot()).workingDirectory).toBe(cwd);
+        await recovered.session.close({ reason: "test complete" });
+      }
+    });
+
+    it.each([
+      ["missing", undefined, "did not report its provider working directory"],
+      ["relative", "home/agent", "normalized absolute path"],
+      ["root", "/", "filesystem root"],
+      ["unnormalized", "/home/agent/../root", "normalized absolute path"],
+    ])("rejects a %s prepared cwd", async (_label, cwd, message) => {
+      const transport = new PreparedLaunchTransport(cwd);
+      const backend = createNativeSessionBackend(execution(), {
+        codexTransportFactory: () => transport, workingDirectoryAuthority: "runner_prepared_launch", environment: {},
+      });
+      await expect(backend.openSession({ identity, workingDirectory: "/home/agent" })).rejects.toThrow(message);
+      expect(transport.calls.some(call => call.method === "turn/start")).toBe(false);
+    });
+
+    it.each([
+      ["thread read", { read: "/projects/other", resume: "/home/agent", reason: "provider read a different working directory" }],
+      ["thread resume", { read: "/home/agent", resume: "/projects/other", reason: "Error: Codex thread response changed the assigned working directory" }],
+    ])("does not recover when the %s reports another cwd", async (_label, cwds) => {
+      const transport = new PreparedLaunchTransport(cwds.resume);
+      transport.readResponse = { thread: { id: transport.threadId, sessionId: transport.providerSessionId, cwd: cwds.read, turns: [] } };
+      const backend = createNativeSessionBackend(execution(), {
+        codexTransportFactory: () => transport, workingDirectoryAuthority: "runner_prepared_launch", environment: {},
+      });
+      await expect(backend.recoverSession!({
+        schema: "paperclip.native-session.v1", backendKind: "codex_app_server", driverKind: "codex_app_server",
+        sessionId: transport.threadId, providerSessionId: transport.providerSessionId, workingDirectory: "/home/agent",
+        identity: { ...identity, issueId: "issue" }, activeTurnId: null, terminalTurns: [], lastCursor: null,
+      } as never, { signal: new AbortController().signal })).resolves.toEqual({ recovered: false, reason: cwds.reason });
+    });
+
+    it("keeps Core-assigned remote directories pinned outside prepared launches", async () => {
+      const backend = createNativeSessionBackend(execution(), {
+        codexTransportFactory: () => new PreparedLaunchTransport("/home/agent"), workingDirectoryAuthority: "remote_runner", environment: {},
+      });
+      await expect(backend.openSession({ identity, workingDirectory: "/home/agent" }))
+        .rejects.toThrow("Remote Codex working directory requires an assigned workspace");
+    });
+
+    it("does not allow prepared launch authority without runnerd", () => {
+      expect(() => createNativeSessionBackend(execution(), { workingDirectoryAuthority: "runner_prepared_launch", environment: {} }))
+        .toThrow("requires a runnerd transport");
+    });
   });
 
   it("does not allow remote workspace authority without runnerd", () => {
@@ -418,7 +550,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.32",
+      version: "1.18.34",
       capabilities: {
         resume: true,
         interruption: true,
@@ -444,10 +576,14 @@ describe("native backend factory", () => {
     });
   });
 
-  it.each(["codex" as const, "claude" as const])(
+  it.each(["codex" as const, "claude" as const, "grok" as const])(
     "routes qualified %s ACPX through runnerd",
     async (agent) => {
-      const backend = createNativeSessionBackend(acpxExecution(agent), {
+      const input = acpxExecution();
+      if (input.provider.kind !== "acpx") throw new Error("Invalid ACPX fixture");
+      const model = "explicit-test-model";
+      Object.assign(input.provider, { agent, model, profile: resolveQualifiedAcpxProfile(agent, model) });
+      const backend = createNativeSessionBackend(input, {
         codexTransportFactory: () => {
           throw new Error("descriptor must not launch the transport");
         },
@@ -462,6 +598,7 @@ describe("native backend factory", () => {
           interruption: true,
           dynamicTools: true,
           collaborationModes: ["default", "plan"],
+          toolRefreshOnResume: true,
         },
       });
     },
@@ -471,6 +608,16 @@ describe("native backend factory", () => {
     expect(() => createNativeSessionBackend(acpxExecution())).toThrow(
       "requires an instance runtime directory",
     );
+  });
+  it.each(["pi", "cursor", "copilot"] as const)("constructs %s identity on the supplied runnerd transport without starting a provider", async agent => {
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const model = "explicit-fixture-model";
+    Object.assign(input.provider, { agent, model, profile: resolveQualifiedAcpxProfile(agent, model) });
+    const backend = createNativeSessionBackend(input, {
+      codexTransportFactory: () => { throw new Error("descriptor must not launch the transport"); },
+    });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
   });
 
   it.each(["claude" as const])(
@@ -487,12 +634,56 @@ describe("native backend factory", () => {
     },
   );
 
-  it("rejects Pi before constructing an ACPX backend", () => {
-    expect(() =>
-      createNativeSessionBackend(acpxExecution("pi"), {
-        acpxRuntimeDirectory: "/runtime",
-      }),
-    ).toThrow("descriptor-confined verified launch");
+  it("constructs the qualified Pi backend without a diagnostic opt-in or provider launch", async () => {
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const profile = resolveQualifiedAcpxProfile("pi", "custom/explicit-test-model");
+    Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, piThinkingLevel: "low", profile });
+    const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+  });
+
+  it.each(["copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const model = "explicit-fixture-model";
+    const profile = resolveQualifiedAcpxProfile(agent, model);
+    Object.assign(input.provider, { agent, model, profile });
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime",
+      acpxEnvironment: { COPILOT_GITHUB_TOKEN: "explicit-fixture", CURSOR_API_KEY: "explicit-fixture", OPENROUTER_API_KEY: "explicit-fixture" },
+    })).toThrow("ACPX candidate direct execution requires completed qualification");
+  });
+
+  // The last source-bound Copilot, Grok and Pi identities, and retained Cursor declarations.
+  it.each([
+    ["copilot", { agentProfileVersion: 91, commandDigest: "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9" }],
+    ["grok", { agentProfileVersion: 19, commandDigest: "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca" }],
+    ["pi", { agentProfileVersion: 36, commandDigest: "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc" }],
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v7-identity.json"],
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v9-identity.json"],
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v10-identity.json"],
+  ] as const)("rejects the exact historical %s identity before runtime startup", (agent, source) => {
+    const historical = typeof source === "string"
+      ? (({ declaration, commandDigest }) => ({ agentProfileVersion: declaration.agentProfileVersion, commandDigest }))(JSON.parse(readFileSync(new URL(source, import.meta.url), "utf8")))
+      : source;
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "custom/explicit-test-model" : "explicit-fixture-model");
+    Object.assign(input.provider, { agent, model: current.qualificationModel, profile: { ...current,
+      agentProfileVersion: historical.agentProfileVersion, commandDigest: historical.commandDigest } });
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified agentProfileVersion");
+    input.provider.profile.agentProfileVersion = current.agentProfileVersion;
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified commandDigest");
+  });
+
+  it.each([1, 2] as const)("rejects a Pi version %s warm snapshot after the rich ACP upgrade", version => {
+    const input = acpxExecution("pi");
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    input.provider.profile.agentProfileVersion = version;
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified agentProfileVersion");
   });
 
   it("rejects a Codex ACPX snapshot that drifts from its qualified profile", () => {
@@ -516,5 +707,90 @@ describe("native backend factory", () => {
         }),
       ),
     ).toThrow("Codex native backend requires provider kind codex");
+  });
+
+  it.each(["v5", "v7", "v9"] as const)("selects prepared transport for %s native input and retains prepared constraints", async version => {
+    const input = preparedExecution(execution(), version);
+    const transport = new FakeCodexTransport();
+    let currentInstructions: string | undefined;
+    const backend = createCodexNativeSessionBackend(input, {
+      transportFactory: (context) => { currentInstructions = context?.baseInstructions; return transport; },
+      workingDirectoryAuthority: "remote_runner",
+      environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+
+    await backend.openSession({
+      identity: {
+        companyId: "company",
+        agentId: "agent",
+        runId: "run",
+        sessionId: "session",
+      },
+      workingDirectory: WORKSPACE,
+    });
+
+    expect(
+      transport.calls.find((call) => call.method === "thread/start")?.params,
+    ).toMatchObject({ conversationMode: "prepared" });
+    expect(currentInstructions).toContain("Keep assigned instructions.");
+    expect(currentInstructions).toBe(transport.calls.find((call) => call.method === "thread/start")?.params.developerInstructions);
+    expect(backend.preparedTaskConstraints).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Obtain one accepted result"),
+      ]),
+    );
+  });
+
+  it("allows a completion-only turn after v9 Claude work without wrapping prepared input", async () => {
+    const { qualificationModel: _model, reportedModelId: _reported, permissionPolicy: _policy, ...profile } = resolveQualifiedAcpxProfile("claude", "claude-opus-5-5");
+    const input = preparedExecution({ ...acpxExecution("claude"), provider: {
+      kind: "acpx", agent: "claude", model: "claude-opus-5-5", permissionMode: "approve-all", profile,
+    } }, "v9");
+    if (input.schema !== "paperclip.native-execution-input.v9" || input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    input.provider.claudeEffort = "high";
+    const transport = new FakeCodexTransport("thread-1", "provider-session-1", {
+      kind: "acpx", normalizedSessionId: "session", acpxRecordId: "fixture-record",
+      backendSessionId: "fixture-backend", agentSessionId: "fixture-agent",
+      profileDigest: `sha256:${"a".repeat(64)}`, workspaceDigest: `sha256:${"b".repeat(64)}`,
+      requestedModel: input.provider.model, effectiveModel: input.provider.model, permissionMode: "approve-all",
+      providerLifetimeFenceCandidates: [60001, 60002, 60003],
+    });
+    const backend = createRunnerdNativeSessionBackend(input, {
+      transportFactory: () => transport,
+      environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+    const session = await backend.openSession({
+      identity: { companyId: "company", agentId: "agent", runId: "run", sessionId: "session" },
+      workingDirectory: WORKSPACE,
+    });
+    const first = JSON.stringify(buildNativeModelEnvelope(input));
+    const completion = "Call paperclip_finish with the result of the work already completed.";
+    try {
+      for (const [index, text] of [first, completion].entries()) {
+        transport.turnStartResponse = Promise.resolve({ turn: { id: `turn-${index + 1}`, status: "inProgress", items: [] } });
+        const turn = await session.startTurn({ message: { role: "user", text } });
+        transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+        for await (const event of session.events()) {
+          if (["turn.completed", "turn.failed", "turn.cancelled"].includes(event.eventType)) break;
+        }
+      }
+      const turns = transport.calls.filter(call => call.method === "turn/start");
+      expect(turns.map(call => call.params.input)).toEqual([first, completion].map(text => [{ type: "text", text, text_elements: [] }]));
+      expect(backend.preparedTaskConstraints).toEqual(expect.arrayContaining([expect.stringContaining("Obtain one accepted result")]));
+    } finally {
+      await session.close({ reason: "test-completed" });
+    }
+  });
+
+  it.each(["v5", "v7", "v9"] as const)("projects %s OpenCode constraints to the prepared runtime boundary", version => {
+    const input = preparedExecution(opencodeExecution(), version);
+    const backend = createOpenCodeNativeSessionBackend(input, {
+      runtimeDirectory: "/tmp/paperclip-opencode-prepared-factory",
+    });
+    expect(backend.preparedTaskConstraints).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Obtain one accepted result"),
+      ]),
+    );
   });
 });

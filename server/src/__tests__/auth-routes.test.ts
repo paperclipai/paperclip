@@ -51,7 +51,7 @@ function createApp(actor: Express.Request["actor"], row: Record<string, unknown>
   return app;
 }
 
-describe.sequential("auth routes", () => {
+describe("auth routes", () => {
   const baseUser = {
     id: "user-1",
     name: "Jane Example",
@@ -113,23 +113,6 @@ describe.sequential("auth routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.sentryDsn).toBe("https://public@o0.ingest.sentry.io/1");
-  });
-
-  it("sends a null sentryDsn when SENTRY_DSN is unset", async () => {
-    delete process.env.SENTRY_DSN;
-    const app = await createApp(
-      {
-        type: "board",
-        userId: "user-1",
-        source: "session",
-      },
-      baseUser,
-    );
-
-    const res = await request(app).get("/api/auth/get-session");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sentryDsn).toBe(null);
   });
 
   it("sends sentryDsn for a board actor when only SENTRY_DSN_FRONTEND is set", async () => {

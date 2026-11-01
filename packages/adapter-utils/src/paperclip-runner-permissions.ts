@@ -1,5 +1,5 @@
 export type PaperclipRunnerProvider =
-  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot" | "grok_bot" | "muse";
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
 export type OpenCodePermissionMode = "allow" | "ask" | "deny";
@@ -12,7 +12,7 @@ export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   codex: "gpt-5.6-sol",
-  acpx: "claude-sonnet-5",
+  acpx: "claude-opus-5-5",
   opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 
@@ -103,6 +103,9 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
     description:
       "AWS AgentCore runs non-interactively under its qualified harness profile and Paperclip policy.",
   },
+  grok_bot: { configurable: false, defaultMode: "provider-managed", options: [], description: "Grok Bot uses first-party Paperclip tools and retains its native apps. Grok manages its model; spending, live steering, provider transcript streaming and remote interruption are unavailable." },
+  muse: { configurable: false, defaultMode: "provider-managed", options: [], description: "Muse uses the admitted Paperclip tool catalog and its own approved tools. Provider usage is unavailable and remote stop is best effort." },
+  openai_dot: { configurable: false, defaultMode: "provider-managed", options: [], description: "Dot uses the admitted Paperclip tool catalog. OpenAI manages its model and other tools; provider usage and global interruption are unavailable." },
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
@@ -125,7 +128,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         value: "approve-reads",
         label: "Allow Paperclip reads",
         description:
-          "Automatically allow assigned Paperclip read tools. Other operations stop with an approval-required message because this runner has no interactive approval handler.",
+          "Automatically allow assigned Paperclip read tools. Other operations request a supported permission decision. Company permissions and execution boundaries still apply.",
       },
       {
         value: "deny-all",
@@ -147,7 +150,7 @@ export function isPaperclipRunnerProvider(
     value === "opencode" ||
     value === "claude_managed" ||
     value === "aws_agentcore" ||
-    value === "acpx"
+    value === "acpx" || value === "openai_dot" || value === "grok_bot" || value === "muse"
   );
 }
 
@@ -160,6 +163,21 @@ export function resolvePaperclipRunnerPermissionMode(
   return capability.options.some((option) => option.value === value)
     ? (value as PaperclipRunnerPermissionMode)
     : capability.defaultMode;
+}
+
+/** Native session behavior is independent of tool permission policy. */
+export function resolvePaperclipRunnerCursorMode(
+  provider: unknown,
+  agent: unknown,
+  value: unknown,
+): "agent" | "plan" | "ask" | undefined {
+  if (provider !== "acpx" || agent !== "cursor") {
+    if (value !== undefined) throw new Error("acpxSessionMode is supported only for Cursor");
+    return undefined;
+  }
+  if (value === undefined) return "agent";
+  if (value === "agent" || value === "plan" || value === "ask") return value;
+  throw new Error("Cursor session mode must be agent, plan, or ask");
 }
 
 export function resolvePaperclipRunnerModel(
@@ -187,7 +205,7 @@ export function paperclipRunnerTransitionConfig(
   providerOverride?: unknown,
 ): Record<string, unknown> {
   const previousProvider =
-    previousAdapterType === "claude_local"
+    (["claude_local", "pi_local", "grok_local"].includes(previousAdapterType))
       ? "acpx"
       : previousAdapterType === "opencode_local"
         ? "opencode"
@@ -200,11 +218,15 @@ export function paperclipRunnerTransitionConfig(
       : previousProvider;
   return {
     provider,
-    model: resolvePaperclipRunnerModel(
+    model: provider === "acpx" && previousAdapterType === "grok_local"
+      ? typeof previousModel === "string" && previousModel.trim() && previousModel.trim() !== "grok-build" ? previousModel.trim() : "grok-4.7"
+      : provider === "acpx" && previousAdapterType === "pi_local"
+      ? typeof previousModel === "string" ? previousModel.trim() : ""
+      : resolvePaperclipRunnerModel(
       provider,
       provider === previousProvider ? previousModel : undefined,
     ),
-    ...(provider === "acpx" ? { acpxAgent: "claude" } : {}),
+    ...(provider === "acpx" ? { acpxAgent: previousAdapterType === "grok_local" ? "grok" : previousAdapterType === "pi_local" ? "pi" : "claude" } : {}),
     [PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].configKey]:
       PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].defaultMode,
     lifecycleMode: "per_turn",
@@ -222,4 +244,27 @@ export function normalizeLegacyRunnerProvider(
     ...rest
   } = config;
   return { ...rest, provider: "codex", codexPermissionMode: "never" };
+}
+
+/** Qualification is a release property, never an operator-configurable bypass. */
+export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
+  { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
+  { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
+  { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
+  { value: "copilot", label: "GitHub Copilot", qualified: true, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
+  { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"] },
+  { value: "kimi", label: "Kimi Code", qualified: true, credentialEnvironment: ["KIMI_API_KEY"] },
+  { value: "antigravity", label: "Google Antigravity", qualified: false, credentialEnvironment: ["GEMINI_API_KEY"] },
+] as const);
+
+/** Exact Pi native thinking levels; aliases that silently clamp are not configuration. */
+export type PaperclipRunnerPiThinkingLevel = "off" | "low" | "high" | "max";
+export function resolvePaperclipRunnerPiThinkingLevel(provider: unknown, agent: unknown, value: unknown): PaperclipRunnerPiThinkingLevel | undefined {
+  if (provider !== "acpx" || agent !== "pi") {
+    if (value !== undefined) throw new Error("piThinkingLevel is supported only for Pi");
+    return undefined;
+  }
+  if (value === undefined) return "low";
+  if (value === "off" || value === "low" || value === "high" || value === "max") return value;
+  throw new Error("Pi thinking level must be off, low, high, or max");
 }

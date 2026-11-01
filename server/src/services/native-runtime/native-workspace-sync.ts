@@ -1,3 +1,10 @@
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
+import { measureRunPhase } from "../execution-preparation-timing.js";
+import { emitStartupReuse, type StartupReuseReason } from "@paperclipai/adapter-utils/startup-reuse";
+import type { AdapterRuntimeEvent } from "@paperclipai/adapter-utils";
+import type { WorkspaceCheckpointMetrics } from "@paperclipai/adapter-utils/workspace-checkpoint";
+import type { RuntimeSpanRunner } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
@@ -11,9 +18,11 @@ import {
   type AdapterExecutionTarget,
   type PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
-import type { GitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { disposeGitWorkspaceSnapshot, type GitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import {
   directorySnapshotSha256,
+  disposeDirectorySnapshot,
+  openDirectorySnapshot,
   parseDirectorySnapshot,
   serializeDirectorySnapshot,
   type DirectorySnapshot,
@@ -23,11 +32,15 @@ import type {
   WorkspaceDurableSeedPaths,
   WorkspaceInboundMode,
 } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { assertWorkspaceManifestDiskSpace, isPathManifest, manifestFileSha256, readManifestRecords, type PathManifest, type WorkspacePaths } from "@paperclipai/adapter-utils/workspace-manifest";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { parseObject } from "../../adapters/utils.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 
-const DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v1";
+const LEGACY_DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v1";
+const PREVIOUS_DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v2";
+const DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v3";
+type DescriptorSchema = typeof DESCRIPTOR_SCHEMA | typeof PREVIOUS_DESCRIPTOR_SCHEMA | typeof LEGACY_DESCRIPTOR_SCHEMA;
 const STAMP_SCHEMA = "paperclip.native-workspace-stamp/v1";
 const STATE_ROOT_NAME = "native-workspace-sync";
 const DESCRIPTOR_NAME = "descriptor";
@@ -42,7 +55,7 @@ export type NativeWorkspaceResourceDisposition =
   "keep_running" | "stop_and_retain" | "destroy";
 
 interface NativeWorkspaceSyncDescriptor {
-  schema: typeof DESCRIPTOR_SCHEMA;
+  schema: DescriptorSchema;
   binding: {
     runId: string;
     companyId: string;
@@ -56,6 +69,7 @@ interface NativeWorkspaceSyncDescriptor {
   baselineSha256: string;
   baseline: SerializedDirectorySnapshot;
   gitSnapshot: GitWorkspaceSnapshot | null;
+  repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   seed: {
     workspaceArchiveSha256: string;
     gitArchiveSha256: string | null;
@@ -67,7 +81,7 @@ interface NativeWorkspaceSyncDescriptor {
 }
 
 export interface NativeWorkspaceSyncReference {
-  schema: typeof DESCRIPTOR_SCHEMA;
+  schema: DescriptorSchema;
   state: NativeWorkspaceSyncState;
   descriptorSha256: string;
   baselineSha256: string;
@@ -82,7 +96,7 @@ export interface NativeWorkspaceSyncReference {
 export interface PreparedNativeWorkspaceSync {
   mode: WorkspaceInboundMode;
   reference: NativeWorkspaceSyncReference;
-  restoreWorkspace(): Promise<void>;
+  restoreWorkspace(assertOwnership?: () => Promise<void>): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -138,12 +152,12 @@ function requireSafeSegment(value: string, label: string): string {
   return value;
 }
 
+export function nativeWorkspaceSyncStateRoot(): string {
+  return path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME);
+}
+
 function descriptorDirectory(runId: string): string {
-  return path.join(
-    resolvePaperclipInstanceRoot(),
-    STATE_ROOT_NAME,
-    requireSafeSegment(runId, "run_id"),
-  );
+  return path.join(nativeWorkspaceSyncStateRoot(), requireSafeSegment(runId, "run_id"));
 }
 
 function descriptorPath(runId: string, descriptorSha256: string): string {
@@ -172,19 +186,20 @@ function durableSeedPaths(runId: string): {
 }
 
 async function sha256File(filePath: string): Promise<string> {
-  return await new Promise((resolveDigest, rejectDigest) => {
+  return measureRunPhase("workspace_sync.archive_hash", () => new Promise((resolveDigest, rejectDigest) => {
     const digest = createHash("sha256");
     const stream = createReadStream(filePath);
     stream.on("data", (chunk) => digest.update(chunk));
     stream.on("error", rejectDigest);
     stream.on("end", () => resolveDigest(digest.digest("hex")));
-  });
+  }));
 }
 
 async function verifiedDurableSeed(input: {
   runId: string;
   seed: NonNullable<NativeWorkspaceSyncDescriptor["seed"]>;
   gitSnapshot: GitWorkspaceSnapshot | null;
+  repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
 }): Promise<WorkspaceDurableSeedPaths> {
   try {
     const paths = durableSeedPaths(input.runId);
@@ -198,7 +213,7 @@ async function verifiedDurableSeed(input: {
     ) {
       throw new Error("workspace_sync_out_unrecoverable");
     }
-    if (input.gitSnapshot) {
+    if (input.gitSnapshot || input.repositories?.length) {
       const gitStat = await fs.lstat(paths.gitArchivePath);
       if (
         gitStat.isSymbolicLink() ||
@@ -214,7 +229,7 @@ async function verifiedDurableSeed(input: {
     return {
       workspaceArchivePath: paths.workspaceArchivePath,
       workspaceArchiveSha256: input.seed.workspaceArchiveSha256,
-      gitArchivePath: input.gitSnapshot ? paths.gitArchivePath : null,
+      gitArchivePath: input.gitSnapshot || input.repositories?.length ? paths.gitArchivePath : null,
       gitArchiveSha256: input.seed.gitArchiveSha256,
     };
   } catch (error) {
@@ -236,11 +251,26 @@ async function ensurePrivateDirectory(dir: string): Promise<void> {
   }
 }
 
+const runDirectoryListeners = new Set<() => void>();
+
+export function onNativeWorkspaceSyncRunDirectory(listener: () => void): () => void {
+  runDirectoryListeners.add(listener);
+  return () => {
+    runDirectoryListeners.delete(listener);
+  };
+}
+
+async function ensureRunDirectory(runId: string): Promise<string> {
+  const dir = descriptorDirectory(runId);
+  await ensurePrivateDirectory(dir);
+  for (const listener of runDirectoryListeners) listener();
+  return dir;
+}
+
 async function writeDescriptor(
   descriptor: NativeWorkspaceSyncDescriptor,
 ): Promise<NativeWorkspaceSyncReference> {
-  const dir = descriptorDirectory(descriptor.binding.runId);
-  await ensurePrivateDirectory(dir);
+  const dir = await ensureRunDirectory(descriptor.binding.runId);
   const body = `${canonicalJson(descriptor)}\n`;
   const descriptorSha256 = createHash("sha256").update(body).digest("hex");
   const finalPath = descriptorPath(descriptor.binding.runId, descriptorSha256);
@@ -258,7 +288,7 @@ async function writeDescriptor(
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
   }
   return {
-    schema: DESCRIPTOR_SCHEMA,
+    schema: descriptor.schema,
     state: descriptor.state,
     descriptorSha256,
     baselineSha256: descriptor.baselineSha256,
@@ -276,7 +306,7 @@ export function readNativeWorkspaceSyncReference(
 ): NativeWorkspaceSyncReference | null {
   const candidate = parseObject(value);
   if (
-    candidate.schema !== DESCRIPTOR_SCHEMA ||
+    (candidate.schema !== DESCRIPTOR_SCHEMA && candidate.schema !== PREVIOUS_DESCRIPTOR_SCHEMA && candidate.schema !== LEGACY_DESCRIPTOR_SCHEMA) ||
     (candidate.state !== "prepared" && candidate.state !== "finalized") ||
     typeof candidate.descriptorSha256 !== "string" ||
     !/^[0-9a-f]{64}$/.test(candidate.descriptorSha256) ||
@@ -299,7 +329,7 @@ export function readNativeWorkspaceSyncReference(
     return null;
   }
   return {
-    schema: DESCRIPTOR_SCHEMA,
+    schema: candidate.schema,
     state: candidate.state,
     descriptorSha256: candidate.descriptorSha256,
     baselineSha256: candidate.baselineSha256,
@@ -320,35 +350,81 @@ export function readNativeWorkspaceSyncReference(
   };
 }
 
+function validManifestShape(value: unknown): value is PathManifest {
+  const record = parseObject(value);
+  return record.kind === "path_manifest" && record.version === 1 && typeof record.filePath === "string"
+    && typeof record.category === "string" && ["overlay", "deleted", "ignored", "baseline"].includes(record.category)
+    && typeof record.count === "number" && Number.isSafeInteger(record.count) && record.count >= 0;
+}
+
+function* gitManifests(snapshot: GitWorkspaceSnapshot | null): Generator<PathManifest> {
+  if (!snapshot) return;
+  for (const paths of [snapshot.overlayPaths, snapshot.deletedPaths, snapshot.ignoredPaths]) if (isPathManifest(paths)) yield paths;
+  for (const repo of snapshot.repositories ?? []) yield* gitManifests(repo.snapshot);
+}
+
+async function verifyManifest(runId: string, manifest: PathManifest): Promise<void> {
+  const directory = descriptorDirectory(runId);
+  const name = path.basename(manifest.filePath);
+  const match = /^manifest\.([0-9a-f]{64})\.sqlite$/.exec(name);
+  if (!match || manifest.filePath !== path.join(directory, name)) throw new Error("native_workspace_sync_manifest_path_invalid");
+  for (const dir of [path.dirname(directory), directory]) {
+    const stat = await fs.lstat(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("native_workspace_sync_manifest_root_invalid");
+  }
+  if (await manifestFileSha256(manifest.filePath) !== match[1]) throw new Error("native_workspace_sync_manifest_digest_mismatch");
+  // Verify every record before consumers can mutate a workspace on recovery.
+  for (const _record of readManifestRecords(manifest)) { /* bounded validation */ }
+}
+
+async function persistSnapshotManifests(runId: string, snapshot: NonNullable<PreparedAdapterExecutionTargetRuntime["workspaceSyncSnapshot"]>): Promise<void> {
+  const baseline = serializeDirectorySnapshot(snapshot.baseline);
+  const manifests = function* () {
+    if (baseline.version === 2) {
+      yield baseline.entries;
+      if (baseline.ignoredPaths && isPathManifest(baseline.ignoredPaths)) yield baseline.ignoredPaths;
+    }
+    yield* gitManifests(snapshot.gitSnapshot);
+    for (const repo of snapshot.repositories ?? []) yield* gitManifests(repo.snapshot);
+  };
+  const copies = new Map<string, string>();
+  for (const manifest of manifests()) {
+    const oldPath = manifest.filePath;
+    const previous = copies.get(oldPath);
+    if (previous) { manifest.filePath = previous; continue; }
+    // A shared reference may already have been updated by the baseline.
+    if (path.dirname(oldPath) === descriptorDirectory(runId)) continue;
+    const temporary = path.join(descriptorDirectory(runId), `manifest.${randomUUID()}.tmp`);
+    try {
+      const sourceStat = await fs.lstat(oldPath);
+      if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw new Error("native_workspace_sync_manifest_invalid");
+      assertWorkspaceManifestDiskSpace(descriptorDirectory(runId), sourceStat.size);
+      await fs.copyFile(oldPath, temporary);
+      await fs.chmod(temporary, 0o600);
+      const digest = await manifestFileSha256(temporary);
+      const target = path.join(descriptorDirectory(runId), `manifest.${digest}.sqlite`);
+      await fs.rename(temporary, target);
+      copies.set(oldPath, target);
+      manifest.filePath = target;
+    } finally { await fs.rm(temporary, { force: true }); }
+  }
+  // Ownership tracks original scratch directories, never the new durable path.
+  await disposeDirectorySnapshot(snapshot.baseline);
+  await disposeGitWorkspaceSnapshot(snapshot.gitSnapshot);
+  for (const repo of snapshot.repositories ?? []) await disposeGitWorkspaceSnapshot(repo.snapshot);
+}
+
 function parseGitSnapshot(
   value: unknown,
   nested = false,
 ): GitWorkspaceSnapshot | null | undefined {
   if (value === null) return null;
   const candidate = parseObject(value);
-  const paths = [
-    candidate.overlayPaths,
-    candidate.deletedPaths,
-    candidate.ignoredPaths,
-  ];
-  if (
-    typeof candidate.headCommit !== "string" ||
-    (candidate.branchName !== null &&
-      typeof candidate.branchName !== "string") ||
-    !paths.every(
-      (entries) =>
-        Array.isArray(entries) &&
-        entries.every(
-          (entry) =>
-            typeof entry === "string" &&
-            !path.posix.isAbsolute(entry) &&
-            !path.win32.isAbsolute(entry) &&
-            !entry.split(/[\\/]/).some((segment) => segment === ".."),
-        ),
-    )
-  ) {
-    return undefined;
-  }
+  const paths = [candidate.overlayPaths, candidate.deletedPaths, candidate.ignoredPaths];
+  if ((candidate.originUrl !== undefined && candidate.originUrl !== null && typeof candidate.originUrl !== "string") || typeof candidate.headCommit !== "string" || (candidate.branchName !== null && typeof candidate.branchName !== "string")
+    || !paths.every((entries) => validManifestShape(entries) || (Array.isArray(entries) && entries.every((entry) =>
+      typeof entry === "string" && entry.length > 0 && !entry.includes("\0") && !path.posix.isAbsolute(entry) && !path.win32.isAbsolute(entry)
+      && !entry.split(/[\\/]/).some((segment) => segment === ".." || segment === "."))))) return undefined;
   const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
   if (candidate.repositories !== undefined) {
     if (nested || !Array.isArray(candidate.repositories)) return undefined;
@@ -365,9 +441,10 @@ function parseGitSnapshot(
   return {
     headCommit: candidate.headCommit,
     branchName: candidate.branchName as string | null,
-    overlayPaths: [...(candidate.overlayPaths as string[])],
-    deletedPaths: [...(candidate.deletedPaths as string[])],
-    ignoredPaths: [...(candidate.ignoredPaths as string[])],
+    ...(candidate.originUrl !== undefined ? { originUrl: candidate.originUrl as string | null } : {}),
+    overlayPaths: candidate.overlayPaths as WorkspacePaths,
+    deletedPaths: candidate.deletedPaths as WorkspacePaths,
+    ignoredPaths: candidate.ignoredPaths as WorkspacePaths,
     ...(repositories.length ? { repositories } : {}),
   };
 }
@@ -413,8 +490,26 @@ async function readDescriptor(input: {
   const parsed = JSON.parse(body) as unknown;
   const candidate = parseObject(parsed);
   const binding = parseObject(candidate.binding);
-  const baseline = parseDirectorySnapshot(candidate.baseline);
+  const rawBaseline = parseObject(candidate.baseline);
+  let baseline: DirectorySnapshot | null;
+  if ((candidate.schema === DESCRIPTOR_SCHEMA || candidate.schema === PREVIOUS_DESCRIPTOR_SCHEMA) && rawBaseline.version === 2
+    && Array.isArray(rawBaseline.exclude) && rawBaseline.exclude.every((entry) => typeof entry === "string")
+    && validManifestShape(rawBaseline.entries) && rawBaseline.entries.category === "baseline"
+    && (rawBaseline.ignoredPaths === undefined || validManifestShape(rawBaseline.ignoredPaths))) {
+    await verifyManifest(input.runId, rawBaseline.entries);
+    if (validManifestShape(rawBaseline.ignoredPaths)) await verifyManifest(input.runId, rawBaseline.ignoredPaths);
+    baseline = openDirectorySnapshot(rawBaseline as unknown as Extract<SerializedDirectorySnapshot, { version: 2 }>);
+  } else {
+    baseline = parseDirectorySnapshot(candidate.baseline);
+  }
   const gitSnapshot = parseGitSnapshot(candidate.gitSnapshot);
+  const repositoryContainer = candidate.repositories === undefined ? null : parseGitSnapshot({
+    headCommit: "", branchName: null, overlayPaths: [], deletedPaths: [], ignoredPaths: [], repositories: candidate.repositories,
+  });
+  if (candidate.repositories !== undefined && (!repositoryContainer || candidate.schema !== DESCRIPTOR_SCHEMA || gitSnapshot)) throw new Error("native_workspace_sync_repositories_invalid");
+  const repositories = repositoryContainer?.repositories;
+  for (const repo of repositories ?? []) for (const manifest of gitManifests(repo.snapshot)) await verifyManifest(input.runId, manifest);
+  for (const manifest of gitManifests(gitSnapshot ?? null)) await verifyManifest(input.runId, manifest);
   const rawSeed =
     candidate.seed === null || candidate.seed === undefined
       ? null
@@ -448,7 +543,7 @@ async function readDescriptor(input: {
         ? null
         : undefined;
   if (
-    candidate.schema !== DESCRIPTOR_SCHEMA ||
+    (candidate.schema !== DESCRIPTOR_SCHEMA && candidate.schema !== PREVIOUS_DESCRIPTOR_SCHEMA && candidate.schema !== LEGACY_DESCRIPTOR_SCHEMA) ||
     (candidate.state !== "prepared" && candidate.state !== "finalized") ||
     !baseline ||
     gitSnapshot === undefined ||
@@ -468,6 +563,7 @@ async function readDescriptor(input: {
     directorySnapshotSha256(baseline) !== candidate.baselineSha256 ||
     typeof candidate.createdAt !== "string" ||
     !Number.isFinite(Date.parse(candidate.createdAt)) ||
+    candidate.schema !== input.reference.schema ||
     candidate.state !== input.reference.state ||
     finalHostSha256 === undefined ||
     finalHostSha256 !== input.reference.finalHostSha256 ||
@@ -484,7 +580,7 @@ async function readDescriptor(input: {
   }
   return {
     descriptor: {
-      schema: DESCRIPTOR_SCHEMA,
+      schema: candidate.schema,
       binding: {
         runId: binding.runId as string,
         companyId: binding.companyId,
@@ -498,6 +594,7 @@ async function readDescriptor(input: {
       baselineSha256: candidate.baselineSha256,
       baseline: candidate.baseline as SerializedDirectorySnapshot,
       gitSnapshot,
+      ...(repositories?.length ? { repositories } : {}),
       seed,
       createdAt: candidate.createdAt,
       finalizedAt:
@@ -518,13 +615,14 @@ async function persistRunReference(
 ): Promise<void> {
   await db.transaction(async (tx) => {
     const run = await tx
-      .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+      .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!run) throw new Error("native_workspace_sync_run_missing");
+    await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId });
     await tx
       .update(heartbeatRuns)
       .set({
@@ -545,13 +643,14 @@ async function persistLeaseStamp(input: {
 }): Promise<void> {
   await input.db.transaction(async (tx) => {
     const lease = await tx
-      .select({ metadata: environmentLeases.metadata })
+      .select({ metadata: environmentLeases.metadata, companyId: environmentLeases.companyId, heartbeatRunId: environmentLeases.heartbeatRunId })
       .from(environmentLeases)
       .where(eq(environmentLeases.id, input.leaseId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!lease) throw new Error("native_workspace_sync_lease_missing");
+    await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
     await tx
       .update(environmentLeases)
       .set({
@@ -618,6 +717,8 @@ async function writeRemoteStamp(input: {
 async function remoteStampMatches(input: {
   target: Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
   expected: Record<string, unknown>;
+  gitSnapshot?: GitWorkspaceSnapshot | null;
+  repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
 }): Promise<boolean> {
   if (!input.target.runner) return false;
   const stampPath = path.posix.join(
@@ -626,11 +727,30 @@ async function remoteStampMatches(input: {
     "paperclip-runner",
     REMOTE_STAMP_NAME,
   );
+  // File hashes do not detect empty commits or branch changes. A fresh host
+  // snapshot may authorize replacement only if the retained sandbox actually
+  // starts from that same Git identity, including each managed repository.
+  const gitChecks: string[] = [];
+  const checkGit = (remoteDir: string, snapshot: GitWorkspaceSnapshot) => {
+    const git = `git -C ${shellQuote(remoteDir)}`;
+    gitChecks.push(`test "$(${git} rev-parse HEAD)" = ${shellQuote(snapshot.headCommit)}`);
+    gitChecks.push(snapshot.branchName === null
+      ? `(${git} symbolic-ref --quiet HEAD >/dev/null 2>&1; test $? -eq 1)`
+      : `test "$(${git} symbolic-ref --quiet --short HEAD)" = ${shellQuote(snapshot.branchName)}`);
+    if (snapshot.originUrl !== undefined) gitChecks.push(snapshot.originUrl === null
+      ? `! ${git} config --get remote.origin.url >/dev/null 2>&1`
+      : `test "$(${git} config --get remote.origin.url)" = ${shellQuote(snapshot.originUrl)}`);
+    for (const repository of snapshot.repositories ?? []) {
+      checkGit(path.posix.join(remoteDir, repository.path), repository.snapshot);
+    }
+  };
+  if (input.gitSnapshot) checkGit(input.target.remoteCwd, input.gitSnapshot);
+  for (const repo of input.repositories ?? []) checkGit(path.posix.join(input.target.remoteCwd, repo.path), repo.snapshot);
   const result = await input.target.runner.execute({
     command: input.target.shellCommand ?? "sh",
     args: [
       "-c",
-      `test -f ${shellQuote(stampPath)} && cat ${shellQuote(stampPath)}`,
+      [...gitChecks, `test -f ${shellQuote(stampPath)}`, `cat ${shellQuote(stampPath)}`].join(" && "),
     ],
     cwd: "/",
     timeoutMs: 15_000,
@@ -689,19 +809,39 @@ async function prepareRuntime(input: {
   mode: WorkspaceInboundMode;
   baseline?: DirectorySnapshot;
   gitSnapshot?: GitWorkspaceSnapshot | null;
+  repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   durableSeed?: WorkspaceDurableSeedPaths;
+  seedCacheDirectory?: string;
+  seedCacheCompanyDirectory?: string;
+  workspaceGitIndexRefresh?: boolean;
+  onPhase?: RuntimeSpanRunner;
+  onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
-  return prepareAdapterExecutionTargetRuntime({
+  const phase = {
+    host_current: "workspace_sync.prepare_host_current",
+    durable_seed: "workspace_sync.prepare_durable_seed",
+    adopt_remote: "workspace_sync.prepare_adopt_remote",
+  } as const;
+  return measureRunPhase(phase[input.mode], () => prepareAdapterExecutionTargetRuntime({
     runId: input.runId,
     target: input.target,
     adapterKey: "paperclip-runner",
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.target.remoteCwd,
     workspaceInboundMode: input.mode,
+    workspaceSnapshotIsolation: "worker",
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.durableSeed,
     workspaceBaseline: input.baseline,
     workspaceGitSnapshot: input.gitSnapshot,
-  });
+    workspaceRepositories: input.repositories ?? (input.baseline ? [] : undefined),
+    workspaceCheckpoint: true,
+    onWorkspaceCheckpoint: input.onCheckpoint,
+    workspaceSeedCacheDirectory: input.seedCacheDirectory,
+    workspaceSeedCacheCompanyDirectory: input.seedCacheCompanyDirectory,
+    workspaceSeedCacheScope: "company",
+    runtimeSpan: input.onPhase,
+  }));
 }
 
 async function finalizePreparedRuntime(input: {
@@ -710,35 +850,46 @@ async function finalizePreparedRuntime(input: {
   target: Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
   runtime: PreparedAdapterExecutionTargetRuntime;
   descriptor: NativeWorkspaceSyncDescriptor;
+  assertOwnership?: () => Promise<void>;
+  onPhase?: RuntimeSpanRunner;
+  onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<NativeWorkspaceSyncReference> {
-  await input.runtime.restoreWorkspace();
-  const finalSnapshot =
-    await import("@paperclipai/adapter-utils/workspace-restore-merge").then(
-      ({ captureDirectorySnapshot }) =>
-        captureDirectorySnapshot(input.descriptor.binding.localCwd, {
-          exclude: input.runtime.workspaceSyncSnapshot?.baseline.exclude ?? [],
-        }),
-    );
-  const finalHostSha256 = directorySnapshotSha256(finalSnapshot);
-  const stamp = finalizedWorkspaceStamp({
-    descriptor: input.descriptor,
-    hostSha256: finalHostSha256,
+  if (input.onPhase) await input.onPhase("workspace.restore", () => input.runtime.restoreWorkspace());
+  else await input.runtime.restoreWorkspace();
+  return measureRunPhase("execution.workspace_commit", async () => {
+    await input.assertOwnership?.();
+    const finalSnapshot =
+      await import("@paperclipai/adapter-utils/workspace-restore-merge").then(
+        ({ captureDirectorySnapshotOffThread: captureDirectorySnapshot }) =>
+          captureDirectorySnapshot(input.descriptor.binding.localCwd, {
+            exclude: input.runtime.workspaceSyncSnapshot?.baseline.exclude ?? [],
+            ignoredPaths: input.runtime.workspaceSyncSnapshot?.baseline.ignoredPaths,
+            diskBacked: true,
+          }),
+      );
+    const finalHostSha256 = directorySnapshotSha256(finalSnapshot);
+    await disposeDirectorySnapshot(finalSnapshot);
+    const stamp = finalizedWorkspaceStamp({
+      descriptor: input.descriptor,
+      hostSha256: finalHostSha256,
+    });
+    await writeRemoteStamp({ target: input.target, stamp });
+    const finalizedDescriptor: NativeWorkspaceSyncDescriptor = {
+      ...input.descriptor,
+      state: "finalized",
+      finalizedAt: new Date().toISOString(),
+      finalHostSha256,
+    };
+    await input.assertOwnership?.();
+    const reference = await writeDescriptor(finalizedDescriptor);
+    await persistRunReference(input.db, input.runId, reference);
+    await persistLeaseStamp({
+      db: input.db,
+      leaseId: input.descriptor.binding.leaseId,
+      stamp,
+    });
+    return reference;
   });
-  await writeRemoteStamp({ target: input.target, stamp });
-  const finalizedDescriptor: NativeWorkspaceSyncDescriptor = {
-    ...input.descriptor,
-    state: "finalized",
-    finalizedAt: new Date().toISOString(),
-    finalHostSha256,
-  };
-  const reference = await writeDescriptor(finalizedDescriptor);
-  await persistRunReference(input.db, input.runId, reference);
-  await persistLeaseStamp({
-    db: input.db,
-    leaseId: input.descriptor.binding.leaseId,
-    stamp,
-  });
-  return reference;
 }
 
 export async function prepareNativeWorkspaceSync(input: {
@@ -752,41 +903,47 @@ export async function prepareNativeWorkspaceSync(input: {
   restartRecovery?: NativeRestartRecoveryClaim;
   sameRunRecovery?: boolean;
   resourceDisposition?: NativeWorkspaceResourceDisposition;
+  workspaceGitIndexRefresh?: boolean;
+  onPhase?: RuntimeSpanRunner;
+  onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
 }): Promise<PreparedNativeWorkspaceSync | null> {
-  if (input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (input.target?.kind !== "remote" || input.target.transport !== "sandbox" || input.target.runnerTask) {
     return null;
   }
   const target = input.target;
   const providerLeaseId = providerLeaseIdFor({ target, lease: input.lease });
   // Reattachment may never seed a replacement sandbox over a still-live run.
   if (input.restartRecovery?.kind === "reattach_remote_runner" &&
-      (input.restartRecovery.runId !== input.runId ||
+      (input.restartRecovery.remote.kind === "plugin_task" || input.restartRecovery.runId !== input.runId ||
        input.restartRecovery.remote.providerLeaseId !== providerLeaseId ||
        input.restartRecovery.remote.remoteCwd !== target.remoteCwd)) {
     throw new Error("native_remote_recovery_lease_mismatch");
   }
-  const run = await input.db
+  const run = await measureRunPhase("workspace_sync.run_read", () => input.db
     .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
-    .then((rows) => rows[0] ?? null);
+    .then((rows) => rows[0] ?? null));
   if (!run) throw new Error("native_workspace_sync_run_missing");
   const existingReference = readNativeWorkspaceSyncReference(
     parseObject(run.runnerProfileJson).nativeWorkspaceSync,
   );
 
-  let runtime: PreparedAdapterExecutionTargetRuntime;
+  let runtime: PreparedAdapterExecutionTargetRuntime | undefined;
   let descriptor: NativeWorkspaceSyncDescriptor;
   let mode: WorkspaceInboundMode = "host_current";
+  let reuseReason: StartupReuseReason = "created";
   const seedPaths = durableSeedPaths(input.runId);
-  await ensurePrivateDirectory(descriptorDirectory(input.runId));
+  await measureRunPhase("workspace_sync.descriptor_directory", () => ensureRunDirectory(input.runId));
 
+  try {
   if (existingReference) {
-    const existing = await readDescriptor({
+    const existing = await measureRunPhase("workspace_sync.descriptor_read", () => readDescriptor({
       runId: input.runId,
       reference: existingReference,
-    });
+    }));
     if (
       existing.descriptor.binding.companyId !== input.companyId ||
       existing.descriptor.binding.workspaceId !== input.workspaceId ||
@@ -804,14 +961,16 @@ export async function prepareNativeWorkspaceSync(input: {
       sameRunRecovery: input.sameRunRecovery,
       sameProviderLease,
     });
+    reuseReason = sameProviderLease ? "verified_reuse" : "replacement";
     const durableSeed =
       mode === "durable_seed"
         ? existing.descriptor.seed
-          ? await verifiedDurableSeed({
+          ? await measureRunPhase("workspace_sync.durable_seed_verify", () => verifiedDurableSeed({
               runId: input.runId,
-              seed: existing.descriptor.seed,
+              seed: existing.descriptor.seed!,
               gitSnapshot: existing.descriptor.gitSnapshot,
-            })
+              repositories: existing.descriptor.repositories,
+            }))
           : (() => {
               throw new Error("workspace_sync_out_unrecoverable");
             })()
@@ -819,10 +978,13 @@ export async function prepareNativeWorkspaceSync(input: {
     runtime = await prepareRuntime({
       runId: input.runId,
       target,
+      onPhase: input.onPhase,
+      onCheckpoint: input.onCheckpoint,
       workspaceLocalDir: input.workspaceLocalDir,
       mode,
       baseline: existing.baseline,
       gitSnapshot: existing.descriptor.gitSnapshot,
+      repositories: existing.descriptor.repositories,
       durableSeed,
     });
     descriptor = {
@@ -835,6 +997,7 @@ export async function prepareNativeWorkspaceSync(input: {
     };
   } else {
     const acquisition = target.sandboxLeaseAcquisition?.outcome ?? null;
+    reuseReason = acquisition === "resumed" ? "cache_miss" : acquisition === "replacement" ? "replacement" : "created";
     const priorStamp = leaseStamp({
       lease: input.lease,
       workspaceId: input.workspaceId,
@@ -846,11 +1009,20 @@ export async function prepareNativeWorkspaceSync(input: {
       acquisition,
       hasPriorStamp: priorStamp !== null,
     });
+    const seedCacheCompanyDirectory = path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME, "generations", requireSafeSegment(input.companyId, "company_id"));
+    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, "shared-v1");
     runtime = await prepareRuntime({
       runId: input.runId,
       target,
+      onPhase: input.onPhase,
+      onCheckpoint: input.onCheckpoint,
       workspaceLocalDir: input.workspaceLocalDir,
       mode,
+      seedCacheCompanyDirectory,
+      seedCacheDirectory,
+      workspaceGitIndexRefresh: input.workspaceGitIndexRefresh === true
+        && acquisition === "created" && mode === "host_current"
+        && !input.restartRecovery && !input.sameRunRecovery,
       durableSeed: {
         workspaceArchivePath: seedPaths.workspaceArchivePath,
         gitArchivePath: seedPaths.gitArchivePath,
@@ -860,40 +1032,56 @@ export async function prepareNativeWorkspaceSync(input: {
     if (!currentSnapshot) {
       throw new Error("native_workspace_sync_snapshot_missing");
     }
+    let workspaceArchiveSha256 = await sha256File(seedPaths.workspaceArchivePath);
+    let gitArchiveSha256 = currentSnapshot.gitSnapshot || currentSnapshot.repositories?.length
+      ? await sha256File(seedPaths.gitArchivePath)
+      : null;
     if (acquisition === "resumed" && priorStamp) {
       const currentHostSha256 = directorySnapshotSha256(
         currentSnapshot.baseline,
       );
       const verifiedWarmAdoption =
         priorStamp.hostSha256 === currentHostSha256 &&
-        (await remoteStampMatches({ target, expected: priorStamp }));
+        (await measureRunPhase("workspace_sync.warm_stamp", () => remoteStampMatches({ target, expected: priorStamp, gitSnapshot: currentSnapshot.gitSnapshot, repositories: currentSnapshot.repositories })));
       if (verifiedWarmAdoption) {
         mode = "adopt_remote";
+        reuseReason = "verified_reuse";
       } else {
         mode = "host_current";
+        reuseReason = "workspace_changed";
+        let preparedSeed: WorkspaceDurableSeedPaths | undefined;
+        try {
+          preparedSeed = await measureRunPhase("workspace_sync.durable_seed_verify", () => verifiedDurableSeed({ runId: input.runId,
+            seed: { workspaceArchiveSha256, gitArchiveSha256 },
+            gitSnapshot: currentSnapshot.gitSnapshot, repositories: currentSnapshot.repositories }));
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "workspace_sync_out_unrecoverable") throw error;
+        }
         runtime = await prepareRuntime({
           runId: input.runId,
           target,
           workspaceLocalDir: input.workspaceLocalDir,
-          mode,
+          mode: preparedSeed ? "durable_seed" : mode,
+          seedCacheCompanyDirectory,
+          seedCacheDirectory,
           baseline: currentSnapshot.baseline,
           gitSnapshot: currentSnapshot.gitSnapshot,
-          durableSeed: {
-            workspaceArchivePath: seedPaths.workspaceArchivePath,
-            gitArchivePath: seedPaths.gitArchivePath,
-          },
+          repositories: currentSnapshot.repositories,
+          onPhase: input.onPhase,
+          onCheckpoint: input.onCheckpoint,
+          durableSeed: preparedSeed ?? seedPaths,
         });
+        if (!preparedSeed) {
+          workspaceArchiveSha256 = await sha256File(seedPaths.workspaceArchivePath);
+          gitArchiveSha256 = currentSnapshot.gitSnapshot || currentSnapshot.repositories?.length
+            ? await sha256File(seedPaths.gitArchivePath) : null;
+        }
       }
     }
     const snapshot = runtime.workspaceSyncSnapshot;
     if (!snapshot) throw new Error("native_workspace_sync_snapshot_missing");
+    await measureRunPhase("workspace_sync.manifests_persist", () => persistSnapshotManifests(input.runId, snapshot));
     const now = new Date().toISOString();
-    const workspaceArchiveSha256 = await sha256File(
-      seedPaths.workspaceArchivePath,
-    );
-    const gitArchiveSha256 = snapshot.gitSnapshot
-      ? await sha256File(seedPaths.gitArchivePath)
-      : null;
     descriptor = {
       schema: DESCRIPTOR_SCHEMA,
       binding: {
@@ -909,6 +1097,7 @@ export async function prepareNativeWorkspaceSync(input: {
       baselineSha256: directorySnapshotSha256(snapshot.baseline),
       baseline: serializeDirectorySnapshot(snapshot.baseline),
       gitSnapshot: snapshot.gitSnapshot,
+      ...(snapshot.repositories?.length ? { repositories: snapshot.repositories } : {}),
       seed: { workspaceArchiveSha256, gitArchiveSha256 },
       createdAt: now,
       finalizedAt: null,
@@ -917,22 +1106,30 @@ export async function prepareNativeWorkspaceSync(input: {
     };
   }
 
-  let reference = await writeDescriptor(descriptor);
-  await persistRunReference(input.db, input.runId, reference);
+  const preparedRuntime = runtime;
+  let reference = await measureRunPhase("workspace_sync.descriptor_write", () => writeDescriptor(descriptor));
+  await measureRunPhase("workspace_sync.reference_write", () => persistRunReference(input.db, input.runId, reference));
+  await emitStartupReuse(input.onEvent, "workspace", {
+    state: mode === "adopt_remote" ? "reused" : "fresh",
+    reason: reuseReason,
+  });
   let restorePromise: Promise<void> | null = null;
   return {
     mode,
     get reference() {
       return reference;
     },
-    restoreWorkspace: async () => {
+    restoreWorkspace: async (assertOwnership) => {
       if (!restorePromise) {
         restorePromise = finalizePreparedRuntime({
           db: input.db,
           runId: input.runId,
           target,
-          runtime,
+          runtime: preparedRuntime,
           descriptor,
+          assertOwnership,
+          onPhase: input.onPhase,
+          onCheckpoint: input.onCheckpoint,
         })
           .then((finalizedReference) => {
             reference = finalizedReference;
@@ -944,14 +1141,44 @@ export async function prepareNativeWorkspaceSync(input: {
       }
       await restorePromise;
     },
-    cleanup: () => cleanupNativeWorkspaceSync(input.runId),
+    cleanup: async () => { await preparedRuntime.cleanupWorkspaceSnapshot?.(); await cleanupNativeWorkspaceSync(input.runId); },
   };
+  } catch (error) {
+    await runtime?.cleanupWorkspaceSnapshot?.();
+    if (!existingReference) await cleanupNativeWorkspaceSync(input.runId);
+    throw error;
+  }
+}
+
+export async function readNativeWorkspaceSyncLocalCwd(input: {
+  companyId: string;
+  runId: string;
+  workspaceId: string;
+  reference: NativeWorkspaceSyncReference;
+}): Promise<string> {
+  const existing = await readDescriptor(input);
+  try {
+    if (existing.descriptor.binding.companyId !== input.companyId ||
+        existing.descriptor.binding.workspaceId !== input.workspaceId) {
+      throw new Error("native_workspace_sync_descriptor_binding_mismatch");
+    }
+    return existing.descriptor.binding.localCwd;
+  } finally {
+    await disposeDirectorySnapshot(existing.baseline);
+    await disposeGitWorkspaceSnapshot(existing.descriptor.gitSnapshot);
+    for (const repository of existing.descriptor.repositories ?? []) {
+      await disposeGitWorkspaceSnapshot(repository.snapshot);
+    }
+  }
 }
 
 export async function resumeNativeWorkspaceSync(input: {
   db: Db;
   runId: string;
   target: AdapterExecutionTarget;
+  assertOwnership?: () => Promise<void>;
+  onPhase?: RuntimeSpanRunner;
+  onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<boolean> {
   if (input.target.kind !== "remote" || input.target.transport !== "sandbox") {
     throw new Error("workspace_sync_out_unrecoverable");
@@ -976,6 +1203,7 @@ export async function resumeNativeWorkspaceSync(input: {
   ) {
     throw new Error("workspace_sync_out_unrecoverable");
   }
+  await input.assertOwnership?.();
   if (
     existing.descriptor.state === "finalized" &&
     existing.descriptor.finalHostSha256
@@ -999,10 +1227,13 @@ export async function resumeNativeWorkspaceSync(input: {
   const runtime = await prepareRuntime({
     runId: input.runId,
     target: input.target,
+    onPhase: input.onPhase,
+    onCheckpoint: input.onCheckpoint,
     workspaceLocalDir: existing.descriptor.binding.localCwd,
     mode: "adopt_remote",
     baseline: existing.baseline,
     gitSnapshot: existing.descriptor.gitSnapshot,
+    repositories: existing.descriptor.repositories,
   });
   await finalizePreparedRuntime({
     db: input.db,
@@ -1010,6 +1241,9 @@ export async function resumeNativeWorkspaceSync(input: {
     target: input.target,
     runtime,
     descriptor: existing.descriptor,
+    assertOwnership: input.assertOwnership,
+    onPhase: input.onPhase,
+    onCheckpoint: input.onCheckpoint,
   });
   return true;
 }
@@ -1022,6 +1256,7 @@ export const nativeWorkspaceSyncInternals = {
   descriptorPath,
   legacyDescriptorPath,
   durableSeedPaths,
+  persistSnapshotManifests,
   writeDescriptor,
   readDescriptor,
   readReference: readNativeWorkspaceSyncReference,

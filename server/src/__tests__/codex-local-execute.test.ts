@@ -659,6 +659,84 @@ describe("codex execute", () => {
     }
   });
 
+  it("keeps real assignment markdown and current wake events single-owned at the CLI boundary", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-context-owner-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-900", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+      includeWakeComments: false,
+    });
+    const historicalMarkdown = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-900", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase" },
+      wakeComments: [
+        { id: "comment-a", body: "Same event body." },
+        { id: "comment-b", body: "Same event body." },
+      ],
+    });
+    try {
+      await execute({
+        runId: "run-context-owner",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli", command: commandPath, cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Custom template keeps {{paperclipTaskMarkdown}} and {{paperclipWakePrompt}}.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: historicalMarkdown,
+          paperclipTaskMarkdownAssignment: markdown,
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "PAP-900", title: "Repeat phrase Repeat phrase", description: "Repeat phrase Repeat phrase", status: "in_progress" },
+            executionContinuation: {
+              version: 1,
+              companyId: "company-1",
+              issueId: "issue-1",
+              trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+              originCommentIds: [],
+              objective: "Repeat phrase Repeat phrase",
+              objectiveSource: { kind: "description", id: "issue-1", revision: "2e2ed64c2ca5be0343f591d037a6f40a0b9cee733fedb7fdafa69e4158299957" },
+              messages: [],
+              interactionOutcomes: [],
+              completedWork: null,
+              unresolvedInteractionIds: [],
+              coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+            },
+            comments: [
+              { id: "comment-a", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:00:00.000Z" },
+              { id: "comment-b", issueId: "issue-1", body: "Same event body.", bodyTruncated: false, createdAt: "2026-09-21T00:01:00.000Z" },
+            ],
+            commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+            fallbackFetchNeeded: false,
+          },
+          paperclipTurnContext: { version: 1, assignment: { owner: "task_markdown" }, events: { owner: "wake_prompt", comments: [{ id: "comment-a", revision: "a" }, { id: "comment-b", revision: "b" }] } },
+        },
+        onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("Custom template keeps");
+      expect(capture.prompt).toContain("comment-a");
+      expect(capture.prompt.indexOf("comment-a")).toBeLessThan(capture.prompt.indexOf("comment-b"));
+      expect(capture.prompt.split("Same event body.")).toHaveLength(3);
+      // The custom template intentionally repeats task context; ownership only
+      // removes automatic wake-event duplication.
+      expect(capture.prompt.split("Repeat phrase Repeat phrase")).toHaveLength(4);
+      expect(capture.prompt).not.toContain('"objective":"Repeat phrase Repeat phrase"');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies remote-compaction high-demand failures as retryable transient upstream errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-transient-"));
     const workspace = path.join(root, "workspace");
@@ -1365,9 +1443,8 @@ process.exit(1);
         expect(invocationPrompt).toContain("baseRevisionId set to that latestRevisionId");
         expect(capture.prompt).not.toContain("Execution contract:");
         expect(capture.prompt).not.toContain("Use child issues");
-      } else {
-        expect(capture.prompt).toContain("Execution contract:");
       }
+      expect(capture.prompt).not.toContain("Execution contract:");
       expect(capture.prompt).not.toContain("Follow the paperclip heartbeat.");
       if (resumedSession) {
         expect(capture.prompt).not.toContain("You are managed instructions.");
@@ -1513,7 +1590,8 @@ process.exit(1);
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sourceHome, { recursive: true });
     await fs.mkdir(skillSource, { recursive: true });
-    await fs.writeFile(path.join(sourceHome, "auth.json"), fakeCodexAuthJson);
+    const selectedAuth = JSON.stringify({ tokens: { account_id: "original-selected-account", access_token: "test-subscription-token" } });
+    await fs.writeFile(path.join(sourceHome, "auth.json"), selectedAuth);
     await fs.writeFile(path.join(skillSource, "SKILL.md"), "# AgentMail\nAssigned inbox one.");
     await writeFakeCodexCommand(command);
     const keys = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "CODEX_HOME"] as const;
@@ -1557,8 +1635,127 @@ process.exit(1);
       await expect(fs.stat(path.join(sourceHome, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
       const removed = await invoke("agent-1", null);
       expect(removed.prompt).not.toContain("inline@example.test");
-      expect(removed.codexHome).toBe(sourceHome);
+      expect(removed.codexHome).not.toBe(sourceHome);
+      expect(removed.codexHome).toContain("skill-runtimes/agent-1/");
       await expect(fs.stat(path.join(removed.codexHome!, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+      // Remote credential copy-back leaves a regular file. A later authorized
+      // account switch must not reuse that previous account's generated home.
+      await fs.unlink(path.join(first.codexHome!, "auth.json"));
+      await fs.writeFile(path.join(first.codexHome!, "auth.json"), selectedAuth);
+      const nextAccount = JSON.parse(selectedAuth);
+      nextAccount.tokens.account_id = "new-selected-account";
+      await fs.writeFile(path.join(sourceHome, "auth.json"), JSON.stringify(nextAccount));
+      const switched = await invoke("agent-1", "a".repeat(64));
+      expect(switched.codexHome).not.toBe(first.codexHome);
+      expect(JSON.parse(await fs.readFile(path.join(switched.codexHome!, "auth.json"), "utf8")).tokens.account_id).toBe("new-selected-account");
+      nextAccount.tokens.access_token = "refreshed-same-account-token";
+      await fs.writeFile(path.join(sourceHome, "auth.json"), JSON.stringify(nextAccount));
+      expect((await invoke("agent-1", "a".repeat(64))).codexHome).toBe(switched.codexHome);
+      expect(await fs.readFile(path.join(first.codexHome!, "auth.json"), "utf8")).toBe(selectedAuth);
+
+    } finally {
+      for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("isolates private skills and keeps custom routing with an explicit credential home: %s", async (explicitHome) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-private-codex-"));
+    const workspace = path.join(root, "workspace");
+    const command = path.join(root, "codex");
+    const capture = path.join(root, "capture.json");
+    const sourceHome = path.join(root, "selected-account");
+    const skillSource = path.join(root, "skill-v1");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.mkdir(skillSource, { recursive: true });
+    await fs.writeFile(path.join(sourceHome, "auth.json"), fakeCodexAuthJson);
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "# AgentMail\nAssigned inbox one.");
+    await writeFakeCodexCommand(command);
+    const keys = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "CODEX_HOME"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip");
+    process.env.PAPERCLIP_INSTANCE_ID = "connectors";
+    process.env.CODEX_HOME = sourceHome;
+    const invoke = async (agentId: string, digest: string | null, source = skillSource, connectorSkillInstructions = "") => {
+      const config = {
+        engine: "cli", command, cwd: workspace,
+        env: { ...(explicitHome ? { CODEX_HOME: sourceHome } : {}), PAPERCLIP_TEST_CAPTURE_PATH: capture,
+          PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: { test_gateway: {
+            name: "Fixture gateway", base_url: "https://gateway.example/v1", wire_api: "responses",
+          } }, model_provider: "test_gateway" }),
+        },
+
+        paperclipSkillSync: { desiredSkills: digest ? ["paperclipai/paperclip/agentmail"] : [] },
+        paperclipRuntimeSkills: digest ? [{ key: "paperclipai/paperclip/agentmail", runtimeName: "agentmail", source }] : [],
+      };
+      const result = await execute({ runId: `run-${agentId}-${digest?.slice(0, 1) ?? "none"}`,
+        agent: { id: agentId, companyId: "company-1", name: "Email agent", adapterType: "codex_local", adapterConfig: config },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config, context: { paperclipWake: { connectorSkillInstructions } }, authToken: "test-token", onLog: async () => {},
+      });
+      expect(result.errorMessage).toBeNull();
+      expect(result.exitCode).toBe(0);
+      return JSON.parse(await fs.readFile(capture, "utf8")) as CapturePayload;
+    };
+    try {
+      const first = await invoke("agent-1", "a".repeat(64));
+      expect(first.codexHome).toContain("skill-runtimes/agent-1/");
+      expect(first.codexConfigContents).toContain('model_provider = "test_gateway"');
+      expect(first.codexConfigContents).toContain('base_url = "https://gateway.example/v1"');
+      expect(await fs.realpath(path.join(first.codexHome!, "auth.json"))).toBe(await fs.realpath(path.join(sourceHome, "auth.json")));
+      expect(await fs.readFile(path.join(first.codexHome!, "skills/agentmail/SKILL.md"), "utf8")).toContain("inbox one");
+      await expect(fs.stat(path.join(sourceHome, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+      const unchanged = await invoke("agent-1", "a".repeat(64));
+      expect(unchanged.codexHome).toBe(first.codexHome);
+      const other = await invoke("agent-2", "a".repeat(64));
+      expect(other.codexHome).not.toBe(first.codexHome);
+      const nextSource = path.join(root, "skill-v2");
+      await fs.mkdir(nextSource);
+      await fs.writeFile(path.join(nextSource, "SKILL.md"), "# AgentMail\nAssigned inbox two.");
+      const next = await invoke("agent-1", "b".repeat(64), nextSource);
+      expect(next.codexHome).not.toBe(first.codexHome);
+      expect(await fs.readFile(path.join(next.codexHome!, "skills/agentmail/SKILL.md"), "utf8")).toContain("inbox two");
+      const inline = await invoke("agent-1", null, skillSource, "# AgentMail\nAssigned inbox inline@example.test");
+      expect(inline.prompt).toContain("Assigned inbox inline@example.test");
+      await expect(fs.stat(path.join(sourceHome, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+      const removed = await invoke("agent-1", null);
+      expect(removed.prompt).not.toContain("inline@example.test");
+      // The old saved files still exist; exclusion is enforced by the launch home.
+      expect(await fs.readFile(path.join(first.codexHome!, "skills/agentmail/SKILL.md"), "utf8")).toContain("inbox one");
+      expect(removed.codexHome).not.toBe(first.codexHome);
+      expect(removed.codexConfigContents).toContain('model_provider = "test_gateway"');
+      expect(await fs.realpath(path.join(removed.codexHome!, "auth.json"))).toBe(await fs.realpath(path.join(sourceHome, "auth.json")));
+      expect(removed.codexHome).not.toBe(sourceHome);
+      expect(removed.codexHome).toContain("skill-runtimes/agent-1/");
+      await expect(fs.stat(path.join(removed.codexHome!, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+      if (!explicitHome) {
+        // A promoted company login can differ from the host's default account.
+        // Digest and seeding must use that same effective credential source.
+        const companyHome = path.resolve(first.codexHome!, "../../..");
+        await fs.unlink(path.join(companyHome, "auth.json"));
+        const originalAccount = JSON.stringify({ tokens: { account_id: "company-account-one", access_token: "test-token-one" } });
+        await fs.writeFile(path.join(companyHome, "auth.json"), originalAccount);
+        const companyRun = await invoke("agent-1", "a".repeat(64));
+        expect(JSON.parse(await fs.readFile(path.join(companyRun.codexHome!, "auth.json"), "utf8")).tokens.account_id).toBe("company-account-one");
+        await fs.unlink(path.join(companyRun.codexHome!, "auth.json"));
+        await fs.writeFile(path.join(companyRun.codexHome!, "auth.json"), originalAccount);
+        await fs.writeFile(path.join(companyHome, "auth.json"), JSON.stringify({ tokens: { account_id: "company-account-two", access_token: "test-token-two" } }));
+        const companyNext = await invoke("agent-1", "a".repeat(64));
+        expect(companyNext.codexHome).not.toBe(companyRun.codexHome);
+        expect(JSON.parse(await fs.readFile(path.join(companyNext.codexHome!, "auth.json"), "utf8")).tokens.account_id).toBe("company-account-two");
+        expect(await fs.readFile(path.join(sourceHome, "auth.json"), "utf8")).toBe(fakeCodexAuthJson);
+      } else {
+        await fs.writeFile(path.join(sourceHome, "config.toml"), '[mcp_servers.changed]\ncommand = "new-selected-server"\n');
+        const settingsChanged = await invoke("agent-1", "a".repeat(64));
+        expect(settingsChanged.codexHome).not.toBe(first.codexHome);
+        expect(settingsChanged.codexConfigContents).toContain('command = "new-selected-server"');
+        expect(settingsChanged.codexConfigContents).toContain('model_provider = "test_gateway"');
+        await fs.unlink(path.join(sourceHome, "config.toml"));
+        const settingsRemoved = await invoke("agent-1", "a".repeat(64));
+        expect(settingsRemoved.codexConfigContents).not.toContain('new-selected-server');
+      }
+
     } finally {
       for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
       await fs.rm(root, { recursive: true, force: true });

@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { ExecutionContinuationEnvelope, AskUserQuestionsInteraction } from "@paperclipai/shared";
 
 import { formatDurableQuestionResponseSummary } from "../question-response-delivery.js";
-import { buildNativeCompletionContract } from "./completion-contracts.js";
+import { nativeCompletionSource, buildNativeCompletionContract } from "./completion-contracts.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
-  it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
+  it.each(["standard", "planning", "ask", "skill_test"])("title and description cannot override %s mode", (workMode) => {
     for (const text of ["Inspect files", "Making a plan", "Create a report", "Research proposal", "Implement now; no plan needed"]) {
       const input = buildNativeExecutionInput({
         companyId: "10000000-0000-4000-8000-000000000001",
@@ -18,11 +19,15 @@ describe("LCA-05 explicit native work mode", () => {
         taskPrompt: text,
         workspace: { id: "50000000-0000-4000-8000-000000000005", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
         normalizedSessionId: null,
+        provider: "codex",
+        codexReasoningEffort: "high",
+        codexWebSearch: "disabled",
         planningContext: workMode === "planning" ? { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "a".repeat(64), reviewContext: {} } : null,
         completionContract: { id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Deliver the requested work", criteria: [{ id: "output", requirement: "Deliver the requested work" }] } },
         runtimeContext: nativeRuntimeContextFixture(),
       });
       expect(input.task.workMode).toBe(workMode);
+      expect(input.provider).toMatchObject({ kind: "codex", reasoningEffort: "high", webSearch: "disabled" });
       expect(input.executionMode).toBe(workMode === "planning" ? "plan" : "default");
       expect(input.task.title).toBe(text);
     }
@@ -452,6 +457,28 @@ describe("native execution input external-chat framing", () => {
         "Never infer the file's contents or substitute an older file",
       );
 
+      const runtimeContext = nativeRuntimeContextFixture();
+      runtimeContext.skills = ["configured", "provider-mentioned"].map((name) => ({
+        key: `company/test/${name}`,
+        runtimeName: name,
+        versionId: null,
+        bundle: { ...runtimeContext.instructions.bundle },
+      }));
+      runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+      const skillArgs = {
+        ...args,
+        issue: { ...args.issue, description: "Stale provider message: /provider-mentioned" },
+        taskPrompt: `${args.taskPrompt}\nGitHub message: /provider-mentioned`,
+        runtimeContext,
+        githubInstructionSkillKeys: ["company/test/configured", "company/other/unknown"],
+      };
+      const skillInput = buildNativeExecutionInput(skillArgs);
+      expect(skillInput.task.description).toBe("Configured GitHub instruction skills:\n/configured");
+      expect(buildNativeModelEnvelope(skillInput)).toMatchObject({ requestedSkills: ["configured"] });
+      expect(buildNativeModelEnvelope(buildNativeExecutionInput({
+        ...skillArgs, githubInstructionSkillKeys: [],
+      }))).toMatchObject({ requestedSkills: [] });
+
       const wake = args.wakePayload as Record<string, unknown>;
       for (const patch of [
         { externalChatProvider: "slack" },
@@ -469,6 +496,13 @@ describe("native execution input external-chat framing", () => {
         expect(unrelated.task.prompt).not.toContain(
           "Paperclip owns recovery navigation for unavailable GitHub attachments",
         );
+        if (["slack", "discord", "telegram", "microsoft-teams"].includes(patch.externalChatProvider ?? "")) {
+          const unrelatedSkills = buildNativeExecutionInput({
+            ...skillArgs, wakePayload: { ...wake, ...patch },
+          });
+          expect(unrelatedSkills.task.description).toBeNull();
+          expect(buildNativeModelEnvelope(unrelatedSkills)).toMatchObject({ requestedSkills: [] });
+        }
       }
     },
   );
@@ -543,5 +577,135 @@ describe("follow-up context size", () => {
     expect(JSON.stringify(contract)).not.toContain(oldBody);
     expect(JSON.stringify(contract)).not.toContain(answerText);
     expect(resumed.length + JSON.stringify(contract).length).toBeLessThan(fresh.length);
+  });
+});
+
+
+describe("native completion references", () => {
+  const source = nativeCompletionSource("description", "task", "Repeat. Repeat.");
+  const args: Parameters<typeof buildNativeExecutionInput>[0] = {
+    companyId: "company", runId: "run", agentId: "agent",
+    issue: { id: "task", identifier: "PAP-1", title: "Brief", description: "Repeat. Repeat.", workMode: "standard" },
+    taskPrompt: "Issue description:\nRepeat. Repeat.",
+    workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId: null,
+    runtimeContext: nativeRuntimeContextFixture(),
+    completionContract: {
+      id: "contract", sha256: "a".repeat(64), schemaVersion: "paperclip.completion-contract.v1",
+      contract: { revision: "1", objective: "Brief", criteria: [{ id: "objective", requirement: "Repeat. Repeat." }] },
+      sources: [{ id: "objective", source }],
+    },
+  };
+  it("binds only source identities and revisions attested by the task renderer", () => {
+    const input = buildNativeExecutionInput({ ...args, turnContext: {
+      version: 1,
+      assignment: { owner: "task_markdown", description: { id: source.id, revision: source.revision } },
+      events: { owner: "wake_prompt", comments: [] },
+    } });
+    expect(input.completionSources).toMatchObject({ contractRevision: "1", criteria: [{ id: "objective", source }] });
+    expect(input.completionContract.contract).toEqual(args.completionContract.contract);
+    expect(input.task.description).toBe("Repeat. Repeat.");
+  });
+  it.each([
+    undefined,
+    { version: 1, assignment: { owner: "task_markdown", description: { id: "another-task", revision: source.revision } } },
+    { version: 1, assignment: { owner: "task_markdown", description: { id: source.id, revision: "stale" } } },
+  ])("keeps the full requirement when provenance is absent or stale", (turnContext) => {
+    const input = buildNativeExecutionInput({ ...args, turnContext });
+    expect(input.completionSources).toBeUndefined();
+    expect(input.completionContract.contract).toEqual(args.completionContract.contract);
+  });
+});
+
+
+describe("Cursor mode native execution projection", () => {
+  function fixture(acpxSessionMode?: "agent" | "plan" | "ask") {
+    return {
+      companyId: "company-1", runId: "run-1", agentId: "agent-1",
+      issue: { id: "issue-1", identifier: "MODE-1", title: "Review a plan", description: null, workMode: "standard" },
+      taskPrompt: "Review the project.",
+      workspace: { id: "workspace-1", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx" as const, acpxAgent: "cursor" as const,
+      model: "exact-cursor-model", acpxSessionMode, acpxPermissionMode: "deny-all" as const,
+      completionContract: { id: "contract-1", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Review", criteria: [{ id: "output", requirement: "Review" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    };
+  }
+  it.each([undefined, "agent", "plan", "ask"] as const)("preserves mode %s independently of permissions and task planning", mode => {
+    const result = buildNativeExecutionInput(fixture(mode));
+    expect(result.provider).toMatchObject({ kind: "acpx", agent: "cursor", mode: mode ?? "agent", permissionMode: "deny-all" });
+    expect(result.executionMode).toBe("default");
+    expect(result.task.workMode).toBe("standard");
+  });
+  it("rejects a Cursor mode attached to another harness", () => {
+    expect(() => buildNativeExecutionInput({ ...fixture("plan"), acpxAgent: "copilot" })).toThrow("only for Cursor");
+  });
+});
+
+describe("Pi thinking native execution projection", () => {
+  function fixture(piThinkingLevel?: "off" | "low" | "high" | "max") {
+    return {
+      companyId: "company-1", runId: "run-1", agentId: "agent-1",
+      issue: { id: "issue-1", identifier: "MODE-1", title: "Review a plan", description: null, workMode: "standard" },
+      taskPrompt: "Review the project.",
+      workspace: { id: "workspace-1", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx" as const, acpxAgent: "pi" as const,
+      model: "openrouter/deepseek/deepseek-v4-flash-0731", piThinkingLevel, acpxPermissionMode: "deny-all" as const,
+      completionContract: { id: "contract-1", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Review", criteria: [{ id: "output", requirement: "Review" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    };
+  }
+  it.each([undefined, "off", "low", "high", "max"] as const)("preserves mode %s independently of permissions and task planning", mode => {
+    const result = buildNativeExecutionInput(fixture(mode));
+    expect(result.provider).toMatchObject({ kind: "acpx", agent: "pi", piThinkingLevel: mode ?? "low", permissionMode: "deny-all" });
+    expect(result.executionMode).toBe("default");
+    expect(result.task.workMode).toBe("standard");
+  });
+  it("rejects a Pi thinking level attached to another harness", () => {
+    expect(() => buildNativeExecutionInput({ ...fixture("low"), acpxAgent: "copilot" })).toThrow("only for Pi");
+  });
+});
+
+
+describe("Claude effort and master home-mode compatibility", () => {
+  it.each([
+    ["isolated", undefined, "v5"], ["preconfigured", undefined, "v7"],
+    ["isolated", "high", "v9"], ["preconfigured", "high", "v9"],
+  ] as const)("retains %s home mode with effort %s in %s", (homeMode, claudeEffort, version) => {
+    const value = buildNativeExecutionInput({
+      companyId: "company", runId: "run", agentId: "agent",
+      issue: { id: "issue", identifier: "CLA-1", title: "Useful output", description: null, workMode: "standard" },
+      taskPrompt: "Create the requested file.",
+      workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5",
+      acpxPermissionMode: "approve-all", homeMode, claudeEffort,
+      completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Create a file", criteria: [{ id: "output", requirement: "Create the file" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(value.schema).toBe(`paperclip.native-execution-input.${version}`);
+    if (version !== "v5") expect(value).toHaveProperty("homeMode", homeMode);
+    if (claudeEffort) expect(value.provider).toHaveProperty("claudeEffort", claudeEffort);
+    expect(JSON.stringify(buildNativeModelEnvelope(value))).not.toContain("claudeEffort");
+  });
+  it.each([
+    ["isolated", undefined, undefined, "v5"], ["isolated", "high", true, "v10"], ["isolated", undefined, false, "v10"],
+  ] as const)("retains %s home mode with effort %s and search policy %s in %s", (homeMode, grokEffort, grokDisableWebSearch, version) => {
+    const value = buildNativeExecutionInput({
+      companyId: "company", runId: "run", agentId: "agent",
+      issue: { id: "issue", identifier: "CLA-1", title: "Useful output", description: null, workMode: "standard" },
+      taskPrompt: "Create the requested file.",
+      workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx", acpxAgent: "grok", model: "grok-4.7",
+      acpxPermissionMode: "approve-all", homeMode, grokEffort, grokDisableWebSearch,
+      completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Create a file", criteria: [{ id: "output", requirement: "Create the file" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(value.schema).toBe(`paperclip.native-execution-input.${version}`);
+    if (version !== "v5") expect(value).toHaveProperty("homeMode", homeMode);
+    if (grokEffort) expect(value.provider).toHaveProperty("grokEffort", grokEffort);
+    if (grokDisableWebSearch !== undefined) expect(value.provider).toHaveProperty("grokDisableWebSearch", grokDisableWebSearch);
+    expect(JSON.stringify(buildNativeModelEnvelope(value))).not.toContain("grokEffort");
   });
 });

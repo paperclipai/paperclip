@@ -18,10 +18,47 @@ function draftStorage(draftKey: string): Storage {
 }
 
 export function loadDraft(draftKey: string): string {
+  return loadDraftIfAvailable(draftKey) ?? "";
+}
+
+/** Distinguish an empty stored draft from unavailable browser storage. */
+export function loadDraftIfAvailable(draftKey: string): string | null {
   try {
     return draftStorage(draftKey).getItem(draftKey) ?? "";
   } catch {
-    return "";
+    return null;
+  }
+}
+
+/** A conflicting tab keeps its own recoverable buffer without replacing the
+ * shared draft or acquiring another tab's pending receipt. */
+export function loadDraftRecoveryKey(draftKey: string): string | null {
+  const key = `paperclip:agent-chat-draft:recovered:${draftKey}`;
+  try {
+    return sessionStorage.getItem(`${key}:recovery:v1`) === draftKey ? key : null;
+  } catch { return null; }
+}
+
+export function preserveDraftInTab(draftKey: string, body: string, attachments: unknown): { key: string; persisted: boolean } {
+  const key = `paperclip:agent-chat-draft:recovered:${draftKey}`;
+  try {
+    sessionStorage.setItem(key, body);
+    sessionStorage.setItem(`${key}:attachments:v1`, JSON.stringify({ version: 1, draftKey: key, attachments: draftAttachments(attachments) }));
+    sessionStorage.setItem(`${key}:recovery:v1`, draftKey);
+    return { key, persisted: true };
+  } catch {
+    return { key, persisted: false };
+  }
+}
+
+function syncDraftRecoveryMarker(draftKey: string) {
+  const prefix = "paperclip:agent-chat-draft:recovered:";
+  if (!draftKey.startsWith(prefix)) return;
+  const marker = `${draftKey}:recovery:v1`;
+  if (loadDraft(draftKey).trim() || loadDraftAttachments(draftKey).length || loadDraftSubmission(draftKey)) {
+    sessionStorage.setItem(marker, draftKey.slice(prefix.length));
+  } else {
+    sessionStorage.removeItem(marker);
   }
 }
 
@@ -38,6 +75,7 @@ export function saveDraft(draftKey: string, value: string, attemptId?: string) {
     } else {
       draftStorage(draftKey).removeItem(draftKey);
     }
+    syncDraftRecoveryMarker(draftKey);
   } catch {
     // Ignore browser storage failures.
   }
@@ -49,9 +87,25 @@ export function clearDraft(draftKey: string, attemptId?: string) {
     draftStorage(draftKey).removeItem(draftKey);
     draftStorage(draftKey).removeItem(`${draftKey}:attachments:v1`);
     draftStorage(draftKey).removeItem(`${draftKey}:submission:v1`);
+    syncDraftRecoveryMarker(draftKey);
   } catch {
     // Ignore browser storage failures.
   }
+}
+
+/**
+ * The exact comment request, kept so a send that failed transiently or lost
+ * its receipt can be resent with the same `attemptId`. The server dedupes by
+ * that ID and rejects it for different content, so the body must be the one
+ * originally sent, not the editor text.
+ */
+export interface ComposerSendRequest {
+  body: string;
+  reopen?: boolean;
+  reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null };
+  attachmentIds?: string[];
+  /** Composer run settings, passed back unchanged. */
+  runSettings?: Record<string, unknown>;
 }
 
 export interface ComposerDraftSubmission {
@@ -60,6 +114,50 @@ export interface ComposerDraftSubmission {
   /** Start of text typed after the submitted body in a restored uncertain draft. */
   nextDraftOffset?: number;
   submittedAttachmentIds?: string[];
+  /** Present when the send can be replayed; older records have none. */
+  request?: ComposerSendRequest;
+  /** The account that made `request`; only that account may replay it (see `useDraftOwner`). */
+  requestOwner?: string;
+}
+
+/** The retained request, only for the account that made it: another account in this browser never replays it. */
+export function replayableRequest(
+  submission: ComposerDraftSubmission | null | undefined,
+  owner: string | undefined,
+): ComposerSendRequest | undefined {
+  const request = submission?.request;
+  if (owner === undefined || submission?.requestOwner !== owner || !request) return undefined;
+  if (request.reassignment !== undefined || request.runSettings !== undefined || request.reopen === true) return undefined;
+  return request;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length <= 128);
+}
+
+export function isComposerSendRequest(value: unknown): value is ComposerSendRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (!Object.keys(row).every((key) => ["body", "reopen", "reassignment", "attachmentIds", "runSettings"].includes(key))) return false;
+  if (typeof row.body !== "string") return false;
+  if (row.reopen !== undefined && typeof row.reopen !== "boolean") return false;
+  if (row.reassignment !== undefined) {
+    const reassignment = row.reassignment as Record<string, unknown> | null;
+    if (
+      !reassignment || typeof reassignment !== "object" || Array.isArray(reassignment) ||
+      !isNullableString(reassignment.assigneeAgentId) || !isNullableString(reassignment.assigneeUserId)
+    ) return false;
+  }
+  if (
+    row.attachmentIds !== undefined &&
+    (!Array.isArray(row.attachmentIds) || row.attachmentIds.length > 256 ||
+      !row.attachmentIds.every((id) => typeof id === "string" && id.length <= 128))
+  ) return false;
+  if (
+    row.runSettings !== undefined &&
+    (!row.runSettings || typeof row.runSettings !== "object" || Array.isArray(row.runSettings))
+  ) return false;
+  return true;
 }
 
 /** Retained client request ID. It is not delivery proof until a matching
@@ -69,19 +167,23 @@ export function loadDraftSubmission(
 ): ComposerDraftSubmission | null {
   try {
     const raw = draftStorage(draftKey).getItem(`${draftKey}:submission:v1`);
-    if (!raw || raw.length > 16_384) return null;
+    if (!raw) return null;
     const record = JSON.parse(raw);
     return record?.version === 1 &&
       record.draftKey === draftKey &&
-      Object.keys(record).every((key) => ["version", "draftKey", "attemptId", "reviewed", "nextDraftOffset", "submittedAttachmentIds"].includes(key)) &&
+      Object.keys(record).every((key) => ["version", "draftKey", "attemptId", "reviewed", "nextDraftOffset", "submittedAttachmentIds", "request", "requestOwner"].includes(key)) &&
       typeof record.attemptId === "string" &&
       /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(record.attemptId) &&
       typeof record.reviewed === "boolean" &&
       (record.nextDraftOffset === undefined || (Number.isSafeInteger(record.nextDraftOffset) && record.nextDraftOffset >= 0)) &&
-      (record.submittedAttachmentIds === undefined || (Array.isArray(record.submittedAttachmentIds) && record.submittedAttachmentIds.length <= 256 && record.submittedAttachmentIds.every((id: unknown) => typeof id === "string" && id.length <= 128)))
+      (record.submittedAttachmentIds === undefined || (Array.isArray(record.submittedAttachmentIds) && record.submittedAttachmentIds.length <= 256 && record.submittedAttachmentIds.every((id: unknown) => typeof id === "string" && id.length <= 128))) &&
+      (record.request === undefined || isComposerSendRequest(record.request)) &&
+      (record.requestOwner === undefined || (typeof record.requestOwner === "string" && record.requestOwner.length <= 256))
       ? { attemptId: record.attemptId, reviewed: record.reviewed,
           ...(record.nextDraftOffset !== undefined ? { nextDraftOffset: record.nextDraftOffset } : {}),
           ...(record.submittedAttachmentIds !== undefined ? { submittedAttachmentIds: record.submittedAttachmentIds } : {}),
+          ...(record.request !== undefined ? { request: record.request } : {}),
+          ...(record.requestOwner !== undefined ? { requestOwner: record.requestOwner } : {}),
         }
       : null;
   } catch {
@@ -101,6 +203,7 @@ export function saveDraftSubmission(
       `${draftKey}:submission:v1`,
       JSON.stringify({ version: 1, draftKey, ...submission }),
     );
+    syncDraftRecoveryMarker(draftKey);
   } catch {
     /* The composer also retains the fence in memory. */
   }
@@ -108,8 +211,10 @@ export function saveDraftSubmission(
 
 export function clearDraftSubmission(draftKey: string, attemptId: string) {
   try {
-    if (loadDraftSubmission(draftKey)?.attemptId === attemptId)
+    if (loadDraftSubmission(draftKey)?.attemptId === attemptId) {
       draftStorage(draftKey).removeItem(`${draftKey}:submission:v1`);
+      syncDraftRecoveryMarker(draftKey);
+    }
   } catch {
     /* Disabled browser storage is supported in memory. */
   }
@@ -212,6 +317,7 @@ export function saveDraftAttachments(draftKey: string, attachments: unknown, att
         JSON.stringify({ version: 1, draftKey, attachments: selected }),
       );
     else draftStorage(draftKey).removeItem(`${draftKey}:attachments:v1`);
+    syncDraftRecoveryMarker(draftKey);
   } catch {
     /* Disabled/full browser storage must not break the composer. */
   }

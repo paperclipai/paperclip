@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "slug": "monday",
+  "name": "monday.com",
+  "description": "Read and manage boards and work items in monday.com.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/monday.png",
+    "darkLogoUrl": "/brands/apps/monday-dark.png"
+  },
+  "urlPatterns": [
+    "https://mcp.monday.com/*"
+  ],
+  "docsUrl": "https://developer.monday.com/api-reference/docs/integrate-with-monday-mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with monday.com",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Connect the hosted monday.com MCP server using OAuth and dynamic client registration.",
+      "defaults": {
+        "serverUrl": "https://mcp.monday.com/mcp"
+      },
+      "guidanceMd": "Use the selected monday.com account only. Read the target board and its columns before acting, and verify the exact board and item before any change. Keep write and destructive actions Off unless the user explicitly asks for a specific change. Never send messages, publish, or trigger automations through a board action without separate authorization.",
+      "warnings": [
+        "The hosted MCP server acts as the authorizing monday.com user and inherits that user's monday.com permissions. An account admin may also restrict MCP access to selected workspaces.",
+        "An additional OAuth/DCR connection can require account-admin approval for Paperclip and its exact callback URL before user authorization completes. If approval is pending, reconnect after the account admin approves it.",
+        "monday.com personal API tokens are documented for personal use, prototyping, and testing, and the provider says they are not intended for integrations used by other people. This connector uses the OAuth/DCR route for additional MCP clients; account-level approval may be required.",
+        "The tool catalog includes actions that can send notifications (optionally email), delete or activate automations, publish workflows, and create or run monday.com platform agents; a low-level tool can execute GraphQL mutations. Keep these actions Off unless separately authorized, and never run agents or change automations during qualification.",
+        "MCP calls count toward the account's monday.com API call limits. Keep tests bounded and avoid repeated discovery or broad queries."
+      ],
+      "consoleLinks": {
+        "docs": "https://developer.monday.com/api-reference/docs/integrate-with-monday-mcp"
+      },
+      "riskTier": "S4"
+    }
+  ]
+}

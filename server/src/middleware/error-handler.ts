@@ -1,3 +1,4 @@
+import { AgentLifecycleConflict } from "../modules/agent-lifecycle/index.js";
 import type { Request, Response, NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
 import { ZodError } from "zod";
@@ -13,6 +14,8 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
+import { isEndedDbPoolError } from "../database-retry.js";
 
 export interface ErrorContext {
   error: {
@@ -85,10 +88,20 @@ function sanitizeSecretSensitiveResponse(
 }
 
 /** Report a server-side crash to every error sink. */
-function reportCrash(error: Error): void {
+function reportCrash(error: Error, req: Request, reportToSentry = true): void {
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
-  captureException(error);
+  if (reportToSentry) {
+    if (req.actor?.type === "agent" && req.actor.runId && req.actor.companyId && req.actor.agentId) {
+      captureException(error, { runId: req.actor.runId, companyId: req.actor.companyId, agentId: req.actor.agentId });
+    } else captureException(error);
+  }
+}
+
+/** Set by the orderly shutdown just before it ends the database pools. */
+function isDatabaseClosing(req: Request): boolean {
+  const locals = req.app?.locals as { paperclipDatabaseClosing?: boolean } | undefined;
+  return locals?.paperclipDatabaseClosing === true;
 }
 
 function getPaperclipDb(req: Request): Db | null {
@@ -128,6 +141,7 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ) {
+  if (err instanceof AgentLifecycleConflict) { res.status(409).json({ error: err.message }); return; }
   if (err instanceof HttpError) {
     const details =
       err.details &&
@@ -176,7 +190,7 @@ export function errorHandler(
             },
         reportableError,
       );
-      reportCrash(reportableError);
+      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err));
     }
     const secretSensitiveServerError =
       err.status >= 500 &&
@@ -263,6 +277,21 @@ export function errorHandler(
     return;
   }
 
+  // Shutdown drains the HTTP listener before it ends the pool, but a handler
+  // whose client already disconnected (or whose socket the drain timeout
+  // closed) keeps running. Its next query then fails with CONNECTION_ENDED
+  // against the pool this process deliberately ended. That is shutdown, not a
+  // server fault, so skip the error sinks. Any other error during shutdown is
+  // still reported.
+  if (isDatabaseClosing(req) && isEndedDbPoolError(rootError)) {
+    if (!res.headersSent) {
+      res.status(503).json({ error: "Server is shutting down" });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
   const reportableError = sanitizeSecretSensitiveError(req, rootError);
   attachErrorContext(
     req,
@@ -280,7 +309,7 @@ export function errorHandler(
     reportableError,
   );
 
-  reportCrash(reportableError);
+  reportCrash(reportableError, req);
 
   res.status(500).json({
     error: "Internal server error",

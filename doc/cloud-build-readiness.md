@@ -33,9 +33,14 @@ test jobs on standard runners. Measure queue time to assess the timing gain.
 
 Release verification spreads the general server suites across ten standard hosted
 runners, with the long chat suite split separately across three jobs. Each server
-job still runs one test worker. The partition covers every suite exactly once;
-normal PR and local test groups keep their existing shape. More jobs increase
-concurrent runner demand, so compare queue time as well as test duration.
+job still runs one test worker. The three Rust-backed server suites run in a
+separate Runner lane with the shared dependency cache. That lane builds both
+debug and release test binaries in a visible, bounded step before Vitest starts;
+the suites still check Cargo freshness and run against the current source. A
+cache miss builds from source. Native test failures block source verification.
+The partition covers every suite exactly once; normal PR and local test groups
+keep their existing shape. More jobs increase concurrent runner demand, so compare
+queue time as well as test duration.
 
 All release verification installs, including the Runner scorer and chaos evals,
 allow pnpm to refresh an outdated lockfile. Contributor PRs leave lockfile updates
@@ -158,10 +163,13 @@ shared infrastructure ownership separately before removing those resources.
 Source verification's typecheck job builds the native Runner binary through the
 server's `prepare:runner-vendor` command. It restores and saves compiled Rust
 dependencies only for canonical master pushes that verify the event's exact SHA.
-The `release-typecheck-v1` cache is separate from Runner verification because
+The `release-typecheck-v2` cache is separate from Runner verification because
 those jobs compile different profiles. The pinned toolchain is selected before
-cache lookup. Workspace crates and installed cargo binaries are excluded, and
-all typechecks still execute. A missing or invalidated cache triggers compilation.
+cache lookup, and the cache action receives the Runner crate through the same
+checkout-independent `$HOME/paperclip-runner-rust` path as the Runner lanes
+(see `RELEASE-AUTOMATION-SETUP.md`). Workspace crates and installed cargo
+binaries are excluded, and all typechecks still execute. A missing or
+invalidated cache triggers compilation.
 
 ### pnpm dependency store cache
 

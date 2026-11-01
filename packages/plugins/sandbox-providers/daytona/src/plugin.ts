@@ -9,10 +9,12 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
+  PluginEnvironmentAcquisitionDiagnostic,
+  PluginEnvironmentAcquisitionProviderState,
   PluginTracer,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentCancelInteractiveSetupParams,
@@ -22,6 +24,8 @@ import type {
   PluginEnvironmentDeleteTemplateParams,
   PluginEnvironmentDeleteTemplateResult,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentRunnerIngressEndpointParams,
@@ -46,6 +50,8 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
 import { DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS } from "./manifest.js";
+import { observeSessionStreamExit } from "./session-stream-exit.js";
+import { DaytonaIdleActivity, trackDaytonaHooks, type DaytonaIdleProof } from "./idle-activity.js";
 
 // The Claude `setup-token` login pseudo-terminal (PTY) session for this provider.
 // The session runs the login command on a real pseudo-terminal, streams the
@@ -107,6 +113,9 @@ let timingNow: () => number = () => Date.now();
 // read the tracer through `getPluginTracer()`. Before `setup` runs (or in a
 // test) the tracer is a no-op, so a span never throws.
 let pluginContext: PluginContext | null = null;
+// A deadline does not settle the underlying request. Keep both that request
+// and its allocation until completion and scoped provider cleanup are proven.
+const idleActivity = new DaytonaIdleActivity();
 
 /**
  * Return the plugin tracer. It is the injected `ctx.tracer` after `setup`, or a
@@ -175,6 +184,7 @@ interface DaytonaDriverConfig {
   autoStopInterval: number | null;
   autoArchiveInterval: number | null;
   autoDeleteInterval: number | null;
+  ttlMinutes: number | null;
   reuseLease: boolean;
   archiveOnRelease: boolean;
 }
@@ -182,6 +192,8 @@ interface DaytonaDriverConfig {
 type WorkspaceSentinelResult = {
   path: string;
   token: string | null;
+  runId?: string;
+  providerLeaseId?: string;
   result: "written" | "matched" | "missing" | "mismatch" | "skipped";
 };
 
@@ -201,6 +213,8 @@ type DaytonaSnapshotService = {
   get?: (name: string) => Promise<unknown>;
   delete?: (snapshot: unknown) => Promise<void>;
 };
+
+type SnapshotIdentity = { provider: "daytona"; requestedRef: string; id: string; name: string; organizationId: string; createdAt: string };
 
 const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-lease.json";
 
@@ -294,6 +308,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     autoStopInterval: parseOptionalInteger(raw.autoStopInterval) ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES,
     autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval) ?? DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES,
     autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
+    ttlMinutes: raw.ttlMinutes == null || raw.ttlMinutes === "" ? null : Number(raw.ttlMinutes),
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
   };
@@ -341,6 +356,7 @@ function buildCreateParams(
     autoStopInterval: config.autoStopInterval ?? undefined,
     autoArchiveInterval: config.autoArchiveInterval ?? undefined,
     autoDeleteInterval: config.autoDeleteInterval ?? undefined,
+    ...(config.ttlMinutes != null ? { ttlMinutes: config.ttlMinutes } : {}),
   };
   if (config.image) {
     return {
@@ -370,6 +386,12 @@ function validateRuntimeResourceRequest(config: DaytonaDriverConfig): string | n
   // image snapshot is layered over a base config that carries CPU/memory/disk/GPU.
   if (!hasResourceRequest(config) || config.image || config.snapshot) return null;
   return "Daytona resource settings require image-backed sandbox creation; default sandbox creation cannot override CPU, memory, disk, or GPU.";
+}
+
+function validateCreationTtl(config: DaytonaDriverConfig): string | null {
+  return config.ttlMinutes != null && (!Number.isSafeInteger(config.ttlMinutes) || config.ttlMinutes <= 0)
+    ? "ttlMinutes must be a positive integer when configured."
+    : null;
 }
 
 function buildSandboxLabels(input: {
@@ -452,14 +474,14 @@ async function withLivenessTimeout<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return run();
+    return idleActivity.track(run);
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new SandboxLivenessTimeoutError(operation, timeoutMs)), timeoutMs);
   });
   try {
-    return await Promise.race([run(), deadline]);
+    return await Promise.race([idleActivity.track(run), deadline]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -511,12 +533,12 @@ function hasMissingSandboxContainer(sandbox: Sandbox): boolean {
     `not found: failed to inspect sandbox container ${sandbox.id}: Error response from daemon: No such container: ${sandbox.id}`;
 }
 
-async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string> {
+async function resolveSandboxWorkingDirectory(sandbox: Sandbox, create = true): Promise<string> {
   const root = (await sandbox.getWorkDir())?.trim()
     || (await sandbox.getUserHomeDir())?.trim()
     || "/home/daytona";
   const remoteCwd = path.posix.join(root, "paperclip-workspace");
-  await sandbox.fs.createFolder(remoteCwd, "755");
+  if (create) await sandbox.fs.createFolder(remoteCwd, "755");
   return remoteCwd;
 }
 
@@ -544,15 +566,17 @@ function parseProbeInteger(value: string | undefined | null): number | null {
 }
 
 function workspaceSentinelToken(input: {
-  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "issueId" | "adapterType">;
+  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "issueId" | "adapterType" | "runId">;
+  providerLeaseId: string;
   config: DaytonaDriverConfig;
 }): string | null {
-  if (!input.config.reuseLease || !input.params.agentId || (!input.params.executionWorkspaceId && !input.params.issueId)) {
+  if ((!input.config.reuseLease && !input.params.runId) || !input.params.agentId || (!input.params.executionWorkspaceId && !input.params.issueId)) {
     return null;
   }
   return createHash("sha256")
     .update(stableStringify({
       provider: "daytona",
+      ...(!input.config.reuseLease ? { ephemeralRunId: input.params.runId, ephemeralProviderLeaseId: input.providerLeaseId } : {}),
       companyId: input.params.companyId,
       environmentId: input.params.environmentId,
       agentId: input.params.agentId,
@@ -585,7 +609,7 @@ async function writeWorkspaceSentinel(input: {
   timeoutSeconds: number;
 }): Promise<WorkspaceSentinelResult> {
   const sentinelPath = workspaceSentinelPath(input.remoteCwd);
-  const token = workspaceSentinelToken({ params: input.params, config: input.config });
+  const token = workspaceSentinelToken({ params: input.params, config: input.config, providerLeaseId: input.sandbox.id });
   if (!token) {
     return { path: sentinelPath, token: null, result: "skipped" };
   }
@@ -606,7 +630,8 @@ async function writeWorkspaceSentinel(input: {
     sentinelPath,
     input.timeoutSeconds,
   );
-  return { path: sentinelPath, token, result: "written" };
+  return { path: sentinelPath, token, result: "written",
+    ...(!input.config.reuseLease ? { runId: input.params.runId!, providerLeaseId: input.sandbox.id } : {}) };
 }
 
 async function verifyWorkspaceSentinel(input: {
@@ -621,6 +646,8 @@ async function verifyWorkspaceSentinel(input: {
   const sentinelPath = typeof metadataSentinel?.path === "string"
     ? metadataSentinel.path
     : workspaceSentinelPath(input.remoteCwd);
+  const binding = typeof metadataSentinel?.runId === "string" && typeof metadataSentinel?.providerLeaseId === "string"
+    ? { runId: metadataSentinel.runId, providerLeaseId: metadataSentinel.providerLeaseId } : {};
   const expectedToken = typeof metadataSentinel?.token === "string" ? metadataSentinel.token : null;
   if (!expectedToken) {
     return { path: sentinelPath, token: null, result: "missing" };
@@ -641,6 +668,7 @@ async function verifyWorkspaceSentinel(input: {
     return {
       path: sentinelPath,
       token: expectedToken,
+      ...binding,
       result: actualToken === expectedToken ? "matched" : "mismatch",
     };
   } catch {
@@ -657,6 +685,7 @@ function leaseMetadata(input: {
   resumedFromState?: string | null;
   sandboxState?: string | null;
   workspaceSentinel?: WorkspaceSentinelResult;
+  snapshotIdentity?: SnapshotIdentity;
 }) {
   return {
     provider: "daytona",
@@ -666,8 +695,10 @@ function leaseMetadata(input: {
     sandboxState: input.sandboxState ?? input.sandbox.state ?? null,
     image: input.config.image,
     snapshot: input.config.snapshot,
+    ...(input.snapshotIdentity ? { snapshotIdentity: input.snapshotIdentity } : {}),
     target: input.sandbox.target,
     timeoutMs: input.config.timeoutMs,
+    ...(input.config.ttlMinutes != null ? { ttlMinutes: input.config.ttlMinutes } : {}),
     reuseLease: input.config.reuseLease,
     // Persisted so the release path (which rebuilds config from lease
     // metadata) still knows to archive instead of delete.
@@ -700,22 +731,17 @@ function expiresAtForMinutes(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
-// Configure a provider-side time-to-live so Daytona destroys the sandbox at or
-// before the caller-requested deadline, even after a Paperclip crash or outage.
-// `setTtl` counts wall-clock time regardless of the sandbox state, so the destroy
-// happens even when the sandbox is stopped, paused, or archived. The function
-// returns the real provider destroy time (`autoDestroyAt`) as evidence of the
-// provider-side bound. It returns null when the caller sets no deadline, when the
-// deadline is invalid, or when the deadline is less than one minute away (Daytona
-// TTL granularity is one minute, so a nearer deadline maps to no valid TTL). The
-// server then fails closed on a null expiry and releases the lease.
 async function configureSandboxExpiry(input: {
   sandbox: Sandbox;
   requestedExpiresAt: string | null | undefined;
   nowMs: number;
+  preserveCreationExpiry: boolean;
 }): Promise<string | null> {
+  const creationExpiry = input.preserveCreationExpiry ? input.sandbox.autoDestroyAt : undefined;
+  const creationExpiryMs = creationExpiry ? Date.parse(creationExpiry) : Number.NaN;
   const requestedMs = input.requestedExpiresAt ? Date.parse(input.requestedExpiresAt) : Number.NaN;
-  if (!Number.isFinite(requestedMs)) return null;
+  if (!Number.isFinite(requestedMs)) return Number.isFinite(creationExpiryMs) ? creationExpiry! : null;
+  if (Number.isFinite(creationExpiryMs) && creationExpiryMs <= requestedMs) return creationExpiry!;
   // Round DOWN so the provider destroy time never lands after the deadline.
   const ttlMinutes = Math.floor((requestedMs - input.nowMs) / 60_000);
   if (ttlMinutes < 1) return null;
@@ -940,16 +966,36 @@ async function createSandbox(
   options: {
     purpose?: string;
     onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
+    onCreateFailure?: () => PluginEnvironmentAcquisitionDiagnostic;
+    onSnapshotIdentity?: (identity: SnapshotIdentity) => void;
   } = {},
 ): Promise<Sandbox> {
-  const resourceRequestError = validateRuntimeResourceRequest(config);
+  const resourceRequestError = validateCreationTtl(config) ?? validateRuntimeResourceRequest(config);
   if (resourceRequestError) {
     throw new Error(resourceRequestError);
   }
   const client = createDaytonaClient(config);
+  let createConfig = config;
+  if ("resolveSnapshotIdentity" in params && params.resolveSnapshotIdentity && config.snapshot && !config.image) {
+    // This read happens only during explicit qualification. The SDK does not
+    // bound snapshot.get; a timed-out read must never continue into allocation.
+    const snapshot = await withLivenessTimeout("snapshot.identity", Math.min(config.timeoutMs || 10_000, 10_000),
+      () => client.snapshot.get(config.snapshot!));
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(snapshot.id ?? "")
+      || !snapshot.name || !snapshot.organizationId || !snapshot.createdAt
+      || (config.snapshot !== snapshot.id && config.snapshot !== snapshot.name)
+      || !Number.isFinite(Date.parse(String(snapshot.createdAt)))) {
+      throw new Error("Daytona did not return an immutable snapshot identity. Retry the connection probe or select Legacy runner.");
+    }
+    const identity: SnapshotIdentity = { provider: "daytona", requestedRef: config.snapshot,
+      id: snapshot.id, name: snapshot.name, organizationId: snapshot.organizationId, createdAt: new Date(snapshot.createdAt).toISOString() };
+    createConfig = { ...config, snapshot: identity.id };
+    options.onSnapshotIdentity?.(identity);
+  }
   // The SDK can create a sandbox and then throw while waiting for it to start.
   // Keep an attempt-specific provider name so that failure cannot lose ownership.
-  const attemptId = randomUUID();
+  const attemptId = "creationOperationId" in params && params.creationOperationId ? params.creationOperationId : randomUUID();
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(attemptId)) throw new Error("Invalid creation operation identity");
   const name = `paperclip-create-${attemptId}`;
   const labels = { ...buildSandboxLabels({
     companyId: params.companyId,
@@ -961,26 +1007,40 @@ async function createSandbox(
   }), "paperclip-create-attempt": attemptId };
   // The SDK mutates params.labels (for example, code-toolbox-language).
   // Preserve our immutable ownership snapshot for validation and retry.
-  const createParams = { ...buildCreateParams(config, { ...labels }), name };
+  const createParams = { ...buildCreateParams(createConfig, { ...labels }), name };
   const cleanup: PluginEnvironmentCreationCleanup = {
     providerLeaseId: name, companyId: params.companyId, environmentId: params.environmentId,
     ...("runId" in params ? { runId: params.runId } : {}),
     attemptId, labels, accountFingerprint: sandboxAccountDiscriminator(config),
   };
   options.onCreateAttempt?.(cleanup);
+  const allocation = idleActivity.resource(providerActivityKey(params, config, name), true);
   try {
-    return await client.create(createParams, {
+    const sandbox = await idleActivity.track(() => client.create(createParams, {
       timeout: toTimeoutSeconds(config.timeoutMs),
-    });
+    }));
+    idleActivity.observe(allocation, providerActivityKey(params, config, sandbox.id));
+    if (config.ttlMinutes != null) {
+      cleanup.observedProviderLeaseId = sandbox.id;
+      await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
+      const expiry = Date.parse(sandbox.autoDestroyAt ?? "");
+      const nowMs = Date.now();
+      if (!Number.isFinite(expiry) || expiry <= nowMs || expiry > nowMs + config.ttlMinutes * 60_000) {
+        throw new Error("Daytona did not confirm the configured creation TTL.");
+      }
+    }
+    return sandbox;
   } catch (createError) {
+    // Observe the create failure before compensating deletion can stall or fail.
+    const diagnostic = options.onCreateFailure?.();
     try {
       // A not-found lookup after an uncertain create is not a deletion receipt:
       // the provider may still materialize the request. Keep the name in the
       // error so cleanup can be reconciled rather than declaring success.
-      await destroyFailedCreation(config, cleanup);
+      await destroyFailedCreation(config, cleanup, params.driverKey);
     } catch (cleanupError) {
       throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
-        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup);
+        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
   }
@@ -992,6 +1052,7 @@ async function createSandbox(
 // conclusive, even if the deletion receipt or database update was lost.
 async function destroyFailedCreation(
   config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
+  driverKey: string,
   requireDurableObservation = false,
 ): Promise<void> {
   if (cleanup.providerLeaseId !== `paperclip-create-${cleanup.attemptId}` ||
@@ -1003,15 +1064,25 @@ async function destroyFailedCreation(
       (cleanup.runId !== undefined && cleanup.labels["paperclip-run-id"] !== cleanup.runId)) {
     throw new Error("Failed-create sandbox ownership does not match");
   }
+  const identity = { driverKey, companyId: cleanup.companyId, environmentId: cleanup.environmentId };
+  const allocation = idleActivity.resource(providerActivityKey(identity, config, cleanup.providerLeaseId), true);
+  if (cleanup.observedProviderLeaseId) {
+    idleActivity.observe(allocation, providerActivityKey(identity, config, cleanup.observedProviderLeaseId));
+  }
   const client = createDaytonaClient(config);
   let orphan: Sandbox;
+  const observationProof = idleActivity.proof(providerActivityKey(identity, config,
+    cleanup.observedProviderLeaseId ?? cleanup.providerLeaseId));
   try {
     orphan = await withLivenessTimeout("sandbox.failedCreateLookup", 10_000,
       () => client.get(cleanup.observedProviderLeaseId ?? cleanup.providerLeaseId));
   } catch (error) {
     // A name that has never been observed may still materialize. An ID already
     // observed with exact ownership cannot materialize as a new allocation.
-    if (cleanup.observedProviderLeaseId && error instanceof DaytonaNotFoundError) return;
+    if (cleanup.observedProviderLeaseId && error instanceof DaytonaNotFoundError) {
+      idleActivity.confirm(observationProof, true);
+      return;
+    }
     throw error;
   }
   if ((cleanup.observedProviderLeaseId && orphan.id !== cleanup.observedProviderLeaseId) ||
@@ -1025,7 +1096,32 @@ async function destroyFailedCreation(
       throw new PluginEnvironmentCreationCleanupError([], "Persist observed sandbox identity before cleanup", cleanup);
     }
   }
+  idleActivity.observe(allocation, providerActivityKey(identity, config, orphan.id));
+  const deletionProof = idleActivity.proof(providerActivityKey(identity, config, orphan.id));
   await withLivenessTimeout("sandbox.failedCreateDelete", 15_000, () => orphan.delete(10, true));
+  idleActivity.confirm(deletionProof);
+}
+
+// Daytona states reported as-is after a create deadline; any other is `other`.
+const REPORTED_CREATE_STATES = new Set<string>([
+  "creating", "pending_build", "building_snapshot", "pulling_snapshot", "starting", "started", "error", "build_failed",
+] satisfies PluginEnvironmentAcquisitionProviderState[]);
+
+// One read-only lookup of the provisional creation name, so a create deadline
+// records where the provider left the allocation. It neither deletes nor
+// records an observed ID: the host-owned cleanup envelope is unchanged.
+async function observeCreateState(
+  config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
+): Promise<PluginEnvironmentAcquisitionProviderState> {
+  try {
+    const sandbox = await withLivenessTimeout("sandbox.createStateLookup", 5_000,
+      () => createDaytonaClient(config).get(cleanup.providerLeaseId));
+    if (!sandbox || sandbox.name !== cleanup.providerLeaseId || typeof sandbox.state !== "string" ||
+        Object.entries(cleanup.labels).some(([key, value]) => sandbox.labels?.[key] !== value)) return "unavailable";
+    return REPORTED_CREATE_STATES.has(sandbox.state) ? sandbox.state as PluginEnvironmentAcquisitionProviderState : "other";
+  } catch (error) {
+    return error instanceof DaytonaNotFoundError ? "absent" : "unavailable";
+  }
 }
 
 // ─── Per-lease started-sandbox handle cache ──────────────────────────────────
@@ -1060,6 +1156,19 @@ type SandboxScope = {
   providerLeaseId: string;
   config: DaytonaDriverConfig;
 };
+
+function providerActivityKey(
+  identity: { driverKey: string; companyId: string; environmentId: string },
+  config: DaytonaDriverConfig,
+  providerLeaseId: string,
+): string {
+  return sandboxHandleCacheKey({ ...identity, config, providerLeaseId });
+}
+
+function confirmedTermination(scope: SandboxScope, state: "stopped" | "destroyed", proof: DaytonaIdleProof): PluginEnvironmentTerminationReceipt {
+  idleActivity.confirm(proof);
+  return { providerLeaseId: scope.providerLeaseId, state };
+}
 
 // Non-secret provider/account fingerprint. Uses the *resolved* key (config or
 // DAYTONA_API_KEY env fallback) so an env-provided credential is still scoped,
@@ -1145,6 +1254,7 @@ const sandboxHandleTeardownGates = (() => {
   const gates = new Map<string, SandboxHandleTeardownGate>();
 
   function begin(scope: SandboxScope): SandboxHandleTeardownGate {
+    idleActivity.resource(sandboxHandleCacheKey(scope));
     const key = sandboxHandleCacheKey(scope);
     const existing = gates.get(key);
     if (existing) {
@@ -1299,6 +1409,7 @@ async function withSandboxActivityGate<T>(
       if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
         throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
       }
+      idleActivity.resource(sandboxHandleCacheKey(scope));
       return await fn();
     } finally {
       sandboxHandleActivityGates.end(scope, activityGate);
@@ -1562,6 +1673,7 @@ const sandboxHandleSessionStore = (() => {
  * Not used in production.
  */
 export function __resetDaytonaSandboxHandleCacheForTest(): void {
+  idleActivity.resetForTest();
   sandboxHandleCache.reset();
   sandboxHandleTeardownGates.reset();
   sandboxHandleActivityGates.reset();
@@ -1598,10 +1710,12 @@ async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {
 }
 
 async function getSandboxOrNull(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox | null> {
+  const proof = idleActivity.proof(sandboxHandleCacheKey(scope));
   try {
     return await getSandbox(scope, options);
   } catch (error) {
     if (error instanceof DaytonaNotFoundError) {
+      idleActivity.confirm(proof, true);
       return null;
     }
     throw error;
@@ -1764,10 +1878,13 @@ async function executeOneShot(
   }
 }
 
-// Poll interval for a session command's exit code. The live spike measured a
-// session command resolving in about 260-300 ms, so a short interval keeps the
-// poll responsive without a busy loop.
-const SESSION_POLL_INTERVAL_MS = 50;
+// Fallback reads full log snapshots as well as status. Limit the heavier
+// polling path while keeping output available to interactive commands.
+const SESSION_LOG_POLL_INTERVAL_MS = 1000;
+const SESSION_INITIAL_STATUS_TIMEOUT_MS = 500;
+// A socket can stay open after it stops delivering output. Switch to saved
+// logs after this much silence; silence never proves that the command exited.
+const SESSION_LOG_STREAM_IDLE_MS = 15_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1779,10 +1896,10 @@ function sleep(ms: number): Promise<void> {
 // where the first read has no code yet.
 const SESSION_EXIT_CODE_RETRY_DELAYS_MS = [50, 100, 200];
 
-// A bounded reconnect for the log stream. A disconnect settles the stream
-// promise as a rejection while the command still runs on the server. One
-// reconnect replays the log from byte 0; the stream buffer drops the replayed
-// prefix by byte offset. After this many reconnects the dispatch falls back to
+// A bounded reconnect for the log stream. The SDK resolves on WebSocket close,
+// which does not prove that the command exited. A reconnect replays the log
+// from byte 0; the stream buffer drops the replayed prefix by byte offset.
+// After this many reconnects the dispatch falls back to
 // the poll path.
 const MAX_SESSION_STREAM_RECONNECTS = 1;
 
@@ -1804,19 +1921,39 @@ const MAX_SESSION_STREAM_RECONNECTS = 1;
 function createSessionStreamBuffer(
   onNewTail?: (stream: "stdout" | "stderr", text: string) => void,
 ) {
+  type Stream = {
+    chunks: Buffer[];
+    length: number;
+    connectionBytes: number;
+    pendingReplacement: string;
+    previousReplacement: { offset: number; text: string } | null;
+  };
+  const createStream = (): Stream => ({
+    chunks: [], length: 0, connectionBytes: 0, pendingReplacement: "", previousReplacement: null,
+  });
   const streams = {
-    stdout: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
-    stderr: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
+    stdout: createStream(),
+    stderr: createStream(),
   };
 
   function append(
     streamName: "stdout" | "stderr",
-    stream: { chunks: Buffer[]; length: number; connectionBytes: number },
+    stream: Stream,
     chunk: string,
+    final = false,
+    publish = true,
   ): void {
-    const buf = Buffer.from(chunk, "utf8");
+    // The SDK flushes an incomplete UTF-8 character as U+FFFD on socket close.
+    // Do not publish that suffix or count its replacement bytes until a replay
+    // confirms it. A real final U+FFFD is flushed at confirmed command exit.
+    const text = stream.pendingReplacement + chunk;
+    stream.pendingReplacement = final ? "" : (text.match(/\uFFFD+$/u)?.[0] ?? "");
+    const buf = Buffer.from(text.slice(0, text.length - stream.pendingReplacement.length), "utf8");
     const start = stream.connectionBytes;
     stream.connectionBytes = start + buf.length;
+    if (stream.previousReplacement && stream.connectionBytes > stream.previousReplacement.offset) {
+      stream.previousReplacement = null;
+    }
     // The whole chunk falls before the delivered byte count, so it is a replay.
     if (start + buf.length <= stream.length) {
       return;
@@ -1829,7 +1966,7 @@ function createSessionStreamBuffer(
     stream.length += tail.length;
     // Deliver only the genuinely new tail to the live sink, so a replayed
     // prefix on a reconnect never reaches the host twice.
-    if (onNewTail && tail.length > 0) {
+    if (publish && onNewTail && tail.length > 0) {
       onNewTail(streamName, tail.toString("utf8"));
     }
   }
@@ -1840,8 +1977,34 @@ function createSessionStreamBuffer(
     // Reset the per-connection read cursors after a reconnect, so the replayed
     // prefix drops against the already-delivered byte count.
     resetConnectionCursors(): void {
-      streams.stdout.connectionBytes = 0;
-      streams.stderr.connectionBytes = 0;
+      for (const stream of Object.values(streams)) {
+        if (stream.pendingReplacement &&
+            (!stream.previousReplacement || stream.connectionBytes > stream.previousReplacement.offset ||
+             (stream.connectionBytes === stream.previousReplacement.offset &&
+              stream.pendingReplacement.length > stream.previousReplacement.text.length))) {
+          stream.previousReplacement = { offset: stream.connectionBytes, text: stream.pendingReplacement };
+        }
+        stream.pendingReplacement = "";
+        stream.connectionBytes = 0;
+      }
+    },
+    finish(publish = true): void {
+      for (const name of ["stdout", "stderr"] as const) {
+        const stream = streams[name];
+        if (stream.previousReplacement?.offset === stream.connectionBytes &&
+            stream.previousReplacement.text.length > stream.pendingReplacement.length) {
+          stream.pendingReplacement = stream.previousReplacement.text;
+        }
+        append(name, stream, "", true, publish);
+        // A short terminal snapshot must not discard a genuine trailing
+        // replacement character already received from a longer stream.
+        const previous = stream.previousReplacement;
+        if (previous && previous.offset >= stream.length) {
+          stream.connectionBytes = previous.offset;
+          append(name, stream, previous.text, true, publish);
+        }
+        stream.previousReplacement = null;
+      }
     },
     get stdout(): string {
       return Buffer.concat(streams.stdout.chunks).toString("utf8");
@@ -1852,34 +2015,175 @@ function createSessionStreamBuffer(
   };
 }
 
-type SessionLogStreamResult =
-  | { ok: true; stdout: string; stderr: string }
-  | { ok: false };
+type SessionLogStreamResult = {
+  exitCode: number | null;
+  pollUntilExit: boolean;
+  buffer: ReturnType<typeof createSessionStreamBuffer>;
+};
+
+class SessionCommandDeadlineError extends Error {}
+class SessionObservationTimeoutError extends Error {}
+
+function createCommandDeadline(timeoutMs: number | undefined) {
+  if (timeoutMs === undefined || timeoutMs === 0) return undefined;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647) {
+    throw new Error("Invalid session command timeout");
+  }
+  let expired = false;
+  const dueAt = Date.now() + timeoutMs;
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    expired = true;
+    controller.abort();
+  }, timeoutMs);
+  return {
+    expired: () => expired,
+    remainingMs: () => Math.max(0, dueAt - Date.now()),
+    race: async <T>(action: () => Promise<T>): Promise<T> => {
+      if (expired) throw new SessionCommandDeadlineError();
+      let rejectDeadline!: (error: SessionCommandDeadlineError) => void;
+      const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+      const onAbort = () => rejectDeadline(new SessionCommandDeadlineError());
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        return await Promise.race([action(), deadline]);
+      } finally {
+        // Retain only active observations. A shared pending promise would keep
+        // every finished poll and its result until a long command ends.
+        controller.signal.removeEventListener("abort", onAbort);
+      }
+    },
+    clear: () => clearTimeout(timer),
+  };
+}
+type CommandDeadline = ReturnType<typeof createCommandDeadline>;
+function withinCommandDeadline<T>(deadline: CommandDeadline, action: () => Promise<T>): Promise<T> {
+  return deadline ? deadline.race(() => idleActivity.track(action)) : idleActivity.track(action);
+}
+
+async function sleepWithinCommandDeadline(deadline: CommandDeadline, delayMs: number): Promise<void> {
+  if (!deadline) return await sleep(delayMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await deadline.race(() => new Promise<void>((resolve) => { timer = setTimeout(resolve, delayMs); }));
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function beforeSessionDeadline<T>(deadlineMs: number, action: () => Promise<T>): Promise<T> {
+  const remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) throw new SessionCommandDeadlineError();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      idleActivity.track(action),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new SessionCommandDeadlineError()), remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+// A provider operation timeout bounds one observation. An explicit command
+// deadline also bounds the stream; existing callers retain their run/Stop guard.
+async function observeSessionCommand<T>(timeoutMs: number, action: () => Promise<T>, commandDeadline?: CommandDeadline): Promise<T> {
+  try {
+    // Use the earlier shared command timer instead of leaving a longer
+    // observation timer alive after the command has already settled.
+    if (commandDeadline && commandDeadline.remainingMs() <= timeoutMs) {
+      return await commandDeadline.race(() => idleActivity.track(action));
+    }
+    return await beforeSessionDeadline(Date.now() + timeoutMs, action);
+  } catch (error) {
+    if (commandDeadline?.expired()) throw new SessionCommandDeadlineError();
+    if (error instanceof SessionCommandDeadlineError || error instanceof DaytonaTimeoutError) {
+      throw new SessionObservationTimeoutError();
+    }
+    throw error;
+  }
+}
 
 // Stream stdout and stderr of one session command from the callback log form.
-// The stream buffer drops a replayed prefix by byte offset on a reconnect. A
-// disconnect rejects the stream promise; the dispatch reconnects a bounded
-// number of times, then reports failure so the caller falls back to the poll
-// path.
+// The stream buffer drops a replayed prefix by byte offset on a reconnect.
+// Rejected streams and clean closes use bounded reconnects, then polling.
+// An idle socket goes directly to polling, including one that never settles.
 async function runSessionLogStream(
   sandbox: Sandbox,
   sessionId: string,
   commandId: string,
-  onNewTail?: (stream: "stdout" | "stderr", text: string) => void,
+  timeoutMs: number,
+  buffer: ReturnType<typeof createSessionStreamBuffer>,
+  commandDeadline?: CommandDeadline,
 ): Promise<SessionLogStreamResult> {
-  const buffer = createSessionStreamBuffer(onNewTail);
   let reconnects = 0;
+  let pollUntilExit = false;
   while (true) {
+    let streamClosed = false;
+    let acceptingOutput = true;
+    let exitObservation: ReturnType<typeof observeSessionStreamExit> | undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let signalIdle!: () => void;
+    const idle = new Promise<"idle">((resolve) => { signalIdle = () => resolve("idle"); });
+    const armIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(signalIdle, SESSION_LOG_STREAM_IDLE_MS);
+    };
+    const receive = (stream: "stdout" | "stderr", chunk: string) => {
+      if (!acceptingOutput || commandDeadline?.expired() || !chunk) return;
+      armIdleTimer();
+      if (stream === "stdout") buffer.onStdout(chunk);
+      else buffer.onStderr(chunk);
+    };
     try {
-      await sandbox.process.getSessionCommandLogs(sessionId, commandId, buffer.onStdout, buffer.onStderr);
-      return { ok: true, stdout: buffer.stdout, stderr: buffer.stderr };
-    } catch {
-      if (reconnects >= MAX_SESSION_STREAM_RECONNECTS) {
-        return { ok: false };
+      armIdleTimer();
+      const observed = await withinCommandDeadline(commandDeadline, () => {
+        exitObservation = observeSessionStreamExit(Promise.race([
+          idleActivity.track(() => sandbox.process.getSessionCommandLogs(
+            sessionId,
+            commandId,
+            (chunk) => receive("stdout", chunk),
+            (chunk) => receive("stderr", chunk),
+          )).then(() => "closed" as const),
+          idle,
+        ]), async () => {
+          const status = await observeSessionCommand(Math.min(timeoutMs, SESSION_INITIAL_STATUS_TIMEOUT_MS),
+            () => sandbox.process.getSessionCommand(sessionId, commandId), commandDeadline);
+          return typeof status.exitCode === "number" ? status.exitCode : null;
+        });
+        return exitObservation.result;
+      });
+      if (observed.kind === "exit") return { exitCode: observed.exitCode, pollUntilExit: false, buffer };
+      const outcome = observed.value;
+      if (outcome === "idle") {
+        // Do not wait for the abandoned socket or open another one. The SDK
+        // exposes no cancellation handle. Fence its callbacks before the
+        // snapshot path resets the buffer's byte cursors.
+        return { exitCode: null, pollUntilExit: true, buffer };
       }
-      reconnects += 1;
-      buffer.resetConnectionCursors();
+      streamClosed = true;
+      pollUntilExit = true;
+    } catch (error) {
+      if (error instanceof SessionCommandDeadlineError) throw error;
+      // The command can still be running after a log transport failure.
+    } finally {
+      // The SDK exposes no cancellation handle for this socket. Session
+      // teardown owns closing it; late data cannot change a settled execution.
+      acceptingOutput = false;
+      exitObservation?.stop();
+      clearTimeout(idleTimer);
     }
+    if (streamClosed) {
+      const exitCode = await readSessionExitCode(sandbox, sessionId, commandId, timeoutMs, commandDeadline);
+      if (exitCode !== null) return { exitCode, pollUntilExit, buffer };
+    }
+    if (reconnects >= MAX_SESSION_STREAM_RECONNECTS) {
+      return { exitCode: null, pollUntilExit, buffer };
+    }
+    reconnects += 1;
+    buffer.resetConnectionCursors();
   }
 }
 
@@ -1891,14 +2195,16 @@ async function readSessionExitCode(
   sandbox: Sandbox,
   sessionId: string,
   commandId: string,
+  timeoutMs: number,
+  commandDeadline?: CommandDeadline,
 ): Promise<number | null> {
-  const first = await sandbox.process.getSessionCommand(sessionId, commandId);
+  const first = await observeSessionCommand(timeoutMs, () => sandbox.process.getSessionCommand(sessionId, commandId), commandDeadline);
   if (typeof first.exitCode === "number") {
     return first.exitCode;
   }
   for (const delayMs of SESSION_EXIT_CODE_RETRY_DELAYS_MS) {
-    await sleep(delayMs);
-    const status = await sandbox.process.getSessionCommand(sessionId, commandId);
+    await sleepWithinCommandDeadline(commandDeadline, delayMs);
+    const status = await observeSessionCommand(timeoutMs, () => sandbox.process.getSessionCommand(sessionId, commandId), commandDeadline);
     if (typeof status.exitCode === "number") {
       return status.exitCode;
     }
@@ -1940,6 +2246,9 @@ async function executeInSession(
   // the exec wall-time spent before the abort, so a slow command is still
   // attributed to the provider boundary.
   let execStart: number | null = null;
+  let confirmedExitCode: number | null = null;
+  let commandDeadline: CommandDeadline;
+  const streamBuffer = createSessionStreamBuffer((stream, text) => pluginContext?.execution.log(stream, text));
 
   try {
     if (stdinPath) {
@@ -1958,96 +2267,143 @@ async function executeInSession(
     const command = `( ${loginScript} )`;
 
     execStart = timingNow();
-    const dispatched = await sandbox.process.executeSessionCommand(
+    commandDeadline = createCommandDeadline(params.commandTimeoutMs);
+    const dispatched = await withinCommandDeadline(commandDeadline, () => sandbox.process.executeSessionCommand(
       sessionId,
       { command, runAsync: true },
       timeoutSeconds,
-    );
+    ));
     const commandId = dispatched.cmdId;
+    let initialExitCode: number | null = null;
+    try {
+      const status = await observeSessionCommand(
+        Math.min(effectiveTimeoutMs, SESSION_INITIAL_STATUS_TIMEOUT_MS),
+        () => sandbox.process.getSessionCommand(sessionId, commandId),
+        commandDeadline,
+      );
+      if (typeof status.exitCode === "number") initialExitCode = status.exitCode;
+    } catch (error) {
+      if (error instanceof SessionCommandDeadlineError) throw error;
+    }
 
     // Log-stream path. A session command always tries the stream first: it
     // streams stdout and stderr from the callback log form, then reads the exit
-    // code one time. On a stream failure, fall through to the poll path below,
-    // because the command still runs to its exit on the server.
+    // code. A log socket closing without a recorded exit leaves the command
+    // running, so reconnect and then poll the same command without replaying it.
     //
     // Emit each genuinely new output chunk to the host during the active execute
     // call. The host routes it to the runner log sink by the host-issued
     // invocation id. This is a no-op when no plugin context is set (a direct
     // test call) or when the host has no active execute route.
-    const streamResult = await runSessionLogStream(
+    const streamResult = initialExitCode !== null
+      ? { exitCode: initialExitCode, pollUntilExit: false, buffer: streamBuffer }
+      : await runSessionLogStream(
       sandbox,
       sessionId,
       commandId,
-      (stream, text) => pluginContext?.execution.log(stream, text),
+      effectiveTimeoutMs,
+      streamBuffer,
+      commandDeadline,
     );
-    if (streamResult.ok) {
-      const exitCode = await readSessionExitCode(sandbox, sessionId, commandId);
+    if (streamResult.exitCode !== null) {
+      confirmedExitCode = streamResult.exitCode;
+      // A log socket can close before the process emits its final bytes. Even
+      // a now-visible exit code does not prove the streamed prefix is complete.
+      const logs = await observeSessionCommand(effectiveTimeoutMs, () => sandbox.process.getSessionCommandLogs(sessionId, commandId), commandDeadline);
+      streamBuffer.resetConnectionCursors();
+      streamBuffer.onStdout(logs?.stdout ?? "");
+      streamBuffer.onStderr(logs?.stderr ?? "");
+      streamBuffer.finish();
       const durationMs = timingNow() - execStart;
       return {
-        exitCode,
+        exitCode: streamResult.exitCode,
         timedOut: false,
-        stdout: streamResult.stdout,
-        stderr: streamResult.stderr,
+        stdout: streamResult.buffer.stdout,
+        stderr: streamResult.buffer.stderr,
         metadata: { durationMs },
       };
     }
 
-    // Poll for the exit code; the SDK has no wait method. The poll deadline uses
-    // the wall clock, separate from the injected timing clock that measures the
-    // reported `durationMs`. The poll path is the fallback when the log stream
-    // fails.
+    // Keep forwarding output while waiting for the actual command exit. ACP
+    // peers may need a tool response before they can finish the command. Waiting
+    // for exit before reading logs would strand those peers after a stream loss.
+    // A closed or idle log socket does not end the command's lifetime. Bound
+    // each recovery read independently; the caller still owns stop/teardown.
+    // Preserve the legacy budget starting at fallback entry when both stream
+    // attempts fail, including a stream that fails after running for hours.
     const deadlineMs = Date.now() + effectiveTimeoutMs;
-    let exitCode: number | null = null;
-    while (true) {
-      const status = await sandbox.process.getSessionCommand(sessionId, commandId);
-      if (typeof status.exitCode === "number") {
-        exitCode = status.exitCode;
-        break;
+    const observe = async <T>(action: () => Promise<T>): Promise<T> => {
+      try {
+        return await (streamResult.pollUntilExit
+          ? observeSessionCommand(effectiveTimeoutMs, action, commandDeadline)
+          : commandDeadline ? commandDeadline.race(action) : beforeSessionDeadline(deadlineMs, action));
+      } catch (error) {
+        if (error instanceof DaytonaTimeoutError) throw new SessionObservationTimeoutError();
+        throw error;
       }
-      if (Date.now() >= deadlineMs) {
+    };
+    while (true) {
+      const status = await observe(() => sandbox.process.getSessionCommand(sessionId, commandId));
+      if (typeof status.exitCode === "number") confirmedExitCode = status.exitCode;
+      const logs = await observe(() => sandbox.process.getSessionCommandLogs(sessionId, commandId));
+      streamResult.buffer.resetConnectionCursors();
+      streamResult.buffer.onStdout(logs.stdout ?? "");
+      streamResult.buffer.onStderr(logs.stderr ?? "");
+      if (confirmedExitCode !== null) {
+        streamResult.buffer.finish();
         const durationMs = timingNow() - execStart;
-        const timeoutMessage = gitNet
-          ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
-          : `Command timed out after ${Math.round(effectiveTimeoutMs / 1000)} s.`;
         return {
-          exitCode: null,
-          timedOut: true,
-          stdout: "",
-          stderr: `${timeoutMessage}\n`,
+          exitCode: confirmedExitCode,
+          timedOut: false,
+          stdout: streamResult.buffer.stdout,
+          stderr: streamResult.buffer.stderr,
           metadata: { durationMs },
         };
       }
-      await sleep(SESSION_POLL_INTERVAL_MS);
+      // Full log snapshots are heavier than a status read. Limit fallback
+      // traffic to one snapshot per second. Failed-stream fallback retains
+      // its original deadline, including the time spent waiting between reads.
+      await sleepWithinCommandDeadline(commandDeadline, streamResult.pollUntilExit ? SESSION_LOG_POLL_INTERVAL_MS
+        : Math.max(0, Math.min(SESSION_LOG_POLL_INTERVAL_MS, deadlineMs - Date.now())));
     }
-
-    // Read true, separated stdout and stderr from the logs endpoint. The
-    // synchronous dispatch response fields are optional, so the logs endpoint is
-    // the source of truth.
-    const logs = await sandbox.process.getSessionCommandLogs(sessionId, commandId);
-    const durationMs = timingNow() - execStart;
-    return {
-      exitCode,
-      timedOut: false,
-      stdout: logs.stdout ?? "",
-      stderr: logs.stderr ?? "",
-      metadata: { durationMs },
-    };
   } catch (error) {
-    if (error instanceof DaytonaTimeoutError) {
+    if (error instanceof SessionObservationTimeoutError ||
+      (error instanceof SessionCommandDeadlineError && confirmedExitCode !== null)) {
+      // Preserve undecided decoder suffixes in the partial result, without
+      // injecting a possibly incomplete character into the live protocol.
+      streamBuffer.finish(false);
+      return {
+        exitCode: null,
+        timedOut: true,
+        stdout: streamBuffer.stdout,
+        stderr: `${streamBuffer.stderr}Session log observation timed out after ${Math.round((commandDeadline?.expired() ? params.commandTimeoutMs! : effectiveTimeoutMs) / 1000)} s; ${confirmedExitCode === null ? "command exit remains unconfirmed" : "final output may be incomplete"}.\n`,
+        metadata: {
+          ...(execStart != null ? { durationMs: timingNow() - execStart } : {}),
+          timeoutScope: "session_log_observation",
+          commandExitConfirmed: confirmedExitCode !== null,
+          ...(confirmedExitCode !== null ? { observedExitCode: confirmedExitCode } : {}),
+        },
+      };
+    }
+    if (error instanceof DaytonaTimeoutError || error instanceof SessionCommandDeadlineError) {
+      streamBuffer.finish(false);
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
-        : error.message.trim();
+        : error instanceof SessionCommandDeadlineError
+          ? `Command timed out after ${Math.round((commandDeadline?.expired() ? params.commandTimeoutMs! : effectiveTimeoutMs) / 1000)} s.`
+          : error.message.trim();
       const durationMs = execStart != null ? timingNow() - execStart : undefined;
       return {
         exitCode: null,
         timedOut: true,
-        stdout: "",
-        stderr: `${timeoutMessage}\n`,
+        stdout: streamBuffer.stdout,
+        stderr: `${streamBuffer.stderr}${timeoutMessage}\n`,
         ...(durationMs != null ? { metadata: { durationMs } } : {}),
       };
     }
     throw error;
   } finally {
+    commandDeadline?.clear();
     if (stdinPath) {
       await sandbox.fs.deleteFile(stdinPath).catch(() => undefined);
     }
@@ -2105,7 +2461,40 @@ async function closeDaytonaDuplexChannelsForLease(providerLeaseId: string): Prom
   await Promise.allSettled(matches.map(entry => entry.session.close()));
 }
 
-const plugin = definePlugin({
+async function stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt> {
+  if (!params.providerLeaseId) throw new Error("Daytona stop requires an exact sandbox identity");
+  const config = parseDriverConfig(params.config);
+  const scope: SandboxScope = { driverKey: params.driverKey, companyId: params.companyId,
+    environmentId: params.environmentId, providerLeaseId: params.providerLeaseId, config };
+  const teardownGate = sandboxHandleTeardownGates.begin(scope);
+  sandboxHandleLeaseAdmissionStates.close(scope);
+  const cleanupProof = idleActivity.proof(sandboxHandleCacheKey(scope));
+  try {
+    const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+    if (!sandbox) throw new Error("Daytona retained sandbox is unavailable");
+    evictSandboxHandle(scope);
+    // Provider auto-delete can destroy a stopped sandbox without an explicit
+    // delete call. Confirm the provider disabled it before stopping saved work;
+    // the SDK setter also updates a local field, which is not sufficient proof.
+    const deadline = Math.min(config.livenessTimeoutMs, 30_000);
+    await withLivenessTimeout("sandbox.setAutoDeleteInterval", deadline, () => sandbox.setAutoDeleteInterval(-1));
+    await withLivenessTimeout("sandbox.refreshData", deadline, () => sandbox.refreshData());
+    if (sandbox.autoDeleteInterval !== -1) throw new Error("Daytona retention policy was not confirmed");
+    // An archive already has no live process and retains its filesystem.
+    // Daytona rejects Stop in this state; leave the confirmed archive cold.
+    if (sandbox.state !== "stopped" && sandbox.state !== "archived") {
+      await terminateAtProvider(scope, "sandbox.stop", () => sandbox.stop(Math.min(toTimeoutSeconds(config.timeoutMs), 30)));
+    }
+    sandboxHandleSessionStore.clear(scope);
+    await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+    return confirmedTermination(scope, "stopped", cleanupProof);
+  } finally {
+    sandboxHandleTeardownGates.end(scope, teardownGate);
+    evictSandboxHandle(scope);
+  }
+}
+
+const plugin = definePlugin(trackDaytonaHooks({
   async setup(ctx) {
     // Hoist the context to a module variable so the lifecycle hooks and the
     // file-sync helpers can read `ctx.tracer` — they have no closure over `ctx`.
@@ -2115,6 +2504,11 @@ const plugin = definePlugin({
 
   async onHealth() {
     return { status: "ok", message: "Daytona sandbox provider plugin healthy" };
+  },
+
+  async onIdleDrain() {
+    return idleActivity.present() || daytonaLoginPtyByRoute.size > 0 || daytonaDuplexChannelByRoute.size > 0
+      ? "present" : "none";
   },
 
   async onEnvironmentValidateConfig(
@@ -2155,6 +2549,8 @@ const plugin = definePlugin({
     if (!config.apiKey && !(process.env.DAYTONA_API_KEY?.trim())) {
       errors.push("Daytona sandbox environments require an API key in config or DAYTONA_API_KEY.");
     }
+    const ttlError = validateCreationTtl(config);
+    if (ttlError) errors.push(ttlError);
     const resourceRequestError = validateResourceRequest(config);
     if (resourceRequestError) {
       errors.push(resourceRequestError);
@@ -2206,7 +2602,11 @@ const plugin = definePlugin({
           },
         };
       } finally {
-        await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+        const proof = idleActivity.proof(providerActivityKey(params, config, sandbox.id));
+        await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true).then(
+          () => idleActivity.confirm(proof),
+          () => undefined,
+        );
       }
     } catch (error) {
       return {
@@ -2228,28 +2628,53 @@ const plugin = definePlugin({
     params: PluginEnvironmentAcquireLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
+    let snapshotIdentity: SnapshotIdentity | undefined;
     // One budget covers creation, setup, and inline cleanup. The host leaves
     // 30 seconds beyond this deadline to receive/journal the cleanup record.
     const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
-    const deadline = Date.now() + budgetMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + budgetMs;
     let expired = false;
-    let phase = "create";
+    let phase: PluginEnvironmentAcquisitionDiagnostic["phase"] = "create";
+    let cleanupInProgress = false;
+    let firstFailure: PluginEnvironmentAcquisitionDiagnostic | undefined;
+    const observeFailure = (): PluginEnvironmentAcquisitionDiagnostic => {
+      // Cleanup may consume the rest of the budget. Keep the original failed
+      // step and time, rather than attributing that failure to its cleanup.
+      return firstFailure ??= {
+        phase,
+        elapsedMs: Math.max(0, Math.min(604_800_000, Date.now() - startedAt)),
+        budgetMs,
+      };
+    };
     let cleanup: PluginEnvironmentCreationCleanup | undefined;
     const timeoutFailure = () => {
+      const diagnostic = observeFailure();
       expired = true;
-      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${phase}`);
+      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${cleanupInProgress ? "cleanup" : phase}`);
       return cleanup
         ? new PluginEnvironmentCreationCleanupError([cause],
             "Daytona lease acquisition timed out; allocation cleanup is pending",
-            { ...cleanup, labels: { ...cleanup.labels } })
+            { ...cleanup, labels: { ...cleanup.labels } }, diagnostic)
         : cause;
     };
     const assertActive = () => {
       if (expired || Date.now() >= deadline) throw timeoutFailure();
     };
+    const deadlineFailure = async () => {
+      // Only a create that has neither resolved nor rejected is still pending.
+      const createPending = phase === "create" && firstFailure === undefined ? cleanup : undefined;
+      const diagnostic = observeFailure();
+      // Stop late setup before the lookup, so a late create cannot be admitted.
+      expired = true;
+      if (createPending) diagnostic.providerState = await observeCreateState(config, createPending);
+      return timeoutFailure();
+    };
     const acquire = async (): Promise<PluginEnvironmentLease> => {
       const sandbox = await createSandbox(params, config, {
-        onCreateAttempt: (attempt) => { cleanup = attempt; },
+        onCreateAttempt: (attempt) => { assertActive(); cleanup = attempt; },
+        onCreateFailure: observeFailure,
+        onSnapshotIdentity: identity => { snapshotIdentity = identity; },
       });
       try {
         assertActive();
@@ -2268,6 +2693,7 @@ const plugin = definePlugin({
           sandbox,
           requestedExpiresAt: params.requestedExpiresAt,
           nowMs: Date.now(),
+          preserveCreationExpiry: config.ttlMinutes != null,
         });
         assertActive();
         phase = "sentinel";
@@ -2309,20 +2735,24 @@ const plugin = definePlugin({
             remoteCwd,
             resumedLease: false,
             workspaceSentinel,
+            snapshotIdentity,
           }),
         };
       } catch (error) {
+        const diagnostic = observeFailure();
         // After timeout the host owns the durable cleanup record. A late SDK
         // completion must not admit this lease or start another setup phase.
         if (!expired) {
-          phase = "cleanup";
+          cleanupInProgress = true;
           try {
-            await sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())));
+            const proof = idleActivity.proof(providerActivityKey(params, config, sandbox.id));
+            await sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())), true);
+            idleActivity.confirm(proof);
           } catch (cleanupError) {
             if (cleanup) {
               throw new PluginEnvironmentCreationCleanupError([error, cleanupError],
                 "Daytona lease setup failed; allocation cleanup is pending",
-                { ...cleanup, labels: { ...cleanup.labels } });
+                { ...cleanup, labels: { ...cleanup.labels } }, diagnostic);
             }
             throw error;
           }
@@ -2331,11 +2761,14 @@ const plugin = definePlugin({
       }
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     try {
       return await Promise.race([
-        acquire(),
+        // After the deadline only the timer settles the call: a late create
+        // rejection cannot replace the timeout's ownership and observation.
+        idleActivity.track(acquire).catch((error: unknown) => timedOut ? new Promise<never>(() => undefined) : Promise.reject(error)),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(timeoutFailure()), budgetMs);
+          timer = setTimeout(() => { timedOut = true; void deadlineFailure().then(reject); }, budgetMs);
         }),
       ]);
     } finally {
@@ -2347,6 +2780,17 @@ const plugin = definePlugin({
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
+    if (params.leaseMetadata?.reuseLease === false) {
+      const sentinel = isRecord(params.leaseMetadata.workspaceSentinel) ? params.leaseMetadata.workspaceSentinel : null;
+      const intent = isRecord(params.leaseMetadata.nativeWorkspaceExportResume) ? params.leaseMetadata.nativeWorkspaceExportResume : null;
+      // Ephemeral recovery is bound at acquisition. Never mint proof during
+      // resume, accept a copied sentinel for a replacement, or waive legacy proof.
+      if (typeof sentinel?.token !== "string" || !sentinel.token || typeof sentinel.runId !== "string" || !sentinel.runId
+        || sentinel.providerLeaseId !== params.providerLeaseId || params.leaseMetadata.sandboxId !== params.providerLeaseId
+        || (intent && intent.runId !== sentinel.runId)) {
+        return { providerLeaseId: null, metadata: { expired: true, workspaceSentinel: { result: "mismatch" } } };
+      }
+    }
     const scope: SandboxScope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
@@ -2403,7 +2847,7 @@ const plugin = definePlugin({
         const resumedFromState = sandbox.state ?? null;
         await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
         try {
-          const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+          const remoteCwd = await resolveSandboxWorkingDirectory(sandbox, false);
           // C3: a resumed lease must clear the workspace sentinel before it is
           // trusted, even when the handle came from the cache. On any non-match we
           // evict the cached handle and expire the lease so a stale/foreign sandbox
@@ -2453,10 +2897,13 @@ const plugin = definePlugin({
     );
   },
 
+  onEnvironmentStopLease: stopLease,
+
   async onEnvironmentReleaseLease(
     params: PluginEnvironmentReleaseLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
+    if (params.resourceDisposition === "stop_and_retain") return stopLease(params);
     const config = parseDriverConfig(params.config);
     const scope: SandboxScope = {
       driverKey: params.driverKey,
@@ -2470,6 +2917,7 @@ const plugin = definePlugin({
     // exec/sync calls cannot reacquire the same sandbox mid-stop/delete.
     const teardownGate = sandboxHandleTeardownGates.begin(scope);
     sandboxHandleLeaseAdmissionStates.close(scope);
+    let cleanupProof = idleActivity.proof(sandboxHandleCacheKey(scope));
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
@@ -2483,9 +2931,10 @@ const plugin = definePlugin({
         if (sandbox.state !== "stopped") await sandbox.stop(timeoutSeconds);
         sandboxHandleSessionStore.clear(scope);
         await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
-        return { providerLeaseId: params.providerLeaseId, state: "stopped" };
+        return confirmedTermination(scope, "stopped", cleanupProof);
       }
       await drainSandboxBeforeTermination(sandbox, scope);
+      cleanupProof = idleActivity.proof(sandboxHandleCacheKey(scope));
 
       // A cached stopped state is not a receipt: the resource could have been
       // resumed since the handle was cached. Read provider state at this boundary.
@@ -2499,10 +2948,10 @@ const plugin = definePlugin({
               `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
             );
             await terminateAtProvider(scope, "sandbox.delete", () => sandbox.delete(toTimeoutSeconds(config.timeoutMs), true));
-            return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
+            return confirmedTermination(scope, "destroyed", cleanupProof);
           }
         }
-        return { providerLeaseId: params.providerLeaseId, state: "stopped" };
+        return confirmedTermination(scope, "stopped", cleanupProof);
       }
 
       if (config.archiveOnRelease) {
@@ -2512,7 +2961,7 @@ const plugin = definePlugin({
           }
           await sandbox.setAutoDeleteInterval(ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES);
           await sandbox.archive();
-          return { providerLeaseId: params.providerLeaseId, state: "stopped" };
+          return confirmedTermination(scope, "stopped", cleanupProof);
         } catch (error) {
           console.warn(
             `Failed to archive Daytona sandbox during lease release: ${formatErrorMessage(error)}. Falling back to delete.`,
@@ -2521,10 +2970,67 @@ const plugin = definePlugin({
       }
 
       await terminateAtProvider(scope, "sandbox.delete", () => sandbox.delete(toTimeoutSeconds(config.timeoutMs), true));
-      return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
+      return confirmedTermination(scope, "destroyed", cleanupProof);
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
+    }
+  },
+
+  async onEnvironmentInspectLease(
+    params: PluginEnvironmentInspectLeaseParams,
+  ): Promise<PluginEnvironmentLeaseObservation> {
+    // An environment-variable fallback may have changed accounts since this
+    // historical allocation. Inspection requires explicitly scoped credentials.
+    if (typeof params.config.apiKey !== "string" || !params.config.apiKey.trim()) {
+      return { providerLeaseId: params.providerLeaseId, state: "unknown" };
+    }
+    const config = parseDriverConfig(params.config);
+    if (!config.apiUrl && (process.env.DAYTONA_API_URL?.trim() || process.env.DAYTONA_SERVER_URL?.trim())) {
+      return { providerLeaseId: params.providerLeaseId, state: "unknown" };
+    }
+    if (params.creationOperation !== undefined) {
+      const { id: attemptId, runId } = params.creationOperation;
+      if (![attemptId, runId].every(value => typeof value === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value))) {
+        throw new Error("Invalid creation operation identity");
+      }
+      const name = `paperclip-create-${attemptId}`;
+      try {
+        const sandbox = await withLivenessTimeout("sandbox.creationLookup", 10_000, () => createDaytonaClient(config).get(name));
+        const labels = {
+          "paperclip-provider": "daytona", "paperclip-create-attempt": attemptId,
+          "paperclip-company-id": params.companyId, "paperclip-environment-id": params.environmentId,
+          "paperclip-run-id": runId,
+        };
+        if (sandbox.name !== name || Object.entries(labels).some(([key, value]) => sandbox.labels?.[key] !== value)) {
+          throw new Error("Creation operation ownership does not match");
+        }
+        return { providerLeaseId: name, state: "active", creationCleanup: {
+          providerLeaseId: name, observedProviderLeaseId: sandbox.id, companyId: params.companyId,
+          environmentId: params.environmentId, runId: labels["paperclip-run-id"], attemptId,
+          accountFingerprint: sandboxAccountDiscriminator(config), labels,
+        } };
+      } catch (error) {
+        if (error instanceof DaytonaNotFoundError) return { providerLeaseId: name, state: "unknown" };
+        throw error;
+      }
+    }
+    const proof = idleActivity.proof(providerActivityKey(params, config, params.providerLeaseId));
+    // Read directly from the provider. The setup-status path and cached lease
+    // reconnect path can start a stopped sandbox, so neither is an observation.
+    try {
+      const sandbox = await createDaytonaClient(config).get(params.providerLeaseId);
+      if (sandbox.id !== params.providerLeaseId) return { providerLeaseId: params.providerLeaseId, state: "unknown" };
+      if (sandbox.state === "stopped" || sandbox.state === "archived") {
+        idleActivity.confirm(proof, true);
+      }
+      return { providerLeaseId: sandbox.id, state: sandbox.state === "stopped" ? "stopped" : "active" };
+    } catch (error) {
+      if (error instanceof DaytonaNotFoundError) {
+        idleActivity.confirm(proof, true);
+        return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
+      }
+      throw error;
     }
   },
 
@@ -2541,7 +3047,7 @@ const plugin = definePlugin({
           cleanup.providerLeaseId !== params.providerLeaseId) {
         throw new Error("Failed-create sandbox cleanup scope does not match");
       }
-      await destroyFailedCreation(config, cleanup, true);
+      await destroyFailedCreation(config, cleanup, params.driverKey, true);
       return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     }
     const scope: SandboxScope = {
@@ -2561,8 +3067,9 @@ const plugin = definePlugin({
 
       evictSandboxHandle(scope);
       await drainSandboxBeforeTermination(sandbox, scope);
+      const cleanupProof = idleActivity.proof(sandboxHandleCacheKey(scope));
       await terminateAtProvider(scope, "sandbox.delete", () => sandbox.delete(toTimeoutSeconds(config.timeoutMs), true));
-      return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
+      return confirmedTermination(scope, "destroyed", cleanupProof);
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
@@ -2637,7 +3144,11 @@ const plugin = definePlugin({
         }),
       };
     } catch (error) {
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+      const proof = idleActivity.proof(providerActivityKey(params, config, sandbox.id));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true).then(
+        () => idleActivity.confirm(proof),
+        () => undefined,
+      );
       throw error;
     }
   },
@@ -2800,7 +3311,9 @@ const plugin = definePlugin({
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
       await teardownSession(sandbox, scope);
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+      const proof = idleActivity.proof(sandboxHandleCacheKey(scope));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+      idleActivity.confirm(proof);
       return {
         status: params.reason === "timed_out" ? "timed_out" : "cancelled",
         metadata: {
@@ -3054,13 +3567,17 @@ const plugin = definePlugin({
     };
     try {
       return await withSandboxActivityGate(scope, async () => {
-        const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-        await ensureSandboxStarted(sandbox, timeoutSeconds);
+        const sandbox = await withEnvironmentSyncTransferStep("sandbox_access", async () => {
+          const resolved = await getSandbox(scope, { bypassTeardownGate: true });
+          await ensureSandboxStarted(resolved, timeoutSeconds);
+          return resolved;
+        });
         const result = await performSyncOut({
           sandbox,
           operations: params.operations,
           remoteDir,
           timeoutSeconds,
+          onArchiveRecovery: () => pluginContext?.logger.info("Workspace export omitted unsafe links; retrying with confined entries."),
         });
         sandboxHandleCache.markFresh(scope);
         return result;
@@ -3070,7 +3587,7 @@ const plugin = definePlugin({
       // unexported workspace bytes no longer exist. Convert the SDK class to a
       // stable cross-worker message; every other error remains retryable.
       if (error instanceof DaytonaNotFoundError) {
-        throw new Error("daytona_sandbox_not_found");
+        throw preserveEnvironmentSyncErrorDiagnostic(new Error("daytona_sandbox_not_found"), error);
       }
       throw error;
     }
@@ -3256,6 +3773,6 @@ const plugin = definePlugin({
     sandboxHandleCache.reset();
     runnerIngressGenerationStore.reset();
   },
-});
+}, idleActivity));
 
 export default plugin;

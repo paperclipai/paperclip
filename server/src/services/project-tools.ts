@@ -1,4 +1,4 @@
-import { createProjectSchema, createIssueSchema } from "@paperclipai/shared";
+import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema, requiredQualityReviewSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
@@ -6,7 +6,7 @@ import { badRequest } from "../errors.js";
 export const PROJECT_TOOL_NAMES = ["create_project", "list_project_repositories", "list_projects"];
 export function projectToolDefinitions(workMode: string, includeTask = false) {
   return CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool =>
-    (PROJECT_TOOL_NAMES.includes(tool.operationId) || includeTask && tool.operationId === "create_task")
+    (PROJECT_TOOL_NAMES.includes(tool.operationId) || includeTask && ["create_task", "set_task_title"].includes(tool.operationId))
     && tool.allowedModes.includes(workMode as "standard"),
   ).map(tool => ({ name: tool.operationId, description: tool.description,
     inputSchema: tool.operationId === "create_project"
@@ -18,13 +18,22 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
 /** All transports use the normal authenticated API, including its validation and audit path. */
 export async function callProjectTool(input: {
   name: string; arguments: Record<string, unknown>; apiUrl: string; token: string;
-  companyId: string; issueId: string; agentId: string; conversation: boolean;
+  companyId: string; issueId: string; agentId: string; conversation: boolean; receiptOnly?: boolean;
 }) {
+  if (input.receiptOnly && input.name !== "create_project") throw badRequest("Receipt recovery is only supported for project creation");
   const args = input.arguments;
+  const page = input.name === "list_projects" ? projectDiscoverySchema.parse(args) : null;
   let path = `/companies/${input.companyId}/projects`;
   let body: unknown;
-  if (input.name === "list_project_repositories") path = `/companies/${input.companyId}/project-repositories`;
-  else if (input.name === "list_projects") { /* read projects */ }
+  if (input.name === "set_task_title") {
+    path = `/issues/${input.issueId}/title`;
+    body = setIssueTitleSchema.parse(args);
+  } else if (input.name === "list_project_repositories") path = `/companies/${input.companyId}/project-repositories`;
+  else if (page) {
+    const query = new URLSearchParams({ view: "summary", limit: String(page.limit) });
+    if (page.cursor) query.set("cursor", page.cursor);
+    path += `?${query}`;
+  }
   else if (input.name === "create_project") {
     body = createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }).parse(args);
   } else if (input.name === "create_task") {
@@ -33,7 +42,11 @@ export async function callProjectTool(input: {
     body = createIssueSchema.parse({
       title: args.title, description: args.description, priority: args.priority,
       projectId: args.projectId, initialPlan: args.initialPlan,
-      assigneeAgentId: args.assigneeActorId ?? input.agentId,
+      ...(args.requiredQualityReview !== undefined ? {
+        executionPolicy: { requiredQualityReview: requiredQualityReviewSchema.parse(args.requiredQualityReview) },
+      } : {}),
+      assigneeAgentId: args.assigneeActorId ?? (args.assigneeUserId ? null : input.agentId),
+      assigneeUserId: args.assigneeUserId,
       parentId: input.conversation ? null : input.issueId,
       status: Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,
@@ -41,12 +54,15 @@ export async function callProjectTool(input: {
     });
   } else throw badRequest("Unknown project tool");
   const response = await fetch(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`, {
-    method: body ? "POST" : "GET",
-    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
+    method: input.name === "set_task_title" ? "PUT" : body ? "POST" : "GET",
+    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json",
+      ...(input.receiptOnly ? { "X-Paperclip-Receipt-Only": "true" } : {}),
+    },
     ...(body ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(60_000),
   });
+  if (input.receiptOnly && response.status === 204) return undefined;
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Project tool failed (${response.status})`);
-  return input.name === "list_projects" ? { projects: result } : result;
+  return result;
 }

@@ -1,9 +1,11 @@
 import { and, desc, eq, lte } from "drizzle-orm";
 import { documentRevisions, heartbeatRuns, issueDocuments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 
+import { canActorReadIssuePrivacy, type AuthorizationActor } from "../authorization.js";
+
 /** Approval evidence belongs to the source conversation and exact revision.
  * It informs scope; it does not approve the new task's document or waive gates. */
-export async function handoffPlanContext(db: Db, task: typeof issues.$inferSelect) {
+export async function handoffPlanContext(db: Db, task: typeof issues.$inferSelect, actor?: AuthorizationActor) {
   if (!task.originRunId || task.conversationAgentId) return null;
   const [sourceRun] = await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, task.originRunId), eq(heartbeatRuns.companyId, task.companyId),
@@ -12,6 +14,7 @@ export async function handoffPlanContext(db: Db, task: typeof issues.$inferSelec
   if (typeof sourceId !== "string" || sourceId === task.id) return null;
   const [source] = await db.select().from(issues).where(and(eq(issues.id, sourceId), eq(issues.companyId, task.companyId)));
   if (!source?.conversationAgentId) return null;
+  if (actor && !(await canActorReadIssuePrivacy(db, actor, source))) return null;
   const accepted = await db.select().from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, task.companyId), eq(issueThreadInteractions.issueId, source.id),
     eq(issueThreadInteractions.kind, "request_confirmation"), eq(issueThreadInteractions.status, "accepted"),

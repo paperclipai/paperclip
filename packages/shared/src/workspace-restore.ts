@@ -3,8 +3,14 @@ export const WORKSPACE_RESTORE_FAILURE_CODES = [
   "restore_permission_denied",
   "restore_lock_timeout",
   "restore_unsafe_archive",
+  "restore_invalid_metadata",
   "restore_failed",
 ] as const;
+
+/** These failures preserve an accepted native result for board-owned export repair. */
+export function isNativeWorkspaceExportRepairCause(value: unknown): boolean {
+  return value === "native_workspace_sync_out_retry_exhausted";
+}
 
 export function hasWorkspaceRestoreFailure(result: Record<string, unknown> | null | undefined): boolean {
   return WORKSPACE_RESTORE_FAILURE_CODES.some((code) => result?.workspaceRestoreFailure === code);

@@ -15,8 +15,8 @@ export function ProjectWorkspacesContent({
   summaries,
 }: {
   companyId: string;
-  projectId: string;
-  projectRef: string;
+  projectId: string | null;
+  projectRef: string | null;
   summaries: ProjectWorkspaceSummary[];
 }) {
   const queryClient = useQueryClient();
@@ -35,6 +35,7 @@ export function ProjectWorkspacesContent({
     }) => {
       setRuntimeActionKey(`${input.key}:${input.action}`);
       if (input.kind === "project_workspace") {
+        if (!projectId) throw new Error("Project workspace has no project");
         return await projectsApi.controlWorkspaceRuntimeServices(projectId, input.workspaceId, input.action, companyId);
       }
       return await executionWorkspacesApi.controlRuntimeServices(input.workspaceId, input.action);
@@ -43,11 +44,11 @@ export function ProjectWorkspacesContent({
       setRuntimeActionKey(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+      if (projectId) queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
+      if (projectId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+      if (projectId) queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
     },
   });
 
@@ -107,11 +108,11 @@ export function ProjectWorkspacesContent({
           onClosed={() => {
             queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(companyId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+            if (projectId) queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
+            if (projectId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+            if (projectId) queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
             setClosingWorkspace(null);
           }}
         />

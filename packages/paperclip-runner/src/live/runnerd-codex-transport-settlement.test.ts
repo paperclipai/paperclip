@@ -46,6 +46,7 @@ import {
   settleRetainedRunnerdSession,
   retainedRunnerdCleanupProofIsCurrent,
   retainedRunnerdMaintenanceIsIdle,
+  waitForRetainedRunnerdMaintenanceIdle,
 } from "./runnerd-codex-transport.js";
 
 // Explicit private-artifact test lane; production/default dist is never changed.
@@ -273,7 +274,14 @@ it.each([
       builder.queueCommand("turn.stop", {
         reason: "interrupted original close",
       });
-      if (!missingHome) builder.queueCommand("runner.suspend", {});
+      // The outbound-ACK row must reach its injected loss after retained event
+      // commits finish. An already queued suspend starts the real two-second
+      // ACK deadline behind that commit queue and can time out without ever
+      // sending the frame this row is meant to withhold. Maintenance queues its
+      // own suspend after draining; the other rows keep the old pending command.
+      if (!missingHome && completedTerminalAck !== "completed") {
+        builder.queueCommand("runner.suspend", {});
+      }
       // Match the retained production split: runner-owned unacknowledged
       // output plus another full provider-owned prefix behind the old suspend.
       const runnerFile = join(original, "runner/runner-state.json");
@@ -349,7 +357,13 @@ it.each([
           ),
         )
         .digest("hex");
-      const appendEvent = vi.fn(async (_event: PrpEvent) => {});
+      const appendEvent = vi.fn(async (_event: PrpEvent) => {
+        // Reproduce slow durable commits without extending the runtime ACK
+        // deadline: all 218 retained events still have to commit exactly once.
+        if (completedTerminalAck === "completed") {
+          await new Promise((resolveCommit) => setTimeout(resolveCommit, 30));
+        }
+      });
       const maintenanceAbort = new AbortController();
       let finalAuthorityRevoked = false;
       const authorize = vi.fn(async () => {
@@ -592,6 +606,11 @@ it.each([
             authorize: () => stuckAuthorization,
           });
           const observed = blocked.catch((error: unknown) => error);
+          let idle = false;
+          const idleWait = waitForRetainedRunnerdMaintenanceIdle(copy).then(() => { idle = true; });
+
+          await waitForRetainedRunnerdMaintenanceIdle(join(copy, "unrelated"));
+          expect(idle).toBe(false);
           if (interruption === "abort") abort.abort();
           else await vi.advanceTimersByTimeAsync(30_000);
           expect(await observed).toMatchObject({
@@ -610,9 +629,11 @@ it.each([
           // The bounded wrapper has already failed, but its original callback
           // remains owned until it actually settles. No retry/proof is granted.
           expect(drained).toBe(false);
+          expect(idle).toBe(false);
           releaseAuthorization();
-          await drain;
+          await Promise.all([drain, idleWait]);
           expect(drained).toBe(true);
+          expect(idle).toBe(true);
           expect(retainedRunnerdMaintenanceIsIdle(copy)).toBe(true);
         } finally {
           releaseAuthorization();

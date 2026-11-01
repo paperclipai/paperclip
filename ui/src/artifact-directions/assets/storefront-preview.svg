@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900"><rect width="1600" height="900" fill="#f6f0e1"/><rect width="1600" height="84" fill="#1f4d3a"/><text x="60" y="56" font-family="Georgia, 'Times New Roman', serif" font-size="38" fill="#f3ecd9">acmehats</text>
+  <rect x="1040" y="38" width="90" height="8" rx="4" fill="#f3ecd9" opacity="0.6"/><rect x="1170" y="38" width="90" height="8" rx="4" fill="#f3ecd9" opacity="0.6"/><rect x="1300" y="38" width="90" height="8" rx="4" fill="#f3ecd9" opacity="0.6"/><rect x="1430" y="38" width="90" height="8" rx="4" fill="#f3ecd9" opacity="0.6"/>
+  <text x="80" y="250" font-family="Georgia, 'Times New Roman', serif" font-size="84" font-weight="400" fill="#1f3a2e">Caps that carry</text><text x="80" y="344.08000000000004" font-family="Georgia, 'Times New Roman', serif" font-size="84" font-weight="400" fill="#1f3a2e">your place.</text><rect x="84" y="400" width="520" height="8" rx="1" fill="#1f3a2e" opacity="0.4"/><rect x="84" y="422" width="478.40000000000003" height="8" rx="1" fill="#1f3a2e" opacity="0.4"/><rect x="84" y="444" width="322.4" height="8" rx="1" fill="#1f3a2e" opacity="0.4"/>
+  <rect x="84" y="500" width="260" height="70" rx="35" fill="#1f4d3a"/><text x="130" y="546" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="28" font-weight="700" fill="#f3ecd9">Design yours</text>
+  <rect x="860" y="160" width="660" height="560" rx="24" fill="#e7dcc4"/><g transform="translate(930 250) scale(2.9)">
+    <ellipse cx="100" cy="118" rx="92" ry="7" fill="rgba(0,0,0,0.18)"/>
+    <path d="M56 90 C34 90 10 99 4 110 C2 115 8 118 16 116 C44 108 74 104 108 103 Z" fill="#1f4d3a"/>
+    <path d="M56 90 C34 90 10 99 4 110 C22 100 44 97 62 96 Z" fill="rgba(0,0,0,0.18)"/>
+    <path d="M48 98 C46 52 76 22 116 22 C156 22 184 52 186 98 C140 104 94 104 48 98 Z" fill="#1f4d3a"/>
+    <path d="M116 22 C100 44 95 70 95 101 M116 22 C140 44 150 70 151 101" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="1.6"/>
+    <path d="M48 98 C94 104 140 104 186 98" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2.4"/>
+    <circle cx="116" cy="21" r="4.5" fill="#1f4d3a" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+    <rect x="60" y="60" width="30" height="19" rx="2.5" fill="#f6f0e1" transform="rotate(-6 75 70)"/>
+  </g>
+  <rect x="84" y="760" width="220" height="90" rx="12" fill="#ffffff"/><circle cx="130" cy="805" r="22" fill="#1f4d3a"/><rect x="166" y="796" width="110" height="10" rx="5" fill="#1f3a2e" opacity="0.4"/><rect x="334" y="760" width="220" height="90" rx="12" fill="#ffffff"/><circle cx="380" cy="805" r="22" fill="#1f44c8"/><rect x="416" y="796" width="110" height="10" rx="5" fill="#1f3a2e" opacity="0.4"/><rect x="584" y="760" width="220" height="90" rx="12" fill="#ffffff"/><circle cx="630" cy="805" r="22" fill="#c8553d"/><rect x="666" y="796" width="110" height="10" rx="5" fill="#1f3a2e" opacity="0.4"/></svg>

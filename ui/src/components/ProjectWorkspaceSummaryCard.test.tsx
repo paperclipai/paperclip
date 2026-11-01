@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act as reactAct, type ComponentProps, type ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
+import { act as reactAct } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -346,60 +347,48 @@ describe("ProjectWorkspaceSummaryCard", () => {
       cwd: "/Users/dotta/paperclip/.worktrees/PAP-1552-workspace-polish",
     });
 
-    await act(async () => {
-      root.render(withQueryClient(
-        <ProjectWorkspaceSummaryCard
-          projectRef="paperclip-app"
-          summary={summary}
-          runtimeActionKey={null}
-          runtimeActionPending={false}
-          onRuntimeAction={() => {}}
-          onCloseWorkspace={() => {}}
-        />,
-      ));
-    });
-
-    const branchTextButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent === summary.branchName);
-    const pathTextButton = container.querySelector(`button[title="${summary.cwd}"]`);
-    const branchIconButton = container.querySelector('button[aria-label="Copy branch"]');
-    const pathIconButton = container.querySelector('button[aria-label="Copy path"]');
-
-    expect(branchTextButton).not.toBeNull();
-    expect(pathTextButton).not.toBeNull();
-    expect(branchIconButton).not.toBeNull();
-    expect(pathIconButton).not.toBeNull();
-
     vi.useFakeTimers();
     try {
       await reactAct(async () => {
-        branchTextButton!.click();
-        await Promise.resolve();
+        root.render(withQueryClient(
+          <ProjectWorkspaceSummaryCard
+            projectRef="paperclip-app"
+            summary={summary}
+            runtimeActionKey={null}
+            runtimeActionPending={false}
+            onRuntimeAction={() => {}}
+            onCloseWorkspace={() => {}}
+          />,
+        ));
       });
-      expect(writeClipboard).toHaveBeenLastCalledWith(summary.branchName);
-      expect(branchTextButton?.nextElementSibling?.className).toContain("opacity-100");
 
-      await reactAct(async () => {
-        pathTextButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        await Promise.resolve();
-      });
-      expect(writeClipboard).toHaveBeenLastCalledWith(summary.cwd);
-      expect(pathTextButton?.nextElementSibling?.className).toContain("opacity-100");
+      const branchTextButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === summary.branchName);
+      const pathTextButton = container.querySelector(`button[title="${summary.cwd}"]`);
+      const branchIconButton = container.querySelector('button[aria-label="Copy branch"]');
+      const pathIconButton = container.querySelector('button[aria-label="Copy path"]');
 
-      writeClipboard.mockClear();
-      await reactAct(async () => {
-        branchIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        pathIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        await Promise.resolve();
-      });
-      expect(writeClipboard).toHaveBeenNthCalledWith(1, summary.branchName);
-      expect(writeClipboard).toHaveBeenNthCalledWith(2, summary.cwd);
-      expect(writeClipboard).toHaveBeenCalledTimes(2);
+      const copyWithFeedback = async (button: Element | null | undefined, text: string) => {
+        expect(button).toBeTruthy();
+        await reactAct(async () => {
+          button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        expect(writeClipboard).toHaveBeenLastCalledWith(text);
+        expect(button!.nextElementSibling?.className).toContain("opacity-100");
+        await reactAct(async () => { await vi.advanceTimersByTimeAsync(1499); });
+        expect(button!.nextElementSibling?.className).toContain("opacity-100");
+        await reactAct(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(button!.nextElementSibling?.className).toContain("opacity-0");
+      };
+
+      await copyWithFeedback(branchTextButton, summary.branchName!);
+      await copyWithFeedback(pathTextButton, summary.cwd!);
+      await copyWithFeedback(branchIconButton, summary.branchName!);
+      await copyWithFeedback(pathIconButton, summary.cwd!);
     } finally {
-      act(() => {
-        root.unmount();
-      });
-      vi.useRealTimers();
+      try {
+        await reactAct(async () => { root.unmount(); });
+      } finally { vi.useRealTimers(); }
     }
   });
   it("colors live service urls green", () => {

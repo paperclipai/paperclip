@@ -171,6 +171,27 @@ describe("TaskChatTurn", () => {
       '[data-testid="task-chat-live-turn"]',
     );
 
+  it("keeps historical activity expandable without a failure or completion status", () => {
+    renderTurn({ ...SETTLED, historical: true, summary: { ...SETTLED.summary, failed: true } });
+    expect(summaryBtn()?.textContent).toContain("Activity");
+    expect(container.textContent).not.toContain("Stopped");
+    expect(container.textContent).not.toContain("Worked");
+    flushSync(() => summaryBtn()!.click());
+    expect(container.textContent).toContain("c1");
+    expect(fold()?.getAttribute("data-folded")).toBe("false");
+  });
+
+  it("omits historical status while preserving native agent identity and response", () => {
+    renderTurn({ ...SETTLED, historical: true, standaloneHeader: true, agentName: "Assistant",
+      summary: { ...SETTLED.summary, failed: true },
+      finalResponse: { id: "response", kind: "message", author: "agent", text: "Saved response" } });
+    expect(container.textContent).toContain("Assistant");
+    expect(container.textContent).toContain("Saved response");
+    expect(container.textContent).toContain("c1");
+    expect(container.textContent).not.toContain("Stopped");
+    expect(container.textContent).not.toContain("Worked");
+  });
+
   it("renders a settled turn folded with its summary line", () => {
     renderTurn(SETTLED);
     // Label and mono metrics are adjacent spans (v7 runsum grammar).

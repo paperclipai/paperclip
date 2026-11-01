@@ -16,8 +16,8 @@ pub use runner::{
     TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
-    create_private_temporary_file, open_private_regular_file, redact_text,
-    sanitize_semantic_tool_input, sanitize_value, verify_private_directory,
+    create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,
+    redact_text, sanitize_value, validate_semantic_tool_input, verify_private_directory,
 };
 pub use state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
@@ -27,7 +27,7 @@ pub(crate) use transport::current_unix_ms;
 
 pub const PROTOCOL: &str = "paperclip.runner";
 pub const PROTOCOL_MIN_VERSION: u64 = 1;
-pub const PROTOCOL_VERSION: u64 = 2;
+pub const PROTOCOL_VERSION: u64 = 3;
 pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -118,6 +118,7 @@ pub struct AcpxLaunchProfile {
     pub command: PathBuf,
     pub args: Vec<String>,
     pub artifacts: Vec<QualifiedLaunchArtifact>,
+    pub candidate_admission: Option<crate::acpx_candidate_admission::AcpxCandidateAdmission>,
 }
 
 impl AcpxLaunchProfile {
@@ -162,6 +163,17 @@ impl AcpxLaunchProfile {
                     .as_bytes(),
             );
             update(&mut digest, artifact.sha256.as_bytes());
+        }
+        if let Some(admission) = &self.candidate_admission {
+            update(&mut digest, b"paperclip.acpx-candidate-admission.v1");
+            update(
+                &mut digest,
+                &serde_json::to_vec(admission).map_err(|_| {
+                    DurableRunnerError::invalid(
+                        "ACPX candidate admission could not be bound to launch identity",
+                    )
+                })?,
+            );
         }
         Ok(format!("sha256:{:x}", digest.finalize()))
     }
@@ -257,6 +269,16 @@ impl DurableRunnerConfig {
             ));
         }
         if let Some(profile) = self.acpx_launch_profile.as_ref() {
+            if let Some(admission) = &profile.candidate_admission {
+                admission
+                    .validate_binding(
+                        &admission.agent,
+                        &admission.model,
+                        &self.run_id,
+                        &self.normalized_session_id,
+                    )
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            }
             if profile.authority_digest.len() != 71
                 || !profile.authority_digest.starts_with("sha256:")
                 || !profile.authority_digest[7..]
@@ -347,6 +369,41 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
         }
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_launch_digest_binds_authority_and_config_binds_actual_identity() {
+        let mut profile = AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/qualified/node"),
+            args: vec!["/qualified/sidecar.cjs".to_owned()],
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: PathBuf::from("/qualified/node"),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            }],
+            candidate_admission: None,
+        };
+        let ordinary = profile.canonical_digest().unwrap();
+        assert_eq!(
+            ordinary,
+            "sha256:652c2eb4b49d3a38b028ea5a9803a91188c14a283f1bb478d823681b95be69c6"
+        );
+        profile.candidate_admission = Some(crate::acpx_candidate_admission::test_admission(
+            "run-1",
+            "session-1",
+        ));
+        let candidate = profile.canonical_digest().unwrap();
+        assert_ne!(ordinary, candidate);
+        let mut config = config();
+        config.acpx_launch_profile = Some(profile.clone());
+        config.validate().unwrap();
+        config.run_id = "wrong-run".to_owned();
+        assert!(config.validate().is_err());
+        profile.candidate_admission.as_mut().unwrap().company_id = "company-2".to_owned();
+        assert_ne!(candidate, profile.canonical_digest().unwrap());
+        profile.candidate_admission = None;
+        assert_eq!(ordinary, profile.canonical_digest().unwrap());
     }
 
     #[test]

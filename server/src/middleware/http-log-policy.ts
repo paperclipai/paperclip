@@ -1,6 +1,7 @@
 const SILENCED_SUCCESS_METHODS = new Set(["GET", "HEAD"]);
 
 const SILENCED_SUCCESS_API_PATHS = [
+  /^\/api\/muse\/v1\/signal$/i,
   /^\/api\/health(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/activity(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/dashboard(?:\/|$)/,
@@ -38,9 +39,38 @@ function normalizePath(url: string): string {
 }
 
 const SECRET_SENSITIVE_HTTP_PATHS = [
+  /^\/api\/companies\/[^/]+\/voice-sessions(?:\/|$)/,
+  /^\/mcp\/(?:oauth|paperclip)(?:\/|$)/,
+  /^\/api\/mcp(?:\/|$)/,
   /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/,
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
+
+/** Free-form agent feedback must never be copied into HTTP diagnostics. */
+export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  // Express routes are case-insensitive and also accept absolute-form URLs.
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
+}
+
+/** Destination credentials stay private even on malformed settings requests. */
+export function isPrivateAgentObservabilityHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return /^\/api\/companies\/[^/]+\/observability(?:\/|$)/i.test(pathname);
+}
+
+/** Muse OAuth and worker payloads stay private even on malformed/rejected paths. */
+export function isPrivateMuseHttpRequest(url:string|undefined):boolean {
+  if(!url)return false;
+  let pathname=normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  for(let depth=0;depth<4;depth++) {
+    if(/^\/api\/muse(?:\/|$)/i.test(pathname) || /^\/api\/companies\/[^/]+\/(?:muse-invitations|agents\/[^/]+\/muse-binding)(?:\/|$)/i.test(pathname))return true;
+    try {const decoded=decodeURIComponent(pathname);if(decoded===pathname)break;pathname=decoded;} catch {break;}
+  }
+  return false;
+}
 
 /** Provider payloads are private even when a method/signature is rejected. */
 export function isPrivateWebhookHttpRequest(
@@ -53,7 +83,7 @@ export function isPrivateWebhookHttpRequest(
     // Do not let URL dot-segment normalization erase an explicitly supplied
     // ingress namespace on a malformed absolute-form callback.
     const rawPath = pathname.replace(/^https?:\/\/[^/]*/i, "");
-    if (/^\/api\/(?:chat-webhooks|routine-triggers\/public)(?:\/|$)/i.test(rawPath)) return true;
+    if (/^\/api\/(?:chat-webhooks|voice-webhooks|routine-triggers\/public)(?:\/|$)/i.test(rawPath)) return true;
     try {
       pathname = new URL(url).pathname;
     } catch {
@@ -62,7 +92,7 @@ export function isPrivateWebhookHttpRequest(
   }
   // This namespace is reserved for provider ingress, including malformed or
   // unknown callback paths. Rejecting a route must not make its payload public.
-  return /^\/api\/(?:chat-webhooks|routine-triggers\/public)(?:\/|$)/i.test(pathname);
+  return /^\/api\/(?:chat-webhooks|voice-webhooks|routine-triggers\/public)(?:\/|$)/i.test(pathname);
 }
 
 /**
@@ -76,8 +106,17 @@ export function isSecretSensitiveHttpRequest(
   method: string | undefined,
   url: string | undefined,
 ): boolean {
-  if (isPrivateWebhookHttpRequest(method, url)) return true;
+  if (isPrivateWebhookHttpRequest(method, url) || isPrivateMuseHttpRequest(url)) return true;
+  if (url && normalizePath(url).startsWith("/mcp/files/")) return true;
+  if (isPrivateAgentCommentaryHttpRequest(url)) return true;
+  // Custom OTLP header values are arbitrary credentials, including on rejected
+  // methods or malformed subpaths. Named-field redaction cannot identify them.
+  if (isPrivateAgentObservabilityHttpRequest(url)) return true;
+  // Avatar uploads and dedicated Dot MCP calls may contain private image bytes.
+  if (url && /^(?:\/mcp\/runner(?:\/|$)|\/api\/companies\/[^/]+\/agents\/[^/]+\/avatar(?:\/|$))/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;
   if (!method || !url) return false;
+  if (/^\/api\/chat-slack\/(?:managed\/)?oauth(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;
+  if (/^\/api\/chat-endpoints\/[^/]+\/slack(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;
   if (!SECRET_SENSITIVE_HTTP_METHODS.has(method.toUpperCase())) return false;
   const pathname = normalizePath(url);
   return SECRET_SENSITIVE_HTTP_PATHS.some((pattern) => pattern.test(pathname));

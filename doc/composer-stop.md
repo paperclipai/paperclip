@@ -110,8 +110,8 @@ Run from the worktree:
 pnpm --filter @paperclipai/ui exec storybook dev -p 6016 -c storybook/.storybook --no-open
 ```
 
-Open `http://localhost:6016/?path=/story/tasks-execution-controls--running-empty`.
-The `Tasks / Execution Controls` stories compose the production composer and
+Open `http://localhost:6016/?path=/story/composer-execution-controls--running-empty`.
+The `Composer / Execution controls` stories compose the production composer and
 menu/dialog controls together. They cover text switching, attachment-only,
 idle, stopping, paused, errors, cancellation preview/loading, and mobile/light
 presentations. The Storybook state transitions simulate requests; runner
@@ -159,7 +159,9 @@ pnpm exec playwright test --config tests/e2e/playwright-composer-stop.config.ts
 The suite boots a disposable local-trusted instance on port 3199 (override with
 `PAPERCLIP_E2E_PORT`). It never attaches to an existing server. Native coverage
 is explicitly skipped without the fixture; it must not use a logged-in provider
-as a fallback. Test companies are archived during cleanup.
+as a fallback. The acceptance server pins its Codex command resolver to the fixture
+and uses an empty credential home, because an installed Codex dependency takes
+precedence over `PATH`. Test companies are archived during cleanup.
 
 For each runner, the journey starts a parent, child, and unrelated task, plus a
 terminal child. It sends while running and verifies the durable queue, clicks
