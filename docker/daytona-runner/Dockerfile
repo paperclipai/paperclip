@@ -10,8 +10,12 @@ COPY packages/paperclip-runner/runner/Cargo.toml packages/paperclip-runner/runne
 COPY packages/paperclip-runner/runner/crates ./crates
 COPY packages/paperclip-runner/protocol ../protocol
 COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ../
+# Retain only the finished executable in this layer. Keeping Cargo's target and
+# download trees makes BuildKit run out of disk while exporting the final image.
 RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd \
-    && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd
+    && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd \
+    && install -m 0755 target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd \
+    && rm -rf target /usr/local/cargo/registry /usr/local/cargo/git
 
 FROM node:24.21.0-bookworm@sha256:5a750d3be5e5c80275f8c9a5367c3aed99c2875656590c8d0701c7ee687f5f0a AS provider-pack-build
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
@@ -110,7 +114,7 @@ COPY packages/paperclip-runner/scripts/provision-grok.mjs /tmp/grok-provision/sc
 COPY packages/paperclip-runner/src/providers/grok/platforms.json /tmp/grok-provision/src/providers/grok/platforms.json
 RUN node /tmp/grok-provision/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok && rm -rf /tmp/grok-provision
 
-COPY --from=runnerd-build /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd
+COPY --from=runnerd-build /usr/local/bin/paperclip-runnerd /usr/local/bin/paperclip-runnerd
 COPY --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
 RUN set -eu; for cli in codex claude opencode; do \
       printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
