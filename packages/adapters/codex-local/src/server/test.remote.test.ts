@@ -267,12 +267,12 @@ describe("codex remote environment diagnostics", () => {
     };
   }
 
-  it("fails before the hello probe when the sandbox Codex CLI is older than the model's floor", async () => {
+  it.each(["0.156.0", "0.159.0-alpha.1"])("stops the hello probe for Codex CLI %s below the model's floor", async (version) => {
     // A sandbox image baked before gpt-6.1-sol reached the catalog still runs
     // Codex 0.156.0. The backend would reject every turn with "not supported
     // when using Codex with a ChatGPT account"; the Test must name the real
     // gap (the CLI in the image) instead of running that doomed probe.
-    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.156.0\n"));
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult(`codex-cli ${version}\n`));
 
     const result = await testEnvironment({
       companyId: "company-1",
@@ -287,7 +287,7 @@ describe("codex remote environment diagnostics", () => {
     expect(incompatible).toMatchObject({
       level: "error",
       message: "gpt-6.1-sol requires Codex CLI 0.159.0 or newer with ChatGPT sign-in.",
-      detail: "Detected Codex CLI 0.156.0.",
+      detail: `Detected Codex CLI ${version}.`,
     });
     expect(incompatible?.hint).toContain("sandbox image");
     expect(result.checks.some((check) => check.code === "codex_hello_probe_skipped_cli_version")).toBe(true);
@@ -299,8 +299,8 @@ describe("codex remote environment diagnostics", () => {
     expect(prepareAdapterExecutionTargetRuntime).not.toHaveBeenCalled();
   });
 
-  it("runs the hello probe when the sandbox Codex CLI satisfies the model's floor", async () => {
-    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.160.0\n"));
+  it.each(["0.160.0", "0.164.0-alpha.11.1"])("runs the hello probe for compatible Codex CLI %s", async (version) => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult(`codex-cli ${version}\n`));
 
     const result = await testEnvironment({
       companyId: "company-1",
@@ -313,7 +313,7 @@ describe("codex remote environment diagnostics", () => {
     expect(result.status).toBe("pass");
     expect(result.checks.find((check) => check.code === "codex_cli_version_compatible")).toMatchObject({
       level: "info",
-      message: "Codex CLI 0.160.0 satisfies the 0.159.0 minimum for gpt-6.1-sol.",
+      message: `Codex CLI ${version} satisfies the 0.159.0 minimum for gpt-6.1-sol.`,
     });
     expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);

@@ -154,35 +154,36 @@ export function codexChatGptRetirementHint(model: string | null | undefined): st
   return `OpenAI retired ${normalizeCodexModel(model)} from Codex with ChatGPT sign-in on ${retirement.retiredOn}. Choose ${retirement.replacement}, or use an OpenAI API key; API-key sessions are not affected.`;
 }
 
-const STABLE_CODEX_CLI_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const CODEX_CLI_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
-function stableCodexCliVersionParts(version: string): number[] | null {
-  const match = STABLE_CODEX_CLI_VERSION.exec(version.trim());
+function codexCliVersionParts(version: string): { release: number[]; prerelease: string | undefined } | null {
+  const match = CODEX_CLI_VERSION.exec(version.trim());
   if (!match) return null;
-  const parts = match.slice(1).map(Number);
-  return parts.every(Number.isSafeInteger) ? parts : null;
+  const release = match.slice(1, 4).map(Number);
+  const prerelease = match[4];
+  if (!release.every(Number.isSafeInteger) || prerelease?.split(".").some((part) => /^0\d+$/.test(part))) return null;
+  return { release, prerelease };
 }
 
-/** Read the version from `codex --version` output; prerelease or ambiguous output yields null. */
 export function parseCodexCliVersionOutput(output: string): string | null {
   const versions = output
     .split(/\r?\n/)
     .map((line) => /^codex-cli (\S+)$/.exec(line.trim())?.[1])
     .filter((version): version is string => version !== undefined);
-  if (versions.length !== 1 || !stableCodexCliVersionParts(versions[0]!)) return null;
+  if (versions.length !== 1 || !codexCliVersionParts(versions[0]!)) return null;
   return versions[0]!;
 }
 
 export function codexCliVersionAtLeast(version: string, minimum: string): boolean {
-  const parsedVersion = stableCodexCliVersionParts(version);
-  const parsedMinimum = stableCodexCliVersionParts(minimum);
-  if (!parsedVersion || !parsedMinimum) return false;
-  for (let index = 0; index < parsedMinimum.length; index += 1) {
-    if (parsedVersion[index] !== parsedMinimum[index]) {
-      return parsedVersion[index]! > parsedMinimum[index]!;
+  const parsedVersion = codexCliVersionParts(version);
+  const parsedMinimum = codexCliVersionParts(minimum);
+  if (!parsedVersion || !parsedMinimum || parsedMinimum.prerelease !== undefined) return false;
+  for (let index = 0; index < parsedMinimum.release.length; index += 1) {
+    if (parsedVersion.release[index] !== parsedMinimum.release[index]) {
+      return parsedVersion.release[index]! > parsedMinimum.release[index]!;
     }
   }
-  return true;
+  return parsedVersion.prerelease === undefined;
 }
 
 export const CODEX_CHATGPT_MODEL_REJECTION_RE =
