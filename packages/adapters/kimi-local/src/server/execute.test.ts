@@ -39,8 +39,8 @@ import { execute } from "./execute.js";
 
 const tempRoots: string[] = [];
 
-async function makeTempRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-kimi-local-"));
+async function makeTempRoot(prefix = "paperclip-kimi-local-") {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   tempRoots.push(root);
   return root;
 }
@@ -294,6 +294,69 @@ describe("kimi_local execute", () => {
     expect(seenArgLists[1].at(-1)).toContain("BOOTSTRAP run-1");
     expect(seenArgLists[1].at(-1)).toContain("comment-first");
     expect(result).toMatchObject({ exitCode: 0, sessionId: "session_abc-123" });
+  });
+
+  it("reports the real failure, not the trust warning, when kimi starts untrusted (COR-4191 Fix A)", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: [
+        "Warning: this folder is not trusted; skipped 1 project-level MCP server: supabase.",
+        '  Run `kimi` here and choose "Trust this folder" to enable them.',
+        "Error: 403 You've reached your 5-hour usage limit",
+      ].join("\n"),
+    }));
+
+    const result = await execute(makeContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("403");
+    expect(result.errorMessage).not.toContain("not trusted");
+  });
+
+  it("pre-approves workspace trust for a provisioned workspace root (COR-4191 Fix B)", async () => {
+    const root = await makeTempRoot();
+    const kimiHome = await makeTempRoot("paperclip-kimi-home-");
+    const logs: string[] = [];
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: KIMI_STDOUT,
+      stderr: "",
+    }));
+
+    await execute(makeContext(root, {
+      config: { cwd: root, env: { KIMI_CODE_HOME: kimiHome } },
+      context: { paperclipWorkspace: { cwd: root, workspaceId: "ws-1", source: "project" } },
+      onLog: async (stream, chunk) => { logs.push(`${stream}:${chunk}`); },
+    }));
+
+    const { kimiWorkspaceTrustKey } = await import("./workspace-trust.js");
+    const record = JSON.parse(
+      await fs.readFile(path.join(kimiHome, "workspace-trust", kimiWorkspaceTrustKey(root)), "utf8"),
+    );
+    expect(record.root).toBe(root);
+    expect(logs.join("")).toContain("Pre-approved Kimi workspace trust");
+  });
+
+  it("does not seed workspace trust for a bare configured cwd (COR-4191 Fix B)", async () => {
+    const root = await makeTempRoot();
+    const kimiHome = await makeTempRoot("paperclip-kimi-home-");
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: KIMI_STDOUT,
+      stderr: "",
+    }));
+
+    await execute(makeContext(root, { config: { cwd: root, env: { KIMI_CODE_HOME: kimiHome } } }));
+
+    await expect(fs.access(path.join(kimiHome, "workspace-trust"))).rejects.toThrow();
   });
 
   it("maps auth failures to the kimi_auth_required error code", async () => {

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   buildKimiRunSummary,
+  describeKimiFailure,
   detectKimiAuthRequired,
   extractKimiRuntimeEvents,
   isKimiSessionUnrecoverableError,
   isKimiTransientNetworkError,
   parseKimiJsonl,
+  selectKimiFailureLine,
 } from "./parse.js";
 
 describe("extractKimiRuntimeEvents", () => {
@@ -154,6 +156,49 @@ describe("detectKimiAuthRequired", () => {
       stderr: "",
     });
     expect(result.requiresAuth).toBe(false);
+  });
+});
+
+describe("selectKimiFailureLine (COR-4191)", () => {
+  it("skips the startup trust warning and reports the real quota failure", () => {
+    const stderr = [
+      "Warning: this folder is not trusted; skipped 1 project-level MCP server: supabase.",
+      '  Run `kimi` here and choose "Trust this folder" to enable them.',
+      "Error: 403 You've reached your 5-hour usage limit",
+    ].join("\n");
+
+    expect(selectKimiFailureLine(stderr)).toBe("Error: 403 You've reached your 5-hour usage limit");
+    expect(describeKimiFailure({ stderr })).toBe(
+      "Kimi run failed: Error: 403 You've reached your 5-hour usage limit",
+    );
+  });
+
+  it("prefers an explicit parsed errorMessage over any stderr line", () => {
+    expect(
+      selectKimiFailureLine("Warning: this folder is not trusted", "quota exceeded"),
+    ).toBe("quota exceeded");
+  });
+
+  it("falls back to the first non-noise line when nothing looks like an error", () => {
+    const stderr = ["Warning: this folder is not trusted", "some plain diagnostic", "another line"].join("\n");
+    expect(selectKimiFailureLine(stderr)).toBe("some plain diagnostic");
+  });
+
+  it("never hides a failure when every line is noise", () => {
+    expect(selectKimiFailureLine("Warning: this folder is not trusted")).toBe(
+      "Warning: this folder is not trusted",
+    );
+  });
+
+  it("returns an empty string for empty stderr", () => {
+    expect(selectKimiFailureLine("")).toBe("");
+    expect(describeKimiFailure({ stderr: "" })).toBeNull();
+  });
+
+  it("keeps an ordinary single-line failure unchanged", () => {
+    expect(selectKimiFailureLine("Error: unknown session 'session_abc'")).toBe(
+      "Error: unknown session 'session_abc'",
+    );
   });
 });
 

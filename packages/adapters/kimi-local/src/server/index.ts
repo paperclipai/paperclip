@@ -72,5 +72,11 @@ export {
   isKimiSessionUnrecoverableError,
   isKimiTransientNetworkError,
   describeKimiFailure,
+  selectKimiFailureLine,
   detectKimiAuthRequired,
 } from "./parse.js";
+export {
+  resolveKimiCodeHome,
+  kimiWorkspaceTrustKey,
+  seedKimiWorkspaceTrust,
+} from "./workspace-trust.js";
