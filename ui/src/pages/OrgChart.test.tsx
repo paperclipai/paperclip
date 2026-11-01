@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -195,12 +195,12 @@ describe("OrgChart mobile gestures", () => {
     vi.clearAllMocks();
   });
 
-  async function renderOrgChart() {
+  async function renderOrgChart(props: ComponentProps<typeof OrgChart> = {}) {
     root = createRoot(container);
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <OrgChart />
+          <OrgChart {...props} />
         </QueryClientProvider>,
       );
     });
@@ -211,6 +211,72 @@ describe("OrgChart mobile gestures", () => {
       layer: container.querySelector('[data-testid="org-chart-card-layer"]') as HTMLDivElement,
     };
   }
+
+  it("preserves embedded zoom and pan through cloned-tree and status refreshes", async () => {
+    const props = { embedded: true, orgTree: structuredClone(orgTree), agents: [] };
+    const { viewport, layer } = await renderOrgChart(props);
+    const initialTransform = layer.style.transform;
+    const initialStatusStyle = layer.querySelector('[data-org-card] span[style]')?.getAttribute("style");
+    expect(initialStatusStyle).toBeTruthy();
+    await act(async () => {
+      viewport.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 100,
+        clientY: 100,
+        deltaY: -100,
+      }));
+      viewport.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
+      viewport.dispatchEvent(createTouchEvent("touchmove", [{ clientX: 135, clientY: 125 }]));
+      viewport.dispatchEvent(createTouchEvent("touchend", []));
+    });
+    const userTransform = layer.style.transform;
+    expect(userTransform).not.toBe(initialTransform);
+
+    for (const status of ["active", "running"]) {
+      const refreshedTree = structuredClone(orgTree);
+      refreshedTree[0].status = status;
+      refreshedTree[0].name = `CEO ${status}`;
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OrgChart {...props} orgTree={refreshedTree} />
+          </QueryClientProvider>,
+        );
+      });
+      expect(layer.style.transform).toBe(userTransform);
+      expect(layer.textContent).toContain(`CEO ${status}`);
+      if (status === "running") {
+        expect(layer.querySelector('[data-org-card] span[style]')?.getAttribute("style"))
+          .not.toBe(initialStatusStyle);
+      }
+    }
+  });
+
+  it("re-fits embedded node replacements even when their bounds stay the same", async () => {
+    const props = { embedded: true, orgTree: structuredClone(orgTree), agents: [] };
+    const { viewport, layer } = await renderOrgChart(props);
+    const initialTransform = layer.style.transform;
+    await act(async () => {
+      viewport.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
+      viewport.dispatchEvent(createTouchEvent("touchmove", [{ clientX: 130, clientY: 145 }]));
+      viewport.dispatchEvent(createTouchEvent("touchend", []));
+    });
+    expect(layer.style.transform).not.toBe(initialTransform);
+
+    const replacementTree = structuredClone(orgTree);
+    replacementTree[0].id = "replacement-ceo";
+    replacementTree[0].reports[0].id = "replacement-engineer";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OrgChart {...props} orgTree={replacementTree} />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(layer.style.transform).toBe(initialTransform);
+  });
 
   it("pans the chart with one-finger touch drag", async () => {
     const { viewport, layer } = await renderOrgChart();
