@@ -251,6 +251,33 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(status).toBe("expired");
   });
 
+  it("settles an SSH lease without a provider teardown", async () => {
+    const { companyId } = await seedCompanyAndEnvironment();
+    const environmentId = randomUUID();
+    await db.insert(environments).values({ id: environmentId, name: "SSH host", driver: "ssh", status: "active",
+      config: { host: "build-host", port: 22, username: "paperclip", remoteWorkspacePath: "/srv/work" },
+      createdAt: new Date(), updatedAt: new Date() });
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000), metadata: { driver: "ssh", provider: "ssh" } });
+    await db.update(environmentLeases).set({ provider: "ssh", providerLeaseId: "ssh://paperclip@build-host:22/srv/work" })
+      .where(eq(environmentLeases.id, leaseId));
+    const retryPendingSandboxTeardown = vi.fn(async () => {
+      throw new Error("SSH has no sandbox teardown");
+    });
+    const destroyRunLease = vi.fn();
+    const heartbeat = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown, destroyRunLease,
+    } as unknown as HeartbeatEnvironmentRuntime });
+
+    expect(await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 })).toEqual({ swept: 1, destroyed: 1, capped: 0 });
+    expect(retryPendingSandboxTeardown).not.toHaveBeenCalled();
+    expect(destroyRunLease).not.toHaveBeenCalled();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+    expect(lease).toMatchObject({ status: "expired", cleanupStatus: "success",
+      metadata: { pendingCleanupInFlight: false } });
+    expect(await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 })).toMatchObject({ swept: 0, destroyed: 0 });
+  });
+
   it("test_pending_cleanup_sweep_respects_backoff_and_page_size", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
 
