@@ -7,9 +7,6 @@ import {
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-// The legacy login-prompt markers. The Claude CLI prints these words when it
-// asks the user to log in. The detector matches them against any probe output
-// line, which includes the raw stdout and stderr. This scope is pre-existing.
 const CLAUDE_LOGIN_PROMPT_RE =
   /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 
@@ -245,28 +242,25 @@ export function detectClaudeLoginRequired(input: {
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
-  const resultText = asString(parsed?.result, "").trim();
-
-  // The legacy login-prompt markers keep their broad scope. They match against
-  // every output line, which includes the parsed result, the parsed errors, and
-  // the raw stdout and stderr.
-  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
-
-  // The token-failure markers match only against the parsed terminal fields of
-  // a failed run. The raw stdout is untrusted, so a model that prints a token
-  // phrase, or a successful run that repeats one, does not flip the classifier.
-  const tokenFailure =
-    parsed !== null &&
-    claudeResultIndicatesAuthFailure(parsed) &&
-    CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
+  const terminalFailed = parsed !== null && claudeResultIndicatesAuthFailure(parsed);
+  const terminalText = terminalFailed ? collectClaudeTerminalText(parsed) : "";
+  const startupText = parsed === null
+    ? [input.stdout, input.stderr].join("\n").split(/\r?\n/).filter((line) => {
+        try {
+          JSON.parse(line);
+          return false;
+        } catch {
+          return true;
+        }
+      }).join("\n")
+    : "";
+  const loginPrompt = CLAUDE_LOGIN_PROMPT_RE.test(terminalText || startupText);
+  const tokenFailure = terminalFailed && CLAUDE_AUTH_TOKEN_FAILURE_RE.test(terminalText);
+  const unauthorizedStatus = parsed !== null &&
+    (asNumber(parsed.api_error_status, 0) === 401 || asNumber(parsed.error_status, 0) === 401);
 
   return {
-    requiresLogin: loginPrompt || tokenFailure,
+    requiresLogin: loginPrompt || tokenFailure || unauthorizedStatus,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
   };
 }

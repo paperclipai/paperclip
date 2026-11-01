@@ -1240,7 +1240,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "claude_transient_upstream"
       : claudeRefusal
       ? "claude_refusal"
+      : parsedSucceeded && proc.terminalResultCleanup?.stopped
+      ? proc.terminalResultCleanup.stopReason
       : null;
+    const backgroundCleanupFailure = resolvedErrorCode === "unmanaged_background_task_stopped";
     const errorFamily = providerQuota
       ? "provider_quota"
       : transientUpstream
@@ -1250,6 +1253,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
+      ...(backgroundCleanupFailure ? { stopReason: resolvedErrorCode } : {}),
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
@@ -1265,7 +1269,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: proc.signal,
       timedOut: false,
       usageComplete: parsedStream.resultJson !== null || parsed.type === "result",
-      errorMessage,
+      errorMessage: backgroundCleanupFailure ? proc.terminalResultCleanup?.reason ?? errorMessage : errorMessage,
       errorCode: resolvedErrorCode,
       errorFamily,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
