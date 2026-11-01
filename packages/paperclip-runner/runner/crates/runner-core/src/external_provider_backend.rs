@@ -356,6 +356,8 @@ impl State {
         if self.events.len() >= MAX_EVENTS {
             return Err(invalid("Dot durable event capacity reached"));
         }
+        let payload =
+            crate::external_provider_transport::event_payload(kind, &payload)?.unwrap_or(payload);
         self.events.push_back(PolledEvent {
             executor_event_id: format!("{}{:016}", self.codec()?.event_prefix(), self.next_event),
             event_type: kind.to_owned(),
@@ -377,6 +379,7 @@ impl State {
     }
 
     fn settle(&mut self, id: &str, outcome: Value) -> Result<(), DurableRunnerError> {
+        let outcome = crate::external_provider_transport::outcome(&outcome, None)?;
         self.operations
             .get_mut(id)
             .ok_or_else(|| invalid("Dot receipt missing"))?
@@ -796,8 +799,16 @@ impl ExternalCommandExecutor {
             state.completion = Some(completion);
             state.completion_input = Some(accepted_input);
         }
-        let outcome =
+        let mut outcome =
             json!({"status":"completed","isError":result.is_error,"result":result.result});
+        if result.operation_id == "read_task_attachment" && !result.is_error {
+            crate::external_provider_transport::validate_attachment(
+                &outcome["result"],
+                Some(&receipt.operation.input["arguments"]),
+            )?;
+            outcome["operationId"] = json!("read_task_attachment");
+        }
+        let outcome = crate::external_provider_transport::outcome(&outcome, None)?;
         // Identical semantic result retries do not produce another mailbox wakeup.
         if state.operations[&result.call_id].outcome != outcome {
             state.settle(&result.call_id, outcome)?;
@@ -1118,7 +1129,7 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         }
         let now = crate::durable::current_unix_ms().unwrap();
-        let tools = ["save_report", "paperclip_finish"]
+        let tools = ["save_report", "paperclip_finish", "read_task_attachment"]
             .into_iter()
             .map(|name| AuthorizedTool {
                 operation_id: name.into(),
@@ -1153,6 +1164,339 @@ mod tests {
             operation("accept-1", "accept", json!({})),
         );
     }
+    #[test]
+    fn external_transport_keeps_long_dispatch_and_rejects_oversize_before_offer() {
+        use crate::durable::DurableState;
+        for text in [
+            format!("{}CURRENT MESSAGE", "preamble é ".repeat(1500)),
+            "\"".repeat(300_000),
+        ] {
+            let dir = TestDirectory::new();
+            let mut executor = prepared(dir.path());
+            let state = executor.state.as_mut().unwrap();
+            state.lifecycle = "open".into();
+            state.text = None;
+            state.events.clear();
+            state.descriptor.instructions = "Follow the complete instructions. ".repeat(300);
+            executor.save().unwrap();
+            let before = fs::read(dir.path().join(DOT_PROVIDER_STATE_FILE)).unwrap();
+            let result = executor.execute(&command("turn.start", json!({"text":text})));
+            if text.len() > 480 * 1024 / 2 {
+                assert!(result.is_err());
+                assert_eq!(
+                    fs::read(dir.path().join(DOT_PROVIDER_STATE_FILE)).unwrap(),
+                    before
+                );
+                assert_eq!(executor.state.as_ref().unwrap().lifecycle, "open");
+                continue;
+            }
+            result.unwrap();
+            let event = executor
+                .poll_events()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.event_type == "external_provider.dispatch_requested")
+                .unwrap();
+            assert_eq!(event.payload["text"], text);
+            let mut durable = DurableState::new(&config(dir.path()));
+            durable
+                .enqueue_executor_event(
+                    &config(dir.path()),
+                    event.executor_event_id,
+                    event.event_type,
+                    event.priority,
+                    event.payload.clone(),
+                )
+                .unwrap();
+            assert_eq!(
+                durable.outbox[0].envelope["payload"]["payload"],
+                event.payload
+            );
+            drop(executor);
+            let mut recovered = prepared_recovery(dir.path());
+            assert_eq!(recovered.poll_events().unwrap()[0].payload, event.payload);
+        }
+    }
+
+    fn prepared_recovery(path: &std::path::Path) -> DotCommandExecutor {
+        DotCommandExecutor::with_runner_config(path, &config(path))
+    }
+
+    #[test]
+    fn external_attachment_exact_through_outbox_receipt_restart_and_retry() {
+        use crate::durable::{CommandDisposition, DurableStateStore};
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use sha2::{Digest, Sha256};
+        let dir = TestDirectory::new();
+        let mut executor = prepared(dir.path());
+        accept(&mut executor);
+        let cfg = config(dir.path());
+        let store = DurableStateStore::new(dir.path()).unwrap();
+        let (mut durable, _) = store.load_or_create(&cfg).unwrap();
+        let bytes: Vec<u8> = (0..64379)
+            .map(|n| ((n * 73 + n / 251) % 256) as u8)
+            .collect();
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let attachment_id = "11111111-1111-4111-8111-111111111111";
+        let mut reconstructed = Vec::new();
+        for (index, chunk) in bytes.chunks(12000).enumerate() {
+            let offset = index * 12000;
+            let end = offset + chunk.len();
+            let id = format!("read-{index}");
+            let args = json!({"attachmentId":attachment_id,"offset":offset,"encoding":"base64","expectedSha256":hash});
+            let op = operation(
+                &id,
+                "tool",
+                json!({"name":"read_task_attachment","arguments":args}),
+            );
+            call(&mut executor, "external_provider.operation", op.clone());
+            let page = json!({"attachmentId":attachment_id,"sourceCommentId":null,"filename":"fixture.bin",
+                "contentType":"application/octet-stream","byteSize":bytes.len(),"sha256":hash,
+                "encoding":"base64","content":STANDARD.encode(chunk),"offset":offset,"returnedBytes":chunk.len(),
+                "nextOffset":if end < bytes.len() {Some(end)} else {None},"contentTrust":"untrusted_attachment"});
+            let result = json!({"callId":id,"operationId":"read_task_attachment","result":page,"isError":false});
+            call(&mut executor, "semantic_tool.result", result.clone());
+            call(&mut executor, "semantic_tool.result", result);
+            let events = executor.poll_events().unwrap();
+            let event = events
+                .iter()
+                .find(|e| {
+                    e.event_type == "external_provider.operation_settled"
+                        && e.payload["requestId"] == id
+                })
+                .unwrap();
+            let outcome = event.payload["outcome"].clone();
+            durable
+                .enqueue_executor_event(
+                    &cfg,
+                    event.executor_event_id.clone(),
+                    event.event_type.clone(),
+                    event.priority,
+                    event.payload.clone(),
+                )
+                .unwrap();
+            assert_eq!(
+                durable.outbox.last().unwrap().envelope["payload"]["payload"]["outcome"],
+                outcome
+            );
+            let mut retry = command("external_provider.operation", op.clone());
+            retry.command_id = format!("receipt-{index}");
+            retry.controller_seq = index as u64 + 1;
+            durable.begin_command(&retry).unwrap();
+            assert_eq!(
+                durable
+                    .complete_command(
+                        &retry,
+                        call(&mut executor, "external_provider.operation", op.clone())
+                    )
+                    .unwrap()
+                    .result,
+                outcome
+            );
+            store.save(&durable).unwrap();
+            drop(executor);
+            executor = prepared_recovery(dir.path());
+            assert_eq!(
+                call(&mut executor, "external_provider.operation", op),
+                outcome
+            );
+            (durable, _) = store.load_or_create(&cfg).unwrap();
+            assert!(
+                matches!(durable.begin_command(&retry).unwrap(),CommandDisposition::Replay(receipt) if receipt.result == outcome)
+            );
+            reconstructed.extend(
+                STANDARD
+                    .decode(outcome["result"]["content"].as_str().unwrap())
+                    .unwrap(),
+            );
+            executor.acknowledge_events(events.len()).unwrap();
+        }
+        assert_eq!(reconstructed, bytes);
+        assert_eq!(format!("{:x}", Sha256::digest(reconstructed)), hash);
+    }
+
+    #[test]
+    fn external_attachment_transport_requires_the_admitted_read() {
+        let dir = TestDirectory::new();
+        let mut executor = prepared(dir.path());
+        accept(&mut executor);
+        let args =
+            json!({"attachmentId":"11111111-1111-4111-8111-111111111111","encoding":"base64"});
+        call(
+            &mut executor,
+            "external_provider.operation",
+            operation(
+                "read-1",
+                "tool",
+                json!({"name":"read_task_attachment","arguments":args}),
+            ),
+        );
+        let before = fs::read(dir.path().join(DOT_PROVIDER_STATE_FILE)).unwrap();
+        let memory_before = serde_json::to_value(&executor.state).unwrap();
+        for result in [
+            json!({"callId":"read-1","operationId":"save_report","result":{}}),
+            json!({"callId":"unadmitted","operationId":"read_task_attachment","result":{}}),
+            json!({"callId":"read-1","operationId":"read_task_attachment","result":{"content":"broken"}}),
+            json!({"callId":"read-1","operationId":"read_task_attachment","result":{"content":"x".repeat(501024)}}),
+        ] {
+            assert!(executor
+                .execute(&command("semantic_tool.result", result))
+                .is_err());
+            assert_eq!(
+                fs::read(dir.path().join(DOT_PROVIDER_STATE_FILE)).unwrap(),
+                before
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(&executor.state).unwrap(),
+            memory_before
+        );
+        call(
+            &mut executor,
+            "semantic_tool.result",
+            json!({"callId":"read-1","operationId":"read_task_attachment",
+            "result":{"attachmentId":"11111111-1111-4111-8111-111111111111","sourceCommentId":null,
+            "filename":"empty.bin","contentType":"application/octet-stream","byteSize":0,
+            "sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "encoding":"base64","content":"","offset":0,"returnedBytes":0,"nextOffset":null,
+            "contentTrust":"untrusted_attachment"}}),
+        );
+        call(
+            &mut executor,
+            "external_provider.operation",
+            operation(
+                "other-1",
+                "tool",
+                json!({"name":"save_report","arguments":{}}),
+            ),
+        );
+        call(
+            &mut executor,
+            "semantic_tool.result",
+            json!({"callId":"other-1","operationId":"save_report",
+            "result":{"operationId":"read_task_attachment","content":"token=synthetic-secret"}}),
+        );
+        let outcome = call(
+            &mut executor,
+            "external_provider.operation",
+            operation(
+                "other-1",
+                "tool",
+                json!({"name":"save_report","arguments":{}}),
+            ),
+        );
+        assert!(!serde_json::to_string(&outcome)
+            .unwrap()
+            .contains("synthetic-secret"));
+        assert!(outcome.get("operationId").is_none());
+    }
+
+    #[test]
+    fn external_large_generic_outcome_binds_full_event_and_replay_receipt() {
+        use crate::durable::{CommandDisposition, DurableStateStore};
+        let dir = TestDirectory::new();
+        let mut executor = prepared(dir.path());
+        accept(&mut executor);
+        let op = operation(
+            "large-1",
+            "tool",
+            json!({"name":"save_report","arguments":{}}),
+        );
+        call(&mut executor, "external_provider.operation", op.clone());
+        let result = json!({"data":"x".repeat(499000)});
+        call(
+            &mut executor,
+            "semantic_tool.result",
+            json!({"callId":"large-1","operationId":"save_report","result":result}),
+        );
+        let event = executor
+            .poll_events()
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                e.event_type == "external_provider.operation_settled"
+                    && e.payload["requestId"] == "large-1"
+            })
+            .unwrap();
+        assert_eq!(event.payload["outcome"]["result"], result);
+        let cfg = config(dir.path());
+        let store = DurableStateStore::new(dir.path()).unwrap();
+        let (mut durable, _) = store.load_or_create(&cfg).unwrap();
+        durable
+            .enqueue_executor_event(
+                &cfg,
+                event.executor_event_id.clone(),
+                event.event_type.clone(),
+                event.priority,
+                event.payload.clone(),
+            )
+            .unwrap();
+        let mut changed = event.payload.clone();
+        changed["outcome"]["result"]["data"] = json!(format!("{}CHANGED", "x".repeat(498993)));
+        assert!(durable
+            .has_executor_event_receipt(
+                &event.executor_event_id,
+                &event.event_type,
+                event.priority,
+                &changed
+            )
+            .is_err());
+        let retry = command("external_provider.operation", op.clone());
+        durable.begin_command(&retry).unwrap();
+        let pending = serde_json::to_value(&durable).unwrap();
+        assert!(durable
+            .complete_command(&retry, json!({"result":"x".repeat(501024)}))
+            .is_err());
+        assert_eq!(serde_json::to_value(&durable).unwrap(), pending);
+        assert!(durable.complete_command(&retry,json!({"operationId":"read_task_attachment","status":"completed","isError":false,"result":{}})).is_err());
+        assert_eq!(serde_json::to_value(&durable).unwrap(), pending);
+        let outcome = call(&mut executor, "external_provider.operation", op);
+        assert_eq!(
+            durable
+                .complete_command(&retry, outcome.clone())
+                .unwrap()
+                .result,
+            outcome
+        );
+        store.save(&durable).unwrap();
+        let (mut recovered, _) = store.load_or_create(&cfg).unwrap();
+        assert_eq!(
+            recovered.outbox.last().unwrap().envelope["payload"]["payload"]["outcome"],
+            outcome
+        );
+        assert!(
+            matches!(recovered.begin_command(&retry).unwrap(),CommandDisposition::Replay(receipt) if receipt.result == outcome)
+        );
+        assert!(recovered
+            .has_executor_event_receipt(
+                &event.executor_event_id,
+                &event.event_type,
+                event.priority,
+                &changed
+            )
+            .is_err());
+        assert!(recovered
+            .has_executor_event_receipt(
+                &event.executor_event_id,
+                &event.event_type,
+                event.priority,
+                &event.payload
+            )
+            .unwrap());
+        let saved = fs::read(store.path()).unwrap();
+        let mut tampered: Value = serde_json::from_slice(&saved).unwrap();
+        tampered["executorEventReceipts"][&event.executor_event_id]["transportDigest"] =
+            json!("malformed");
+        fs::write(store.path(), serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(store.load_or_create(&cfg).is_err());
+        tampered["executorEventReceipts"][&event.executor_event_id]
+            .as_object_mut()
+            .unwrap()
+            .remove("transportDigest");
+        fs::write(store.path(), serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(store.load_or_create(&cfg).is_ok());
+    }
+
     #[test]
     fn grok_identity_survives_recovery_and_revocation_without_claiming_remote_termination() {
         let dir = TestDirectory::new();

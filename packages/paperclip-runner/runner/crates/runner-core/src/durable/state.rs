@@ -306,6 +306,8 @@ pub(crate) struct PendingWarmRunTransition {
 #[serde(rename_all = "camelCase")]
 struct ExecutorEventReceipt {
     fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport_digest: Option<String>,
     source_seq: u64,
 }
 
@@ -463,7 +465,12 @@ impl DurableState {
         let Some(existing) = self.executor_event_receipts.get(executor_event_id) else {
             return Ok(false);
         };
-        if existing.fingerprint != executor_event_fingerprint(event_type, priority, payload) {
+        if existing.fingerprint != executor_event_fingerprint(event_type, priority, payload)
+            || existing
+                .transport_digest
+                .as_ref()
+                .is_some_and(|digest| digest != &canonical_digest(payload))
+        {
             return Err(DurableRunnerError::invalid(
                 "executor event identity was reused with different event data",
             ));
@@ -486,6 +493,11 @@ impl DurableState {
         }
         let source_event_id = self.source_event_id_for_executor(&executor_event_id)?;
         let fingerprint = executor_event_fingerprint(&event_type, priority, &payload);
+        let transport_digest = matches!(
+            event_type.as_str(),
+            "external_provider.dispatch_requested" | "external_provider.operation_settled"
+        )
+        .then(|| canonical_digest(&payload));
         let source_seq = self.enqueue_event_with_source_event_id(
             config,
             source_event_id,
@@ -497,6 +509,7 @@ impl DurableState {
             executor_event_id,
             ExecutorEventReceipt {
                 fingerprint,
+                transport_digest,
                 source_seq,
             },
         );
@@ -573,6 +586,9 @@ impl DurableState {
             &payload,
             sanitize_value(&payload),
         )?;
+        let sanitized_payload =
+            crate::external_provider_transport::event_payload(event_type.as_str(), &payload)?
+                .unwrap_or(sanitized_payload);
         // Restore authoritative tool arguments before checking protocol identities.
         // Their contents are execution data, not a redacted diagnostic preview.
         let sanitized_payload =
@@ -886,7 +902,16 @@ impl DurableState {
                 ));
             }
         }
-        let sanitized_result = sanitize_value(&result);
+        let sanitized_result =
+            if command.command_type == "external_provider.operation" && status == "completed" {
+                let tool = command
+                    .payload
+                    .pointer("/input/name")
+                    .and_then(Value::as_str);
+                crate::external_provider_transport::outcome(&result, Some(tool.unwrap_or("")))?
+            } else {
+                sanitize_value(&result)
+            };
         if durable_semantics_changed_by_sanitization(&result, &sanitized_result) {
             return Err(DurableRunnerError::invalid(
                 "durable command result identity or validation semantics contain credential-shaped material",
@@ -895,9 +920,15 @@ impl DurableState {
         let result_bytes = serde_json::to_vec(&sanitized_result)
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?
             .len();
-        if result_bytes > MAX_COMMAND_RESULT_BYTES {
+        let result_limit =
+            if command.command_type == "external_provider.operation" && status == "completed" {
+                crate::external_provider_transport::OUTCOME_BYTES
+            } else {
+                MAX_COMMAND_RESULT_BYTES
+            };
+        if result_bytes > result_limit {
             return Err(DurableRunnerError::invalid(
-                "command result exceeds the 64 KiB durable journal limit",
+                "command result exceeds its durable journal limit",
             ));
         }
         let stored = self
@@ -1335,6 +1366,9 @@ fn validate_binding(
             .iter()
             .all(|(event_id, receipt)| {
                 state.source_event_id_for_executor(event_id).is_ok()
+                    && receipt.transport_digest.as_ref().is_none_or(|digest| {
+                        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
                     && receipt.fingerprint.len() == 64
                     && receipt
                         .fingerprint
@@ -1628,7 +1662,10 @@ fn sanitized_object_field(key: &str, value: &Value) -> Value {
     }
 }
 
-fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value) -> bool {
+pub(crate) fn durable_semantics_changed_by_sanitization(
+    original: &Value,
+    sanitized: &Value,
+) -> bool {
     match (original, sanitized) {
         (Value::Object(original), Value::Object(sanitized)) => {
             original.iter().any(|(key, value)| {
@@ -1877,7 +1914,7 @@ pub(crate) fn sanitize_value(value: &Value) -> Value {
     }
 }
 
-fn sanitize_bounded_display_value(value: &Value) -> Value {
+pub(crate) fn sanitize_bounded_display_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => Value::Object(
             object

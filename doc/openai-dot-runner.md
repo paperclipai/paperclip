@@ -117,6 +117,41 @@ missing discovery document. See [OpenAI's authentication guidance](https://devel
 
 ## Assignment protocol
 
+### Message and attachment transport
+
+Dispatch context and settled operation results are transport data, not 4 KiB
+log previews. The Runner preserves complete text within an encoded JSON budget.
+A dispatch must fit 480 KiB, including its tools and completion contract. An
+external operation outcome must fit 501,024 bytes. This permits the existing
+500,000-byte tool-result page plus its outcome wrapper. The external command
+replay receipt uses the same budget. Other command receipts keep their 64 KiB
+limit. Frame, outbox, and total state limits still apply. Oversize or malformed
+payloads fail explicitly; the Runner does not append a truncation marker and
+claim that a complete result was delivered.
+
+Existing credential redaction still applies to dispatch text, instructions,
+tool descriptions, ordinary results, and diagnostics. Thus this is not an
+unredacted prompt or generic result channel. A change to identity or validation
+fields fails closed. The one exact-byte exception is the content of a successful
+`read_task_attachment` result. The external executor first matches the result
+against its admitted tool call, then validates the attachment ID, requested
+encoding and offset, expected hash, closed page shape, decoded length, and next
+offset. It adds the operation identity outside the tool's result object. A tool
+cannot select this exception by returning a field named `content` or a nested
+`operationId`. The durable event and command receipt repeat the page checks.
+The server remains responsible for current task/company authorization and full
+file hash verification before and after storage I/O. A page cannot independently
+verify the hash of a multi-page file; consumers must reconstruct all pages and
+verify the returned full-file hash.
+
+The exact-byte path keeps the existing 12,000-byte attachment pages and 16 MiB
+file limit. Both UTF-8 and canonical base64 content retain their bytes. Filename
+and other metadata remain subject to redaction. Invalid data never carries
+successfully advanced offsets. Already persisted, truncated receipts are not
+repaired retroactively. This change requires a rebuilt Runner binary and its
+matching artifact metadata; changing server JavaScript alone is insufficient.
+
+
 Events contain mailbox references. Dot drains the inbox after its saved cursor,
 reads the assignment, and explicitly accepts it before executing tools. A
 webhook `2xx` does not mean Dot accepted or started the task. Duplicate or
