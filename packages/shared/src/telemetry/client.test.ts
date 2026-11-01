@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TelemetryClient } from "./client.js";
 import { resolveTelemetryConfig } from "./config.js";
+import { trackCloudOrganizationIdentified } from "./events.js";
 import type { TelemetryConfig, TelemetryDimensions, TelemetryState } from "./types.js";
 
 const CONTRACT_KEYS = new Set(["app", "schemaVersion", "installId", "version", "events", "batchId"]);
@@ -58,6 +59,17 @@ describe("TelemetryClient runtime event gate", () => {
       { sharing_scope: "team" },
     );
 
+    await client.flush();
+
+    expect(stateFactory).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("suppresses the proposed Cloud organization mapping before approval", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+    const { client, stateFactory } = makeClient();
+
+    trackCloudOrganizationIdentified(client, { organization_id: "account-group-1" });
     await client.flush();
 
     expect(stateFactory).not.toHaveBeenCalled();

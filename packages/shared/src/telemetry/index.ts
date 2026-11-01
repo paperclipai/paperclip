@@ -6,6 +6,7 @@ export {
   trackInstallStarted,
   trackInstallCompleted,
   trackCompanyImported,
+  trackCloudOrganizationIdentified,
   trackProjectCreated,
   trackRoutineCreated,
   trackRoutineRun,
