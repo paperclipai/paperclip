@@ -1106,4 +1106,22 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
   });
+
+  it("reads the served model from runtime.model", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "completed",
+        payload: {
+          status: "completed",
+          usage: { input_tokens: 3, output_tokens: 2 },
+          runtime: { provider: "openrouter", model: "served-model", route_source: "default" },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.model).toBe("served-model");
+  });
 });
