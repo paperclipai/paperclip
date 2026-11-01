@@ -330,7 +330,7 @@ API: `present` — production resolve_review calls POST /api/issues/{id}/interac
 
 Agent access: `available` — the actual bound native completion-review run exposes resolve_review. It cannot choose an arbitrary issue/review or take over the worker task.
 
-Policy: Recheck the current server-issued review assignment and independent reviewer policy. Reject requires a reason. Same decision already resolved by the admitted review run returns a deduplicated receipt; a different or stale decision fails. Record the verdict without changing task ownership; task completion still waits for every required reviewer.
+Policy: Recheck the current server-issued review assignment and independent reviewer policy. Agent accept/reject requests require a signed agent JWT for the review run; an agent API key and run ID header are insufficient. Company, audience, and run checks still apply. Reject requires a reason. Same decision already resolved by the admitted review run returns a deduplicated receipt; a different or stale decision fails. Record the verdict without changing task ownership; task completion still waits for every required reviewer.
 
 Evidence: `source-only` — [interaction routes](../../server/src/routes/issues.ts), [interaction service](../../server/src/services/issue-thread-interactions.ts), [native authority](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live proof.
 
