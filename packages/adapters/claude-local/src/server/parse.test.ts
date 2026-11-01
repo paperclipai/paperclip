@@ -145,6 +145,72 @@ describe("detectClaudeLoginRequired", () => {
       }).requiresLogin,
     ).toBe(false);
   });
+
+  it("does not classify 'Unauthorized' quoted in a tool-result transcript event as login required (AUR-1817)", () => {
+    // Real incident, run b2bc3199: a tool result unrelated to auth (a Traefik
+    // probe reading a 401 off an unrelated router) quoted "401 Unauthorized".
+    // The login-prompt marker used to scan the raw stdout transcript for that
+    // word regardless of which event carried it, vetoing the run's own result
+    // event, which reported a session-limit quota failure.
+    const parsed = {
+      is_error: true,
+      subtype: "success",
+      api_error_status: 429,
+      result: "You've hit your session limit · resets 4:20am (Europe/Zurich)",
+    };
+    const stdout = [
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              content: "=== TCP-Router (HostSNI-abhaengig)? ===\n401 Unauthorized\n",
+            },
+          ],
+        },
+      }),
+      JSON.stringify({ type: "result", ...parsed }),
+    ].join("\n");
+
+    const input = { parsed, stdout, stderr: "" };
+    expect(detectClaudeLoginRequired(input).requiresLogin).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+  });
+
+  it("still classifies a login prompt the CLI printed as plain text before any stream event", () => {
+    // A CLI that refuses to start at all writes its login nudge directly to
+    // stdout, before any `--output-format stream-json` event exists. That text
+    // is not an assistant/tool event, so it must stay visible to the
+    // login-prompt marker even though the marker no longer scans raw stdout.
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "Please log in with `claude login` to continue.",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("still finds a login URL quoted in the transcript even though requiresLogin ignores it", () => {
+    // extractClaudeLoginUrl keeps its own broad scope over stdout + stderr.
+    // Narrowing the login-prompt marker to the error surface must not narrow
+    // this lookup too, or a real login URL sitting in an assistant event would
+    // stop resolving.
+    const parsed = { is_error: false, subtype: "success", result: "done" };
+    const stdout = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Visit https://claude.ai/login to re-authenticate." },
+        ],
+      },
+    });
+    const result = detectClaudeLoginRequired({ parsed, stdout, stderr: "" });
+    expect(result.requiresLogin).toBe(false);
+    expect(result.loginUrl).toBe("https://claude.ai/login");
+  });
 });
 
 describe("isClaudeModelNotFoundError", () => {
