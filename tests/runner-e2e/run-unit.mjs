@@ -23,7 +23,8 @@ for (const [name, command] of [
   ["Node tests", ["--test", "tests/runner-e2e/artifact-budget.test.mjs", "tests/runner-e2e/native-completion-checks.test.mjs",
     "tests/runner-e2e/native-completion-git-source.test.mjs", "tests/runner-e2e/native-completion-source-contract.test.mjs",
     "tests/runner-e2e/chat-feature-testops-api.test.mjs", "tests/runner-e2e/chat-feature-testops-cli.test.mjs", "tests/runner-e2e/chat-feature-testops-results.test.mjs", "tests/runner-e2e/testops-chat-reporter.test.mjs", "tests/runner-e2e/chat-feature-testops-retained-verification.node-test.mjs",
-    "tests/runner-e2e/chat-completion-testops-api.test.mjs", "tests/runner-e2e/chat-completion-testops-contract.test.mjs"]],
+    "tests/runner-e2e/chat-completion-testops-api.test.mjs", "tests/runner-e2e/chat-completion-testops-contract.test.mjs",
+    "tests/runner-e2e/chat-full-catalog-testops-manifest.test.mjs", "tests/runner-e2e/chat-full-catalog-testops-reconcile.test.mjs", "tests/runner-e2e/chat-full-catalog-testops-adapter.test.mjs"]],
 ]) {
   const result = spawnSync(process.execPath, command, { cwd: root, env, stdio: "inherit" });
   if (result.error || result.signal) {
