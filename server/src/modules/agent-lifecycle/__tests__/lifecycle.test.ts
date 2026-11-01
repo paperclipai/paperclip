@@ -395,6 +395,62 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     } finally { probe.mockRestore(); }
   });
 
+  /** Records the projection of every select that reads heartbeat_runs. `undefined` means a full row. */
+  function recordRunSelections() {
+    const selections: (Record<string, unknown> | undefined)[] = [];
+    const select = db.select.bind(db);
+    const spy = vi.spyOn(db, "select").mockImplementation(((fields?: Record<string, unknown>) => {
+      const builder = fields ? select(fields as never) : select();
+      const from = builder.from.bind(builder);
+      (builder as { from: unknown }).from = (table: unknown) => {
+        if (table === heartbeatRuns) selections.push(fields);
+        return from(table as never);
+      };
+      return builder;
+    }) as typeof db.select);
+    return { selections, restore: () => spy.mockRestore() };
+  }
+  const readsRunPayload = (fields: Record<string, unknown> | undefined) => !fields ||
+    Object.values(fields).some(column => column === heartbeatRuns.resultJson || column === heartbeatRuns.contextSnapshot);
+
+  it("checks stop proof without loading historical run payloads", async () => {
+    const agent = await hire();
+    const stdout = "x".repeat(1_000_000);
+    await db.insert(heartbeatRuns).values(["succeeded", "failed", "timed_out"].map(status => ({ companyId, agentId: agent.id,
+      status, invocationSource: "on_demand", startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { stdout }, contextSnapshot: { stdout } })));
+    await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled", invocationSource: "on_demand",
+      runtimeMode: "legacy", startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { stdout, executionCancellation: { state: "acknowledged" } } });
+    const { heartbeatService } = await import("../../../services/heartbeat.js");
+    const proof = recordRunSelections();
+    try {
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    } finally { proof.restore(); }
+    expect(proof.selections.length).toBeGreaterThan(0);
+    expect(proof.selections.filter(readsRunPayload)).toEqual([]);
+    const stop = recordRunSelections();
+    try {
+      expect(await heartbeatService(db).stopInvocationsForAgents([agent.id], "Agent lifecycle stop requested")).toBe(true);
+    } finally { stop.restore(); }
+    // The only full-row read left is the cancellation lookup, which is limited to cancellable statuses.
+    expect(stop.selections.filter(readsRunPayload)).toHaveLength(1);
+  });
+
+  it("loads a full run row only for the cancelled run that needs deeper stop evidence", async () => {
+    const agent = await hire();
+    await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "succeeded", invocationSource: "on_demand",
+      startedAt: new Date(), finishedAt: new Date(), resultJson: { stdout: "x".repeat(100_000) } });
+    await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled", invocationSource: "on_demand",
+      runtimeMode: "legacy", executionStage: "preparing", startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { executionCancellation: { state: "requested" } } });
+    const recorded = recordRunSelections();
+    try {
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    } finally { recorded.restore(); }
+    expect(recorded.selections.filter(readsRunPayload)).toHaveLength(1);
+  });
+
   it("recovers an expired native owner only after the cancelled run and controller stop", async () => {
     const agent = await hire();
     const [issue] = await db.insert(issues).values({ companyId, title: "Cancelled native run" }).returning();
