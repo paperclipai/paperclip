@@ -3,10 +3,35 @@ import {
   buildKimiRunSummary,
   detectKimiAuthRequired,
   extractKimiRuntimeEvents,
+  isKimiProviderQuotaError,
   isKimiSessionUnrecoverableError,
   isKimiTransientNetworkError,
   parseKimiJsonl,
 } from "./parse.js";
+
+const KIMI_FIVE_HOUR_LIMIT_STDERR =
+  "error: failed to run prompt: provider.auth_error: 403 You've reached your 5-hour usage limit. " +
+  "Your quota will reset when the current 5-hour window ends.\nSee log: ~/.kimi-code/logs/kimi-code.log";
+
+describe("isKimiProviderQuotaError", () => {
+  it("matches the 5-hour usage-limit 403", () => {
+    expect(isKimiProviderQuotaError({ stderr: KIMI_FIVE_HOUR_LIMIT_STDERR })).toBe(true);
+  });
+
+  it("matches rate limiting", () => {
+    expect(isKimiProviderQuotaError({ stderr: "error: 429 Too Many Requests" })).toBe(true);
+    expect(isKimiProviderQuotaError({ errorMessage: "rate_limit_error: slow down" })).toBe(true);
+  });
+
+  it("does not treat a bare 403 or a login failure as quota", () => {
+    expect(isKimiProviderQuotaError({ stderr: "provider.auth_error: 403 Forbidden" })).toBe(false);
+    expect(isKimiProviderQuotaError({ stderr: "Error: 401 Unauthorized — run kimi login" })).toBe(false);
+  });
+
+  it("is not tripped by the quota wording alone being an auth requirement", () => {
+    expect(detectKimiAuthRequired({ stdout: "", stderr: KIMI_FIVE_HOUR_LIMIT_STDERR }).requiresAuth).toBe(false);
+  });
+});
 
 describe("extractKimiRuntimeEvents", () => {
   it("maps assistant content to an assistant snippet event", () => {
