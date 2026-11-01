@@ -230,3 +230,26 @@ it("retries a failed ledger save once per sweep without spinning on the same pat
   await fixture.cleanup.retryTemporaryDirectoryCleanupNow();
   expect(JSON.parse(await readFile(fixture.ledger, "utf8"))).toEqual([]);
 });
+
+
+it("wakes an idle worker even when removal and ledger persistence both fail", async () => {
+  instanceHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-home-"));
+  temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-cleanup-"));
+  let locked = true;
+  const fixture = await prepareCleanupModules(() => locked, () => locked);
+  const wake = vi.fn();
+  let task: CleanupTask | undefined;
+  fixture.cleanup.registerTemporaryDirectoryCleanupWork({
+    register(_queue: string, definition: CleanupTask) { task = definition; return { wake }; },
+  } as never);
+  await task!.run(new AbortController().signal);
+  expect(await task!.hasPending()).toBe(false);
+  await expect(fixture.cleanup.queueTemporaryDirectoryCleanup(temporaryDirectory)).rejects.toMatchObject({ code: "EBUSY" });
+  expect(wake).toHaveBeenCalledOnce();
+  expect(await task!.hasPending()).toBe(true);
+  locked = false;
+  await task!.run(new AbortController().signal);
+  expect(await task!.hasPending()).toBe(false);
+  await expect(stat(temporaryDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(JSON.parse(await readFile(fixture.ledger, "utf8"))).toEqual([]);
+});

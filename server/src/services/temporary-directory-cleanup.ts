@@ -118,8 +118,11 @@ export async function queueTemporaryDirectoryCleanup(directory: string) {
     await persistTemporaryCleanupState();
   } catch (error) {
     pendingTemporaryDirectoryRemovals.add(directory);
-    await persistTemporaryCleanupState();
-    logger.warn({ dir: directory, err: error }, "Failed to remove temporary directory; cleanup remains queued");
-    wakeTemporaryDirectoryCleanupWork?.();
+    try {
+      await persistTemporaryCleanupState();
+      logger.warn({ dir: directory, err: error }, "Failed to remove temporary directory; cleanup remains queued");
+    } finally {
+      wakeTemporaryDirectoryCleanupWork?.();
+    }
   }
 }
