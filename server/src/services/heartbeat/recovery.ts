@@ -2439,7 +2439,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         const startedRef = run.startedAt ? new Date(run.startedAt).getTime() : 0;
         const updatedRef = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         const refTime = Math.max(startedRef, updatedRef, 0);
-        if (refTime > 0 && now.getTime() - refTime < metadataGraceMs) continue;
+        if (refTime > 0 && now.getTime() - refTime < metadataGraceMs) {
+          scope.onDeferredDeadline?.(refTime + metadataGraceMs);
+          continue;
+        }
       }
       // Native runner processes also persist child metadata, but they must not
       // inherit legacy retry or termination authority. Use their PID/group only
