@@ -6382,6 +6382,7 @@ async function blockedInboxIssueConditions(
   const conditions = [
     eq(issues.companyId, companyId),
     visibleIssueCondition(),
+    isNull(issues.conversationAgentId),
     notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
   ];
   if (filters?.readCondition) conditions.push(filters.readCondition);
@@ -8219,8 +8220,8 @@ export function issueService(db: Db) {
         if (filters.parentIds.length === 0) return [];
         conditions.push(inArray(issues.parentId, filters.parentIds));
       }
+      if (!filters?.issueIds) conditions.push(isNull(issues.conversationAgentId));
       if (!filters?.q?.trim() && !filters?.issueIds) {
-        conditions.push(isNull(issues.conversationAgentId));
         if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
           conditions.push(nonIdleSlackIssueCondition());
         }
@@ -8564,12 +8565,11 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition(), isNull(issues.conversationAgentId)];
       if (filters?.readCondition) conditions.push(filters.readCondition);
       const creationCondition = creationVisibilityCondition(companyId, filters);
       if (creationCondition) conditions.push(creationCondition);
       if (!filters?.q?.trim()) {
-        conditions.push(isNull(issues.conversationAgentId));
         if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
           conditions.push(nonIdleSlackIssueCondition());
         }
