@@ -2,16 +2,26 @@ import type { Request } from 'express';
 import type { Db } from '@paperclipai/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { forbidden } from '../errors.js';
-const mocks = vi.hoisted(() => ({ headers: vi.fn(), connectionIds: vi.fn(), snapshot: vi.fn(), grantIds: vi.fn(), managed: vi.fn() }));
+const mocks = vi.hoisted(() => ({ headers: vi.fn(), connectionIds: vi.fn(), snapshot: vi.fn(), grantIds: vi.fn(), managed: vi.fn(), selection: vi.fn(), secretByName: vi.fn(), secretValue: vi.fn() }));
 vi.mock('../services/tool-access.js', () => ({ toolAccessService: () => ({ githubReadHeaders: mocks.headers, githubReadConnectionIds: mocks.connectionIds, githubReadGrantIds: mocks.grantIds }) }));
 vi.mock('../services/github-operation-credentials.js', () => ({ resolveGitHubOperationCredentials: mocks.managed }));
 vi.mock('../services/skill-source-git-snapshot.js', () => ({ openGitSkillSnapshot: mocks.snapshot }));
+vi.mock('../services/git-credentials.js', () => ({ DEFAULT_GITHUB_TOKEN_SECRET_NAMES: ['GITHUB_TOKEN', 'GH_TOKEN', 'PAPERCLIP_GITHUB_TOKEN'], resolveManagedGitHubIdentitySelection: mocks.selection }));
+vi.mock('../services/secrets.js', () => ({ secretService: () => ({ getByName: mocks.secretByName, resolveSecretValue: mocks.secretValue }) }));
 import { skillSourceGitHubReader } from '../services/skill-source-github-access.js';
 import { scanGitHubSkills } from '../services/github-skill-source.js';
 import { githubFixture } from './helpers/github-skills.js';
 const actor = (values: Record<string, unknown>) => values as Request['actor'];
 const db = {} as Db;
-beforeEach(() => { mocks.grantIds.mockResolvedValue(['grant']); mocks.connectionIds.mockResolvedValue([]); });
+const companyToken = () => {
+  mocks.secretByName.mockImplementation(async (_company: string, name: string) => name === 'GH_TOKEN' ? { id: 'secret' } : null);
+  mocks.secretValue.mockResolvedValue(' company-token\n');
+};
+const authorizations = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(call => new Headers(call[1].headers).get('authorization'));
+beforeEach(() => {
+  mocks.grantIds.mockResolvedValue(['grant']); mocks.connectionIds.mockResolvedValue([]);
+  mocks.selection.mockResolvedValue({ configured: false }); mocks.secretByName.mockResolvedValue(null);
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 describe('GitHub source authorization', () => {
   it('identifies a missing tracked branch instead of suggesting another connection', async () => {
@@ -194,6 +204,67 @@ describe('GitHub source authorization', () => {
     await expect(skillSourceGitHubReader(db, 'company', run, 'other')('/repos/acme/private')).rejects.toThrow(/authorized connection/);
     await expect(skillSourceGitHubReader(db, 'other-company', run, 'allowed')('/repos/acme/private')).rejects.toThrow(/authenticated agent run/);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('reads with the company’s GitHub token secret when no GitHub connection is installed', async () => {
+    companyToken();
+    mocks.managed.mockResolvedValue({ status: 'absent' });
+    const fetch = vi.fn(async () => Response.json({})); vi.stubGlobal('fetch', fetch);
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'agent', agentId: 'agent', companyId: 'company', runId: 'run' }), null)('/repos/acme/private');
+    const board = skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice', source: 'session' }), null);
+    await board('/repos/acme/private');
+    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40), release: async () => {} });
+    await (await board.openSnapshot({ repositoryUrl: 'https://github.com/acme/private', ref: 'main' })).release();
+    expect(authorizations(fetch)).toEqual(['Bearer company-token', 'Bearer company-token']);
+    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({ token: 'company-token', cacheScope: expect.stringMatching(/,true\]$/) }), expect.anything());
+    expect(mocks.selection).toHaveBeenCalledWith(db, 'company', {});
+    expect(mocks.secretByName.mock.calls.slice(0, 2)).toEqual([['company', 'GITHUB_TOKEN'], ['company', 'GH_TOKEN']]);
+    expect(mocks.secretValue).toHaveBeenCalledWith('company', 'secret', 'latest', { accessContext: expect.objectContaining({ consumerType: 'system', consumerId: 'skill-source-github-access' }) });
+  });
+  it('reads anonymously when no company token secret resolves', async () => {
+    mocks.managed.mockResolvedValue({ status: 'absent' });
+    mocks.secretByName.mockImplementation(async (_company: string, name: string) => {
+      if (name === 'GITHUB_TOKEN') throw new Error('lookup failed');
+      return { id: name };
+    });
+    mocks.secretValue.mockImplementation(async (_company: string, id: string) => {
+      if (id === 'GH_TOKEN') return ' \n';
+      throw new Error('inactive secret');
+    });
+    const fetch = vi.fn(async () => Response.json({})); vi.stubGlobal('fetch', fetch);
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'agent', agentId: 'agent', companyId: 'company', runId: 'run' }), null)('/repos/acme/public');
+    const board = skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice', source: 'session' }), null);
+    await board('/repos/acme/public');
+    mocks.snapshot.mockResolvedValue({ commitSha: 'a'.repeat(40), release: async () => {} });
+    await (await board.openSnapshot({ repositoryUrl: 'https://github.com/acme/public', ref: 'main' })).release();
+    expect(authorizations(fetch)).toEqual([null, null]);
+    expect(mocks.secretValue.mock.calls.map(call => call[1])).toEqual(['GH_TOKEN', 'PAPERCLIP_GITHUB_TOKEN', 'GH_TOKEN', 'PAPERCLIP_GITHUB_TOKEN', 'GH_TOKEN', 'PAPERCLIP_GITHUB_TOKEN']);
+    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({ token: '', cacheScope: expect.stringMatching(/,false\]$/) }), expect.anything());
+  });
+  it('keeps the anonymous fallback when the company has a GitHub connection installed', async () => {
+    companyToken();
+    mocks.selection.mockResolvedValue({ configured: true });
+    mocks.managed.mockResolvedValue({ status: 'absent' });
+    const fetch = vi.fn(async () => Response.json({})); vi.stubGlobal('fetch', fetch);
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice', source: 'session' }), null)('/repos/acme/public');
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'agent', agentId: 'agent', companyId: 'company', runId: 'run' }), null)('/repos/acme/public');
+    expect(authorizations(fetch)).toEqual([null, null]);
+    expect(mocks.secretByName).not.toHaveBeenCalled();
+  });
+  it('prefers managed identities over the company token secret', async () => {
+    companyToken();
+    const fetch = vi.fn(async () => Response.json({})); vi.stubGlobal('fetch', fetch);
+    const run = actor({ type: 'agent', agentId: 'agent', companyId: 'company', runId: 'run' });
+    mocks.managed.mockResolvedValue({ status: 'available', connectionId: 'allowed', env: { GH_TOKEN: 'managed' } });
+    await skillSourceGitHubReader(db, 'company', run, null)('/repos/acme/private');
+    mocks.managed.mockResolvedValue({ status: 'unavailable', reason: 'Grant revoked.' });
+    await expect(skillSourceGitHubReader(db, 'company', run, null)('/repos/acme/private')).rejects.toThrow('Grant revoked.');
+    mocks.connectionIds.mockResolvedValue(['own']);
+    mocks.headers.mockResolvedValue({ Authorization: 'Bearer own-token' });
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice', source: 'session' }), null)('/repos/acme/private');
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'agent', agentId: 'agent', companyId: 'company' }), null)('/repos/acme/public');
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'agent', agentId: 'agent', companyId: 'other-company', runId: 'run' }), null)('/repos/acme/public');
+    expect(authorizations(fetch)).toEqual(['Bearer managed', 'Bearer own-token', null, null]);
+    expect(mocks.secretByName).not.toHaveBeenCalled();
   });
   it('reports retryable failures without returning provider bodies or credentials', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('sensitive provider text', { status: 503 })));
