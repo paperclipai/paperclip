@@ -311,6 +311,20 @@ and the user need not certify infrastructure state in a reconciliation form.
 
 Repeated automatic signals for an unchanged gate share one durable skipped-wake diagnostic, scoped to company, agent, issue, gate code, and condition identity. The diagnostic retains the first request and counts later observations. This applies to execution reconciliation, dependencies, pause holds, company and agent availability, budget blocks, and disabled heartbeats. These diagnostics do not consume provider attempts and are never proof that a future wake was delivered. All current gates are checked again on the next wake, including the periodic dependency reconciliation sweep. Clearing one gate does not bypass another.
 
+Assignment and execution-stage handoffs blocked by a previous execution's process
+or environment lease instead retain a deferred wake. The receipt binds the current
+task version and stage participant; repeated signals reuse it. Committed cleanup
+notifications and startup reconstruction reconsider it through normal admission.
+Ordinary release drains retain valid handoffs for that same admission path, so
+daily limits, company/subtree pause and budgets cannot consume their receipts.
+Recovery preserves nullable system or absent actor identities exactly. It retires
+obsolete intent under the task lock before availability or budget checks, even
+while the company or agent is paused; settled receipts cancel their retry deadline.
+Only retained receipts have retry deadlines, and an active lease or failed cleanup
+continues to prevent a successor. A changed assignment, stage, or terminal task
+retires the obsolete receipt without executing it. Wake diagnostics identify this
+wait as `execution_owner_active` and explain that cleanup must finish first.
+
 New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.

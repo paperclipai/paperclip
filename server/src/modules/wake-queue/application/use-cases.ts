@@ -768,6 +768,8 @@ export type AdmitWakeBehindIssueExecutionInput = {
   activeExecutionRun: WakeAdmissionActiveExecutionRun;
   allowRunCoalescing?: boolean;
   durableReceipt?: DurableWakeAdmissionReceipt;
+  /** The caller already validated the persisted receipt and keeps ownership of the resume. */
+  retainDeferredWake?: boolean;
   reason?: string | null;
   /** Tracks which runs are still live in this process, for the zombie-run filter. */
   liveRunExecutions: { has(id: string): boolean };
@@ -884,6 +886,9 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       });
       return { kind: "coalesced", run };
     }
+
+    // The resume already has a receipt: deferring must neither create nor merge another wake.
+    if (input.retainDeferredWake) return { kind: "deferred" };
 
     // decision.kind === "defer": only now does the module read for an
     // existing deferred wake, so the coalesce path (the common path) never
