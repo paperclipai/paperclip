@@ -294,7 +294,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(65);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(66);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -460,15 +460,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 69 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 70 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(69);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(70);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 69);
+    ).toHaveProperty("size", 70);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -896,7 +896,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(88);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(89);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1249,6 +1249,46 @@ describe("AppDefinition catalog", () => {
       });
       expect(method.warnings?.length).toBe(2);
     }
+  });
+  it("connects Grafana Cloud's hosted server with read-only sign-in by default and a full-access option", () => {
+    const grafana = APP_DEFINITIONS.find((app) => app.slug === "grafana-cloud")!;
+    expect(grafana).toMatchObject({
+      name: "Grafana Cloud",
+      categories: ["developer"],
+      urlPatterns: ["https://mcp.grafana.com/*"],
+      docsUrl: "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/",
+      branding: { logoUrl: "/brands/apps/grafana-cloud.svg" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "grafana-cloud")).toBe(true);
+    expect(grafana.methods.map((method) => method.key)).toEqual(["mcp-oauth-read", "mcp-oauth-write"]);
+    const [read, write] = grafana.methods;
+    expect(read).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://mcp.grafana.com/mcp", scopesHint: ["grafana:read"] },
+      capabilityProfile: { key: "read" },
+    });
+    expect(write).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      defaults: {
+        serverUrl: "https://mcp.grafana.com/mcp",
+        scopesHint: ["grafana:read", "grafana:query", "grafana:write"],
+      },
+      capabilityProfile: {
+        key: "full",
+        description: expect.stringContaining("raw SQL"),
+      },
+    });
+    expect(getRecommendedConnectionMethod(grafana.methods)?.key).toBe("mcp-oauth-read");
+    expect(write!.warnings).toHaveLength(2);
+    expect(read!.warnings).toHaveLength(1);
+    expect(grafana.methods.every((method) => !method.credentialFields?.length)).toBe(true);
   });
   it("connects Ditto's hosted server with browser sign-in or a workspace API key", () => {
     const ditto = APP_DEFINITIONS.find((app) => app.slug === "ditto")!;

@@ -20645,6 +20645,33 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ name: "triage_finding" })).toBe("read");
   });
 
+  it("classifies Grafana Cloud raw SQL, alerting management and Assistant tools as writes", () => {
+    for (const name of [
+      "query_prometheus",
+      "query_loki_logs",
+      "list_datasources",
+      "get_dashboard_by_uid",
+      "describe_clickhouse_table",
+      "generate_deeplink",
+    ])
+      expect(classifyRisk({ name }, "grafana-cloud")).toBe("read");
+    for (const name of [
+      "query_athena",
+      "query_clickhouse",
+      "query_snowflake",
+      "query_influxdb",
+      "alerting_manage_rules",
+      "alerting_manage_routing",
+      "ask_assistant",
+      "add_activity_to_incident",
+      "update_dashboard",
+      "create_incident",
+    ])
+      expect(classifyRisk({ name }, "grafana-cloud")).toBe("write");
+    expect(classifyRisk({ name: "query_clickhouse" })).toBe("read");
+    expect(classifyRisk({ name: "alerting_manage_rules" })).toBe("read");
+  });
+
   it("classifies Ditto translate, link and unlink tools as writes", () => {
     for (const name of [
       "get_styleguide_rules",

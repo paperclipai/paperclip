@@ -1015,6 +1015,7 @@ const categoryBySlug = {
   cloudinary: "content",
   coda: "productivity",
   ditto: "content",
+  "grafana-cloud": "developer",
   egnyte: "content",
   embat: "commerce",
   fireflies: "productivity",
@@ -1264,6 +1265,37 @@ const specialMethodsFor = (entry) => {
         consoleLinks: { keys: "https://app.dittowords.com/developers", docs: entry.docsUrl },
         warnings: [entry.prerequisite, warning],
         capabilityProfile,
+      }),
+    ];
+  }
+  if (entry.slug === "grafana-cloud") {
+    const warning =
+      "Grafana's query scope runs raw SQL against ClickHouse, Snowflake, Athena and InfluxDB as written, and it can change data if the data source credentials allow it. Set query_* SQL and alerting_manage_* actions to Ask first before agents run unattended.";
+    return [
+      oauthMethodFor(entry, "mcp-oauth-read", entry.serverUrl, {
+        label: "Sign in with Grafana Cloud (read)",
+        whenToUse: "Use read access to inspect dashboards, alerts, incidents and telemetry.",
+        guidanceMd:
+          "Connect Grafana Cloud in the browser and choose the stack on Grafana's consent screen. This option requests only the read scope. The connection acts as the Grafana user who signs in.",
+        warnings: [entry.prerequisite],
+        capabilityProfile: {
+          key: "read",
+          label: "Read only",
+          description:
+            "Read dashboards, alerts, incidents, metrics, logs, traces and profiles from the Grafana Cloud stack you choose.",
+        },
+      }),
+      oauthMethodFor(entry, "mcp-oauth-write", entry.serverUrl, {
+        label: "Sign in with Grafana Cloud (read, query and write)",
+        whenToUse: "Use full access when agents must change dashboards, alerts or incidents.",
+        guidanceMd:
+          "Connect Grafana Cloud in the browser and choose the stack on Grafana's consent screen. Only a Grafana administrator can grant the write scope. The connection acts as the Grafana user who signs in.",
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile: {
+          key: "full",
+          label: "Read, query and write",
+          description: `Read telemetry, run raw SQL queries, and create or change dashboards, alerts, incidents, data sources and Assistant investigations. ${warning}`,
+        },
       }),
     ];
   }
@@ -1817,7 +1849,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", ditto: "Search and reuse approved product copy, follow your style guide, and edit and translate text.", gauge: "Track how AI answers mention your brand, research keywords and traffic, and run content workflows.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", ditto: "Search and reuse approved product copy, follow your style guide, and edit and translate text.", "grafana-cloud": "Query metrics, logs, traces and profiles, review dashboards and alerts, and work incidents in Grafana Cloud.", gauge: "Track how AI answers mention your brand, research keywords and traffic, and run content workflows.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],

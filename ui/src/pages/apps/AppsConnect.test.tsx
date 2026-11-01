@@ -68,6 +68,7 @@ const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
 const GAUGE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
 const DITTO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
+const GRAFANA_CLOUD = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "grafana-cloud")!;
 const BRAINTRUST = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "braintrust")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
@@ -2282,6 +2283,25 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       connectionMethodKey: "mcp-api-key",
       credentialValues: { "credentials.authorization": "sk_live_test-key" },
     }));
+  });
+
+  it("defaults Grafana Cloud to read-only sign-in and shows the raw SQL warning for full access", async () => {
+    mockParams.appKey = "grafana-cloud";
+    listGalleryMock.mockResolvedValueOnce({ apps: [GRAFANA_CLOUD] });
+    await render();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    expect(container.textContent).toContain("Read only:");
+    expect(container.textContent).not.toContain("raw SQL");
+    await openAccessAdvanced();
+
+    expect(radioContaining("Read only")?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      radioContaining("Read, query and write")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(radioContaining("Read, query and write")?.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Set query_* SQL and alerting_manage_* actions to Ask first");
   });
 
   it("defaults Ditto to browser sign-in and connects a workspace API key once entered", async () => {
