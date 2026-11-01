@@ -1708,10 +1708,13 @@ function buildOnboardingConnectionCandidates(input: {
     candidates.add(`${protocol}//${bindHost}${port}`);
   }
 
-  for (const rawHost of input.allowedHostnames) {
-    const host = normalizeHostname(rawHost);
-    if (!host) continue;
-    candidates.add(`${protocol}//${host}${port}`);
+  const includeAllowedHostnames = !bindHost || !isLoopbackHost(bindHost);
+  if (includeAllowedHostnames) {
+    for (const rawHost of input.allowedHostnames) {
+      const host = normalizeHostname(rawHost);
+      if (!host) continue;
+      candidates.add(`${protocol}//${host}${port}`);
+    }
   }
 
   if (base && isLoopbackHost(base.hostname)) {
