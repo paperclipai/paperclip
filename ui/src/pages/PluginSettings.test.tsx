@@ -13,6 +13,7 @@ const mockPluginsApi = vi.hoisted(() => ({
   dashboard: vi.fn(),
   logs: vi.fn(),
   getConfig: vi.fn(),
+  saveConfig: vi.fn(),
   listLocalFolders: vi.fn(),
   configureLocalFolder: vi.fn(),
 }));
@@ -176,6 +177,95 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("secret bindings still resolve through the selected organization context");
     const link = container.querySelector('a[href="/company/settings/instance/environments"]');
     expect(link?.textContent).toContain("Open Environments");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("allows saving default values when no company config row exists", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      manifestJson: {
+        displayName: "Configured plugin",
+        version: "0.1.0",
+        description: "Plugin with default settings.",
+        author: "Paperclip",
+        capabilities: [],
+        instanceConfigSchema: {
+          type: "object",
+          properties: {
+            region: { type: "string", default: "us-east-1" },
+          },
+        },
+      },
+    }));
+    const savedConfig = {
+      id: "config-1",
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      configJson: { region: "us-east-1" },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockPluginsApi.getConfig.mockResolvedValueOnce(null).mockResolvedValue(savedConfig);
+    mockPluginsApi.saveConfig.mockResolvedValue({ configJson: { region: "us-east-1" } });
+
+    const root = await renderSettings(container);
+    const saveButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Save Configuration"),
+    );
+
+    expect(saveButton).toBeDefined();
+    expect(saveButton?.disabled).toBe(false);
+
+    await act(async () => {
+      saveButton?.click();
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.saveConfig).toHaveBeenCalledWith("plugin-1", "company-1", { region: "us-east-1" });
+    expect(mockPluginsApi.getConfig).toHaveBeenCalledTimes(2);
+    expect(saveButton?.disabled).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps saving disabled when an existing config matches the schema defaults", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      manifestJson: {
+        displayName: "Configured plugin",
+        version: "0.1.0",
+        description: "Plugin with default settings.",
+        author: "Paperclip",
+        capabilities: [],
+        instanceConfigSchema: {
+          type: "object",
+          properties: {
+            region: { type: "string", default: "us-east-1" },
+          },
+        },
+      },
+    }));
+    mockPluginsApi.getConfig.mockResolvedValue({
+      id: "config-1",
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      configJson: { region: "us-east-1" },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const root = await renderSettings(container);
+    const saveButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Save Configuration"),
+    );
+
+    expect(saveButton).toBeDefined();
+    expect(saveButton?.disabled).toBe(true);
 
     await act(async () => {
       root.unmount();

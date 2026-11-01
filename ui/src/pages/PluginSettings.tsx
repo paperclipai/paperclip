@@ -259,6 +259,7 @@ export function PluginSettings() {
                   companyId={selectedCompanyId}
                   schema={configSchema!}
                   initialValues={configData?.configJson}
+                  hasSavedConfig={configData !== null}
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
                   supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
@@ -934,6 +935,7 @@ interface PluginConfigFormProps {
   companyId: string | null;
   schema: JsonSchemaNode;
   initialValues?: Record<string, unknown>;
+  hasSavedConfig: boolean;
   isLoading?: boolean;
   /** Current plugin lifecycle status — "Test Configuration" only available when `ready`. */
   pluginStatus?: string;
@@ -948,7 +950,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, companyId, schema, initialValues, hasSavedConfig, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -981,7 +983,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
   const [testResult, setTestResult] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Dirty tracking: compare against initial values
-  const isDirty = JSON.stringify(values) !== JSON.stringify({
+  const isDirty = !hasSavedConfig || JSON.stringify(values) !== JSON.stringify({
     ...getDefaultValues(schema),
     ...(initialValues ?? {}),
   });
