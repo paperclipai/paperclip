@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
-import type { ExecutionBlocker } from "@paperclipai/shared";
+import { and, eq, sql } from "drizzle-orm";
+import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
 import { z } from "zod";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 
@@ -40,16 +40,34 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">) {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
-  if (typeof issueId !== "string" || !reference || reference.state !== "finalized" || !reference.finalHostSha256) return null;
+  const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+  const remote = parsedRemote.success && parsedRemote.data.state === "saved" ? parsedRemote.data : null;
+  if ((run.runnerProfileJson?.remoteWorkspace != null && !parsedRemote.success) || reference && parsedRemote.success) return null;
+  if (typeof issueId !== "string" || (!remote && (!reference || reference.state !== "finalized" || !reference.finalHostSha256))) return null;
   const [receipt] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
     eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_recovery"),
     eq(workspaceOperations.status, "succeeded"),
+    remote ? sql`${workspaceOperations.metadata}->>'snapshotId' = ${remote.snapshotId}` : undefined,
   )).limit(1);
   const proof = receipt?.metadata;
-  if (!proof || proof.leaseId !== reference.leaseId || proof.providerLeaseId !== reference.providerLeaseId
-    || proof.descriptorSha256 !== reference.descriptorSha256 || proof.finalHostSha256 !== reference.finalHostSha256
-    || typeof proof.recoveryActionId !== "string") return null;
+  if (!proof || typeof proof.recoveryActionId !== "string") return null;
+  if (remote) {
+    const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, remote.workspaceId),
+    ));
+    const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
+    if (!authority || authority.dirty || authority.writerRunId || authority.epoch !== remote.epoch
+      || authority.snapshotId !== remote.snapshotId || proof.storage !== "remote_workspace"
+      || proof.leaseId !== remote.leaseId || proof.providerLeaseId !== remote.providerLeaseId || proof.epoch !== remote.epoch) return null;
+    const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.companyId, run.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, remote.workspaceId),
+      eq(executionWorkspaceSnapshots.id, remote.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
+      eq(executionWorkspaceSnapshots.epoch, remote.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
+    ));
+    if (!snapshot || snapshot.sha256 !== proof.sha256 || snapshot.generation !== proof.generation) return null;
+  } else if (!reference || proof.leaseId !== reference.leaseId || proof.providerLeaseId !== reference.providerLeaseId
+    || proof.descriptorSha256 !== reference.descriptorSha256 || proof.finalHostSha256 !== reference.finalHostSha256) return null;
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.id, proof.recoveryActionId),

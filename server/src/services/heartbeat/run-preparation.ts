@@ -394,76 +394,31 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // no binding before resolving any secret value. Missing bindings short-circuit
   // to a configuration-incomplete blocker routed to a human owner instead of a
   // dispatched-then-failed run (which previously surfaced as opaque setup_failed).
-  if (typeof input.secretsSvc.collectMissingRuntimeBindings === "function") {
-    const missingBindings: MissingRuntimeBinding[] = [];
-    if (environmentEnv && input.environmentId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          environmentEnv,
-          {
-            consumerType: "environment",
-            consumerId: input.environmentId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-    }
+  const collectMissing = input.secretsSvc.collectMissingRuntimeBindings;
+  if (typeof collectMissing === "function") {
+    const checks: Array<() => Promise<MissingRuntimeBinding[]>> = [];
+    const checkEnv = (env: unknown, consumerType: "environment" | "agent" | "project" | "routine", consumerId: string) => {
+      checks.push(() => collectMissing(input.companyId, env, {
+        consumerType, consumerId, responsibleUserId: input.responsibleUserId ?? null,
+      }));
+    };
+    if (environmentEnv && input.environmentId) checkEnv(environmentEnv, "environment", input.environmentId);
     if (input.agentId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          parseObject(executionRunConfig.env),
-          {
-            consumerType: "agent",
-            consumerId: input.agentId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-      if (
-        typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings ===
-        "function"
-      ) {
-        missingBindings.push(
-          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
-            input.companyId,
-            executionRunConfig,
-            input.adapterType ?? null,
-            {
-              consumerType: "agent",
-              consumerId: input.agentId,
-              responsibleUserId: input.responsibleUserId ?? null,
-            },
-          )),
-        );
+      checkEnv(parseObject(executionRunConfig.env), "agent", input.agentId);
+      const collectAdapterMissing = input.secretsSvc.collectMissingAdapterConfigRuntimeBindings;
+      if (typeof collectAdapterMissing === "function") {
+        checks.push(() => collectAdapterMissing(input.companyId, executionRunConfig, input.adapterType ?? null, {
+          consumerType: "agent", consumerId: input.agentId!, responsibleUserId: input.responsibleUserId ?? null,
+        }));
       }
     }
-    if (projectEnv && input.projectId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          projectEnv,
-          {
-            consumerType: "project",
-            consumerId: input.projectId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-    }
-    if (routineEnv && input.routineId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          routineEnv,
-          {
-            consumerType: "routine",
-            consumerId: input.routineId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
+    if (projectEnv && input.projectId) checkEnv(projectEnv, "project", input.projectId);
+    if (routineEnv && input.routineId) checkEnv(routineEnv, "routine", input.routineId);
+    const results = await Promise.allSettled(checks.map(check => Promise.resolve().then(check)));
+    const missingBindings: MissingRuntimeBinding[] = [];
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
+      missingBindings.push(...result.value);
     }
     if (requiredScopedEnvBinding) {
       const requiredEnvKeys = new Set(requiredScopedEnvBinding.keys);
@@ -2244,12 +2199,45 @@ export async function attestReviewedExternalChatRun(input: {
   throw new Error("reviewed_chat_execution_binding_not_ready");
 }
 
+export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {
+  if (commentIds.length === 0) return [];
+  return db
+    .select({
+      id: issueComments.id,
+      companyId: issueComments.companyId,
+      issueId: issueComments.issueId,
+      body: issueComments.body,
+      origin: issueComments.origin,
+      authorType: issueComments.authorType,
+      authorAgentId: issueComments.authorAgentId,
+      authorUserId: issueComments.authorUserId,
+      presentation: issueComments.presentation,
+      metadata: issueComments.metadata,
+      deletedAt: issueComments.deletedAt,
+      deletedByType: issueComments.deletedByType,
+      deletedByAgentId: issueComments.deletedByAgentId,
+      deletedByUserId: issueComments.deletedByUserId,
+      deletedByRunId: issueComments.deletedByRunId,
+      sourceTrust: issueComments.sourceTrust,
+      createdAt: issueComments.createdAt,
+    })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, companyId),
+        issueId ? eq(issueComments.issueId, issueId) : undefined,
+        inArray(issueComments.id, commentIds),
+      ),
+    );
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   agentId?: string | null;
   runId?: string | null;
   contextSnapshot: Record<string, unknown>;
+  wakeCommentRows?: Awaited<ReturnType<typeof readHeartbeatWakeComments>>;
   continuationSummary?: {
     key: string;
     title: string | null;
@@ -2314,36 +2302,9 @@ export async function buildPaperclipWakePayload(input: {
   )
     return null;
 
-  const commentRows =
-    commentIds.length === 0
-      ? []
-      : await input.db
-          .select({
-            id: issueComments.id,
-            issueId: issueComments.issueId,
-            body: issueComments.body,
-            origin: issueComments.origin,
-            authorType: issueComments.authorType,
-            authorAgentId: issueComments.authorAgentId,
-            authorUserId: issueComments.authorUserId,
-            presentation: issueComments.presentation,
-            metadata: issueComments.metadata,
-            deletedAt: issueComments.deletedAt,
-            deletedByType: issueComments.deletedByType,
-            deletedByAgentId: issueComments.deletedByAgentId,
-            deletedByUserId: issueComments.deletedByUserId,
-            deletedByRunId: issueComments.deletedByRunId,
-            sourceTrust: issueComments.sourceTrust,
-            createdAt: issueComments.createdAt,
-          })
-          .from(issueComments)
-          .where(
-            and(
-              eq(issueComments.companyId, input.companyId),
-              issueId ? eq(issueComments.issueId, issueId) : undefined,
-              inArray(issueComments.id, commentIds),
-            ),
-          );
+  const commentRows = input.wakeCommentRows
+    ? input.wakeCommentRows.filter(row => row.companyId === input.companyId && (!issueId || row.issueId === issueId) && commentIds.includes(row.id))
+    : await readHeartbeatWakeComments(input.db, input.companyId, issueId, commentIds);
 
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
@@ -2959,6 +2920,7 @@ export function createHeartbeatRunPreparation(db: Db) {
       .select({
         testRunId: companySkillTestRuns.id,
         skillId: companySkillTestRuns.skillId,
+        skillKey: companySkillsTable.key,
         inputId: companySkillTestRuns.inputId,
         skillVersionId: companySkillTestRuns.skillVersionId,
         outputDocumentKey: companySkillTestRuns.outputDocumentKey,
@@ -2972,8 +2934,13 @@ export function createHeartbeatRunPreparation(db: Db) {
         and(
           eq(companySkillVersions.id, companySkillTestRuns.skillVersionId),
           eq(companySkillVersions.companyId, companySkillTestRuns.companyId),
+          eq(companySkillVersions.companySkillId, companySkillTestRuns.skillId),
         ),
       )
+      .innerJoin(companySkillsTable, and(
+        eq(companySkillsTable.id, companySkillTestRuns.skillId),
+        eq(companySkillsTable.companyId, companySkillTestRuns.companyId),
+      ))
       .where(
         and(
           eq(companySkillTestRuns.companyId, companyId),
@@ -3002,6 +2969,7 @@ export function createHeartbeatRunPreparation(db: Db) {
     return {
       testRunId: row.testRunId,
       skillId: row.skillId,
+      skillKey: row.skillKey,
       inputId: row.inputId ?? null,
       skillVersionId: row.skillVersionId,
       revisionNumber: row.revisionNumber,

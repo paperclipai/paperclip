@@ -109,29 +109,42 @@ export function statusCardFingerprintHash(fingerprint: StatusCardFingerprint) {
   return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
 }
 
+// These caches contain only timezone/policy calculations, never card or company
+// data. Bound both maps because timezone aliases and hour pairs are user input.
+const activeHoursFormatters = new Map<string, Intl.DateTimeFormat>();
+const upcomingActiveHours = new Map<string, { closedAt: number; opensAt: number }>();
+
+function remember<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): V {
+  cache.delete(key);
+  cache.set(key, value);
+  if (cache.size > limit) cache.delete(cache.keys().next().value!);
+  return value;
+}
+
+function activeHoursFormatter(timezone: string) {
+  const cached = activeHoursFormatters.get(timezone);
+  return remember(activeHoursFormatters, timezone, cached ?? new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }), 32);
+}
+
 export function isWithinStatusCardActiveHours(policy: StatusCardRefreshPolicy, now: Date) {
   if (!policy.activeHours) return true;
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: policy.activeHours.timezone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
-  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
-  const current = hour * 60 + minute;
   const [startHour, startMinute] = policy.activeHours.start.split(":").map(Number);
   const [endHour, endMinute] = policy.activeHours.end.split(":").map(Number);
   const start = startHour! * 60 + startMinute!;
   const end = endHour! * 60 + endMinute!;
+  if (start === end) return false;
+  const parts = activeHoursFormatter(policy.activeHours.timezone).formatToParts(now);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  const current = hour * 60 + minute;
   return start <= end ? current >= start && current < end : current >= start || current < end;
 }
 
 export function nextStatusCardEvaluationAt(policy: StatusCardRefreshPolicy, now: Date) {
-  if (policy.mode === "manual") return null;
-  const seconds = policy.mode === "interval"
-    ? (policy.intervalMinutes ?? 15) * 60
-    : Math.min(policy.debounceSeconds ?? 60, 60);
+  if (policy.mode !== "interval") return null;
+  const seconds = (policy.intervalMinutes ?? 15) * 60;
   return new Date(now.getTime() + seconds * 1000);
 }
 
@@ -171,4 +184,52 @@ export function evaluateStatusCardPolicy(input: {
     if (dueAt > input.now) return { action: "wait" as const, dueAt };
   }
   return { action: "run" as const };
+}
+
+/** A retry exists only while filtered changes remain. Use the owning policy's
+ * actual eligibility boundary instead of repeatedly rediscovering a closed gate. */
+export function nextStatusCardPolicyEligibility(input: {
+  policy: StatusCardRefreshPolicy;
+  now: Date;
+  lastChangeAt: Date;
+  completedUpdateTimes: Date[];
+  tokensToday: number;
+}): Date | null {
+  if (input.policy.mode === "manual") return null;
+  const hours = input.policy.activeHours;
+  if (hours && hours.start === hours.end) return null;
+  let at = input.now.getTime();
+  if (input.tokensToday >= (input.policy.dailyTokenCap ?? 100_000)) {
+    const day = new Date(input.now);
+    day.setUTCHours(24, 0, 0, 0);
+    at = Math.max(at, day.getTime());
+  }
+  if (input.policy.mode === "reactive") {
+    at = Math.max(at, input.lastChangeAt.getTime() + (input.policy.debounceSeconds ?? 60) * 1000);
+    const cap = input.policy.maxUpdatesPerHour ?? 6;
+    const recent = input.completedUpdateTimes.map(time => time.getTime())
+      .filter(time => time > at - 3_600_000).sort((a, b) => a - b);
+    if (recent.length >= cap) at = Math.max(at, recent[recent.length - cap]! + 3_600_000 + 1);
+  }
+  // Check the precise instant before reusing a minute-aligned opening. Some
+  // historical timezone offsets include seconds, so a window may be open now.
+  if (!hours || isWithinStatusCardActiveHours(input.policy, new Date(at))) return new Date(at);
+  const key = JSON.stringify([hours.timezone, hours.start, hours.end]);
+  const cached = upcomingActiveHours.get(key);
+  if (cached && at >= cached.closedAt && at < cached.opensAt) {
+    remember(upcomingActiveHours, key, cached, 256);
+    return new Date(cached.opensAt);
+  }
+  const closedAt = at;
+  // Active-hour precision is one local minute. Walking UTC minutes also honors
+  // skipped/repeated local times at daylight-saving transitions.
+  const end = at + 48 * 3_600_000;
+  for (at = Math.floor(at / 60_000) * 60_000 + 60_000; at <= end; at += 60_000) {
+    if (isWithinStatusCardActiveHours(input.policy, new Date(at))) {
+      remember(upcomingActiveHours, key, { closedAt, opensAt: at }, 256);
+      return new Date(at);
+    }
+  }
+  // No opening inside the existing bounded search horizon. Retain changes.
+  return null;
 }

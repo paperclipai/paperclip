@@ -4168,6 +4168,7 @@ describe("company portability", () => {
     const insertedRelationValues: Array<Record<string, unknown>> = [];
     const monitorUpdates: Array<Record<string, unknown>> = [];
     const db = {
+      transaction: async (write: (tx: unknown) => Promise<unknown>) => write(db),
       insert: () => ({
         values: (rows: Array<Record<string, unknown>>) => ({
           onConflictDoNothing: async () => {
@@ -4184,6 +4185,7 @@ describe("company portability", () => {
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
+    db.transaction = async (write: (tx: typeof db) => Promise<unknown>) => write(db);
     return { db, insertedRelationValues, monitorUpdates };
   }
 

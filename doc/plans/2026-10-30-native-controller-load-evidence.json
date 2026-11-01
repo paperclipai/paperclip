@@ -1,0 +1,390 @@
+{
+  "schema": "paperclip.native-controller-load-summary/v1",
+  "baselineRevision": "59e191c368",
+  "candidateRevision": "4f710fd7e7",
+  "qualification": "failed; host contention and unequal completed work invalidate the ABBA comparison",
+  "sourceReport": "/tmp/native-controller-load/combined-steady/report.json",
+  "fixture": {
+    "mode": "steady",
+    "normalReadsPerSecond": 500,
+    "normalWritesPerSecond": 100,
+    "databaseAdmissionEverySeconds": 5,
+    "checkpointControlEverySeconds": 5,
+    "controlPayloadBytes": 4096,
+    "phaseSeconds": 65,
+    "snapshotTransactionsPerControl": 1,
+    "baselineCheckpointPool": 2,
+    "baselineRenewalIntervalSeconds": 20,
+    "candidateRenewalIntervalSeconds": 20,
+    "historicalIssues": 10000
+  },
+  "limits": [
+    "Database request latency is not HTTP latency",
+    "Pool queue includes client encoding; BEGIN response includes network time",
+    "pg_stat_statements execution includes lock waits; samples report concurrent lock waiters, not a lock latency distribution",
+    "Peak memory is sampled once a second",
+    "Use an otherwise idle cluster and host; WAL and cgroup CPU are cluster-wide"
+  ],
+  "results": [
+    {
+      "label": "01_baseline_300",
+      "controls": 3900,
+      "normalOffered": 32500,
+      "normalCompleted": 32500,
+      "normalWritesCompleted": 6500,
+      "dropped": 0,
+      "renewalLosses": 0,
+      "checkpointTransactions": 3900,
+      "snapshotTransactions": 3900,
+      "sqlCount": 54687,
+      "livenessSqlCount": 4502,
+      "checkpointSqlCount": 15601,
+      "changedRows": 7800,
+      "changedBytes": 17371500,
+      "walBytes": 63819704,
+      "postgresCpuUsec": 25887716,
+      "postgresPeakSampledMemoryBytes": 697917440,
+      "normalReadSummary": {
+        "n": 32500,
+        "p50": 53.82264099999884,
+        "p95": 83.97040299999935,
+        "p99": 131.4543599999888,
+        "max": 249.75419500000135
+      },
+      "checkpointLatencySummary": {
+        "n": 3900,
+        "p50": 3.5057919999962905,
+        "p95": 14.36212499999965,
+        "p99": 79.32949999999255,
+        "max": 220.70087599998806
+      },
+      "poolQueueByPool": {
+        "request": {
+          "n": 3913,
+          "p50": 0.04241599999659229,
+          "p95": 4.89183399999456,
+          "p99": 25.90625,
+          "max": 210.7756250000093
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 401.07175099999586,
+          "p95": 1987.666584000006,
+          "p99": 2269.4225429999933,
+          "max": 2296.889626000004
+        },
+        "checkpoint": {
+          "n": 3900,
+          "p50": 0.05258299999695737,
+          "p95": 0.14449999999487773,
+          "p99": 41.99183400000038,
+          "max": 188.36633400000574
+        }
+      },
+      "transactionLatencyByPool": {
+        "request": {
+          "n": 3913,
+          "p50": 3.6501250000001164,
+          "p95": 14.756584000002476,
+          "p99": 62.41062499998952,
+          "max": 240.88450000000012
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 406.2205419999955,
+          "p95": 2044.2198760000028,
+          "p99": 2277.324250999998,
+          "max": 2308.3716669999994
+        },
+        "checkpoint": {
+          "n": 3900,
+          "p50": 3.297791999997571,
+          "p95": 14.160208000001148,
+          "p99": 79.12295900000026,
+          "max": 220.50066700000025
+        }
+      },
+      "drainMs": 26.716459000002942,
+      "absoluteGates": {
+        "requestP99": true,
+        "drain": true,
+        "throughput": true,
+        "postgresCpu": true,
+        "postgresMemory": true
+      },
+      "passed": true,
+      "startedAt": "2026-10-30T16:40:56.503Z",
+      "endedAt": "2026-10-30T16:42:01.534Z"
+    },
+    {
+      "label": "02_candidate_300",
+      "controls": 3900,
+      "normalOffered": 32500,
+      "normalCompleted": 32500,
+      "normalWritesCompleted": 6500,
+      "dropped": 0,
+      "renewalLosses": 0,
+      "checkpointTransactions": 3900,
+      "snapshotTransactions": 3900,
+      "sqlCount": 54687,
+      "livenessSqlCount": 4502,
+      "checkpointSqlCount": 15601,
+      "changedRows": 7800,
+      "changedBytes": 17371500,
+      "walBytes": 66746424,
+      "postgresCpuUsec": 35685605,
+      "postgresPeakSampledMemoryBytes": 666578944,
+      "normalReadSummary": {
+        "n": 32500,
+        "p50": 68.02364699999453,
+        "p95": 127.37661100001424,
+        "p99": 303.326441000012,
+        "max": 474.2829830000119
+      },
+      "checkpointLatencySummary": {
+        "n": 3900,
+        "p50": 5.670542000007117,
+        "p95": 241.97500100001344,
+        "p99": 479.3440830000036,
+        "max": 553.2187080000003
+      },
+      "poolQueueByPool": {
+        "request": {
+          "n": 3913,
+          "p50": 0.05162500002188608,
+          "p95": 37.2935839999991,
+          "p99": 136.02920900000026,
+          "max": 420.89487499999814
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 536.7470420000027,
+          "p95": 3620.454543,
+          "p99": 4146.325211000018,
+          "max": 4238.34758500001
+        },
+        "checkpoint": {
+          "n": 3900,
+          "p50": 0.057792000006884336,
+          "p95": 209.87512499999139,
+          "p99": 443.83324999999604,
+          "max": 528.2805419999931
+        }
+      },
+      "transactionLatencyByPool": {
+        "request": {
+          "n": 3913,
+          "p50": 6.640833000012208,
+          "p95": 66.06445900001563,
+          "p99": 184.52537499999744,
+          "max": 449.3999579999945
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 545.1022919999959,
+          "p95": 3665.246376999974,
+          "p99": 4172.158336000022,
+          "max": 4248.078752000001
+        },
+        "checkpoint": {
+          "n": 3900,
+          "p50": 5.484875000009197,
+          "p95": 241.83212600002298,
+          "p99": 478.8787080000038,
+          "max": 553.1449999999895
+        }
+      },
+      "drainMs": 76.8760000000184,
+      "absoluteGates": {
+        "requestP99": false,
+        "drain": true,
+        "throughput": true,
+        "postgresCpu": true,
+        "postgresMemory": true
+      },
+      "passed": false,
+      "startedAt": "2026-10-30T16:42:16.915Z",
+      "endedAt": "2026-10-30T16:43:21.995Z"
+    },
+    {
+      "label": "03_candidate_300",
+      "controls": 3887,
+      "normalOffered": 32500,
+      "normalCompleted": 32379,
+      "normalWritesCompleted": 6470,
+      "dropped": 164,
+      "renewalLosses": 0,
+      "checkpointTransactions": 3887,
+      "snapshotTransactions": 3887,
+      "sqlCount": 54484,
+      "livenessSqlCount": 4502,
+      "checkpointSqlCount": 15549,
+      "changedRows": 7774,
+      "changedBytes": 17313559,
+      "walBytes": 66470080,
+      "postgresCpuUsec": 53715752,
+      "postgresPeakSampledMemoryBytes": 670437376,
+      "normalReadSummary": {
+        "n": 32379,
+        "p50": 87.29533699998865,
+        "p95": 407.7868620000081,
+        "p99": 715.8863589999964,
+        "max": 1413.3376139999891
+      },
+      "checkpointLatencySummary": {
+        "n": 3887,
+        "p50": 35.722666999994544,
+        "p95": 2254.7568759999995,
+        "p99": 4195.890377000003,
+        "max": 4784.590544000006
+      },
+      "poolQueueByPool": {
+        "request": {
+          "n": 3900,
+          "p50": 0.12583400000585243,
+          "p95": 218.51912499999162,
+          "p99": 498.72595799999544,
+          "max": 1368.8183760000102
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 2733.2611259999976,
+          "p95": 7990.602337999997,
+          "p99": 8707.207421,
+          "max": 8915.786796
+        },
+        "checkpoint": {
+          "n": 3887,
+          "p50": 3.155832999997074,
+          "p95": 2207.667333999998,
+          "p99": 4154.626294000016,
+          "max": 4726.676418999996
+        }
+      },
+      "transactionLatencyByPool": {
+        "request": {
+          "n": 3900,
+          "p50": 27.709541999996873,
+          "p95": 276.61000000001513,
+          "p99": 625.9165419999918,
+          "max": 1627.7409179999959
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 2782.7440009999846,
+          "p95": 8019.347628999996,
+          "p99": 8734.34838000001,
+          "max": 8964.291171000019
+        },
+        "checkpoint": {
+          "n": 3887,
+          "p50": 35.49954200000502,
+          "p95": 2254.554459999985,
+          "p99": 4195.5352520000015,
+          "max": 4784.371294000011
+        }
+      },
+      "drainMs": 4928.940960000007,
+      "absoluteGates": {
+        "requestP99": false,
+        "drain": false,
+        "throughput": true,
+        "postgresCpu": true,
+        "postgresMemory": true
+      },
+      "passed": false,
+      "startedAt": "2026-10-30T16:43:41.479Z",
+      "endedAt": "2026-10-30T16:44:51.414Z"
+    },
+    {
+      "label": "04_baseline_300",
+      "controls": 2390,
+      "normalOffered": 32500,
+      "normalCompleted": 10713,
+      "normalWritesCompleted": 1503,
+      "dropped": 28305,
+      "renewalLosses": 0,
+      "checkpointTransactions": 2390,
+      "snapshotTransactions": 2390,
+      "sqlCount": 21797,
+      "livenessSqlCount": 4502,
+      "checkpointSqlCount": 9561,
+      "changedRows": 4780,
+      "changedBytes": 10643952,
+      "walBytes": 31871472,
+      "postgresCpuUsec": 55047197,
+      "postgresPeakSampledMemoryBytes": 643657728,
+      "normalReadSummary": {
+        "n": 10713,
+        "p50": 291.001007999992,
+        "p95": 841.957837999973,
+        "p99": 2601.1680469999555,
+        "max": 3106.3534709999803
+      },
+      "checkpointLatencySummary": {
+        "n": 2390,
+        "p50": 6933.93029400002,
+        "p95": 16553.939049999986,
+        "p99": 17176.082591000013,
+        "max": 17434.499467000016
+      },
+      "poolQueueByPool": {
+        "request": {
+          "n": 2392,
+          "p50": 0.10450000001583248,
+          "p95": 520.4013340000529,
+          "p99": 798.97454200004,
+          "max": 2614.81958499999
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 5497.6995860000025,
+          "p95": 16836.80413299997,
+          "p99": 17748.473174999992,
+          "max": 18895.275049999997
+        },
+        "checkpoint": {
+          "n": 2390,
+          "p50": 6882.121711000043,
+          "p95": 16492.48646600003,
+          "p99": 17097.382091999985,
+          "max": 17352.715134
+        }
+      },
+      "transactionLatencyByPool": {
+        "request": {
+          "n": 2392,
+          "p50": 55.64137500000652,
+          "p95": 638.8517920000013,
+          "p99": 2574.2484169999952,
+          "max": 2879.7436260000104
+        },
+        "liveness": {
+          "n": 900,
+          "p50": 5623.322503000032,
+          "p95": 16872.938590999984,
+          "p99": 18552.84471799998,
+          "max": 18921.25067499996
+        },
+        "checkpoint": {
+          "n": 2390,
+          "p50": 6933.636502000038,
+          "p95": 16553.763133,
+          "p99": 17175.909424000012,
+          "max": 17433.771509000042
+        }
+      },
+      "drainMs": 12508.142965000006,
+      "absoluteGates": {
+        "requestP99": false,
+        "drain": false,
+        "throughput": false,
+        "postgresCpu": true,
+        "postgresMemory": true
+      },
+      "passed": false,
+      "startedAt": "2026-10-30T16:45:39.710Z",
+      "endedAt": "2026-10-30T16:46:57.219Z"
+    }
+  ]
+}

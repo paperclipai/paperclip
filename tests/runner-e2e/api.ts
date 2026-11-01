@@ -116,9 +116,9 @@ export class RunnerApi {
 
   async delete(
     path: string,
-    options?: { allowNotFound?: boolean },
+    options?: { allowNotFound?: boolean; timeout?: number },
   ): Promise<void> {
-    const response = await this.request.delete(path, this.sessionOptions());
+    const response = await this.request.delete(path, { ...this.sessionOptions(), timeout: options?.timeout });
     if (response.ok() || (options?.allowNotFound && response.status() === 404))
       return;
     throw new Error(await failureMessage(response, "DELETE"));

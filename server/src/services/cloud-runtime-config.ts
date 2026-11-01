@@ -5,6 +5,8 @@ import { eq } from "drizzle-orm";
 import { instanceSettings, type Db } from "@paperclipai/db";
 import { paperclipConfigSchema } from "@paperclipai/shared";
 import { resolvePaperclipConfigPathForInstance } from "@paperclipai/shared/home-paths";
+import { validateManagedCloudStoragePrerequisites } from "../managed-cloud-prerequisites.js";
+import { loadStorageConfig } from "../storage/config.js";
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./cloud-instance.js";
 import {
   parseStoredCloudRuntimeConfig,
@@ -83,11 +85,18 @@ export async function readLegacyCloudRuntimeConfig(env: CloudInstanceEnv = proce
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Legacy Cloud runtime configuration could not be read safely");
     return null;
   }
+  // Refuse an unconfigured legacy bucket before shared-schema defaults can
+  // turn its omission into an apparently explicit canonical database value.
+  const legacyStorage = (raw as { storage?: { provider?: unknown; s3?: { bucket?: unknown } } } | null)?.storage;
+  if (typeof legacyStorage?.s3?.bucket !== "string" || !legacyStorage.s3.bucket.trim()) {
+    throw new Error("Legacy Cloud runtime configuration requires an explicit nonblank storage.s3.bucket");
+  }
   const parsed = paperclipConfigSchema.safeParse(raw);
   if (!parsed.success) throw new Error("Legacy Cloud runtime configuration is invalid");
   if (parsed.data.llm?.provider === "openai" && parsed.data.llm.apiKey?.trim() && !env.OPENAI_API_KEY?.trim()) {
     throw new Error("Move the legacy OpenAI API key to OPENAI_API_KEY before initializing Cloud runtime configuration");
   }
+  validateManagedCloudStoragePrerequisites(loadStorageConfig(parsed.data, env), env);
   return projectCloudRuntimeConfig(parsed.data);
 }
 

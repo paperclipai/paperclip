@@ -30,10 +30,15 @@ type Descriptor = Pick<typeof snapshots.$inferSelect, "id" | "companyId" | "cont
 export const skillVersionMetadataColumns = { ...getTableColumns(companySkillVersions),
   fileInventory: sql<CompanySkillVersionFileInventoryEntry[]>`'[]'::jsonb` };
 export type StoredSkillVersion = typeof companySkillVersions.$inferSelect;
-export function skillVersionFileMap(files: CompanySkillVersionFileInventoryEntry[], manifest: SkillPackageManifest): SkillPackageFileMapping[] | null {
-  const stored = new Map(manifest.files.map(file => [file.path, file]));
-  if (files.every(file => stored.get(file.path)?.kind === file.kind && stored.get(file.path)?.encoding === (file.encoding ?? "utf8"))) return null;
-  return files.map(file => ({ path: file.path, sourcePath: file.path, kind: file.kind, encoding: file.encoding ?? "utf8" }));
+export function skillVersionFileMap(files: Array<Pick<CompanySkillVersionFileInventoryEntry, "path" | "kind" | "encoding">>): SkillPackageFileMapping[] {
+  return files.map(file => ({ path: file.path, sourcePath: file.path, kind: file.kind, encoding: file.encoding ?? "utf8" as const }));
+}
+export function skillVersionUsesWholePackage(version: Pick<StoredSkillVersion, "packageFileMap">, manifest: SkillPackageManifest) {
+  if (!version.packageFileMap) return true;
+  const paths = new Set(version.packageFileMap.map(file => file.path));
+  return paths.size === manifest.files.length && version.packageFileMap.length === manifest.files.length
+    && version.packageFileMap.every(file => file.path === file.sourcePath)
+    && manifest.files.every(file => paths.has(file.path));
 }
 type ReadScope = { db: Db; descriptors: Map<string, Promise<Descriptor>>; durable: Map<string, Promise<boolean>>; versions: Map<string, StoredSkillVersion> };
 const readScope = new AsyncLocalStorage<ReadScope>();
@@ -197,6 +202,13 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     const [saved] = await database.select({ restore: snapshots.restore }).from(snapshots).where(scope(row.companyId, row.id));
     const recipe = saved?.restore;
     if (!recipe || recipe.version !== 1) throw notFound("This skill package has no exact-commit restore recipe");
+    const url = new URL(recipe.repositoryUrl);
+    if (!/^[a-f0-9]{40}$/i.test(recipe.commitSha) || !recipe.sourceId || !recipe.repositoryId
+      || url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password
+      || !/^\/[^/]+\/[^/]+$/.test(url.pathname) || url.search || url.hash) {
+      throw new Error("Invalid immutable skill package recipe");
+    }
+    if (recipe.skillPath) assertSkillSnapshotPath(recipe.skillPath);
     const manifest = validateSkillPackageManifest(recipe.manifest);
     if (manifest.contentHash !== row.contentHash || (row.storage && packageSha256(skillPackageManifestBytes(manifest)) !== row.storage.manifestSha256)) {
       throw new Error("Skill package restore recipe does not match its receipt");
@@ -670,5 +682,6 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     return row?.files ?? [];
   }
   return { descriptor, prepare, bindRestore, files, version, prefetch, versionFiles, versionInventory, readVersionFile, withPackage, withIsolatedPackage, verifyDurable,
+    recoveryRecipe: async (companyId: string, id: string) => restoreRecipe(await descriptor(companyId, id)),
     manifest: async (companyId: string, id: string, cancellation?: AbortSignal) => manifestFor(await descriptor(companyId, id), cancellation) };
 }

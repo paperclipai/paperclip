@@ -144,9 +144,7 @@ export async function protectedVersions(db: Db, companyId: string): Promise<{ ve
           || input.binding.runId !== id || input.binding.agentId !== agentId
           || input.binding.issueId !== nativeIssueId) return unknown();
         for (const skill of input.runtimeContext.skills) {
-          // Unversioned skills have their own captured asset bundle; they do
-          // not reference a directory under __versions__.
-          if (skill.versionId === null) continue;
+          if (skill.versionId === null) return unknown();
           if (!uuid.test(skill.versionId)) return unknown();
           add(skill.versionId);
         }

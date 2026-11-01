@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,13 +9,14 @@ import { routineService } from "../routines.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_ROUTINE_STATUS_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Skipping native routine status tests: ${support.reason}`);
 (support.supported ? describe : describe.skip)("native routine history status projection", () => {
   let db: ReturnType<typeof createDb>, database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   const companyId = randomUUID(), agentId = randomUUID();
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("native-routine-status-"); db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("native-routine-status-"); db = createDb(external ?? database.connectionString, { maxConnections: 6 });
     await db.insert(companies).values({ id: companyId, name: "Routine status fixture", issuePrefix: "NRS" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Routine worker", adapterType: "paperclip_runner", status: "running" });
   }, 60_000);

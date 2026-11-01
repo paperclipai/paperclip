@@ -793,7 +793,7 @@ describePg("decisionService", () => {
       expect((await service().get(id))?.metadata.continuationPending).toBe(false);
     }
     const markReady = (id: string, source = db) => writeDecisionChange(source, async tx => tx.update(decisions)
-      .set({ status: "cancelled", metadata: { continuationPending: true } }).where(eq(decisions.id, id)));
+      .set({ status: "cancelled", metadata: { continuationPending: true } }).where(eq(decisions.id, id)), { companyId });
 
     it("coalesces sequential tenant writes without dropping pending recovery", async () => {
       const row = await createCommentDecision();

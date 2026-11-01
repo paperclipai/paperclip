@@ -12,7 +12,7 @@ import {
 import type { StorageService } from "../storage/types.js";
 import { getCloudRuntimeIdentity } from "../services/cloud-runtime-identity.js";
 import { customerSuccessRunAuthority } from "../services/customer-success-authority.js";
-import { readCustomerSuccessResource } from "../services/customer-success-inspection.js";
+import { readCustomerSuccessResource, type CustomerSuccessInspectionOptions } from "../services/customer-success-inspection.js";
 import { forbidden, unprocessable } from "../errors.js";
 
 export function verifyInspectionPermit(
@@ -70,7 +70,7 @@ export function verifyInspectionPermit(
 }
 
 /** Mounted before actor middleware: none of these reads creates tenant state. */
-export function customerSuccessRoutes(db: Db, storage: StorageService) {
+export function customerSuccessRoutes(db: Db, storage: StorageService, options: CustomerSuccessInspectionOptions = {}) {
   const router = Router();
   router.use((_req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -122,7 +122,7 @@ export function customerSuccessRoutes(db: Db, storage: StorageService) {
       signal: AbortSignal.timeout(10000),
     });
     if (!consumed.ok) throw forbidden("Inspection permit could not be consumed");
-    const result = await readCustomerSuccessResource(db, storage, query);
+    const result = await readCustomerSuccessResource(db, storage, query, options);
     const body = JSON.stringify(result);
     if (Buffer.byteLength(body) > 2 * 1024 * 1024)
       throw unprocessable("Inspection response is too large; use pagination or a byte range");

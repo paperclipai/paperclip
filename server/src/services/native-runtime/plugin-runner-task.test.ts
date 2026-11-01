@@ -137,6 +137,39 @@ describe("plugin native Runner ownership", () => {
     expect(retained).toHaveBeenCalledWith(expect.objectContaining(requirements.identity));
     expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["status", "read_state", "connection", "stop", "status", "read_state", "complete"]);
   });
+  it.each(["settled", "unsettled"] as const)("proves retirement independently of %s checkpoint reuse", async settlement => {
+    const { task } = provider();
+    const retained = vi.fn(async () => {});
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity, onSessionRetained: retained });
+    const registration = await owner.registration({} as never, "run");
+    expect(owner.isRetired()).toBe(false);
+    await registration.release();
+    expect(owner.isRetired()).toBe(false);
+    await registration.checkpoint(settlement);
+    expect(owner.isRetired()).toBe(true);
+    expect(retained).toHaveBeenCalledTimes(settlement === "settled" ? 1 : 0);
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(settlement === "settled"
+      ? ["stop", "status", "read_state", "complete"] : ["stop", "status", "complete"]);
+  });
+
+  it.each(["credentials", "read_state", "complete"])("does not prove retirement when %s obligations fail after execution stops", async failingOperation => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async operation => {
+      if (operation.kind === failingOperation) throw new Error("handoff failed");
+      if (operation.kind === "credentials") return { kind: "credentials", taskId: "task", credential: null };
+      return perform(operation);
+    });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex", accountIdentity: "account",
+      adoptIdentity: requirements.identity, onCredentials: async () => {}, onSessionRetained: async () => {} });
+    const registration = await owner.registration({} as never, "run");
+    await registration.release();
+    await expect(registration.checkpoint("settled")).rejects.toThrow("handoff failed");
+    expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(false);
+    expect(owner.isRetired()).toBe(false);
+  });
+
   it("submits only a prepared identity and configuration ID", async () => {
     const { task } = provider();
     const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", pollMs: 1 });

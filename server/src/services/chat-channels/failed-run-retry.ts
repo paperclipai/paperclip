@@ -1,3 +1,5 @@
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
+import { notifyDeferredExecutionWork, notifyTaskRetrySettlement } from "../deferred-execution-notifications.js";
 import { notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { createFailedRetryNotices } from "./failed-retry-notices.js";
@@ -1424,6 +1426,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     // Source authorization above checked every external receipt and its owner.
     // Reset only this certified unstarted batch under the task's admission lock.
     const skippedIds = source.taskRetryInput?.skippedActionIds ?? [];
+    await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
     await tx.update(agentWakeupRequests).set({ status: "deferred_issue_execution", runId: null, finishedAt: null,
       payload: sql`${agentWakeupRequests.payload} - 'coalescedIntoWakeupRequestId'`, updatedAt: new Date(),
     }).where(and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
@@ -1784,6 +1787,9 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const attemptCount = Number(candidate.result?.attemptCount ?? 0) + 1;
     const settle = async (status: string, result: Record<string, unknown>) => {
       const [current] = await db.transaction(async (tx) => {
+        if (typeof claimed.payload.taskRetryIntentId === "string") await notifyTaskRetrySettlement(tx, {
+          companyId: claimed.companyId, requestId: claimed.payload.taskRetryIntentId,
+        });
         await notifyChatActionWork(tx, "failed_run_retry");
         if (status === "processed") await notifyNativeResponsePresentation(tx, {
           companyId: claimed.companyId, issueId: String(claimed.payload.issueId),
@@ -1918,6 +1924,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           // Receipt existence proves the earlier wait, not current authority.
           // Retire only this unadmitted wake; an admitted run keeps its history.
           await db.transaction(async tx => {
+            await notifyStrandedAgentStatus(tx, { companyId: claimed.companyId, agentId: receipt.agentId });
             await notifyChatInboundWakeNotices(tx, {
               companyId: claimed.companyId, issueId: String(claimed.payload.issueId),
             });

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_SERVICE_GROUPS, googleWorkspaceSelectionForScopes, type GoogleWorkspaceServiceSelection, type ToolConnection } from "@paperclipai/shared";
+import { GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_SERVICE_GROUPS, googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectionForScopes, type GoogleWorkspaceServiceSelection, type ToolConnection } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -43,12 +43,11 @@ type DialogProps = {
 };
 
 export function GoogleWorkspaceServicesDialog(props: DialogProps) {
-  const existing = props.connection && props.connection.status !== "draft" ? props.connection : null;
+  const existing = props.connection ?? null;
   const oauth = props.connection?.config?.oauth as { pendingWorkspaceServiceRequests?: Record<string, { requestedScopes?: unknown; requestedAt?: string }> } | undefined;
   const pendingRequests = oauth?.pendingWorkspaceServiceRequests;
-  const loadConnection = existing ?? (pendingRequests && Object.keys(pendingRequests).length ? props.connection : null);
-  const grants = useQuery({ queryKey: ["workspace-service-consent", loadConnection?.id], queryFn: () => toolsApi.listConnectionGrants(loadConnection!.id), enabled: Boolean(loadConnection) });
-  if (loadConnection && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent>
+  const grants = useQuery({ queryKey: ["workspace-service-consent", existing?.id], queryFn: () => toolsApi.listConnectionGrants(existing!.id), enabled: Boolean(existing) });
+  if (existing && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent>
     <DialogTitle>Connect Google Workspace</DialogTitle><DialogDescription>{grants.isError ? "Could not load your saved service access. Your connection has not changed." : "Loading your saved service access…"}</DialogDescription>
     <footer className="flex items-center justify-between gap-3"><Button variant="ghost" onClick={() => props.onCancel()}>Cancel</Button>{grants.isError && <Button onClick={() => void grants.refetch()}>Try again</Button>}</footer>
   </DialogContent></Dialog>;
@@ -57,7 +56,15 @@ export function GoogleWorkspaceServicesDialog(props: DialogProps) {
     : existing?.credentialPolicy === "per_agent"
       ? grant.kind === "agent" && grant.subjectAgentId === (existing.config?.oauth as { connectorSubjectAgentId?: string } | undefined)?.connectorSubjectAgentId
       : grant.kind === "organization");
-  const savedScopes = grant?.providerTenant?.oauth?.requestedScopes ?? grant?.providerTenant?.oauth?.scopes ?? [];
+  const savedScopes = existing?.status === "draft"
+    ? googleWorkspaceDraftRequestedScopes(existing.config?.workspaceSetup, {
+      companyId: existing.companyId, connectionId: existing.id,
+      actorType: "user", actorId: grants.data?.currentUserId ?? null,
+      grantKind: existing.credentialPolicy === "per_user" ? "user" : existing.credentialPolicy === "per_agent" ? "agent" : "organization",
+      subjectId: existing.credentialPolicy === "per_user" ? grants.data?.currentUserId ?? null
+        : existing.credentialPolicy === "per_agent" ? (existing.config?.oauth as { connectorSubjectAgentId?: string } | undefined)?.connectorSubjectAgentId ?? null : null,
+    }) ?? grant?.providerTenant?.oauth?.requestedScopes ?? []
+    : grant?.providerTenant?.oauth?.requestedScopes ?? grant?.providerTenant?.oauth?.scopes ?? [];
   const pending = grants.data?.currentUserId ? pendingRequests?.[grants.data.currentUserId] : undefined;
   const pendingTime = Date.parse(pending?.requestedAt ?? "");
   // Refresh and lease writes update the grant row without changing consent.

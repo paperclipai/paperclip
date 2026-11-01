@@ -1,3 +1,6 @@
+import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
+import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
+import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
@@ -52,9 +55,10 @@ export type QueuedCommentQueuePostgresAdapterDeps = {
   syncCommentExternalObjectsSafely(commentId: string, tx: Db): Promise<void>;
 };
 
-function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentQueueTransaction {
+function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps, wakeAgentId: string): QueuedCommentQueueTransaction {
   return {
     async updateCommentBody({ issueId, commentId, body, updatedAt }) {
+      await notifyStatusCardIssueChange(tx, companyId);
       const updated = await tx
         .update(issueComments)
         .set({ body, updatedAt })
@@ -65,6 +69,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async touchIssueUpdatedAt({ issueId, updatedAt }) {
+      await notifyStatusCardIssueChange(tx, companyId);
       await tx.update(issues).set({ updatedAt }).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
     },
 
@@ -100,6 +105,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async cancelWake({ wakeId, reason, now }) {
+      await notifyStrandedAgentStatus(tx, { companyId, agentId: wakeAgentId });
       await notifyChatInboundWakeNotices(tx, { companyId, issueId });
       await tx
         .update(agentWakeupRequests)
@@ -108,6 +114,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async cancelQueueRun({ queueRunId, reason, now }) {
+      await notifyExecutionRunWork(tx, { companyId, runId: queueRunId });
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
       await notifyInstructionCollection(tx, { companyId, runId: queueRunId });
       await notifyExternalAgentSettlement(tx, { companyId, runId: queueRunId });
@@ -308,7 +315,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
               .then((rows) => rows[0] ?? null)
           : null;
 
-        const transaction = buildTransaction(tx, companyId, input.issue.id, deps);
+        const transaction = buildTransaction(tx, companyId, input.issue.id, deps, wakeRow.agentId);
         const wake = toWakeRow(wakeRow);
         const queueRun = queueRunRow ? toRunRow(queueRunRow) : null;
         const activeRun = activeRunRow ? toRunRow(activeRunRow) : null;

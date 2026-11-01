@@ -1,3 +1,4 @@
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { statusCards, statusCardUpdates } from "@paperclipai/db";
@@ -36,6 +37,7 @@ export async function finalizeStatusCardsForStalledGeneration(
 ) {
   if (!STALLED_GENERATION_STATUSES.has(issue.status)) return [];
 
+  await notifyStatusCardEvaluation(dbOrTx, issue.companyId);
   const now = new Date();
   const failureReason = failureReasonForIssue(issue);
   const cards = await dbOrTx
@@ -45,6 +47,7 @@ export async function finalizeStatusCardsForStalledGeneration(
       failureReason,
       generatingIssueId: null,
       nextEvalAt: null,
+      nextEvalReason: null,
       updatedAt: now,
     })
     .where(

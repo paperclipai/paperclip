@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { randomUUID, createHash } from "node:crypto";
@@ -67,6 +68,13 @@ async function provider(
     throw conflict("The workspace storage plugin is unavailable");
   }
   return plugin;
+}
+
+export async function pluginWorkspaceSupportsMergeAncestry(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
+  const pluginId = readWorkspaceProviderBinding(workspace.metadata)?.pluginId;
+  if (!pluginId) return true;
+  const selected = await provider(db, workers, workspace.companyId, pluginId);
+  return selected.manifestJson.workspaceProvider?.supportsMergeAncestry !== false;
 }
 
 /** No paths or provider credentials are accepted from task callers. */
@@ -418,6 +426,7 @@ export async function preparePluginWorkspace(
           },
         })
         .returning();
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx
         .update(issues)
         .set({

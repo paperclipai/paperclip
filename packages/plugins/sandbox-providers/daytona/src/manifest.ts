@@ -15,7 +15,7 @@ export const DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS = 300_000;
 // 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
 // 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
 // 0.1.8 declares the default provider acquisition budget to the host.
-const PLUGIN_VERSION = "0.1.9";
+const PLUGIN_VERSION = "0.1.10";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -39,6 +39,7 @@ const manifest: PaperclipPluginManifestV1 = {
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
       supportsReusableLeases: true,
+      creationOperationVersion: 1,
       // Daytona keeps a persistent session and tails its callback log form, so it
       // emits incremental session output while the command runs. Declare the
       // opt-in capability so the host selects the session-output streaming path.

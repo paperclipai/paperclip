@@ -24,6 +24,13 @@ describe("saved harness verification", () => {
       expect(error).toMatchObject({ code, message: "The harness test failed" });
     }
   });
+  it("preserves a retryable failed check before classifying configuration failures", () => {
+    const temporary = result("fail", ["opencode_cwd_invalid", "opencode_command_unresolvable"]);
+    temporary.checks[0] = { ...temporary.checks[0], level: "error", retryable: true };
+    expect(() => assertHarnessTestPassed(temporary)).toThrow(expect.objectContaining({ code: "test_environment_unavailable" }));
+    temporary.checks[0].level = "info";
+    expect(() => assertHarnessTestPassed(temporary)).toThrow(expect.objectContaining({ code: "harness_command_unavailable" }));
+  });
   it.each([
     ["fail", []], ["warn", ["claude_hello_probe_auth_required"]],
     ["warn", ["gemini_hello_probe_timed_out"]], ["pass", ["claude_hello_probe_skipped_custom_command"]],

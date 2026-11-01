@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { type BudgetServiceHooks } from "./budgets.js";
 
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -52,7 +53,9 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         });
       }
 
-      const updated = await db
+      const updated = await db.transaction(async tx => {
+        await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
+        return tx
         .update(agents)
         .set({
           permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
@@ -61,6 +64,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      });
 
       return updated ? getById(updated.id) : null;
     },

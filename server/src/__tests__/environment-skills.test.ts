@@ -103,9 +103,7 @@ describeDatabase("environment managed skills", () => {
     const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime")));
     const before = (await events()).length;
     const edited = skill.markdown + "\nCompany edit.";
-    await fs.chmod(path.join(skill.sourceLocator!, "SKILL.md"), 0o600);
-    await fs.writeFile(path.join(skill.sourceLocator!, "SKILL.md"), edited);
-    await db.update(companySkills).set({ markdown: edited }).where(eq(companySkills.id, skill.id));
+    await companySkillService(db).updateFile(companyId, skill.id, "SKILL.md", edited);
     expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id]);
     const refreshed = (await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true))!.skills[0];
     expect(refreshed.versionId).not.toBe(runtime.versionId);

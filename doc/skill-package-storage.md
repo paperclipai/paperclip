@@ -7,7 +7,26 @@ The original repository tree, wrappers, binary bytes and executable flags retain
 their existing behavior. New Git packages also retain an immutable restore recipe;
 locally authored/edited packages and unproven legacy packages keep a durable copy.
 
-## Automatic upgrade
+## Installed content authority
+
+Paperclip-owned skills use `sourceType: managed`, `sourceLocator: null`, and an
+immutable `currentVersionId`. Creation, edits, deletion of files, forks and restores
+prepare verified packages before a short transaction publishes the version, head,
+metadata and audit. A competing head returns `409`; it never overwrites another
+writer's files. Acknowledged saves survive cache loss. Studio submits the version it
+read and preserves unsaved text on a conflict.
+
+Repository and catalog installations also read committed versions. Runtime selection
+persists version pins before delivery materializes files. Recovery uses the pinned
+version and checks its reconstructed v1 asset digest; a previous server's `rootPath`
+is not proof of availability. Active or recovering run pins block whole-skill deletion,
+even after the agent assignment is detached. Explicit linked-local sources retain
+their local filesystem behavior and are outside this replacement guarantee.
+
+See [ephemeral web-server operation](skill-ephemeral-web-servers.md) for the one-time
+installation conversion, rollback boundary and qualification procedure.
+
+## Automatic package upgrade
 
 No data-migration command is required. The normal schema upgrade applies migration
 0415 (`0415_zippy_zemo.sql`). External writes and automatic conversion are enabled by default. Startup
@@ -31,20 +50,30 @@ reader is the rollback floor; an older binary needs rehydrated database contents
 Use durable, backed-up local storage or S3-compatible storage for authored packages.
 The extracted cache is not that storage backend.
 
-Deleting an editable file or folder keeps a temporary copy outside the skill until
-the transaction commits. Upload or database failures restore the original subtree,
-including binary files, permissions, empty folders and files omitted from inventory.
-Successful deletions remove the temporary copy; historical versions retain their
-existing package bytes. If the commit reply is lost, recovery checks the saved
-version under the mutation lock before restoring. A committed deletion stays
-deleted. If the database is unavailable or the skill has since changed, recovery
-preserves the backup and logs its location instead of overwriting newer work.
+Managed file and folder deletion publishes a new inventory. It requires no local
+rollback copy. Unused uploads follow the existing orphan/deletion machinery; a
+post-commit cache or notification failure cannot undo a committed save. Only the
+explicit linked-local compatibility adapter retains filesystem rollback handling.
+
+Create idempotency receipts retain the original response projection and immutable
+version identity in `company_skill_mutation_receipts`; file-save receipts keep their
+existing activity receipt shape. Retries reauthorize access. Deleted identities do
+not transfer their receipts to a skill recreated with the same name. Skill bodies
+remain in packages/versions rather than activity logs.
 
 The optional `server/scripts/migrate-skill-packages.ts` command remains available for
 diagnostics and controlled batches. It defaults to dry run, supports
-`--phase=snapshots|versions|orphans|deletions`, `--company=<uuid>`, `--limit=1..50`,
+`--phase=snapshots|versions|orphans|deletions|installations|eligibility|verification`, `--company=<uuid>`, `--limit=1..50`,
 `--after=<uuid>`, `--apply` and `--clear-legacy`. It is not part of normal installation
-or upgrade. Never point it at another instance's database/storage configuration.
+or compatible routine upgrade. The installations phase is the one-time legacy
+conversion boundary described in the linked runbook. Never point it at another instance's database/storage configuration.
+
+New package-backed versions retain their complete path/kind/encoding index in
+`package_file_map`, including identity mappings. Library and version listing read
+this metadata without downloading manifests or archives. The bounded `versions`
+phase also backfills older null indexes from verified manifests without changing
+version IDs or content; include that phase in legacy conversion. Old null indexes
+remain readable during conversion, with a cold manifest read when needed.
 
 ## Acquisition and retention
 
@@ -83,8 +112,11 @@ Package/version publication and deletion use transaction-aware work notification
 local asset use signals its filesystem worker. Both reuse the delivery coordinator,
 restore deadlines on startup, pause in drain/standby, and stop on shutdown. With no
 pending conversion, retry, or eligible cache deadline they perform no recurring work.
-The supported live writer is the owning server; independent SQL writers/other servers
-need restart reconstruction or an explicit wake. No permanent DB listener is added.
+Compatible servers resolve the durable head on each content operation and use
+transactional publication checks. Content correctness needs no process-local
+invalidation. Maintenance wake delivery across instances remains owned by the
+delivery coordinator; startup reconstructs pending deadlines. No permanent
+skills-specific DB listener is added.
 Conversion retains authoritative legacy bytes until verification succeeds. Conversion
 retries and cache/deletion dates are optional maintenance eligibility; they may wait
 until the next ingress wake, including with package storage disabled. They do not

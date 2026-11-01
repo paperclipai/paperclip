@@ -1,5 +1,20 @@
 # Database
 
+### Proactive agent chat messages
+
+Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
+on `issue_comments(issue_id, author_agent_id, client_request_id)` alongside the
+existing human request constraint. Proactive delivery stores a source-task-scoped
+retry key and server-authored `metadata.chatMessage` provenance/content fingerprint.
+The comment and audit record commit together; a retry returns the original receipt.
+Conversation creation reuses the unique company/agent/human identity and existing
+advisory-lock order. No message outbox is added.
+
+Chat list/detail unread projections reuse `issue_read_states`, including chats
+with no human participation. Read cutoffs use the exact PostgreSQL comment
+timestamp; upserts take the greatest previous/new cutoff so delayed requests
+cannot move a read receipt backward or clear a later unseen arrival.
+
 Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
 
 ### Persistent case handoffs
@@ -931,6 +946,44 @@ and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
 
+## Experimental remote workspace snapshots
+
+Migration [0421_bright_skaar.sql](../packages/db/src/migrations/0421_bright_skaar.sql)
+adds the company-scoped `execution_workspace_snapshots` ledger. It records the
+workspace, source operation/run, parent, generation, writer epoch, encrypted
+object receipt, hashes, manifest digest, and retention state. Integrity and key
+fields remain nullable while an upload is pending. Upload attempts record their
+candidate object keys before I/O so a lost reply can be reconciled and abandoned
+objects can be reclaimed. Object existence alone is not a committed save.
+
+`execution_workspaces.metadata.remoteWorkspace`, schema
+`paperclip.remote-workspace.v1`, holds the source, epoch, committed snapshot ID,
+remote allocation/path, writer run, and dirty flag. Paths in this record belong
+to the remote allocation. Save publication checks the current writer/epoch and
+atomically commits the ledger row, authority pointer, and operation receipt.
+`workspace_operations` journals preparation, save, restore, and local import;
+large file bodies stay outside the database. Ledger identities deliberately
+survive source-record deletion so object cleanup can finish.
+
+Snapshots stream through authenticated encryption into S3. Portable archives
+preserve supported files, modes, empty directories, confined symlinks, and Git
+checkout/index/object state, including unpushed history. Linked worktrees and
+object alternates are normalized into standalone Git storage. The versioned
+exclusion policy omits runtime transport material and proven rebuildable
+dependencies; unsupported entries fail the save.
+
+The current snapshot and active run/restore/recovery/unfinished-operation
+references pin saved data. Unreferenced superseded versions receive a seven-day
+grace. Retention uses committed producer notifications and actual deadlines;
+pinned history and an empty queue do not cause recurring scans. Deletion fences
+new adoption, rechecks references, and removes every recorded upload candidate
+and winning object within the company/workspace prefix.
+
+Database backups contain snapshot receipts, not S3 payloads or encryption keys.
+Disaster recovery requires the database, object store, and original master key.
+Unsaved live sandbox edits remain outside that saved-version guarantee. See
+[setup and explicit local import](DEVELOPING.md#experimental-native-remote-workspace-storage).
+
 ## Chat communication snapshots
 
 Chat communication guidance uses two additive columns: endpoint
@@ -1544,6 +1597,32 @@ It uses disposable embedded PostgreSQL by default. A disposable local database
 named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
+
+
+### Sandbox creation ownership
+
+Migration 0418 adds `sandbox_creation_operations`. Admission commits company,
+original environment, run, request key and provider identity before external
+creation. Configuration contains nonsecret values and existing secret references.
+The original identity survives environment, run, task and company deletion; only
+the optional live environment FK uses SET NULL. Company/run deletion must not
+erase an outstanding remote-resource obligation.
+
+The unique company/environment/run/request index fences duplicate creation and
+ambiguous successful lease commits. Normal lease attachment and operation transfer
+share a transaction. Recovery transfers one claimed cleanup lease after provider
+ownership lookup. The pending deadline index drives the existing cleanup worker.
+`needs_reconciliation` is a durable manual outcome, not an automatic retry or an
+idle blocker. See [cleanup ownership](idle-environment-cleanup.md).
+
+## Object-backed run evidence
+
+Optional segmented run logs and raw provider traces store their payloads and
+range indexes directly in S3-compatible storage. Existing `heartbeat_runs` and
+`provider_trace_records` contain backend/reference and lifecycle metadata;
+there is no new payload table or per-segment SQL publication. Object manifests
+use conditional writes to fence publication. Existing structured events retain
+their database append contract. See [run evidence storage](run-evidence-storage.md).
 
 ## Cloud runtime configuration singleton
 

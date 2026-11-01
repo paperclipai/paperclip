@@ -16,6 +16,7 @@ import { canActorReadWorkspaceOperation } from "../services/heartbeat-run-privac
 describe("private task production review", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
+  let fixtureCompanyNumber = 0;
   beforeAll(async () => {
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-private-review-");
@@ -26,7 +27,7 @@ describe("private task production review", () => {
   afterAll(async () => { await tempDb?.cleanup(); });
 
   async function fixture() {
-    const [company] = await db.insert(companies).values({ name: randomUUID(), issuePrefix: `T${randomUUID().slice(0, 5)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: randomUUID(), issuePrefix: `T${++fixtureCompanyNumber}` }).returning();
     const owner = randomUUID(), outsider = randomUUID();
     await db.insert(authUsers).values([owner, outsider].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
     await db.insert(companyMemberships).values([owner, outsider].map(principalId => ({ companyId: company.id, principalType: "user", principalId, status: "active", membershipRole: "operator" })));

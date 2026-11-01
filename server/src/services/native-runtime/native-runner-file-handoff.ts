@@ -1,3 +1,4 @@
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
@@ -1265,7 +1266,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
     ) {
       throw new Error("paperclip_runner_file_handoff_origin_not_persisted");
     }
-    await input.db
+    await input.db.transaction(async tx => {
+      await notifyIssueRecovery(tx, { companyId: input.binding.companyId });
+      await tx
       .update(issueWorkProducts)
       .set({ title: verified.title, updatedAt: new Date() })
       .where(
@@ -1276,6 +1279,7 @@ export async function prepareNativeRunnerFileHandoff(input: {
           eq(issueWorkProducts.createdByRunId, input.binding.runId),
         ),
       );
+    });
     const comment = await issueService(input.db).addComment(
       input.binding.issueId,
       `Prepared ${verified.title} for this response.`,

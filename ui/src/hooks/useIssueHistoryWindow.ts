@@ -14,6 +14,7 @@ export function useIssueHistoryWindow(
   issueRef: string | undefined,
   showFullHistory: boolean,
   issue?: Pick<Issue, "id" | "identifier">,
+  continuous = false,
 ) {
   const queryClient = useQueryClient();
   const expansionKey = ["issues", "history-expanded", issueRef] as const;
@@ -24,7 +25,7 @@ export function useIssueHistoryWindow(
     initialData: false,
     gcTime: Infinity,
   });
-  const historyExpanded = showFullHistory || expanded;
+  const historyExpanded = !continuous && (showFullHistory || expanded);
   const expandHistory = useCallback(() => {
     for (const ref of new Set([issueRef, issue?.id, issue?.identifier])) {
       if (ref) queryClient.setQueryData(["issues", "history-expanded", ref], true);
@@ -32,8 +33,8 @@ export function useIssueHistoryWindow(
   }, [issueRef, issue?.id, issue?.identifier, queryClient]);
   useEffect(() => {
     // Keep identifier and UUID navigation on the same expansion preference.
-    if (showFullHistory || expanded) expandHistory();
-  }, [showFullHistory, expanded, expandHistory]);
+    if (!continuous && (showFullHistory || expanded)) expandHistory();
+  }, [continuous, showFullHistory, expanded, expandHistory]);
   const recentKey = [...queryKeys.issues.comments(issueRef ?? ""), "recent"] as const;
   const recent = useQuery({
     queryKey: recentKey,
@@ -76,12 +77,40 @@ export function useIssueHistoryWindow(
       return {
         ...snapshot,
         hasMore: previous.hasMore,
+        oldestCommentId: previous.oldestCommentId,
         latestCommentId: incoming.at(-1)?.id ?? snapshot.latestCommentId,
         comments: mergeWindowComments(previous.comments, incoming, snapshot.comments),
       };
     },
   });
+  const { data: acknowledgedComments = [] } = useQuery<IssueComment[]>({
+    queryKey: queryKeys.issues.acknowledgedComments(issueRef ?? ""),
+    queryFn: () => [],
+    enabled: false,
+    initialData: [],
+  });
+  const retainComment = useCallback((comment: IssueComment) => {
+    for (const ref of new Set([issueRef, issue?.id, issue?.identifier, comment.issueId])) {
+      if (!ref) continue;
+      queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current =>
+        mergeWindowComments(current ?? [], [comment]),
+      );
+    }
+  }, [issueRef, issue?.id, issue?.identifier, queryClient]);
+  useEffect(() => {
+    if (!recent.data) return;
+    const observed = new Set(recent.data.comments.map(comment => comment.id));
+    for (const ref of new Set([issueRef, issue?.id, issue?.identifier])) {
+      if (!ref) continue;
+      queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current => {
+        if (!current?.some(comment => observed.has(comment.id))) return current;
+        return current.filter(comment => !observed.has(comment.id));
+      });
+    }
+  }, [recent.data, issueRef, issue?.id, issue?.identifier, queryClient]);
   return {
+    acknowledgedComments,
+    retainComment,
     historyExpanded,
     expandHistory,
     recent,

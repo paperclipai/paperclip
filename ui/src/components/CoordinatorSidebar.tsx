@@ -62,6 +62,7 @@ function ProjectRecent({ project }: { project: Project }) {
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreContentRef = useRef<HTMLDivElement>(null);
@@ -99,7 +100,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     <div className="design-sidebar-brand"><SidebarCompanyMenu showChevron={false} /></div>
     <nav className="design-sidebar-navigation" aria-label="Workspace navigation">
       <div className="design-sidebar-primary">
-        <SidebarNavItem className="design-sidebar-item" to="/chats" label="Chat" icon={MessageCircle} />
+        <SidebarNavItem className="design-sidebar-item" to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
         <div className="group/coordinator-new relative">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} className={cn("design-sidebar-item", !rail && "pr-9")} />
           {!rail && <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}

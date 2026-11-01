@@ -1,0 +1,8 @@
+{
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../../../../.."
+  },
+  "include": ["*.ts", "../../maintenance-*.test.ts", "../../decision-target-work.test.ts", "../../../types/express.d.ts"]
+}

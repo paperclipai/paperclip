@@ -11,6 +11,73 @@
     "providerRequestId": { "type": ["string", "null"], "maxLength": 240 },
     "cumulative": { "$ref": "#/$defs/measurement" },
     "runDeltaAvailable": { "type": "boolean" },
+    "runDeltaBasis": { "const": "run" },
+    "reconciliation": {
+      "type": "object",
+      "required": [
+        "reason",
+        "receivedTurnId",
+        "cumulative",
+        "priorOrigin"
+      ],
+      "properties": {
+        "reason": {
+          "const": "accounting_reconciliation_required"
+        },
+        "receivedTurnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 240
+        },
+        "cumulative": {
+          "$ref": "#/$defs/measurement"
+        },
+        "priorOrigin": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "runnerInstanceId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+            "itemId"
+          ],
+          "properties": {
+            "runnerInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "normalizedSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "turnId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "itemId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "runDelta": { "$ref": "#/$defs/measurement" }
   },
   "additionalProperties": false,

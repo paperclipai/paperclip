@@ -1,5 +1,5 @@
 import path from "node:path";
-import { and, asc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { companySkillRepositorySnapshots as snapshots, companySkillVersions as versions,
   skillPackageDeletions, type Db } from "@paperclipai/db";
 import { getStorageService, type StorageService } from "../storage/index.js";
@@ -43,7 +43,8 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
     const rows = await db.select(skillVersionMetadataColumns).from(versions).where(and(
       options.companyId ? eq(versions.companyId, options.companyId) : undefined,
       options.id ? eq(versions.id, options.id) : undefined,
-      options.after ? gt(versions.id, options.after) : undefined, options.clearLegacy ? undefined : isNull(versions.packageSnapshotId), isNull(versions.releaseId)))
+      options.after ? gt(versions.id, options.after) : undefined,
+      options.clearLegacy ? undefined : or(isNull(versions.packageSnapshotId), isNull(versions.packageFileMap)), isNull(versions.releaseId)))
       .orderBy(asc(versions.id)).limit(pageSize(options));
     let migrated = 0;
     if (options.apply) for (const row of rows) {
@@ -51,6 +52,15 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
       const files = legacy?.files;
       options.signal?.throwIfAborted();
       if (!files?.length) {
+        if (row.packageSnapshotId && !row.packageFileMap) {
+          const manifest = await store.manifest(row.companyId, row.packageSnapshotId, options.signal);
+          const changed = await db.update(versions).set({ packageFileMap: skillVersionFileMap(manifest.files), migrationAt: null })
+            .where(and(eq(versions.companyId, row.companyId), eq(versions.id, row.id),
+              eq(versions.packageSnapshotId, row.packageSnapshotId), isNull(versions.packageFileMap)))
+            .returning({ id: versions.id });
+          migrated += changed.length;
+          continue;
+        }
         await db.update(versions).set({ migrationAt: null }).where(eq(versions.id, row.id));
         continue;
       }
@@ -71,7 +81,7 @@ export function skillPackageMaintenance(db: Db, storage?: StorageService) {
       packageId ??= await store.prepare(row.companyId, files, true, options.signal);
       const legacyMetadata = new Map(files.map(file => [file.path, file]));
       fileMap = fileMap ? fileMap.map(file => ({ ...file, kind: legacyMetadata.get(file.path)?.kind ?? file.kind,
-        encoding: legacyMetadata.get(file.path)?.encoding ?? "utf8" })) : skillVersionFileMap(files, await store.manifest(row.companyId, packageId, options.signal));
+        encoding: legacyMetadata.get(file.path)?.encoding ?? "utf8" })) : skillVersionFileMap(files);
       const receipt = await store.descriptor(row.companyId, packageId);
       if (!receipt.storage || !await store.verifyDurable(row.companyId, packageId, options.signal)) throw new Error(`Package must be migrated and verified first: ${packageId}`);
       await db.update(versions).set({ packageSnapshotId: packageId, packageFileMap: fileMap, ...(options.clearLegacy ? { fileInventory: [], migrationAt: null } : {}) })

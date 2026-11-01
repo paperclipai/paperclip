@@ -1,3 +1,5 @@
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -888,7 +890,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   const tempRoots: string[] = [];
 
   beforeAll(async () => {
-    if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+    if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl, { maxConnections: 6 });
     else {
       tempDb = await startEmbeddedPostgresTestDatabase("paperclip-branch-containment-");
       db = createDb(tempDb.connectionString);
@@ -1173,15 +1175,15 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       },
     });
 
+    const routineEvents: string[] = [];
+    const unsubscribeRoutine = subscribeDatabaseWork(db, DELIVERY_QUEUES.routineExecutionStatus, event => routineEvents.push(event));
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.wakeup(agentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: { issueId },
-      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
-    });
-
+    let run;
+    try {
+      run = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
+    } finally { unsubscribeRoutine(); }
+    expect(routineEvents).toContain("intent"); expect(routineEvents).toContain("settled");
     expect(run).toBeNull();
     expect(adapterExecute).not.toHaveBeenCalled();
 

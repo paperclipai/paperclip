@@ -242,12 +242,14 @@ describePostgres("immutable skill version cache", () => {
     return { run, execution };
   }
 
-  it.each([false, true])("uses the legacy native manifest without changing unresolved recovery (bundled skill: %s)", async bundled => {
+  it.each([false, true])("protects unknown legacy versions without changing unresolved recovery (bundled skill: %s)", async bundled => {
     const f = await fixture();
     const old = await f.resolve(f.versions[0]!.id);
     await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
     const { run } = await legacyNativeRun(f.companyId, bundled ? [{ key: "paperclipai/paperclip/slack", versionId: null }] : []);
-    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+    const result = await sweepSkillVersionCache(db, { companyId: f.companyId });
+    expect(result.evicted).toBe(bundled ? 0 : 1);
+    if (bundled) expect(result.skipped.unknown_run_pins).toBe(1);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
       .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]!.contextSnapshot).toBeNull();

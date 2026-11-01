@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm";
-import { environmentLeases, type Db } from "@paperclipai/db";
+import { environmentLeases, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { hasDeferredEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 
 export const ENVIRONMENT_CLEANUP_RETRY_MS = 5 * 60_000;
@@ -20,7 +20,10 @@ export async function nextEnvironmentCleanupAt(db: Db, backoffMs = ENVIRONMENT_C
   const [row] = await db.select({ next: sql<string | null>`min(greatest(
     extract(epoch from ${environmentLeases.updatedAt}) * 1000 + ${backoffMs},
     ${pendingCleanupDeadlineSql()}))` }).from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"));
-  const saved = row?.next == null ? null : Number(row.next);
+  const [creation] = await db.select({ next: sql<string | null>`min(extract(epoch from ${sandboxCreationOperations.nextAttemptAt}) * 1000)` })
+    .from(sandboxCreationOperations).where(eq(sandboxCreationOperations.state, "pending"));
+  const deadlines = [row?.next, creation?.next].filter((value): value is string => value != null).map(Number);
+  const saved = deadlines.length ? Math.min(...deadlines) : null;
   const buffered = hasDeferredEnvironmentCleanup(db) ? Date.now() + backoffMs : null;
   return saved === null ? buffered : buffered === null ? saved : Math.min(saved, buffered);
 }

@@ -13,6 +13,7 @@ import type { RunnerE2EResult } from "../types.js";
 import type { JourneyContext, JourneyEvidence, TargetSession } from "./types.js";
 import { createConnectionProof } from "../connection-evidence.js";
 import { retainOnboardingArtifact } from "./artifact-evidence.js";
+import { journeyRequiredChecks } from "./success-contract.js";
 import type { OnboardingConnectEvidence } from "./onboarding-connect.js";
 vi.mock("@playwright/test", () => ({
   expect: Object.assign(
@@ -220,12 +221,17 @@ describe("deployment journey contracts", () => {
     onboarding.productJourney!.operations.modelCostUsd=null;
     expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeNull();
   });
-  it("requires real pass evidence and forbids model work in browser-only passes", () => {
-    expect(()=>validateRetainedRunnerResult(result())).not.toThrow();
-    const missing = result(); missing.productJourney!.checks=[];
+  it.each(["task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
+    const browser = result();
+    browser.caseId = caseId;
+    browser.executionId = `product-journeys.local-qa.local.${caseId}`;
+    browser.productJourney!.checks = journeyRequiredChecks[caseId]!.map(id => ({ id, passed: true }));
+    expect(()=>validateRetainedRunnerResult(browser)).not.toThrow();
+    const missing = structuredClone(browser); missing.productJourney!.checks=[];
     expect(()=>validateRetainedRunnerResult(missing)).toThrow();
-    const paid = result(); paid.runIds=["unexpected"];
-    expect(()=>validateRetainedRunnerResult(paid)).toThrow();
+    const forbidden: Array<Partial<RunnerE2EResult>> = [{ runIds: ["unexpected"] }, { provider: "openai" }, { model: "unexpected" },
+      { runtimeMode: "native" }, { runtimeMode: "legacy" }];
+    for (const work of forbidden) expect(()=>validateRetainedRunnerResult({ ...browser, ...work })).toThrow("result.browserOnly");
   });
   it("keeps browser-only reporting free of invented model calls and rejects public publication", () => {
     const value=result();

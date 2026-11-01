@@ -5,7 +5,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
   companies, createDb, documents, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as support, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { settleInterruptedNativeBootstrap, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
@@ -16,12 +16,11 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { chatCompletionDeliveryService, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff } from "../services/chat-completion-delivery.js";
 import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
 
-const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("chat completion delivery", () => {
   let db: ReturnType<typeof createDb>;
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("chat-completion-"); db = createDb(temporary.connectionString);
+    temporary = await startRecoveryPostgres("chat-completion-"); db = createDb(temporary.connectionString);
     await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
   }, 30_000);
   afterAll(async () => { await temporary?.cleanup(); });

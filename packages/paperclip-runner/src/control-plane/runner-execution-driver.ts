@@ -36,6 +36,10 @@ export interface RunnerExecutionDriver {
     checkpoint?: (settlement: "settled" | "unsettled") => Promise<void> | void;
     release: (reason?: "detach") => Promise<void> | void;
   }>;
+  /** Register source and target checkpoint ownership before staging changes the stored run. */
+  onStagedRunAttachment?: (authority: DurablePrpControlPlane, proof: {
+    sourceIdentity: DurableRecoveryIdentity; targetIdentity: DurableRecoveryIdentity; templateDigest: string;
+  }) => Promise<void>;
   /** Override process ownership; omission uses the SDK's local process owner. */
   runnerProcessLauncher?: (
     spec: RunnerProcessLaunchSpec,

@@ -70,7 +70,8 @@ const reuseScript = `
 (async()=>{
  const fs=require('node:fs'),p=require('node:path'),c=require('node:crypto');
  const spec=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'));
- const f=fs.promises;await f.mkdir(spec.target,{mode:448});
+ const f=fs.promises;await f.mkdir(p.dirname(spec.target),{recursive:true,mode:448});
+ await f.mkdir(spec.target,{mode:448});
  const missing=[];
  const regularPath=async(root,relative)=>{
    let current=root;if(!(await f.lstat(current)).isDirectory())return false;

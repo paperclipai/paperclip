@@ -1,0 +1,152 @@
+{
+  "phase": "initial",
+  "issue": {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "companyId": "00000000-0000-4000-8000-000000000001",
+    "assigneeAgentId": "00000000-0000-4000-8000-000000000003",
+    "status": "in_review"
+  },
+  "runs": [
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "companyId": "00000000-0000-4000-8000-000000000001",
+      "issueId": "00000000-0000-4000-8000-000000000002",
+      "agentId": "00000000-0000-4000-8000-000000000003",
+      "status": "succeeded",
+      "runtimeMode": "native",
+      "resultJson": {
+        "apiToolReceipts": {
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+            "state": "completed",
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "operationId": "POST /api/issues/{id}/interactions",
+            "result": {
+              "ok": true,
+              "status": 201,
+              "contentType": "application/json; charset=utf-8",
+              "operationId": "POST /api/issues/{id}/interactions",
+              "data": {
+                "kind": "ask_user_questions",
+                "status": "pending",
+                "continuationPolicy": "wake_assignee",
+                "payload": {
+                  "version": 1,
+                  "supersedeOnUserComment": false,
+                  "questions": [
+                    {
+                      "id": "time_choice",
+                      "prompt": "Should the club meetup welcome note reference Morning or Afternoon?",
+                      "selectionMode": "single",
+                      "required": true,
+                      "allowOther": false,
+                      "options": [
+                        {
+                          "id": "morning",
+                          "label": "Morning"
+                        },
+                        {
+                          "id": "afternoon",
+                          "label": "Afternoon"
+                        }
+                      ]
+                    }
+                  ],
+                  "questionSet": {
+                    "schema": "paperclip.question_set.v1",
+                    "questions": [
+                      {
+                        "id": "time_choice",
+                        "prompt": "Should the club meetup welcome note reference Morning or Afternoon?",
+                        "required": true,
+                        "answerMode": "single_select",
+                        "options": [
+                          {
+                            "id": "morning",
+                            "label": "Morning"
+                          },
+                          {
+                            "id": "afternoon",
+                            "label": "Afternoon"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "id": "00000000-0000-4000-8000-000000000005",
+                "sourceRunId": "00000000-0000-4000-8000-000000000004",
+                "companyId": "00000000-0000-4000-8000-000000000001",
+                "issueId": "00000000-0000-4000-8000-000000000002",
+                "createdByAgentId": "00000000-0000-4000-8000-000000000003",
+                "createdByUserId": null,
+                "idempotencyKey": "meetup-time-choice-api-v1"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "interactions": [
+    {
+      "kind": "ask_user_questions",
+      "status": "pending",
+      "continuationPolicy": "wake_assignee",
+      "payload": {
+        "version": 1,
+        "supersedeOnUserComment": false,
+        "questions": [
+          {
+            "id": "time_choice",
+            "prompt": "Should the club meetup welcome note reference Morning or Afternoon?",
+            "selectionMode": "single",
+            "required": true,
+            "allowOther": false,
+            "options": [
+              {
+                "id": "morning",
+                "label": "Morning"
+              },
+              {
+                "id": "afternoon",
+                "label": "Afternoon"
+              }
+            ]
+          }
+        ],
+        "questionSet": {
+          "schema": "paperclip.question_set.v1",
+          "questions": [
+            {
+              "id": "time_choice",
+              "prompt": "Should the club meetup welcome note reference Morning or Afternoon?",
+              "required": true,
+              "answerMode": "single_select",
+              "options": [
+                {
+                  "id": "morning",
+                  "label": "Morning"
+                },
+                {
+                  "id": "afternoon",
+                  "label": "Afternoon"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "id": "00000000-0000-4000-8000-000000000005",
+      "sourceRunId": "00000000-0000-4000-8000-000000000004",
+      "companyId": "00000000-0000-4000-8000-000000000001",
+      "issueId": "00000000-0000-4000-8000-000000000002",
+      "createdByAgentId": "00000000-0000-4000-8000-000000000003",
+      "createdByUserId": null,
+      "idempotencyKey": "meetup-time-choice-api-v1"
+    }
+  ],
+  "documents": [],
+  "attachments": [],
+  "children": [],
+  "comments": []
+}

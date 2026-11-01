@@ -694,3 +694,13 @@ telemetry-read authorization. Ordinary PRP reads/live delivery retain run-secret
 and current-user redaction. The task page uses one history read on mount/reconnect
 and the existing live transcript stream, then makes a bounded plugin readiness
 check. No panel discovery timer scans runs or provider state while connected.
+
+## Payload storage
+
+Structured events in this guide remain in `heartbeat_run_events`. When the
+instance's existing file storage uses S3, new stdout/stderr NDJSON logs use the
+same stack bucket and configured prefix under `run-logs/`, with existing run
+references in Postgres. Local-disk instances remain local. Raw provider
+traces have their own restricted, encrypted object path. See
+[run evidence storage](run-evidence-storage.md) for batching, durability,
+configuration, migration, retention, and qualification boundaries.

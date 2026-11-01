@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -61,10 +62,9 @@ describe("native runner file handoff", () => {
   const runId = "00000000-0000-4000-8000-000000009104";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
-      "native-runner-file-handoff-",
-    );
-    db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_HANDOFF_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-runner-file-handoff-");
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6 });
     temporaryRoot = await mkdtemp(
       path.join(tmpdir(), "paperclip-native-file-handoff-"),
     );

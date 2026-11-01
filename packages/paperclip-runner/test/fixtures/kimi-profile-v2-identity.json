@@ -1,0 +1,28 @@
+{
+  "declaration": {
+    "schema": "paperclip.kimi-profile-identity.v1",
+    "agent": "kimi",
+    "agentProfileVersion": 2,
+    "agentServerPackage": "@moonshot-ai/kimi-code",
+    "agentServerVersion": "2.3.3",
+    "agentRuntimePackage": null,
+    "agentRuntimeVersion": null,
+    "requiresProviderPolicy": true,
+    "qualificationStatus": "pending",
+    "acpxVersion": "0.13.1",
+    "sources": {
+      "scripts/patch-kimi-runtime.mjs": "sha256:7bea24c45b7f32a72168bf6da57cb6fd472cd2ef9fac0c196b7f050e81a8b62a",
+      "scripts/kimi-instructions-runtime.mjs": "sha256:7697cd40f1123ce607ec61548dde1c31dff496f3fd7aed1afbe75bbe434e7859",
+      "scripts/materialize-kimi-distribution.mjs": "sha256:7d61f91d2b32a8d22e5949619faed009c2fded8e034e84a2615a76548e2aa4d0",
+      "scripts/provision-kimi.mjs": "sha256:d11a6320b47c1549572f192e6a3d532b4c48a7f2499afd91539626c04e917bca",
+      "scripts/kimi-distribution/package.json": "sha256:13511f26a31248e42063c49eeaf6235b7448df12049c1bf45c2170cc20767175",
+      "scripts/kimi-distribution/package-lock.json": "sha256:ff2cf7356dc031cac15d9f3339cf82bd1811399af59396e2d7629648c21298cf",
+      "src/drivers/acpx/kimi-closure-pins.ts": "sha256:b40e709dbd3fdc04bd1bc1f2ec5a34a2eb09b353a11d3b1b86c35bbe3dcbd513",
+      "src/drivers/acpx/kimi-config.ts": "sha256:b927c3f2437094d4492a1499559247220e154fcae719ecfe75bb63defc7df05e",
+      "src/drivers/acpx/kimi-installation.ts": "sha256:753a1f8505bcfaff83ac76c425e45e4ff780861a6b6b0fbcb71e96c0c482669d",
+      "src/drivers/acpx/kimi-instructions.ts": "sha256:a04e2d17aac37da2463c8a2c057f9e922ecdb68d9e922e9288e0445c870f9a36",
+      "src/drivers/acpx/instruction-admission.ts": "sha256:371c17f328abed44f90ac37f3b686e1c0a0d6b647518e62935262ecc31450b16"
+    }
+  },
+  "commandDigest": "sha256:103f3a3d84353fa6d3244fe51065bd62159dc32adb88a69d16dbde495c012360"
+}

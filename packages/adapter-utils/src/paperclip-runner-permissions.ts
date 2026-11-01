@@ -253,6 +253,7 @@ export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
   { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
   { value: "copilot", label: "GitHub Copilot", qualified: true, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
   { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"] },
+  { value: "kimi", label: "Kimi Code", qualified: true, credentialEnvironment: ["KIMI_API_KEY"] },
   { value: "antigravity", label: "Google Antigravity", qualified: false, credentialEnvironment: ["GEMINI_API_KEY"] },
 ] as const);
 

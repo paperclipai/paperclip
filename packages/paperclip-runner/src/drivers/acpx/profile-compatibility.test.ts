@@ -7,6 +7,9 @@ import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 // at 1. Update this table, with the reason, only for a deliberate reset.
 const PROFILE_VERSIONS: Readonly<Record<string, number>> = {
   antigravity: 1, claude: 1, codex: 1, copilot: 92, cursor: 17, grok: 20, pi: 37,
+  // Released Kimi uses revision 17 to refuse saved pending-candidate sessions.
+  // The upstream-only attestation migration retains that existing revision.
+  kimi: 17,
 };
 
 describe("ACPX profile versions", () => {
@@ -28,7 +31,7 @@ describe("historical ACPX profile decoding", () => {
     }
   });
   it("does not decode a revision newer than the current one", () => {
-    for (const agent of ["copilot", "grok", "pi", "cursor", "antigravity"] as const) {
+    for (const agent of ["copilot", "grok", "pi", "cursor", "antigravity", "kimi"] as const) {
       expect(isSupportedAcpxProfileVersion(agent, QUALIFIED_ACPX_PROFILE_DATA[agent].agentProfileVersion + 1)).toBe(false);
     }
   });

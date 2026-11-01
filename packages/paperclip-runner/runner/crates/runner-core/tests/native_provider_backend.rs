@@ -558,6 +558,7 @@ fn shutdown_recovered_acpx_fixture(executor: &mut NativeProviderCommandExecutor,
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn acpx_response_delivery_survives_crash_before_journaling_without_replaying_the_response() {
     for mode in [
         "permissions-interactive",
@@ -633,6 +634,7 @@ fn acpx_response_delivery_survives_crash_before_journaling_without_replaying_the
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn acpx_delivered_response_is_acknowledged_once_before_session_close() {
     for mode in ["permissions-interactive", "resolutions"] {
         let directory = temporary_directory("response-ack");
@@ -662,6 +664,7 @@ fn acpx_delivered_response_is_acknowledged_once_before_session_close() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn acpx_uncommitted_delivery_expires_after_failed_state_write_without_replay() {
     for mode in ["permissions-interactive", "resolutions"] {
         let directory = temporary_directory("response-save-failure");
@@ -743,6 +746,7 @@ fn acpx_uncommitted_delivery_expires_after_failed_state_write_without_replay() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn acpx_failed_settlement_ack_replays_the_same_delivered_event_without_expiry() {
     for mode in ["permissions-interactive", "resolutions"] {
         let directory = temporary_directory("response-ack-save-failure");
@@ -808,6 +812,7 @@ fn acpx_failed_settlement_ack_replays_the_same_delivered_event_without_expiry() 
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn acpx_uncommitted_expiry_and_cancellation_cannot_escape_through_poll_or_drain() {
     for (mode, close) in [
         ("permissions-wrong-ack", false),
@@ -879,6 +884,7 @@ fn acpx_uncommitted_expiry_and_cancellation_cannot_escape_through_poll_or_drain(
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn acpx_failed_or_cancelled_responses_retain_one_durable_settlement() {
     for (mode, close) in [
         ("permissions-wrong-ack", false),
@@ -937,6 +943,7 @@ fn acpx_failed_or_cancelled_responses_retain_one_durable_settlement() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn preserves_acpx_semantic_disposition_in_the_run_terminal() {
     let directory = temporary_directory("acpx-blocked");
     let config = acpx_config(&directory, "turns-reserved-block-terminal");
@@ -1072,6 +1079,7 @@ fn preserves_managed_provider_descriptors_through_the_native_selector() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     let directory = temporary_directory("acpx");
     let config = acpx_config(&directory, "turns-reserved-result-terminal");
@@ -1131,6 +1139,7 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn routes_reserved_completion_feedback_with_the_full_controller_catalog() {
     let directory = temporary_directory("acpx-controller-completion");
     let mode = "turns-reserved-feedback-roundtrip";
@@ -1215,6 +1224,7 @@ fn routes_reserved_completion_feedback_with_the_full_controller_catalog() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
     let directory = temporary_directory("acpx-transport-failure");
     let mode = "turns-malformed-activity";
@@ -1276,6 +1286,7 @@ fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn provider_death_expires_input_and_commits_failure_without_querying_the_dead_provider() {
     let directory = temporary_directory("acpx-provider-death");
     let mode = "turns-provider-death";
@@ -1381,6 +1392,7 @@ fn provider_death_expires_input_and_commits_failure_without_querying_the_dead_pr
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let directory = temporary_directory("acpx-cold-idle-recovery");
     let config = acpx_config(&directory, "turns-reserved-result-terminal");
@@ -1432,6 +1444,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn keeps_native_acpx_semantic_events_on_the_durable_controller_turn() {
     let directory = temporary_directory("acpx-durable-turn-correlation");
     let config = acpx_config(&directory, "turns-tool");
@@ -1481,6 +1494,7 @@ fn keeps_native_acpx_semantic_events_on_the_durable_controller_turn() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn starts_a_distinct_acpx_provider_turn_for_same_run_recovery() {
     let directory = temporary_directory("acpx-same-run-recovery");
     let config = acpx_config(&directory, "turns-reserved-result-terminal");
@@ -1537,6 +1551,7 @@ fn starts_a_distinct_acpx_provider_turn_for_same_run_recovery() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
     let directory = temporary_directory("opencode");
     let config = opencode_config(&directory);
@@ -1605,6 +1620,7 @@ fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn replacement_shutdown_restores_the_persisted_provider_before_cleanup() {
     let directory = temporary_directory("opencode-replacement-shutdown");
     let config = opencode_config(&directory);
@@ -1730,6 +1746,7 @@ fn rejects_pi_without_an_explicit_model_before_starting_a_sidecar() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn pi_thinking_change_cannot_attach_to_an_existing_provider_identity() {
     let directory = temporary_directory("pi-thinking-attach");
     let config = pi_acpx_config(&directory, "bootstrap");
@@ -1770,6 +1787,7 @@ fn pi_thinking_change_cannot_attach_to_an_existing_provider_identity() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn stops_an_idle_pi_provider_before_suspension_without_waiting_for_its_close_rpc() {
     let directory = temporary_directory("pi-idle-suspension");
     let mut config = pi_acpx_config(&directory, "bootstrap");
@@ -1818,6 +1836,7 @@ fn stops_an_idle_pi_provider_before_suspension_without_waiting_for_its_close_rpc
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn idle_pi_stop_cannot_publish_a_reusable_identity_while_its_lifetime_fence_is_held() {
     let directory = temporary_directory("pi-idle-held-lifetime");
     // Linux can assign port 0 below the identity contract's dynamic-port range.
@@ -1886,6 +1905,7 @@ fn idle_pi_stop_cannot_publish_a_reusable_identity_while_its_lifetime_fence_is_h
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn publishes_only_changed_pi_controls_before_the_new_turn() {
     for (mode, initially_available, turn_available) in [
         ("controls-lazy", false, true),

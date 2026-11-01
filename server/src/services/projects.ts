@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
@@ -1013,6 +1014,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
       const row = await db.transaction(async (tx) => {
         if (updates.visibility !== undefined) {
+          await notifyStatusCardIssueChange(tx, existingProject.companyId);
           await notifyChatInboundWakeNotices(tx, { companyId: existingProject.companyId });
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
         }
@@ -1086,6 +1088,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
       await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+      await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
       return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
     }),

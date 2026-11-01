@@ -1,4 +1,5 @@
 import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
 import { includeIssueHierarchyContext } from "../lib/issue-hierarchy-context";
@@ -1219,6 +1220,7 @@ export function IssuesList({
     hierarchyEnabled,
     hierarchyRowBudget,
   );
+  useWarmTaskDetailCode(!isLoading && !error && (!hierarchyEnabled || !hierarchy.isLoading) && filtered.length > 0);
   const baseGroupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
       return [{ key: "__all", label: null as string | null, items: filtered }];

@@ -61,6 +61,7 @@ test("a published selection controls the matrix and the required aggregate", () 
 
 test("publication follows successful upload and manifests are downloaded without ignoring failures", () => {
   const selection = block("test_selection");
+  assert.match(selection, /fetch-depth: 2/);
   assert.ok(selection.indexOf("Upload validated selection") < selection.indexOf("Publish the executable plan"));
   assert.match(selection, /timeout-minutes: 5/);
   assert.match(selection, /vars.CI_VITEST_SELECTION == '' \|\| vars.CI_VITEST_SELECTION == 'enabled'/);

@@ -1,3 +1,4 @@
+import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../src/drivers/acpx/kimi-closure-pins.ts";
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -88,6 +89,13 @@ pub(crate) struct AcpxReleaseProfile {
     pub command_digest: &'static str,
     pub requires_provider_policy: bool,
     pub qualification_pending: bool,
+}
+
+pub(crate) fn kimi_native_closure(platform: &str, architecture: &str) -> Option<&'static str> {
+    match (platform, architecture) {
+${Object.entries(KIMI_DISTRIBUTION_CLOSURE_SHA256).map(([target, digest]) => { const [platform, architecture] = target.split("-"); return `        (${quote(platform)}, ${quote(architecture)}) => {\n            Some(${quote(digest)})\n        }`; }).join("\n")}
+        _ => None,
+    }
 }
 
 pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {

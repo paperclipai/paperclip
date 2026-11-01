@@ -402,7 +402,7 @@ describe("assigned MCP runner tools", () => {
     expect(f.executeTool).not.toHaveBeenCalled();
   });
 
-  it.each(["planning", "ask"] as const)("exposes and permits only read tools in %s mode", async workMode => {
+  it.each(["planning", "ask", "skill_test"] as const)("exposes and permits only read tools in %s mode", async workMode => {
     const f = fixture([descriptor("read"), descriptor("remember", "write"), descriptor("forget", "destructive")]);
     const standard = await createAssignedMcpTools(f);
     const restricted = await createAssignedMcpTools({ ...f, workMode });
@@ -423,7 +423,7 @@ describe("assigned MCP runner tools", () => {
     for (const [call] of f.executeTool.mock.calls) expect(call).not.toHaveProperty("approvedActionRequestId");
   });
 
-  it.each(["planning", "ask"] as const)("enforces fresh %s mode without relaxing the pinned mode", async currentMode => {
+  it.each(["planning", "ask", "skill_test"] as const)("enforces fresh %s mode without relaxing the pinned mode", async currentMode => {
     const f = fixture([descriptor("read"), descriptor("remember", "write")]);
     const standard = await createAssignedMcpTools(f);
     const restricted = await createAssignedMcpTools({ ...f, workMode: currentMode });

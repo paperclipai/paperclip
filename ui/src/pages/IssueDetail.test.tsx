@@ -16,6 +16,7 @@ import type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
+  Project,
 } from "@paperclipai/shared";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type {
@@ -38,6 +39,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -103,6 +105,7 @@ const mockActivityApi = vi.hoisted(() => ({
   recentForIssue: vi.fn(),
   inputFactsForIssue: vi.fn(),
   runsForIssue: vi.fn(),
+  runsByIdsForIssue: vi.fn(),
   recentRunsForIssue: vi.fn(),
 }));
 
@@ -161,6 +164,11 @@ const mockRouteParams = vi.hoisted(() => ({
 const mockSidebarState = vi.hoisted(() => ({ isMobile: false }));
 const mockIssuePropertiesRender = vi.hoisted(() => vi.fn());
 const mockTaskSidePanelRender = vi.hoisted(() => vi.fn());
+const mockTaskPluginPanels = vi.hoisted(() => ({ panels: [] as import("@/hooks/useTaskPluginPanels").TaskPluginPanel[], isLoading: false }));
+vi.mock("@/hooks/useTaskPluginPanels", async importOriginal => ({
+  ...await importOriginal<typeof import("@/hooks/useTaskPluginPanels")>(),
+  useTaskPluginPanels: () => mockTaskPluginPanels,
+}));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbToolbar = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbPanelControl = vi.hoisted(() => vi.fn());
@@ -1333,6 +1341,7 @@ describe("IssueDetail", () => {
 
   beforeEach(() => {
     Object.assign(coordinatorPreference, { enabled: false, loaded: true });
+    mockTaskPluginPanels.panels = []; mockTaskPluginPanels.isLoading = false;
     localStorage.clear();
     sessionStorage.clear();
     mockPanelState.panelVisible = true;
@@ -1350,6 +1359,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.getCore.mockImplementation((id) => mockIssuesApi.get(id));
     mockIssuesApi.recentComments.mockResolvedValue({ comments: [], latestCommentId: null, hasMore: false });
     mockActivityApi.recentRunsForIssue.mockResolvedValue([]);
+    mockActivityApi.runsByIdsForIssue.mockResolvedValue([]);
     mockActivityApi.recentForIssue.mockResolvedValue([]);
     mockActivityApi.inputFactsForIssue.mockResolvedValue([]);
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1558,6 +1568,44 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
   });
 
+  it("supplies direct children and source-created tasks to the feed without promoting grandchildren", async () => {
+    const issue = createIssue();
+    const child = createIssue({ id: "child", parentId: issue.id, createdByAgentId: "agent-1" });
+    const grandchild = createIssue({ id: "grandchild", parentId: child.id, createdByAgentId: "agent-1" });
+    const followup = createIssue({ id: "followup", createdByAgentId: "agent-1" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listAll.mockImplementation(async (_companyId, filters) => filters?.createdFromIssueId ? [child, followup] : [child, grandchild]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.createdTasks).toEqual([child, child, followup]));
+    const updated = { ...child, status: "done" };
+    await act(async () => { queryClient.setQueryData(queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id), [updated, grandchild]); });
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.createdTasks[0]).toMatchObject({ id: "child", status: "done" }));
+  });
+
+  it("keeps the conversation readable when created tasks fail to load and offers a retry", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listAll.mockRejectedValue(new Error("Task read unavailable"));
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.textContent).toContain("Could not load created tasks."));
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.initialHistoryError).toBe(false);
+    mockIssuesApi.listAll.mockResolvedValue([]);
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Retry")!;
+    await act(async () => retry.click());
+    await waitForAssertion(() => expect(container.textContent).not.toContain("Could not load created tasks."));
+  });
+
+  it("loads standalone follow-up cards in the task feed when Streamlined UI is off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: false, enableClassicTaskInterface: false });
+    const issue = createIssue();
+    const followup = createIssue({ id: "standalone", parentId: null, createdByAgentId: "agent-1" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listAll.mockImplementation(async (_companyId, filters) => filters?.createdFromIssueId ? [followup] : []);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.createdTasks).toEqual([followup]));
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull();
+    expect(mockIssuesApi.listAll).toHaveBeenCalledWith(issue.companyId, { createdFromIssueId: issue.id, includeRoutineExecutions: true });
+  });
+
   it("uses Coordinator task presentation and panel scope without changing the Classic preference", async () => {
     coordinatorPreference.enabled = true;
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
@@ -1570,6 +1618,14 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull());
     expect(container.querySelector('[data-testid="issue-chat-thread"]')).toBeNull();
     await waitForAssertion(() => expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props).toMatchObject({ accountScope: "coordinator:user-1" }));
+    const editor = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.documentEditor;
+    expect(editor).toMatchObject({ mentions: expect.any(Array), imageUploadHandler: expect.any(Function), onVote: expect.any(Function) });
+    mockIssuesApi.uploadAttachment.mockResolvedValue(createAttachment({ id: "document-image" }));
+    const image = new File(["image"], "document.png", { type: "image/png" });
+    let uploaded: string | undefined;
+    await act(async () => { uploaded = await editor.imageUploadHandler(image); });
+    expect(uploaded).toBe(createAttachment({ id: "document-image" }).contentPath);
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith(createIssue().companyId, createIssue().id, image);
     coordinatorPreference.enabled = false;
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull());
@@ -1630,7 +1686,7 @@ describe("IssueDetail", () => {
     });
     await flushReact();
     expect(mockNavigate).not.toHaveBeenCalled();
-    expect(mockIssuesApi.markRead).toHaveBeenCalledWith(canonical.id);
+    expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
     const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
     expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
     expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
@@ -1918,6 +1974,59 @@ describe("IssueDetail", () => {
       expect(props?.historyControl).toBeNull();
       expect(props?.compactHistory).toBe(false);
     });
+  });
+
+  it("opens chats compactly and pages backward without expanding all history", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const chat = createIssue({ conversationAgentId: "agent-1", conversationUserId: "user-1" });
+    const latest = createIssueComment({ id: "10000000-0000-4000-8000-000000000020", body: "Recent chat reply" });
+    mockIssuesApi.getCore.mockResolvedValue(chat);
+    mockIssuesApi.get.mockResolvedValue(chat);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [latest], latestCommentId: latest.id, oldestCommentId: latest.id, hasMore: true });
+    mockIssuesApi.listComments.mockResolvedValue([]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      compactHistory: true, historyControl: null, scrollingHistory: { hasMore: true, loading: false },
+    }));
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    await act(async () => { await mockIssueChatThreadRender.mock.calls.at(-1)?.[0].onRefreshLatestComments(); });
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    await act(async () => { await mockIssueChatThreadRender.mock.calls.at(-1)?.[0].scrollingHistory.load(); });
+    await waitForAssertion(() => expect(mockIssuesApi.listComments.mock.calls.some(([ref, options]) => ref === "PAP-1" && options.order === "desc" && options.after === latest.id && options.limit === 50)).toBe(true));
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].compactHistory).toBe(true);
+  });
+
+  it.each([false, true])("keeps chat paging after sending (earlier pages loaded: %s)", async loaded => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const chat = createIssue({ conversationAgentId: "agent-1", conversationUserId: "user-1" });
+    const latest = createIssueComment({ id: "10000000-0000-4000-8000-000000000020" });
+    const sent = createIssueComment({ id: "10000000-0000-4000-8000-000000000021", body: "Send before scrolling" });
+    const rows = Array.from({ length: 100 }, (_, index) => createIssueComment({
+      id: `20000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      body: `Earlier ${index}`, createdAt: new Date(100_000 - index * 1000),
+    }));
+    mockIssuesApi.getCore.mockResolvedValue(chat); mockIssuesApi.get.mockResolvedValue(chat);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [latest], latestCommentId: latest.id, oldestCommentId: latest.id, hasMore: true });
+    mockIssuesApi.addComment.mockResolvedValue(sent);
+    mockIssuesApi.listComments.mockImplementation(async (_ref, options) => options.order === "asc" ? [sent]
+      : options.after === rows[49].id ? rows.slice(50) : rows.slice(0, 50));
+    await act(async () => renderIssueView());
+    const props = () => mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await waitForAssertion(() => expect(props().scrollingHistory?.hasMore).toBe(true));
+    if (loaded) {
+      await act(async () => { await props().scrollingHistory.load(); });
+      await waitForAssertion(() => expect(props().comments.some((comment: IssueComment) => comment.id === rows[49].id)).toBe(true));
+    }
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [sent, latest], latestCommentId: sent.id, oldestCommentId: latest.id, hasMore: true });
+    await act(async () => { await props().onAdd(sent.body); });
+    await waitForAssertion(() => expect(props().scrollingHistory?.hasMore).toBe(true));
+    await act(async () => { await props().scrollingHistory.load(); });
+    await waitForAssertion(() => expect(mockIssuesApi.listComments.mock.calls.some(([ref, options]) => ref === "PAP-1"
+      && options.order === "desc" && options.limit === 50 && options.after === (loaded ? rows[49].id : latest.id))).toBe(true));
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
   });
 
   it("reveals a cold task and recent exchange while full detail and older history are stalled", async () => {
@@ -2386,6 +2495,36 @@ describe("IssueDetail", () => {
       expect(content!.className).toContain("-mt-4");
       expect(content!.className).toContain("md:-mt-6");
     });
+  });
+
+  it.each([
+    { coordinator: false, mobile: false }, { coordinator: false, mobile: true },
+    { coordinator: true, mobile: false }, { coordinator: true, mobile: true },
+  ])("keeps dismissed plugin panes closed (coordinator=$coordinator, mobile=$mobile)", async ({ coordinator, mobile }) => {
+    coordinatorPreference.enabled = coordinator;
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    const task = createIssue();
+    mockIssuesApi.get.mockResolvedValue(task);
+    const manual = { entityId: "agent-1", runId: "run-1", autoOpen: false,
+      slot: { pluginKey: "example.view", id: "screen", displayName: "Live view" } } as import("@/hooks/useTaskPluginPanels").TaskPluginPanel;
+    mockTaskPluginPanels.panels = [manual];
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => expect(mockOpenPanel).toHaveBeenCalled());
+    const props = mockOpenPanel.mock.calls.at(-1)![0]?.props.children?.props as {
+      accountScope: string; dismissedPluginPanelKeys: Set<string>;
+    };
+    props.dismissedPluginPanelKeys.add(taskPluginPanelActivationKey(manual, props.accountScope, task));
+    mockPanelState.panelVisible = false;
+    mockSidebarState.isMobile = mobile;
+    mockTaskPluginPanels.panels = [{ ...manual, autoOpen: true }];
+    mockSetPanelVisible.mockClear();
+    await act(async () => { renderIssueView(); }); await flushReact();
+    expect(mockSetPanelVisible).not.toHaveBeenCalledWith(true);
+    expect(container.querySelector('[data-testid="mobile-task-side-panel"]')).toBeNull();
+    mockTaskPluginPanels.panels = [{ ...manual, runId: "run-2", autoOpen: true }];
+    await act(async () => { renderIssueView(); }); await flushReact();
+    expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+    if (mobile) expect(container.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
   });
 
   it("does not register a redundant breadcrumb side-panel toggle in Streamlined UI", async () => {
@@ -3029,6 +3168,32 @@ describe("IssueDetail", () => {
 
     pendingListRequest.resolve([]);
     await flushReact();
+  });
+
+  it.each([false, true])("keeps the panel stable while projects are still loading (Classic: %s)", async classic => {
+    const pendingProjects = createDeferred<Project[]>();
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: classic });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockProjectsApi.list.mockReturnValue(pendingProjects.promise);
+    const renderDetail = () => <QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>;
+    try {
+      await act(async () => root.render(renderDetail()));
+      await flushReact();
+      await flushReact();
+      const panelOpenCount = mockOpenPanel.mock.calls.length;
+      expect(panelOpenCount).toBeGreaterThan(0);
+      await act(async () => root.render(renderDetail()));
+      await flushReact();
+      expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+    } finally {
+      const beforeCompletion = mockOpenPanel.mock.calls.length;
+      pendingProjects.resolve([]);
+      await waitForAssertion(() => expect(mockOpenPanel.mock.calls.length).toBeGreaterThan(beforeCompletion));
+    }
+    const settledCount = mockOpenPanel.mock.calls.length;
+    await act(async () => root.render(renderDetail()));
+    await flushReact();
+    expect(mockOpenPanel).toHaveBeenCalledTimes(settledCount);
   });
 
   it("does not load or render decision sections in the issue header", async () => {
@@ -6727,6 +6892,7 @@ describe("IssueDetail", () => {
         comments: [earlier, comment], latestCommentId: comment.id, hasMore: true,
       });
       queryClient.setQueryData(queryKeys.issues.comments(ref), { pages: [[comment, earlier]], pageParams: [null] });
+      queryClient.setQueryData(queryKeys.issues.earlierComments(ref), { pages: [{ comments: [comment, earlier], nextCursor: earlier.id }], pageParams: [comment.id] });
       queryClient.setQueryData([...queryKeys.issues.comments(ref), "linked", comment.id], comment);
     }
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1" }));
@@ -6761,6 +6927,11 @@ describe("IssueDetail", () => {
       finishStaleRead({ comments: [earlier, comment], latestCommentId: comment.id, hasMore: true });
       await staleRead;
     });
+    for (const ref of refs) {
+      const history = queryClient.getQueryData<{ pages: { comments: IssueComment[]; nextCursor: string }[] }>(queryKeys.issues.earlierComments(ref))!;
+      expect(history.pages[0].nextCursor).toBe(earlier.id);
+      expect(history.pages[0].comments.find(row => row.id === comment.id)).toEqual(action === "delete" ? deleted : undefined);
+    }
     await waitForAssertion(() => {
       for (const ref of refs) {
         const recent = queryClient.getQueryData<IssueRecentComments>([...queryKeys.issues.comments(ref), "recent"]);

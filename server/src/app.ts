@@ -1,3 +1,4 @@
+import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
@@ -12,6 +13,9 @@ import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
 import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
+import { retainedUiAssets } from "./retained-ui-assets.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
+import { loadStorageConfig } from "./storage/config.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
 import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
@@ -79,6 +83,7 @@ import {
 import { registerImportSpoolCleanupWork } from "./services/import-spool-cleanup-work.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { readinessRoutes } from "./routes/ready.js";
 import { livenessRoutes } from "./routes/liveness.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
@@ -111,6 +116,8 @@ import { caseRoutes } from "./routes/cases.js";
 import { caseHandoffRoutes } from "./routes/case-handoffs.js";
 import { workflowRoutes } from "./routes/workflows.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
+import { createRemoteWorkspaceFiles } from "./services/remote-workspace-files.js";
+import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -127,6 +134,7 @@ import {
 import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { agentCommentaryRoutes } from "./routes/agent-commentary.js";
+import { agentChatMessageRoutes } from "./routes/agent-chat-messages.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
@@ -532,10 +540,14 @@ export async function createApp(
   // Routine probes stop before session/actor resolution, even after claim.
   // Keep hostname validation and the signed-bootstrap endpoint guard above.
   app.use("/api/liveness", livenessRoutes());
+  app.use("/api/ready", readinessRoutes());
   // A signed claim above commits identity before any normal request can seed
   // company data. Unclaimed probes bypass session resolution as well as SQL.
   app.use(cloudWarmStandbyMiddleware(isWarmStandby, health, staticUi));
-  app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService));
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService, {
+    pluginWorkerManager: workerManager,
+  }));
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
   app.use(publicMcpIngress);
   // Connection-intent tools carry their own short-lived, run-bound bearer and
@@ -543,7 +555,6 @@ export async function createApp(
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
   const connectionIntentHeartbeat = heartbeatService(db, {
@@ -577,6 +588,7 @@ export async function createApp(
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
+  app.use(connectionEventWakeRoutes(db));
   app.use(skillAccessRequestContext);
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
@@ -668,10 +680,11 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db));
+  api.use(companySkillRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
   api.use(agentCommentaryRoutes(db));
+  api.use(agentChatMessageRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
@@ -768,7 +781,10 @@ export async function createApp(
   api.use(caseHandoffRoutes(db));
   api.use(workflowRoutes(db));
   api.use(issueTreeControlRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(fileResourceRoutes(db));
+  api.use(fileResourceRoutes(db, { remoteFiles: createRemoteWorkspaceFiles(db, {
+    environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+    loadSavedWorkspace: createSavedWorkspaceLoader(db, opts.storageService),
+  }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     environmentRoutes(db, {
@@ -1047,6 +1063,11 @@ export async function createApp(
           immutable: true,
         }),
       );
+      if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
+        const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
+        await retained.publish(path.join(uiDist, "assets"));
+        staticUi.use("/assets", retained.serve);
+      }
       // Serve root/index through the same runtime HTML transform as SPA routes.
       staticUi.get(["/", "/index.html"], (_req, res) => {
         res.type("html").set("Cache-Control", "no-cache").send(readBrandedStaticIndexHtml(uiDist));

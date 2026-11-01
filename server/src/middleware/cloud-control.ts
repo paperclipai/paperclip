@@ -8,6 +8,7 @@ import {
 
 /** Endpoint → method → the one action a control assertion must name to take it. */
 const ACTIONS_BY_ENDPOINT: Record<string, Record<string, CloudControlAction>> = {
+  "/api/instance/connector-events/wake": { POST: "connector-events:wake" },
   "/api/instance/task-drain": {
     GET: "task-drain:read",
     POST: "task-drain:start",

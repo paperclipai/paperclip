@@ -580,16 +580,33 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         .where(inArray(heartbeatRuns.id, work.map(row => row.id)));
       clock();
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const register = coordinator.register.bind(coordinator);
+      let initial: Awaited<ReturnType<typeof states>> | undefined;
+      let releaseFirstPass!: () => void;
+      const firstPassHeld = new Promise<void>(resolve => { releaseFirstPass = resolve; });
+      vi.spyOn(coordinator, "register").mockImplementation((queue, task) => register(queue, {
+        ...task,
+        run: async signal => {
+          const result = await task.run(signal);
+          if (initial) return result;
+          const cancelled = (await states()).filter(row => row.status === "cancelled");
+          if (cancelled.length === 0) return result;
+          initial = cancelled;
+          await firstPassHeld;
+          return result;
+        },
+      }));
       try {
         await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
         expect((await states()).filter(row => row.status === "cancelled")).toHaveLength(0);
         const earlierId = "00000000-0000-4000-8000-000000000000";
-        await writeIntent({ companyId: a.companyId, retryRunId: earlierId });
         work.push({ id: earlierId });
+        await writeIntent({ companyId: a.companyId, retryRunId: earlierId });
         await vi.advanceTimersByTimeAsync(1000);
-        await expect.poll(async () => (await states()).filter(row => row.status === "cancelled").length).toBe(20);
-        const initial = (await states()).filter(row => row.status === "cancelled");
-        expect(new Set(initial.map(row => row.companyId)).size).toBe(2);
+        await expect.poll(() => initial).toBeDefined();
+        expect(initial).toHaveLength(20);
+        expect(new Set(initial!.map(row => row.companyId)).size).toBe(2);
+        releaseFirstPass();
         await vi.waitFor(async () => {
           await vi.advanceTimersByTimeAsync(1000);
           expect((await states()).filter(row => row.status === "cancelled")).toHaveLength(29);
@@ -600,7 +617,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         const reads = vi.spyOn(db, "select");
         await vi.advanceTimersByTimeAsync(180_000);
         expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
-      } finally { await coordinator.stop(); }
+      } finally { releaseFirstPass(); await coordinator.stop(); }
     });
   });
 

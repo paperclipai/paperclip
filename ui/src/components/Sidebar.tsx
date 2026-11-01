@@ -33,6 +33,7 @@ import { SidebarAgents } from "./SidebarAgents";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarStarredProjects } from "./SidebarStarredProjects";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
+import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -60,6 +61,8 @@ export function Sidebar({ children }: { children?: ReactNode }) {
 function ClassicSidebar({ children }: { children?: ReactNode }) {
   const { openNewIssue } = useDialogActions();
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
+  const chatNavigation = useAgentChatNavigation();
+  const unreadChatCount = chatNavigation.chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   // Every labeled section is collapsible (session-scoped, default open) —
   // one policy across static nav groups and the data-driven sections.
   const [workOpen, setWorkOpen] = useState(true);
@@ -192,7 +195,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               alert={inboxBadge.failedRuns > 0}
             />
           ) : null}
-          {agentChatEnabled && !chatRail ? <SidebarNavItem to="/chats" label="Chat" icon={MessageCircle} /> : null}
+          {agentChatEnabled && !chatRail ? <SidebarNavItem to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" /> : null}
           {showDecisions ? (
             <SidebarNavItem
               to="/decisions"
@@ -215,7 +218,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               agents you talk to live in the Chat surface's own secondary rail
               (ChatContextualSidebar), not in the primary nav. */}
           {chatRail ? (
-            <SidebarNavItem to="/chats" label="Chat" icon={MessageCircle} />
+            <SidebarNavItem to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
           ) : null}
           {/* Combined Inbox + Task List: Inbox is a view inside Tasks, so the
               unread/failed-run badge rides on Tasks. */}

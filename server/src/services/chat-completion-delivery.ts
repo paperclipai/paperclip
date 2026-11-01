@@ -1,5 +1,7 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
+import { nativeResponsePresentationCandidates } from "./native-runtime/native-response-presentation-query.js";
+import { and, asc, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
   heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -195,11 +197,11 @@ export async function existingChatCompletionReply(tx: Connection, runId: string,
     await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, delivery.taskId), eq(issues.companyId, run.companyId))).for("update");
     const row = await loadAudience(tx, delivery.id);
     if (!row || row.source?.id !== issueId || row.handoff.agentId !== run.agentId || !current(row)) throw new Error("chat_completion_superseded");
-    if (delivery.responseCommentId) {
-      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, delivery.responseCommentId), eq(issueComments.issueId, issueId)));
+    if (row.delivery.responseCommentId) {
+      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, row.delivery.responseCommentId), eq(issueComments.issueId, issueId)));
       if (comment) return comment;
     }
-    if (delivery.status !== "queued" || delivery.targetRunId !== runId) throw new Error("chat_completion_superseded");
+    if (row.delivery.status !== "queued" || row.delivery.targetRunId !== runId) throw new Error("chat_completion_superseded");
   }
   if (rows.length !== ids(run).length) throw new Error("chat_completion_superseded");
   return null;
@@ -233,17 +235,51 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (runId) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         if (run && activeRuns.includes(run.status)) return;
-        // A published reply is acknowledged in its own transaction, independent of run outcome.
-        const [latest] = await db.select().from(deliveries).where(eq(deliveries.id, id));
-        if (!latest || !pending.includes(latest.status as typeof pending[number])) return;
-        await db.update(deliveries).set({ status: claimed.attempts + 1 >= MAX_ATTEMPTS ? "exhausted" : "pending",
-          attempts: claimed.attempts + 1, targetRunId: null, nextAttemptAt: new Date(),
-          error: run?.error ?? "Completion turn ended without a reply" })
-          .where(and(eq(deliveries.id, id), inArray(deliveries.status, [...pending])));
-        // The failed run is already terminal. Reclaim the advanced attempt now;
-        // a second lease interval would only delay restart recovery. The atomic
-        // claim and fresh wake key still serialize competing sweepers.
-        if (claimed.attempts + 1 < MAX_ATTEMPTS) await deliver(id);
+
+        const presentationDeadline = run?.runtimeMode === "native" && run.status === "succeeded" && run.finishedAt
+          ? run.finishedAt.getTime() + MAX_ATTEMPTS * LEASE_MS : null;
+        if (run && presentationDeadline !== null && Date.now() < presentationDeadline) {
+          const scope = { companyId: claimed.companyId, issueId: row.handoff.conversationId,
+            runId: run.id, agentId: row.handoff.agentId };
+          const deferred = await db.transaction(async tx => {
+
+
+            const candidates = nativeResponsePresentationCandidates(scope).as("pending_native_completion_reply");
+            const [response] = await tx.select().from(candidates);
+            if (!response || Date.now() >= presentationDeadline) return false;
+            await notifyNativeResponsePresentation(tx, scope);
+            const updated = await tx.update(deliveries).set({ nextAttemptAt: new Date(Math.min(presentationDeadline, Math.max(
+              claimed.nextAttemptAt.getTime(), response.nextAttemptAt?.getTime() ?? 0,
+            ))) }).where(and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
+              eq(deliveries.status, "queued"), eq(deliveries.targetRunId, run.id),
+              eq(deliveries.statusVersion, claimed.statusVersion), eq(deliveries.attempts, claimed.attempts),
+              eq(deliveries.nextAttemptAt, claimed.nextAttemptAt))).returning({ id: deliveries.id });
+            return updated.length > 0;
+          });
+          if (deferred) return;
+        }
+        const advanced = await db.transaction(async tx => {
+
+
+          const [task] = await tx.select({ status: issues.status }).from(issues)
+            .where(and(eq(issues.id, claimed.taskId), eq(issues.companyId, claimed.companyId))).for("update");
+          if (task?.status !== "done") return false;
+          const sameClaim = and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
+            inArray(deliveries.status, [...pending]), eq(deliveries.statusVersion, claimed.statusVersion),
+            eq(deliveries.attempts, claimed.attempts),
+            eq(deliveries.nextAttemptAt, claimed.nextAttemptAt),
+            claimed.targetRunId ? eq(deliveries.targetRunId, claimed.targetRunId) : isNull(deliveries.targetRunId));
+          const [latest] = await tx.select({ id: deliveries.id }).from(deliveries).where(sameClaim).for("update");
+          if (!latest) return false;
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatCompletion);
+          const updated = await tx.update(deliveries).set({ status: claimed.attempts + 1 >= MAX_ATTEMPTS ? "exhausted" : "pending",
+            attempts: claimed.attempts + 1, targetRunId: null, nextAttemptAt: new Date(),
+            error: run?.error ?? "Completion turn ended without a reply" }).where(sameClaim).returning({ id: deliveries.id });
+          return updated.length > 0;
+        });
+
+
+        if (advanced && claimed.attempts + 1 < MAX_ATTEMPTS) await deliver(id);
         return;
       }
       if (wakes.some(w => ["queued", "claimed", "deferred_issue_execution", "coalesced"].includes(w.status))) return;

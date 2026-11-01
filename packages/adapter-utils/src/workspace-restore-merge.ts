@@ -144,15 +144,21 @@ async function hashFile(filePath: string): Promise<string> {
   });
 }
 
+const isVanishedEntry = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+
 async function* walkDirectory(
   root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
 ): AsyncGenerator<[string, SnapshotEntry]> {
   const readEntry = async (nextRelative: string): Promise<[string, SnapshotEntry | null]> => {
     const fullPath = path.join(root, nextRelative);
-    const stats = await fs.lstat(fullPath);
-    if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
-    if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
-    if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+    try {
+      const stats = await fs.lstat(fullPath);
+      if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
+      if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
+      if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+    } catch (error) {
+      if (!isVanishedEntry(error)) throw error;
+    }
     return [nextRelative, null];
   };
   const visitBatch = async function* (paths: string[]): AsyncGenerator<[string, SnapshotEntry]> {
@@ -167,8 +173,13 @@ async function* walkDirectory(
     }
   };
   const current = relative ? path.join(root, relative) : root;
+  const dir = await fs.opendir(current).catch((error: unknown) => {
+    if (relative && isVanishedEntry(error)) return null;
+    throw error;
+  });
+  if (!dir) return;
   let batch: string[] = [];
-  for await (const entry of await fs.opendir(current)) {
+  for await (const entry of dir) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
     if (shouldExcludePath(nextRelative, exclude) || ignored.matches(nextRelative)) continue;
     batch.push(nextRelative);

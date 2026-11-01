@@ -355,6 +355,9 @@ const heartbeatRunLogAccessColumns = {
   ...heartbeatRunReadAccessColumns,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
+  runtimeMode: heartbeatRuns.runtimeMode,
+  status: heartbeatRuns.status,
+  logBytes: heartbeatRuns.logBytes,
 } as const;
 
 const heartbeatRunIssueControlColumns = {

@@ -79,6 +79,13 @@ another agent still require the outgoing execution to stop before ownership chan
 
 Paperclip issue statuses are not just UI labels. They imply different expectations about ownership and execution.
 
+A running native owner reports its own task status through `paperclip_finish` or
+`paperclip_block`. Both ordinary task updates and recovery-action resolution reject
+direct self-status changes before they can release that run's task-tool access.
+Recovery resolution can still record an outcome without changing the status.
+Board recovery, legacy agents, and the existing conversation and handoff paths
+retain their normal permission and lifecycle checks.
+
 ### `backlog`
 
 The issue is not ready for active work.
@@ -329,6 +336,10 @@ the cancellation owner finishes settlement. Startup and periodic recovery finish
 persisted cancellations of parked retries through the normal guarded cancellation
 path if the original owner stops or its final database write fails. They preserve
 the original cancellation request and never start a provider turn for that work.
+
+Replaying an audited native Stop also fences a later same-run retry. It preserves
+the original intent and acknowledgement. That retry fence does not prove that
+the provider stopped or that workspace cleanup finished.
 
 Recovery instructions in a wake describe only an active or escalated recovery
 action. Resolving or cancelling that action removes its repair instructions from
@@ -1338,6 +1349,33 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+A delegated-task completion callback can finish native execution before its
+accepted final reply is saved. The completion outbox must retain that callback's
+queued target and attempt while the existing presentation selector finds pending
+work for the same company, conversation, run and agent. The hold lasts at most
+five existing one-minute delivery leases, measured from that run's original
+`finishedAt`. Repeated sweeps cannot restart or extend this five-minute window.
+It wakes the presentation owner and waits until the later of its current delivery
+lease or the recorded native retry deadline, capped by that fixed window.
+The selector only defers a new execution attempt; the presentation owner still
+enforces all reply, session, actor and digest checks. A saved reply acknowledges
+the outbox once and permits normal conversation settlement. If publication keeps
+declining or cannot finish within the window, the existing retry, exhaustion and
+daily-limit checks resume. Retry takes the same child-task-first lock held by
+reply insertion and acknowledgment. Reply authority reloads the delivery after
+acquiring that lock. Retry checks that the locked task is still Done. It then
+matches the delivery's recorded completion-event version, pending state, target,
+attempt and exact lease. Deferral uses that same exact claim fence, so a stalled
+old hold cannot shorten or replace a newer claim's lease.
+Reassigning a Done task can change its current task version without invalidating
+that completion event; a real status change keeps its existing supersession. A delivered reply,
+newer target or newer claim prevents that retry. Wake admission runs only after
+the winning retry transaction commits and releases its locks. The original
+accepted result and child work remain unchanged. Failed or cancelled execution,
+missing accepted output and superseded
+handoffs retain their existing retry or supersession paths. Daily limits do not
+need to admit another model run to save an already accepted answer.
+
 Native execution success can precede its durable presentation decision. GitHub
 response maintenance without a confirmed current-run reply holds that request
 until the native phase is committed and a valid presentation decision exists.
@@ -1603,10 +1641,29 @@ Retained-file recovery has a separate, source-bound maintenance path. It uses
 the existing physical copyback lock and durable controller receipt. It verifies
 the exact stopped allocation and immutable workspace descriptor, resumes only
 that allocation for export, preserves newer host edits through the normal merge,
-and obtains a fresh stop receipt. An interrupted legacy run does not need an
-accepted native result. A successful `workspace_recovery` operation and matching
+and obtains a fresh stop receipt. The owned file-recovery path can request the
+exact recorded directory through the driver-only `requestedCwd` resume field.
+Daytona requires that field to equal the recorded lease directory and verifies
+the allocation sentinel at its recorded path. It returns the requested directory
+without creating a folder. Ordinary resume omits the field and returns the
+allocation root for normal workspace preparation. Recovery still requires the
+reopened allocation and directory to match the recorded source exactly.
+An interrupted legacy run does not need an accepted native result. A successful
+`workspace_recovery` operation and matching
 recovery record prove persistence; adapter output or a user repair note cannot.
 The failed run and unknown external effects remain historical facts.
+Cancelled native work can owe files after an audited run-only Stop from the
+agent lifecycle, without a board actor. The preservation worker admits that
+exact acknowledged receipt only when the coordinator is terminal, has no
+accepted result or owner, and the run's controller lease is not live. While a
+controller is live, the worker waits for its actual lease expiry, including a
+renewal observed when preservation rechecks the locked run. Once eligible, it
+records the bound prepared workspace and allocation as file recovery work. An existing
+resolved execution watchdog does not discharge that file obligation. This does
+not grant board Stop or continuation authority, change the cancelled result,
+or prove physical termination. Normal recovery stops and retains the same
+allocation, saves its files, and obtains a fresh stop receipt before cleanup
+can apply the original destroy disposition. It starts no provider turn.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
@@ -2167,8 +2224,11 @@ digest. Earlier live qualification results keep their original profile identity.
 
 Healthy native warm turns retain their runner and provider processes. After a
 controller crash, continuation can recover a completed remote session from its
-saved checkpoint and exact sandbox process identity. The prior controller must
-be stopped, its result committed, and the successor must hold current task and
+saved checkpoint and exact sandbox process identity. For an externally persisted
+controller with validated recovery metadata, the prior lease must be released
+and its result committed. A PID in the replacement container does not establish
+whether the prior remote controller is alive. Legacy file-backed recovery retains
+its stopped-process check. The successor must hold current task and
 coordinator authority. Recovery reconnects through the prior run's route before
 the authenticated run attachment changes authority. Unavailable identity probes
 have a shared 30-second retry budget; an identity conflict never permits replay.
@@ -2232,6 +2292,27 @@ passed authentication. It preserves protocol and capability checks. Fresh or
 replacement launches use current release authority. A missing historical receipt
 retains the current release gate; guest files cannot establish old authority. A missing, changed, or incompatible package
 must be replaced and verified before launch.
+
+The server records the closed `runnerProfileJson.nativeProviderPackAdmission`
+receipt after actual session admission and attachment. Its `session_admitted`
+stage and `core_verified_selection` authority describe Core's verified selection,
+not an independent provider statement. It includes only the bound run, session,
+runner, lease and pack identities. Retained attachments keep the original pack
+and identify `inheritedFromRunId`. The first receipt is immutable history.
+`nativeProviderPackAdmissionState` separately describes current admission proof:
+`pending`, `verified` or `unknown`, with an opaque admission epoch. The mandatory
+coordinator claim atomically sets a new pending epoch before session admission.
+Only the matching owner and epoch can publish post-attachment proof. Failed
+receipt writes leave pending evidence; changed or unsupported admission leaves
+unknown evidence and does not prevent authorized execution. A missing legacy
+receipt remains unknown; the current release cannot supply that missing history.
+Retained recovery needs positively verified prior provenance, captured before
+same-run invalidation or read from the exact source run. A fresh replacement
+uses its actual newly verified selection. Recording the receipt does not grant
+execution or change the existing recovery gates. Admission proof does not certify
+provider liveness, physical termination or workspace export.
+The `runnerEnvironmentLeaseId` names the logical Runner and provider-pack
+authority scope. It can differ from a physical `environment_leases.id`.
 
 Warm attachment requires two consecutive authenticated readiness snapshots.
 Blocked readiness probes back off within the reconnect deadline so they do not
@@ -2522,6 +2603,15 @@ wake from a server-verified human card response references that entry in
 `humanResponses`, whose answer is already present in the current request context.
 Agent/tool outcomes and generated summaries are not promoted to human direction.
 
+Standing agent chats, identified by both conversation agent and user IDs through
+the shared conversation predicate, complete the current response stage. Each pending request
+keeps its criterion identity and source, with instructions to address it within
+that stage. Authorized chat actions require verified results. Delegation requires
+a verified handoff and a reply; the worker's task remains separate. An unavailable
+action requires a truthful limitation and supported handoff. Ordinary task
+contracts still require the requested work itself, and an admitted run retains
+its saved contract during recovery.
+
 These are model instructions, not additional execution or permission gates.
 Contracts reference the existing brief and answers instead of copying them again.
 Resumed sessions keep the existing message-delta path; fresh sessions receive the
@@ -2647,3 +2737,159 @@ The existing prior-owner, suspended-state and backup checks still decide whether
 the next turn may start. Missing checkpoints and ambiguous identity remain
 blocked; restoration does not authorize a new provider session or change the
 configured lifecycle policy.
+
+Remote admission also handles the absence of both native controller projections.
+`native-controller-recovery.ts` selects the existing bounded task/session source
+and restores its encrypted PRP records before admission reads local identity.
+It reconstructs the supervisor envelope from `runnerProfileJson.sessionCheckpoint`
+and the private `nativeControllerRecovery` metadata. Missing, incompatible, or
+mixed evidence holds the continuation; it does not authorize fresh execution.
+The 32-candidate boundary and newer-progress barriers remain in force. Exhausted
+history and current-run progress cannot establish fresh-bootstrap proof.
+
+A settled warm journal may contain an authenticated idle goal-read snapshot
+after `run.terminal`. Recovery accepts only the supported PRP event v1/v2
+envelopes with the same complete attachment identity, a null goal and
+`workingNow: false`. All commands must already be complete. Active goals, new
+work, unknown versions and mixed bindings remain holds. This check adds no
+streaming persistence or database work.
+
+If admission finds a live retained controller owner, it preserves the unstarted
+business run and records the owner's actual deadline through the existing native
+resumption path. This does not consume a provider attempt or stop the retained
+sandbox. A locked run/coordinator check rejects Stop, changed ownership or any
+provider progress. Startup restores even an overdue wait to the same scheduler;
+ordinary resumption rechecks current permissions and task authority. No idle
+scan is added. Per-turn continuation reconstructs a missing suspended-state
+receipt from the admitted sandbox or prepared-task owner, including after a
+previous read failed with only a PRP projection written.
+
+The version-one metadata contains a digest of the exact redacted stored snapshot,
+configuration digests and the PRP checkpoint binding. It is bounded to 4 KiB,
+excluded from public run projections, and saved by `checkpointSession` in its
+existing snapshot transaction. No second snapshot writer, per-text-chunk query,
+pool, or recurring scan is added. A null checkpoint binding records an incomplete
+publication and prevents expiration. Snapshot and result writes recheck the
+coordinator generation and lease after lock waits, including the existing limited
+post-result maintenance exception.
+
+Goal-less native turns publish their task-session pointer with the first accepted,
+successful terminal checkpoint, before provider or instruction cleanup can delay
+the heartbeat completion callback. The pointer uses the native normalized UUID
+and the checkpoint's provider display identity. Its prepared configuration metadata
+comes from normal admission; neither streaming events nor ordinary checkpoints
+add task-session writes. Goal checkpoints retain their existing publication path.
+
+The snapshot transaction validates the exact accepted result and current owner,
+then updates only the authenticated run's existing task-session projection. Its
+private `nativeTaskSessionPublication` receipt shares the 4 KiB recovery-metadata
+budget. Coordinator, issue and run locks precede the ownership clock check; the
+issue's `NO KEY UPDATE` lock remains compatible with result insertion's parent
+`KEY SHARE`. Reset/deletion, a newer task-session epoch or a competing execution
+prevents publication. Later maintenance and heartbeat completion honor the receipt,
+so they cannot restore a cleared pointer or overwrite its successor. Unsupported
+legacy bindings keep the existing completion path. The receipt is excluded from
+public run projections and contains no session parameters or credentials.
+
+A terminal snapshot can arrive before result acceptance. That snapshot publishes
+neither a continuation pointer nor a handled publication receipt. The existing
+post-acceptance checkpoint completes publication in its normal transaction.
+The first production release containing recovery readers, complete attachment
+identity handling and redaction for both private recovery fields is the
+disk-independent rollback floor. Earlier
+development-reader probes do not establish a published rollback target.
+
+Active remote adoption and compatible idle warm reuse carry an existing verified
+Runner proof. Preparation revalidates that proof and the exact process's liveness,
+then preserves its in-place harness state. The later protocol attachment still
+authenticates the durable PRP authority. A provider lease acquisition described as
+`resumed` does not establish that this already-running harness was suspended.
+Ordinary resumed leases retain their verified suspension and backup checks.
+
+Reattachment keeps the complete durable PRP binding, including its turn and item
+attachment IDs. A healthy warm handoff can create new attachment IDs within the
+retained Runner. Replacing that run's controller must preserve those IDs; deriving
+them again from the business run ID would request an invalid authority rotation.
+
+Cold Codex continuation can restore a completed provider with a retained event
+suffix. Native remote controllers first persist a private staged attachment under
+the target run's existing checkpoint owner, then restore and drain the exact
+source authority before attaching the target. The source's run, turn and item
+identity stays on every old event. Receipt persistence precedes acknowledgement;
+unknown semantic work holds the handoff and never reaches the target's tool
+authority. The provider's settled-session attachment guard remains mandatory.
+
+The staged controller format is
+`paperclip.runner.durable.control-plane-state.staged-attachment.v1`. It contains
+the source and target attachment tuples and one bound target attachment template
+inside the existing encrypted PRP authority, subject to its existing size limits.
+The header stores a bounded descriptor and digest. Before command delivery, the
+template is a separate changed-record part; after queueing, recovery uses the
+existing command or receipt. Control checkpoints do not rewrite another copy of
+instructions or tool context in the header.
+It is separate from the 4 KiB run-profile recovery envelope. Startup discovers
+this target obligation through bounded encrypted-header reads before a target
+session snapshot exists. It verifies both frozen runs, the accepted and released
+source, its original Runner artifact and the exact source header. Remote process
+verification then chooses authenticated source adoption or verified suspended
+source restoration. An in-memory rebound snapshot supplies normal admission;
+an existing target snapshot always takes precedence over that source baseline.
+The intent remains through command delivery and authenticated handoff, including
+an uncertain commit response. Source and target receipt phases require their
+exact physical authority; receipt replay cannot start a second Runner or attach
+again under a different endpoint. After the ordinary target snapshot commits,
+an in-memory notification permits intent retirement in the next existing command
+write. There is no separate metadata/snapshot transaction for that retirement.
+
+Source accounting uses the source's immutable producer receipts and billing
+classification. Opening this receiver does not reset accounting ownership or
+reopen a finalized run. Equal finalized usage retains the existing audit policy;
+changed, incomplete or conflicting usage remains unacknowledged for
+reconciliation. The target's usage receiver never receives source events. Staging
+adds recovery control work only: text streaming and settled idle operation add no
+queries, snapshot transactions, pools or recurring scans. The first rollback
+release supporting this continuation must also read the staged controller format;
+older readers fail closed. Prepared-launch and other provider paths retain their
+existing admission and recovery contracts.
+
+Accepted-result retirement still stops the old provider turn before draining and
+suspending its Runner. The checkpoint codec classifies `turn.stop` as lifecycle
+maintenance. Existing exact ownership, generation and accepted-result fences
+govern this cleanup; starting provider work still requires an active owner.
+A successor claims its existing native coordinator and starts renewal before
+retiring a superseded warm session. An unclaimed preparation cannot authorize
+the predecessor's checkpoint writes. Shared attachment staging follows verified
+retirement; a failed claim or Stop cannot close that predecessor or stage files.
+Recovery also preserves the implicit isolated-home default when binding admitted
+configuration, so an unchanged home does not invalidate the retained session.
+Explicit home-mode changes retain their normal configuration-change checks.
+Restoring pinned skill versions also preserves the fresh selection's existing
+name/key order. JSONB map ordering must not change the generated skill preference
+and invalidate the session when the selected keys, versions and bytes are unchanged.
+
+For per-turn direct sandbox recovery, the executor reads the retained Runner's
+suspended lifecycle through the recorded sandbox lease and validates its complete
+identity and lack of pending delivery/cleanup. Only a lifecycle projection is
+cached locally; provider files remain on the execution host. Prepared tasks use
+their existing `read_state` contract. The normal snapshot rebinder, tool-contract
+checks and current admission authority still govern the next turn.
+
+An active remote owner causes startup recovery to retain the obligation at the
+actual lease deadline. The existing recovery dispatch timer is rearmed on drain
+resume; successful reconciliation leaves no recurring recovery work.
+Follow-up waits retain their original dispatch mode and owner across a drain,
+including when another heartbeat service facade resumes the work. A failed
+dispatch retains a bounded retry obligation rather than losing its deadline.
+Upgrade diagnostics retain their existing `ready` meaning and add bounded retained-pointer
+header evidence. That inventory is preliminary, reports partial coverage, and
+does not certify workspace durability or volume removal.
+
+`importNativeControllerRecovery` is an internal one-source operation for the
+migration owner while old controller files remain available. It requires the
+admitted configuration digest and exact supervisor snapshot, locks the issue,
+coordinator and run in order, rejects live or unsettled ownership, and publishes
+only missing metadata. Repeating the same import is a no-op. Normal lifecycle
+checkpoints publish the metadata without a separate migration write. Disk-free
+rollback requires a server that reads this envelope and the supported settled
+warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
+and readers lacking that suffix handling remain outside that rollback contract.

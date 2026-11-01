@@ -1,3 +1,5 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -743,8 +745,10 @@ export function accessService(db: Db) {
         sql`${issues.status} not in ('done', 'cancelled')`,
       );
       await notifyNativeStatusReassessment(tx, { companyId });
+      await notifyDeferredExecutionEligibility(tx, { companyId });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+      await notifyStatusCardIssueChange(tx, companyId);
       const resetInProgress = await tx
         .update(issues)
         .set({

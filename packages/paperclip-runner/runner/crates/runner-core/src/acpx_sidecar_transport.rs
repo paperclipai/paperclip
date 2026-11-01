@@ -216,6 +216,7 @@ impl AcpxSidecarTransport {
             "pi" => &[],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => &["COPILOT_GITHUB_TOKEN"],
+            "kimi" => &["KIMI_API_KEY"],
             "antigravity" => &[
                 "GEMINI_API_KEY",
                 "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
@@ -254,7 +255,7 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
-        if matches!(agent, "pi" | "cursor" | "copilot" | "antigravity") {
+        if matches!(agent, "pi" | "cursor" | "copilot" | "kimi" | "antigravity") {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");

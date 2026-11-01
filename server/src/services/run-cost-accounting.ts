@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { accountingRuntimeBaselines, budgetReservations, agentRuntimeState, agents, costEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
@@ -38,6 +39,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
     if (run.costAccountedAt) {
+      await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
       await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
         text(object(object(run.usageJson).ledgerScope).projectId));
@@ -69,6 +71,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false) return false;
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
+    await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));

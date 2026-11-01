@@ -50,7 +50,9 @@ function assistantChannel(
 ): "progress" | "final" | "unknown" {
   const item = normalizedItem(payload);
   const value = text(payload.channel) ?? text(item.channel);
-  if (value === "progress" || value === "final" || value === "unknown") return value;
+  if (value === "progress" || value === "final") return value;
+  if ((!value || value === "unknown") && record(payload.update)?.channel === "progress") return "progress";
+  if (value === "unknown") return value;
   return fallback;
 }
 

@@ -173,6 +173,21 @@ The existing agent-independent `inspect` and `remove` operations continue to
 protect storage maintenance. Providers that do not declare finalization version 1
 retain the inspection-based completion path. No stored binding migration is required.
 
+A provider whose inspection cannot prove merge ancestry may declare
+`workspaceProvider.supportsMergeAncestry: false`. Omission preserves the existing
+ancestry inspection behavior. For an opted-out provider, automatic cleanup first
+checks for a matching PR work product. No matching PR means no storage inspection
+or recurring cleanup deadline for that workspace; work-product and workspace
+notifications reconsider it, and startup reconstructs the decision. Provider
+manifest changes, activation, and company re-enablement also wake cleanup, so a
+provider that later gains ancestry inspection can reconsider parked workspaces.
+A relevant open or unknown PR retains the existing bounded retry because external merge
+state can change without a local notification. Only a merged PR with the expected
+branch and a known HEAD triggers inspection; Core still compares that HEAD with
+fresh storage evidence before archive. Removal's fresh data-safety and lifecycle
+checks are unchanged. Explicit close-readiness and pending lifecycle recovery
+continue to inspect even without a PR.
+
 ## Warm task retention
 
 A driver declares `warmTaskVersion: 1`, implements `onEnvironmentResumeLease`,
@@ -222,6 +237,16 @@ Core permits read-only suspension proof for the exact saved identity of a
 successful warm run after its reuse lease is retained or superseded. This does
 not authorize new work or file access through that lease.
 Temporary credential homes are not needed after the originating run ends.
+An explicit reset to a different normalized session can retire a warm owner
+whose close failed only because it could not prove checkpoint suspension. Core
+requires the exact lease-bound task's `executionStopped: true` receipt, a
+successful `complete` handoff, and settled Core tool results first. It then
+collects stopped instruction files before it releases the in-memory owner. The old checkpoint remains evidence;
+it is not reused by the new session. A failed handoff, failed file collection,
+unsettled Core tool result, other close error, or continuation of the same
+session still blocks replacement.
+A controller restart is not required for this stopped-owner reset path.
+
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection
 precedes in-memory session selection so a replacement cannot inherit the stopped

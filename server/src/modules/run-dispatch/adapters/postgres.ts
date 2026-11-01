@@ -1,3 +1,5 @@
+import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
+import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
@@ -511,6 +513,15 @@ export function createPostgresRunDispatchAdapter(
     return decideScheduledRetryGate(factsResult.facts, input.now);
   }
 
+  async function nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null> {
+    const [row] = await db.select({ at: heartbeatRuns.scheduledRetryAt }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "scheduled_retry"),
+        sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
+        input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined))
+      .orderBy(asc(heartbeatRuns.scheduledRetryAt)).limit(1);
+    return row?.at?.getTime() ?? null;
+  }
+
   async function listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]> {
     const rows = await db
       .select()
@@ -518,6 +529,7 @@ export function createPostgresRunDispatchAdapter(
       .where(
         and(
           eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
           lte(heartbeatRuns.scheduledRetryAt, input.now),
           input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined,
         ),
@@ -676,6 +688,7 @@ export function createPostgresRunDispatchAdapter(
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
   > {
+    await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
@@ -721,6 +734,7 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyExternalAgentSettlement(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });
@@ -986,6 +1000,7 @@ export function createPostgresRunDispatchAdapter(
         recordedCommentId && authors.get(recordedCommentId) === actorId ? [recordedCommentId] : [];
     }));
     if (commentIds.some(id => !recordedCommentIds.has(id))) return null;
+    await notifyDeferredExecutionWork(tx, { companyId: run.companyId, requestId: wake.id });
     const [deferred] = await tx.update(agentWakeupRequests).set({
       status: "deferred_issue_execution", runId: null, claimedAt: null, finishedAt: null, error: null,
       payload: withQueuedCommentIdsInWakePayload({ ...payload, _paperclipWakeContext: context,
@@ -1006,6 +1021,7 @@ export function createPostgresRunDispatchAdapter(
     now: Date,
     providerDispatchNotStarted = false,
   ): Promise<CancelStaleQueuedRunOutcome> {
+      await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
       await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
       await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
       await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
@@ -1414,6 +1430,7 @@ export function createPostgresRunDispatchAdapter(
 
   return {
     evaluateScheduledRetryGate,
+    nextScheduledRetryAt,
     listDueRetries,
     cancelStaleQueuedRun,
     dispatchResolvedInteractionIfCurrent,

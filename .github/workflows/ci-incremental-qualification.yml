@@ -58,6 +58,7 @@ jobs:
           for (const [file, project, related] of [
             ['ui/src/pages/Inbox.tsx', '@paperclipai/ui', 'ui/src/pages/Inbox.test.tsx'],
             ['server/src/middleware/auth.ts', '@paperclipai/server', 'server/src/__tests__/agent-auth-middleware.test.ts'],
+            ['server/src/storage/config.test.ts', '@paperclipai/server', 'server/src/storage/config.test.ts'],
           ]) {
             const selected = await createTestSelection(planTasks({ config, lanes, paths: [file, "doc/DEVELOPING.md", "doc/plans/2026-10-30-ci-proof.md"] }), head);
             const graph = selected.graphs.find(graph => graph.project === project);

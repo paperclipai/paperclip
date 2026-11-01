@@ -1,3 +1,6 @@
+import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
+import { initializeDurableAgentFiles } from "./agent-file-durability.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifySkillVersionRetention, notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
@@ -16,6 +19,7 @@ import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
+  await notifyAttentionRetentionWork(db, { companyId });
   const { runner, ...data } = input;
   const selection = options?.runnerResolved
     ? { adapterType: data.adapterType ?? "process", adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {} }
@@ -63,6 +67,8 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
 export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, options?: CreateAgentOptions) {
   const tx = txDb;
   const companyId = created.companyId;
+  assertEphemeralAgentInstructions({ ...created, name: "" });
+  await initializeDurableAgentFiles(txDb, created);
   await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
   // New standard agents receive the standard direct grants at activation.
   // Low-trust and bundled agents keep their explicit, narrower grants.
@@ -131,6 +137,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
     });
   }
   if (patch.adapterConfig !== undefined) await notifySkillVersionPinChange(txDb, existing.companyId, existing.adapterConfig ?? {}, patch.adapterConfig);
+  assertEphemeralAgentInstructions({ ...existing, ...patch, name: "" });
   return patch;
 }
 

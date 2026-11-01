@@ -35,6 +35,7 @@ function callbacks() {
     getWorktreeExecutionCutoff: vi.fn(async (): Promise<Date | null> => null),
     applyRunDispatchPostCommitEffects: vi.fn<(effects: PostCommitEffect[]) => void>(),
     runDispatch: {
+      nextScheduledRetryAt: vi.fn(async () => null),
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
       promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [] })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),
@@ -183,7 +184,9 @@ describe("heartbeat retry module callbacks", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HEARTBEAT_RETRIES_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping retry PostgreSQL tests: ${support.reason ?? "unsupported host"}`);
 
@@ -193,11 +196,11 @@ describePostgres("heartbeat retry module database wiring", () => {
   const now = new Date("2026-10-08T12:00:00Z");
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("heartbeat-retries-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("heartbeat-retries-");
+    db = createDb(external ?? database.connectionString, { maxConnections: 6 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   afterEach(async () => {
     await db.delete(issues);

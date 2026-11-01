@@ -54,6 +54,7 @@ const WORK_CHECKS = [
     state NOT IN ('saved', 'unchanged', 'resolved', 'unavailable', 'conflict')
     OR process_stopped_at IS NULL OR next_attempt_at IS NOT NULL
     OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`,
+  `SELECT 1 FROM sandbox_creation_operations WHERE state = 'pending'`,
   `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`,
   `SELECT 1 FROM budget_policies WHERE enforcement_version > enforcement_delivered_version`,
   `SELECT 1 FROM agents WHERE lifecycle_state IN

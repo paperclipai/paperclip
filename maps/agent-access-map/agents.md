@@ -270,6 +270,10 @@ Policy: Agent creation/configuration uses action grants, resource policies and c
 consent; some controls require a board actor.
 Permanent deletion is board-only. Retained case handoff references return
 `409 agent_case_history_retained` before dependency cleanup; keep the agent terminated.
+Failed configuration verification waits for a changed execution configuration
+or an authorized explicit retry. That wait does not grant an agent permission
+to retry itself, resume execution, or change configuration. Temporary verification
+outages retain automatic recovery.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L1395) at
 the reviewed commit above.

@@ -1,4 +1,5 @@
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
+import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
@@ -41,7 +42,7 @@ import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
-import { resolveAntigravityCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
+import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
@@ -1874,6 +1875,11 @@ export function agentRoutes(
         try { antigravityCandidate = resolveAntigravityCandidateAdmission({ companyId, model: selected.model }); }
         catch { throw unprocessable("This Google Antigravity candidate requires the exact enabled model and a current operator authorization.", { code: "paperclip_runner_antigravity_candidate_invalid" }); }
       }
+      let kimiCandidate: ReturnType<typeof resolveKimiCandidateAdmission>;
+      if (companyId && selected?.provider === "acpx" && selected.acpxAgent === "kimi" && typeof selected.model === "string") {
+        try { kimiCandidate = resolveKimiCandidateAdmission({ companyId, model: selected.model }); }
+        catch { throw unprocessable("This Kimi candidate requires the exact enabled model and a current operator authorization.", { code: "paperclip_runner_kimi_candidate_invalid" }); }
+      }
       if (asRecord(config)?.provider === "openai_dot") {
         if (experimental.enableOpenAiDot !== true) throw unprocessable(
           "OpenAI Dot is experimental and disabled on this instance.",
@@ -1886,7 +1892,7 @@ export function agentRoutes(
       } else if (!([undefined, "codex", "opencode"].includes(asRecord(config)?.provider as string | undefined)) &&
         !(asRecord(config)?.provider === "acpx" && asRecord(config)?.acpxAgent === "copilot") &&
         !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", asRecord(config) ?? {})) &&
-        experimental.enableNativeRunner !== true && !antigravityCandidate) {
+        experimental.enableNativeRunner !== true && !antigravityCandidate && !kimiCandidate) {
         throw unprocessable(
           "Paperclip Runner is experimental and disabled on this instance.",
           { code: "paperclip_runner_rollout_disabled" },
@@ -1961,9 +1967,9 @@ export function agentRoutes(
       throw unprocessable("Select a Paperclip Runner provider before converting this agent.");
     }
     const next = { ...defaults, ...input.nextAdapterConfig };
-    if (next.provider === "acpx" && next.acpxAgent === "pi") {
+    if (next.provider === "acpx" && (next.acpxAgent === "pi" || next.acpxAgent === "kimi")) {
       next.model = input.nextAdapterConfig.model
-        ?? (input.previousAdapterType === "pi_local" ? input.previousAdapterConfig.model : "");
+        ?? (input.previousAdapterType === `${next.acpxAgent}_local` ? input.previousAdapterConfig.model : "");
     } else if (!asNonEmptyString(next.model)) next.model = defaults.model;
     return normalizeLegacyRunnerProvider(next);
   }
@@ -2200,7 +2206,7 @@ export function agentRoutes(
     );
     const incompleteModelSetup = input.setupOnly && input.adapterType === "paperclip_runner"
       && (normalizedAdapterConfig.provider === "opencode"
-        || (normalizedAdapterConfig.provider === "acpx" && normalizedAdapterConfig.acpxAgent === "pi"))
+        || (normalizedAdapterConfig.provider === "acpx" && ["pi", "kimi"].includes(String(normalizedAdapterConfig.acpxAgent))))
       && (normalizedAdapterConfig.model === undefined || normalizedAdapterConfig.model === "");
     // Inactive drafts can precede model selection. Test/hire always validate the complete profile.
     if (!incompleteModelSetup) await assertAdapterConfigConstraints(
@@ -3076,6 +3082,10 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "kimi") {
+      res.json([]);
+      return;
+    }
     if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "antigravity") {
       if (environment && environment.driver !== "local") throw unprocessable("Google Antigravity account model discovery requires the Paperclip host.");
       let binding: AiConnectionBinding = { provider: "google", method: "subscription", mode: "responsible_user" };
@@ -7310,7 +7320,10 @@ export function agentRoutes(
           throw conflict("This runtime request is stale or is no longer pending.");
         }
         let queued: { commandId: string };
-        try {
+        if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true") {
+          queued = await enqueueNativeRuntimeResponse(db, { request: currentPendingRequest,
+            actor: resolutionActor, localImplicit: req.actor.source === "local_implicit", resolution });
+        } else try {
           queued = await resolveNativeRuntimeRequest({
             runId,
             requestId,

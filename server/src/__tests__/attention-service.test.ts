@@ -62,7 +62,7 @@ describeEmbeddedPostgres("attention service", () => {
 
   beforeAll(async () => {
     if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
-    db = createDb(externalUrl ?? tempDb!.connectionString);
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 30_000);
 
   afterEach(async () => {

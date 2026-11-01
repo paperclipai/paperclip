@@ -12,14 +12,14 @@ const PILL_SELECTOR = 'button[aria-label="Scroll to latest"]';
  * jsdom has no layout, so scroll geometry is faked per element: scrollHeight /
  * clientHeight are pinned and scrollTop is backed by a plain variable.
  */
-function fakeGeometry(el: HTMLElement, { scrollHeight = 1000, clientHeight = 400 } = {}) {
+function fakeGeometry(el: HTMLElement, { scrollHeight = 1000, clientHeight = 400, clamp = false } = {}) {
   let scrollTop = 0;
   Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
   Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
   Object.defineProperty(el, "scrollTop", {
     get: () => scrollTop,
     set: (v: number) => {
-      scrollTop = v;
+      scrollTop = clamp ? Math.max(0, Math.min(v, el.scrollHeight - el.clientHeight)) : v;
     },
     configurable: true,
   });
@@ -125,6 +125,154 @@ describe("TaskMessageScroller", () => {
     vi.unstubAllGlobals();
   });
 
+  it("loads one older page on upward scroll, keeps the status slot, and pauses after failure", async () => {
+    let release!: () => void;
+    const load = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    const history = { hasMore: true, loading: false, error: false, load };
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} scrollingHistory={{ ...history }}><div>saved messages</div></TaskMessageScroller>,
+    ));
+    update(0);
+    fakeGeometry(scroller());
+    update(1);
+    expect(load).not.toHaveBeenCalled();
+    await scrollTo(scroller(), 400);
+    expect(load).not.toHaveBeenCalled();
+    await scrollTo(scroller(), 150);
+    expect(load).toHaveBeenCalledTimes(1);
+    await scrollTo(scroller(), 100);
+    scroller().dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+    await flushEvents();
+    expect(load).toHaveBeenCalledTimes(1);
+    const status = container.querySelector('[data-testid="chat-history-status"]');
+    history.loading = true;
+    update(2);
+    expect(container.querySelector('[data-testid="chat-history-status"]')).toBe(status);
+    expect(status?.textContent).toBe("Loading earlier messages…");
+    release();
+    await flushEvents();
+    history.loading = false;
+    history.error = true;
+    update(3);
+    await scrollTo(scroller(), 50);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(status?.textContent).toContain("Earlier messages couldn’t load.");
+    (status?.querySelector('button') as HTMLButtonElement).click();
+    expect(load).toHaveBeenCalledTimes(2);
+    release();
+    await flushEvents();
+    history.error = false;
+    history.hasMore = false;
+    update(4);
+    await scrollTo(scroller(), 0);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("follows a late image resize in the message body after the history status", () => {
+    const observers: { targets: Set<Element>; resize: () => void }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      targets = new Set<Element>();
+      constructor(callback: ResizeObserverCallback) { observers.push({ targets: this.targets, resize: () => callback([], this as unknown as ResizeObserver) }); }
+      observe(target: Element) { this.targets.add(target); }
+      disconnect() {}
+    });
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} scrollingHistory={{ hasMore: true, loading: false, load: vi.fn() }}><div data-testid="image-body">image content</div></TaskMessageScroller>,
+    ));
+    update(0); fakeGeometry(scroller(), { clamp: true }); update(1);
+    const body = container.querySelector('[data-testid="image-body"]')!;
+    Object.defineProperty(scroller(), "scrollHeight", { value: 1400, configurable: true });
+    for (const observer of observers) if (observer.targets.has(body)) observer.resize();
+    expect(scroller().scrollTop).toBe(1000);
+  });
+
+  it("retains the reading anchor when a resize scroll event precedes the next width reflow", async () => {
+    const resize: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize.push(() => callback([], this as unknown as ResizeObserver)); }
+      observe() {}
+      disconnect() {}
+    });
+    let width = 400, rowTop = 100;
+    flushSync(() => root.render(<TaskMessageScroller contentKey="width-transition">
+      <div ref={node => {
+        if (!node) return;
+        const viewport = node.parentElement!;
+        fakeGeometry(viewport, { clamp: true });
+        Object.defineProperty(viewport, "clientWidth", { get: () => width, configurable: true });
+        viewport.getBoundingClientRect = () => ({ top: 0, bottom: 400 } as DOMRect);
+      }}>
+        <div data-thread-anchor="reading-row" ref={node => {
+          if (node) node.getBoundingClientRect = () => ({ top: rowTop - scroller().scrollTop, bottom: rowTop + 100 - scroller().scrollTop, height: 100 } as DOMRect);
+        }}>Saved reply</div>
+      </div>
+    </TaskMessageScroller>));
+    await scrollTo(scroller(), 150);
+    width = 500; rowTop = 80;
+    for (const callback of resize) callback();
+    expect(scroller().scrollTop).toBe(130);
+    rowTop = 70;
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    for (const callback of resize) callback();
+    expect(scroller().scrollTop).toBe(120);
+    width = 600; rowTop = 60;
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    for (const callback of resize) callback();
+    expect(rowTop - scroller().scrollTop).toBe(-50);
+    expect(pill()).not.toBeNull();
+  });
+
+  it("retains upward intent when content reconciles before the scroll event", async () => {
+    const load = vi.fn();
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} scrollingHistory={{ hasMore: true, loading: false, load }}><div>saved messages</div></TaskMessageScroller>,
+    ));
+    update(0); fakeGeometry(scroller()); update(1);
+    await scrollTo(scroller(), 400);
+    scroller().dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1000 }));
+    scroller().scrollTop = 0;
+    update(2);
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds a short conversation when an upward wheel gesture loads history", async () => {
+    const load = vi.fn().mockResolvedValue(undefined);
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} scrollingHistory={{ hasMore: true, loading: false, load }}><div>short conversation</div></TaskMessageScroller>,
+    ));
+    update(0);
+    fakeGeometry(scroller(), { scrollHeight: 200, clientHeight: 400, clamp: true });
+    update(1);
+    await scrollTo(scroller(), 0);
+    scroller().dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+    await flushEvents();
+    expect(load).toHaveBeenCalledTimes(1);
+    Object.defineProperty(scroller(), "scrollHeight", { value: 1200, configurable: true });
+    update(2);
+    expect(scroller().scrollTop).toBe(0);
+  });
+
+  it("pages short conversations with touch and keyboard gestures", async () => {
+    const load = vi.fn().mockResolvedValue(undefined);
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} scrollingHistory={{ hasMore: true, loading: false, load }}><div>short conversation</div></TaskMessageScroller>,
+    ));
+    update(0); fakeGeometry(scroller(), { scrollHeight: 200, clientHeight: 400, clamp: true }); update(1);
+    await scrollTo(scroller(), 0);
+    const touch = (type: string, y: number) => {
+      const event = new Event(type, { bubbles: true });
+      Object.defineProperty(event, "touches", { value: [{ clientY: y }] });
+      scroller().dispatchEvent(event);
+    };
+    touch("touchstart", 100); touch("touchmove", 200); touch("touchmove", 250);
+    await flushEvents();
+    expect(load).toHaveBeenCalledTimes(1);
+    scroller().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Home" }));
+    await flushEvents();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it("does not measure historical rows on each streaming update while following the bottom", () => {
     let initialized = false;
     let rowMeasurements = 0;
@@ -186,6 +334,31 @@ describe("TaskMessageScroller", () => {
     expect(viewport.scrollTop).toBe(150);
     navigate("desktop-entry-one", "#nav-comment-1", true);
     expect(viewport.scrollTop).toBe(500);
+  });
+
+  it.each([[false, "none"], [false, "wheel"], [false, "pointer"], [true, "none"], [true, "wheel"], [true, "pointer"]] as const)("positions a late hash target unless the reader moved on (restore=%s, readerMoved=%s)", async (restore, readerMoved) => {
+    let initialized = false;
+    const show = (targetReady: boolean) => flushSync(() => root.render(
+      <TaskChatScrollNavigation.Provider value={{ key: `late-target-${restore}-${readerMoved}`, hash: "#late-target", restore }}>
+        <TaskMessageScroller contentKey={targetReady}>
+          <div ref={node => {
+            if (node && !initialized) { fakeGeometry(node.parentElement!, { clamp: true }); initialized = true; }
+          }}>
+            Saved conversation
+            {targetReady ? <div id="late-target" data-thread-anchor="late-target" ref={node => {
+              if (node) node.getBoundingClientRect = () => ({ top: 100 - scroller().scrollTop, bottom: 200 - scroller().scrollTop, height: 100 } as DOMRect);
+            }}>Linked comment</div> : null}
+          </div>
+        </TaskMessageScroller>
+      </TaskChatScrollNavigation.Provider>,
+    ));
+    show(false);
+    if (readerMoved !== "none") {
+      await scrollTo(scroller(), 300);
+      await dispatch(scroller(), readerMoved === "wheel" ? new WheelEvent("wheel", { bubbles: true, deltaY: -100 }) : new Event("pointerdown", { bubbles: true }));
+    }
+    show(true);
+    expect(scroller().scrollTop).toBe(readerMoved === "none" ? 100 : 300);
   });
 
   it("does not replace a saved reading position with a hidden route's geometry", async () => {

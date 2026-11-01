@@ -8,20 +8,38 @@ interface TaskChatComposerDockProps {
   concealed?: boolean;
 }
 
-/** A normal flex footer beside the message scroller, on desktop and mobile. */
 export function TaskChatComposerDock({ children, mobile, streamlined, concealed = false }: TaskChatComposerDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const dock = dockRef.current;
     const thread = dock?.closest<HTMLElement>('[data-testid="task-chat-thread"]');
     if (!dock || !thread || !thread.closest(".coordinator-workspace")) return;
+    const forwardGapWheel = (event: WheelEvent) => {
+      if (event.target !== dock || event.ctrlKey || event.defaultPrevented) return;
+      const scroller = thread.querySelector<HTMLElement>('[data-testid="task-chat-scroller"]');
+      if (!scroller) return;
+      event.preventDefault();
+      const { deltaX, deltaY, deltaMode, altKey, ctrlKey, metaKey, shiftKey } = event;
+      if (!scroller.dispatchEvent(new WheelEvent("wheel", {
+        deltaX, deltaY, deltaMode, altKey, ctrlKey, metaKey, shiftKey, bubbles: true, cancelable: true,
+      }))) return;
+      const style = window.getComputedStyle(scroller);
+      const fontSize = Number.parseFloat(style.fontSize);
+      const lineHeight = Number.parseFloat(style.lineHeight) || fontSize;
+      const verticalUnit = deltaMode === WheelEvent.DOM_DELTA_LINE ? lineHeight
+        : deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientHeight : 1;
+      const horizontalUnit = deltaMode === WheelEvent.DOM_DELTA_LINE ? fontSize / 2
+        : deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientWidth : 1;
+      scroller.scrollBy({ left: deltaX * horizontalUnit, top: deltaY * verticalUnit, behavior: "instant" });
+    };
+    dock.addEventListener("wheel", forwardGapWheel, { passive: false });
     const measure = () => thread.style.setProperty("--task-composer-dock-height", `${dock.getBoundingClientRect().height}px`);
     measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(dock);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(dock);
     return () => {
-      observer.disconnect();
+      dock.removeEventListener("wheel", forwardGapWheel);
+      observer?.disconnect();
       thread.style.removeProperty("--task-composer-dock-height");
     };
   }, []);

@@ -3,7 +3,7 @@ import { canonicalJson } from "../../packages/shared/src/portability-hash.js";
 import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
 import type { StoryCheck, StoryRun } from "./everyday-observations.js";
 import { pollUntil } from "./api.js";
-import { validControllerOutageReceipt, type ControllerOutageReceipt } from "./controller-outage.js";
+import { validControllerReplacementReceipt, type ControllerReplacementReceipt } from "./controller-replacement.js";
 import { validControllerRecoveryReceipt } from "./controller-recovery-observer.js";
 
 type Row = Record<string, unknown>;
@@ -26,8 +26,8 @@ export interface RemoteRestartBoundary {
 }
 export interface RemoteRestartEvidence {
   expectedReplacements?: number;
-  replacements?: Array<{ before: RemoteRestartBoundary; after: RemoteRestartBoundary; outage: ControllerOutageReceipt }>;
-  outage?: ControllerOutageReceipt;
+  replacements?: Array<{ before: RemoteRestartBoundary; after: RemoteRestartBoundary; outage: ControllerReplacementReceipt }>;
+  outage?: ControllerReplacementReceipt;
   before?: RemoteRestartBoundary;
   after?: RemoteRestartBoundary;
   final?: { run: StoryRun; events: RemoteRestartEvent[]; operations: Row[];
@@ -194,7 +194,7 @@ export function gradeRemoteRestart(evidence: RemoteRestartEvidence | undefined):
       const preservesIdentity = digest(step.before.identity) === digest(step.after.identity)
         && digest(step.before.lease) === digest(step.after.lease)
         && retainsPrefix(step.before.events, step.after.events);
-      const authenticated = validControllerOutageReceipt(step.outage) && validControllerRecoveryReceipt(step.outage)
+      const authenticated = validControllerReplacementReceipt(step.outage) && validControllerRecoveryReceipt(step.outage)
         && step.outage.recovery?.binding.runId === step.before.identity.runId
         && step.outage.recovery.binding.companyId === step.before.identity.companyId
         && step.outage.recovery.binding.issueId === step.before.identity.issueId
@@ -210,7 +210,7 @@ export function gradeRemoteRestart(evidence: RemoteRestartEvidence | undefined):
     check("remote-restart-same-execution-and-lease", sameIdentity, "The original run, native session, admitted runner identity and sandbox lease survive replacement."),
     check("remote-restart-native-completion-once", nativeCompletion, "The original provider turn completes once and retains its native receipt prefix."),
     check("remote-restart-files-finalized", Boolean(saved), "The original run commits its workspace receipt and leaves no active operation or recovery."),
-    check("remote-restart-fault-exercised", validControllerOutageReceipt(evidence?.outage), "The main server exited, its cache was retired, and a distinct replacement became ready after the requested outage."),
+    check("remote-restart-fault-exercised", validControllerReplacementReceipt(evidence?.outage), "The requested outage or ready-before-handoff replacement occurred, and the departing server state is unavailable."),
     check("remote-restart-authenticated-recovery", validControllerRecoveryReceipt(evidence?.outage)
       && evidence?.outage?.recovery?.binding.runId === identity?.runId
       && evidence?.outage?.recovery?.runnerInstanceId === identity?.runnerInstanceId

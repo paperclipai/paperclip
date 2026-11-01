@@ -383,6 +383,36 @@ describeEmbeddedPostgres("decision queue routes", () => {
       .toHaveLength(1);
   });
 
+  it("batches repeated seed checks and records only new memberships across concurrent reads", async () => {
+    const { companyId } = await seed();
+    const service = decisionQueueService(db);
+    const items = Array.from({ length: 501 }, () => ({ sourceKind: "issue_thread_interaction" as const,
+      sourceId: randomUUID(), issueId: null, interactionKind: "ask_user_questions" }));
+    await service.materializeSeedSources(companyId, items.slice(0, 2));
+    await Promise.all([
+      service.materializeSeedSources(companyId, [...items, items[0]!]),
+      service.materializeSeedSources(companyId, items),
+    ]);
+    const memberships = await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.companyId, companyId));
+    expect(new Set(memberships.map(item => item.sourceId))).toEqual(new Set(items.map(item => item.sourceId)));
+    expect(memberships).toHaveLength(items.length);
+    const events = await db.select().from(decisionTriageEvents).where(and(
+      eq(decisionTriageEvents.companyId, companyId), eq(decisionTriageEvents.action, "queue_item.seeded")));
+    const activity = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId), eq(activityLog.action, "decision_queue_item.seeded")));
+    expect(events).toHaveLength(items.length);
+    expect(activity).toHaveLength(items.length);
+    const queries: string[] = [];
+    const previousDebug = db.$client.options.debug;
+    try {
+      db.$client.options.debug = (_connection, text) => queries.push(text);
+      await service.materializeSeedSources(companyId, items);
+    } finally { db.$client.options.debug = previousDebug; }
+    expect(queries.filter(query => query.startsWith('insert into "decision_queue_items"')).length).toBeLessThan(10);
+    expect(await db.select().from(decisionTriageEvents).where(and(
+      eq(decisionTriageEvents.companyId, companyId), eq(decisionTriageEvents.action, "queue_item.seeded")))).toHaveLength(items.length);
+  });
+
   it("records agent decide-by, preserves override history, and exposes the board override attribution", async () => {
     const { companyId, agentId, issueId } = await seed();
     const agent = agentActor(companyId, agentId);

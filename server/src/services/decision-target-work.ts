@@ -7,11 +7,13 @@ export function registerDecisionTargetWork(
   service: Pick<ReturnType<typeof decisionService>, "sweepInvalidTargets" | "decisionTargetsChanged" | "hasDecisionTargetWork">,
   canRun: () => boolean,
 ) {
+  const retryMs = 30_000;
   return coordinator.register(DELIVERY_QUEUES.decisionTargets, {
-    retryMs: 30_000,
+    retryMs,
     pausePassiveMaintenance: true,
     onSettled: service.decisionTargetsChanged,
     run: signal => canRun() ? service.sweepInvalidTargets(new Date(), signal) : Promise.resolve(),
-    hasPending: async () => service.hasDecisionTargetWork(),
+    hasPending: async () => canRun() && service.hasDecisionTargetWork(),
+    nextRunAt: () => service.hasDecisionTargetWork() ? Date.now() + retryMs : null,
   });
 }
