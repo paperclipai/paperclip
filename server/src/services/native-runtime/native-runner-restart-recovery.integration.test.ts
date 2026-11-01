@@ -358,7 +358,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(next.kind).toBe("bootstrap_incomplete");
   });
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = !["warm", "same-server"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
     const perTurn = scenario.startsWith("diskless-per-turn");
@@ -427,7 +427,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       onLog: async (_stream: "stdout" | "stderr", text: string) => { logs.push(text); },
     };
     let controller: ReturnType<typeof spawn> | undefined;
-    const executeInController = (executionOptions: Parameters<typeof executePaperclipNativeSession>[0]) => new Promise<{ exitCode: number | null }>((resolveResult, reject) => {
+    const executeInController = (executionOptions: Parameters<typeof executePaperclipNativeSession>[0]) => new Promise<{ exitCode: number | null; inspectionOverridden?: boolean }>((resolveResult, reject) => {
         controller = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), resolve("server/src/__tests__/helpers/remote-warm-controller.test-worker.ts")],
           { stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env });
         let timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error("Controller fixture imports exceeded 120 seconds")); }, 120_000);
@@ -439,7 +439,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           if (message.ready) {
             clearTimeout(timer);
             timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error(`Warm controller admission exceeded 60 seconds: ${logs.join("").slice(-3_000)}`)); }, 60_000);
-            controller!.send?.({ connectionString: temporary.connectionString, container, suspendAfterTurn: warmSuspended, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
+            controller!.send?.({ connectionString: temporary.connectionString, container, suspendAfterTurn: warmSuspended, transientBackpressureInspection: scenario === "diskless-live-inspection" && executionOptions.execution.binding.runId !== fixture.runId, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
               options: { ...executionOptions, db: undefined, onLog: undefined, runnerExecutionTarget: { ...executionOptions.runnerExecutionTarget, runner: undefined } } });
           }
           if (message.log) logs.push(message.log.text);
@@ -610,6 +610,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       }
       const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession(nextOptions);
       expect(second.exitCode).toBe(0);
+      if (scenario === "diskless-live-inspection") expect("inspectionOverridden" in second && second.inspectionOverridden).toBe(true);
       const historyAfter = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/filesystem/codex-home/fake-codex-state.json`] });
       const providerAfter = JSON.parse(historyAfter.stdout);
       expect(providerAfter.threadId).toBe(providerBefore.threadId);

@@ -5914,7 +5914,7 @@ async function restoreRemoteSuspendedRunnerCheckpoint(input: {
   }
   // A running warm source keeps the existing live-adoption identity, idle,
   // controller-fencing and physical-process checks. Only suspension is cached.
-  if (input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle === "ready") return;
+  if (input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
   if (state.lifecycle !== "suspended" || !Array.isArray(state.outbox) || state.outbox.length !== 0
     || state.pendingTerminalDelivery != null || state.pendingProviderCleanup != null || state.warmTransition != null) {
     throw new Error("native_controller_recovery_missing_evidence:runner_not_settled");

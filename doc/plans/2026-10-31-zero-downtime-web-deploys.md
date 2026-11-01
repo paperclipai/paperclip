@@ -1,9 +1,10 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 15:23 UTC): existing-volume staging enrollment
+Date: 2026-10-31. Status (2026-11-01 15:39 UTC): existing-volume staging enrollment
 and manual sleep/wake preserve saved files and read/save behavior. The full local
-active-agent journey and ten-deploy staging campaign remain unqualified.
-Natural database autosuspension now passes after abandoned test-resource cleanup. No production canary yet.
+active-agent journey now passes on `cc23019691`; hosted browser continuity and
+the ten-deploy staging campaign remain unqualified. Natural database autosuspension
+passes after abandoned test-resource cleanup. No production canary yet.
 
 Core #18543 merged as `7751fc3107` after 55 successful CI checks, Greptile 5/5
 and no unresolved threads. It supplies runtime admission, immutable-cache
@@ -74,8 +75,33 @@ The existing remote process launcher now passes its structured launch identity
 to asset preparation, so reconciliation preserves the previous authority's
 retained launch files. Both new regressions pass: three turns preserve one
 provider thread after two cache deletions, including a failed remote state read
-and retry. The ten-scenario continuity matrix and surrounding boundary checks
-are running before the next exact-build live attempt.
+and retry. All ten Linux continuity scenarios and 1,067 surrounding boundary tests pass.
+The exact `cc23019691` server build passes. PR #18554 has Greptile 5/5; CI and
+its second review identified a narrower dispatch boundary: warm receipt
+inspection must leave every non-suspended state to the existing live-adoption
+checks. A new preliminary-read regression fails before that refinement. The
+refinement plus both suspension regressions pass in a fresh Linux fixture, and
+server typecheck passes. The first retry reused a container whose deliberately
+failed pre-fix case left its live Runner on the ingress port; that infrastructure
+failure is preserved. The local wrapper now creates and cleans one container per
+invocation. This does not weaken the existing idle check or claim support for
+adopting a persistently backpressured Runner.
+
+The live Codex/Daytona attempt at that clean source PASSED on its first attempt,
+with no automatic retries: 518 reads, 53 saves and 53 verified saves across both
+replacements, zero probe failures, both complete predecessor homes deleted.
+The active execution resumes under the replacement and completes once. All four
+turns use the same native/provider session with accepted native terminal records.
+The final turn runs the saved project and returns the independently checked
+output. The original Git commit, untracked workspace reference, prior downloads
+and revised files survive. Browser reconnection remains explicitly unqualified
+in this API-led continuation case and must pass in the hosted campaign.
+Child credential, bucket and local test-home cleanup passed. Independent provider
+verification found two archived setup sandboxes left by the harness; those exact
+owned residuals were deleted separately and independently confirmed absent,
+preserving the failed automatic-cleanup verification. The product journey pass does not prove automatic fixture cleanup. The attempt's
+reported-plus-estimated model/runtime cost is about $0.243. Its immutable evidence
+is `zdt-live-2026-11-01T15-24-43-429Z` under the private live-evidence directory.
 
 Review also identified save quotas incorrectly applied during cache recovery.
 Recovery uses the existing inbound remote projection and preserves path/link
@@ -176,9 +202,9 @@ Measure one-time setup separately from repeated attempts. Keep failed evidence.
 | Item | State | Next action |
 | --- | --- | --- |
 | Prior prerequisites | #18403 and all five storage workstreams merged | Retain the ephemeral filesystem contract |
-| Core implementation | #18518, #18526, #18529, #18530, #18531 and #18533 merged; local packaged migration, browser overlap, cold restoration and durable command proofs recorded below | Complete live remote execution, accounting and later continuation qualification |
+| Core implementation | #18518, #18526, #18529, #18530, #18531, #18533, #18543 and #18552 merged; #18554 reviewed at 5/5 with CI pending; local packaged migration, browser overlap, cold restoration and durable command proofs recorded below | Publish and qualify the exact fixed release after CI/review merge |
 | Cloud implementation | #1096, #1098, #1099, #1100, #1101 and #1102 merged; #1102 serving on staging | Verify repeated Railway overlap behavior after Core recovery qualification |
-| Staging | Original enrollment complete; migrated data and signing key preserved; volume detached and retained | Diagnose idle behavior, verify sleep/wake and repair, then qualify ten app-only replacements |
+| Staging | Original enrollment complete; migrated data and signing key preserved; volume detached and retained | Sleep/wake and natural database idle pass; verify repair and ten app-only replacements with browser continuity |
 | Production | No canary mutation performed | Proceed only after the staging and active-agent acceptance gates pass |
 
 Keep PRs, tested revisions, artifact identities, evidence paths, deployment targets
