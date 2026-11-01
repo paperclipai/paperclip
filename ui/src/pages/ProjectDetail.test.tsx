@@ -15,6 +15,7 @@ const mockProjectsApi = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
   update: vi.fn(),
+  remove: vi.fn(),
 }));
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -31,6 +32,7 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   updateProject: vi.fn(),
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockPushToast = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ projectId: "project-1" }));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
@@ -72,7 +74,7 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 vi.mock("../context/PanelContext", () => ({ usePanel: () => ({ closePanel: vi.fn() }) }));
-vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
+vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: mockPushToast }) }));
 vi.mock("../context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mockSetBreadcrumbs }) }));
 vi.mock("@/plugins/slots", () => ({
   PluginSlotMount: (props: unknown) => {
@@ -84,7 +86,7 @@ vi.mock("@/plugins/slots", () => ({
 }));
 vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: () => null }));
 vi.mock("../components/ProjectProperties", () => ({
-  ProjectProperties: ({ onFieldUpdate }: { onFieldUpdate: (field: string, data: Record<string, unknown>) => void }) => <div data-testid="project-properties"><input aria-label="Unsaved project field" /><button onClick={() => onFieldUpdate("visibility", { visibility: "open" })}>Open project through autosave</button></div>,
+  ProjectProperties: ({ onFieldUpdate, onDelete }: { onFieldUpdate: (field: string, data: Record<string, unknown>) => void; onDelete: (deleteFiles: boolean) => void }) => <div data-testid="project-properties"><input aria-label="Unsaved project field" /><button onClick={() => onFieldUpdate("visibility", { visibility: "open" })}>Open project through autosave</button><button onClick={() => onDelete(false)}>Delete project</button></div>,
 }));
 vi.mock("../components/BudgetPolicyCard", () => ({
   BudgetPolicyCard: () => <div data-testid="budget-policy-card" />,
@@ -217,6 +219,24 @@ describe("ProjectDetail", () => {
     root = null;
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it.each([
+    "This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.",
+    "Project activity is still stopping. The project remains fenced; retry the deletion after its active runs stop.",
+  ])("shows the server explanation when deletion fails: %s", async message => {
+    mockLocation.pathname = "/projects/project-1/configuration";
+    mockProjectsApi.remove.mockRejectedValue(new Error(message));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    root = createRoot(container);
+    await act(() => root!.render(<QueryClientProvider client={queryClient}><ProjectDetail /></QueryClientProvider>));
+    await settle();
+    const button = Array.from(container.querySelectorAll("button")).find(item => item.textContent === "Delete project");
+    expect(button).toBeDefined();
+    await act(() => button!.click());
+    await settle();
+    expect(mockPushToast).toHaveBeenCalledWith({ title: "Failed to delete project", body: message, tone: "error" });
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it.each(["alias", "other project", "other company"])("preserves a draft only for a same-project route alias (%s)", async target => {

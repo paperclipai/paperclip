@@ -12,6 +12,10 @@ import { projectGitAuthorizationService } from "../services/project-git-authoriz
 import { errorHandler } from "../middleware/index.js";
 import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+vi.mock("../services/heartbeat.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/heartbeat.js")>(),
+  heartbeatService: () => ({}),
+}));
 const vault = vi.hoisted(() => ({
   resolveUserSecretValue: vi.fn(async (_company: string, input: { responsibleUserId: string }) => ({ value: `test-token-${input.responsibleUserId}` })),
   resolveSecretValue: vi.fn(async () => "test-dedicated-token"),

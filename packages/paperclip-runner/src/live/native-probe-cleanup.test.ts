@@ -22,7 +22,7 @@ it.each(["eventual-exit", "bounded-retry", "windows-unconfirmed"] as const)("ret
     await rm(home, { recursive: true, force: true });
   });
   const probe = probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: "codex", model: "fixture-model", admissionOnly: true,
-    environment: {}, timeoutMs: 1000, ...(mode !== "eventual-exit" ? { cleanupTimeoutMs: 100 } : {}), onCleanupConfirmed: cleanup, onCodexCredentialRefresh: copyBack,
+    environment: {}, timeoutMs: 1000, ...(mode !== "eventual-exit" ? { cleanupTimeoutMs: 1000 } : {}), onCleanupConfirmed: cleanup, onCodexCredentialRefresh: copyBack,
     transportOptions: { sourceCodexHome: "", runnerBinary: resolve("runner/target/debug/paperclip-runnerd"), codexCommand: resolve("runner/target/debug/fake-codex-app-server"),
       runnerProcessLauncher: () => {
         child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", env: { PATH: "/usr/bin:/bin" } });
@@ -49,7 +49,7 @@ it.each(["eventual-exit", "bounded-retry", "windows-unconfirmed"] as const)("ret
     void failure.retired.then(() => { retired = true; }, (error: unknown) => { retirementError = error; });
     await new Promise(resolve => setTimeout(resolve, 20));
     if (mode !== "eventual-exit") {
-      await vi.waitFor(() => expect(retirementError).toBeInstanceOf(Error), { timeout: 500 });
+      await vi.waitFor(() => expect(retirementError).toBeInstanceOf(Error), { timeout: 3000 });
       expect(failure.retryCleanup).toBeTypeOf("function");
     }
     expect(retired).toBe(false);

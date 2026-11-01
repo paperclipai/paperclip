@@ -1,3 +1,4 @@
+import { assertProjectRunAdmissionOpen } from "../project-run-admission.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -2926,6 +2927,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
       const outcome = await db
         .transaction(withDurableChatAdmission(durableRequest, async (tx) => {
+          await assertProjectRunAdmissionOpen(tx as unknown as Db, agent.companyId, projectId);
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
@@ -4655,6 +4657,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
+      await assertProjectRunAdmissionOpen(tx as unknown as Db, agent.companyId, projectId);
       await notifyRunDispatch(tx, { companyId: agent.companyId });
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
