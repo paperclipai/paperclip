@@ -665,6 +665,7 @@ export async function withShallowGitWorkspaceClone<T>(
       });
     }
     if (input.snapshot.repositories?.length) {
+      await fs.mkdir(path.join(cloneDir, ".git/info"), { recursive: true });
       await fs.appendFile(path.join(cloneDir, ".git/info/exclude"), `\n/${PROJECT_REPOSITORIES_DIR}/\n`);
     }
     return await fn(cloneDir);
