@@ -94,6 +94,12 @@ describe("server image init", () => {
   });
 });
 
+describe("server image runtime tools", () => {
+  it("installs lsof in the base stage for listener ownership checks", () => {
+    expect(aptPackages(dockerfile, "base")).toContain("lsof");
+  });
+});
+
 describe("deployment manifest parity", () => {
   it.each([
     ["docker-compose.yml", compose],
