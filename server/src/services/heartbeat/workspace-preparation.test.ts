@@ -52,7 +52,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   let home: string;
-  const persistenceKeys = ["DATABASE_URL", "PAPERCLIP_STORAGE_PROVIDER", "PAPERCLIP_SECRETS_MASTER_KEY", "PAPERCLIP_SECRETS_MASTER_KEY_FILE"];
+  const persistenceKeys = ["PAPERCLIP_EPHEMERAL_SERVER", "DATABASE_URL", "PAPERCLIP_STORAGE_PROVIDER", "PAPERCLIP_SECRETS_MASTER_KEY", "PAPERCLIP_SECRETS_MASTER_KEY_FILE"];
   let persistenceBefore = new Map<string, string | undefined>();
   const configureRemotePersistence = () => Object.assign(process.env, { DATABASE_URL: database.connectionString,
     PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_SECRETS_MASTER_KEY: "remote-workspace-preparation-fixture" });
@@ -272,7 +272,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
   });
 
-  it("auto-enrollment leaves a configured local folder on the host authority", async () => {
+  it.each([false, true])("configured local folders retain host authority only on durable servers (ephemeral=%s)", async ephemeral => {
     const { input, envOrchestrator } = await fixture();
     input.agent.adapterType = "paperclip_runner";
     input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
@@ -281,8 +281,11 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
     configureRemotePersistence();
     const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun").mockRejectedValue(new Error("local folder retained"));
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("local folder retained");
-    expect(resolve).toHaveBeenCalledOnce();
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = String(ephemeral);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(ephemeral
+      ? "Volume-free servers require warm Paperclip Runner execution with remote workspace storage." : "local folder retained");
+    if (ephemeral) expect(resolve).not.toHaveBeenCalled();
+    else expect(resolve).toHaveBeenCalledOnce();
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
     expect(acquire).not.toHaveBeenCalled();
   });
