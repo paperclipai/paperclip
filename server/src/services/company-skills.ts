@@ -275,7 +275,6 @@ type ImportedSkillPersistValues = Pick<
 > & {
   fileInventory: Array<Record<string, unknown>>;
   metadata: Record<string, unknown>;
-  updatedAt: Date;
 };
 
 type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
@@ -6448,7 +6447,6 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         sharingScope: existing?.sharingScope ?? "company",
         installCount: existing?.installCount ?? 1,
         metadata,
-        updatedAt: new Date(),
       };
       const files = options.snapshots?.get(skill.key) ?? (incomingKind === "paperclip_bundled" && skill.sourceLocator
         ? await collectVersionFileInventoryFromDirectory(normalizeSourceLocatorDirectory(skill.sourceLocator)!) : undefined);
@@ -6472,7 +6470,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const row = existing
         ? await database
           .update(companySkills)
-          .set(values)
+          .set({ ...values, updatedAt: new Date() })
           .where(eq(companySkills.id, existing.id))
           .returning()
           .then((rows) => rows[0] ?? null)
