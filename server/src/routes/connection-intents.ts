@@ -1,6 +1,7 @@
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { refreshReadyConnectionTools } from "../services/connection-tool-refresh.js";
 import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
   CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
@@ -40,7 +41,7 @@ export { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool-definitions.js";
 
 /** Public, token-authenticated routes mounted before the general actor middleware. */
-export function runtimeConnectionIntentRoutes(db: Db) {
+export function runtimeConnectionIntentRoutes(db: Db, heartbeat: Pick<ReturnType<typeof heartbeatService>, "wakeup">) {
   const router = Router();
   const service = connectionIntentService(db);
 
@@ -109,7 +110,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       }
       if (name === "connection_request") {
         const input = connectionRequestInputSchema.parse(params.arguments ?? {});
-        const result = await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames });
+        const result = await refreshReadyConnectionTools(db, heartbeat, claims, await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames }));
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
@@ -133,7 +134,8 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   });
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
-    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames }));
+    const claims = runtimeClaims(req);
+    res.json(await refreshReadyConnectionTools(db, heartbeat, claims, await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames })));
   });
   return router;
 }

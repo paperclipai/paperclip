@@ -805,7 +805,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await grant(input, "A");
       const app = express();
       app.use(express.json());
-      app.use(runtimeConnectionIntentRoutes(db));
+      app.use(runtimeConnectionIntentRoutes(db, { wakeup: async () => null } as never));
       app.use(errorHandler);
       const tokenInput = {
         ...input,
