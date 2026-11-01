@@ -1,4 +1,5 @@
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { IssueRowDetailsNotice } from "./IssueRowDetailsNotice";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
@@ -1324,6 +1325,7 @@ function StreamlinedIssuesList({
   // Resolve the initial tree before reveal: inserting ancestors/children later would move rows.
   // Hierarchy queries retain existing context during subsequent reads.
   const collectionLoading = Boolean(isLoading || externalObjectFilterLoading || (hierarchyEnabled && hierarchy.isLoading));
+  useWarmTaskDetailCode(!collectionLoading && !error && filtered.length > 0);
   const baseGroupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
       return [{ key: "__all", label: null as string | null, items: filtered }];

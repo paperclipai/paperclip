@@ -1,3 +1,14 @@
+import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
+import { finishedIdleWake } from "./idle-work-proof.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
+import { notifyMergeConfirmationWork } from "./merged-pr-confirmation-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { notifyNativeHarnessBackupExpiration } from "./native-harness-backup-expiration-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
@@ -89,6 +100,7 @@ import {
   heartbeatRuns,
   routineRuns,
   executionWorkspaces,
+  externalObjectMentions,
   issueApprovals,
   issueAccessGrants,
   issueAttachments,
@@ -2514,120 +2526,87 @@ export async function listUnfinalizedExecutionWorkspaceIds(
   return unfinalized;
 }
 
+/** Workspace-wide facts are shared by blockers, rather than rereading retained
+ * operation history for every issue pointing at the same workspace. The ordered
+ * OFFSET boundary keeps the rare finalize filter from turning into a company
+ * history scan; the existing workspace/started-at index can stream candidates. */
+function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
+  return sql`(
+    with candidate_workspaces as materialized (
+      select distinct workspace_id from (${workspaceScope}) scoped_workspaces(workspace_id)
+    ), workspace_facts as materialized (
+      select candidate.workspace_id, finalized.started_at as finalized_at,
+        legacy.phase, legacy.status, legacy.started_at
+      from candidate_workspaces candidate
+      left join lateral (
+        select started_at from (
+          select phase, status, started_at from workspace_operations
+          where company_id = ${companyId}::uuid
+            and execution_workspace_id = candidate.workspace_id
+          order by started_at desc offset 0
+        ) workspace_history
+        where phase = 'workspace_finalize' and status = 'succeeded'
+        order by started_at desc limit 1
+      ) finalized on true
+      left join lateral (
+        select phase, status, started_at from workspace_operations
+        where company_id = ${companyId}::uuid
+          and execution_workspace_id = candidate.workspace_id and issue_id is null
+        order by started_at desc limit 1
+      ) legacy on true
+    ) select * from workspace_facts
+  ) as blocker_workspace_facts`;
+}
+
+/** An issue's own operation takes precedence over the legacy NULL fallback.
+ * Only a strictly later successful finalize clears either barrier. */
+function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
+  return sql`${workspaceId} is not null and exists (
+    select 1 from (values (1)) seed(value)
+    left join lateral (
+      select phase, status, started_at from workspace_operations blocker_operation
+      where blocker_operation.company_id = ${companyId}::uuid
+        and blocker_operation.execution_workspace_id = ${workspaceId}
+        and blocker_operation.issue_id = ${issueId}
+      order by blocker_operation.started_at desc limit 1
+    ) latest_blocker_operation on true
+    where coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at) is not null
+      and not (coalesce(latest_blocker_operation.phase, blocker_workspace_facts.phase) = 'workspace_finalize'
+        and coalesce(latest_blocker_operation.status, blocker_workspace_facts.status) = 'succeeded')
+      and (blocker_workspace_facts.finalized_at is null
+        or blocker_workspace_facts.finalized_at <= coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at))
+  )`;
+}
+
 async function listPendingFinalizeBlockerIssueIds(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
-  blockerWorkspacePairs: Array<{
-    blockerIssueId: string;
-    executionWorkspaceId: string;
-  }>,
+  blockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }>,
   lockSources = false,
 ): Promise<Set<string>> {
   const pending = new Set<string>();
-  const blockerIssueIds = [
-    ...new Set(blockerWorkspacePairs.map((pair) => pair.blockerIssueId)),
-  ];
-  const executionWorkspaceIds = [
-    ...new Set(blockerWorkspacePairs.map((pair) => pair.executionWorkspaceId)),
-  ];
-  if (blockerIssueIds.length === 0 || executionWorkspaceIds.length === 0)
-    return pending;
-  const blockerWorkspaceKeys = new Set(
-    blockerWorkspacePairs.map(
-      (pair) => `${pair.blockerIssueId}:${pair.executionWorkspaceId}`,
-    ),
-  );
-
+  const pairs = [...new Map(blockerWorkspacePairs.map(pair => [`${pair.blockerIssueId}:${pair.executionWorkspaceId}`, pair])).values()];
   if (lockSources) {
-
-
-    await dbOrTx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-      .where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, executionWorkspaceIds)))
-      .for("update", { noWait: true });
-  }
-  const query = dbOrTx
-    .select({
-      issueId: workspaceOperations.issueId,
-      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
-      phase: workspaceOperations.phase,
-      status: workspaceOperations.status,
-      startedAt: workspaceOperations.startedAt,
-    })
-    .from(workspaceOperations)
-    .where(
-      and(
-        eq(workspaceOperations.companyId, companyId),
-        inArray(
-          workspaceOperations.executionWorkspaceId,
-          executionWorkspaceIds,
-        ),
-      ),
-    );
-
-  const rows = await (lockSources ? query.for("share", { noWait: true }) : query);
-
-  const latestAttributedByBlockerWorkspace = new Map<
-    string,
-    { phase: string; status: string; startedAt: Date }
-  >();
-  const latestUnattributedByWorkspace = new Map<
-    string,
-    { phase: string; status: string; startedAt: Date }
-  >();
-  const latestSuccessfulFinalizeByWorkspace = new Map<string, Date>();
-  for (const row of rows) {
-    if (!row.executionWorkspaceId) continue;
-    if (row.phase === "workspace_finalize" && row.status === "succeeded") {
-      const current = latestSuccessfulFinalizeByWorkspace.get(
-        row.executionWorkspaceId,
-      );
-      if (!current || row.startedAt > current) {
-        latestSuccessfulFinalizeByWorkspace.set(
-          row.executionWorkspaceId,
-          row.startedAt,
-        );
-      }
-    }
-    if (row.issueId) {
-      const key = `${row.issueId}:${row.executionWorkspaceId}`;
-      if (!blockerWorkspaceKeys.has(key)) continue;
-      const current = latestAttributedByBlockerWorkspace.get(key);
-      if (!current || row.startedAt > current.startedAt) {
-        latestAttributedByBlockerWorkspace.set(key, {
-          phase: row.phase,
-          status: row.status,
-          startedAt: row.startedAt,
-        });
-      }
-      continue;
-    }
-
-    const current = latestUnattributedByWorkspace.get(row.executionWorkspaceId);
-    if (!current || row.startedAt > current.startedAt) {
-      latestUnattributedByWorkspace.set(row.executionWorkspaceId, {
-        phase: row.phase,
-        status: row.status,
-        startedAt: row.startedAt,
-      });
+    const workspaceIds = [...new Set(pairs.map(pair => pair.executionWorkspaceId))];
+    for (const chunk of chunkList(workspaceIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      await dbOrTx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+        .where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, chunk)))
+        .for("update", { noWait: true });
+      await dbOrTx.select({ id: workspaceOperations.id }).from(workspaceOperations)
+        .where(and(eq(workspaceOperations.companyId, companyId), inArray(workspaceOperations.executionWorkspaceId, chunk)))
+        .for("share", { noWait: true });
     }
   }
-
-  for (const pair of blockerWorkspacePairs) {
-    const latest =
-      latestAttributedByBlockerWorkspace.get(
-        `${pair.blockerIssueId}:${pair.executionWorkspaceId}`,
-      ) ?? latestUnattributedByWorkspace.get(pair.executionWorkspaceId);
-    if (!latest) continue; // no ops recorded -> nothing to finalize for this blocker
-    if (latest.phase === "workspace_finalize" && latest.status === "succeeded")
-      continue;
-    const laterSuccessfulFinalize = latestSuccessfulFinalizeByWorkspace.get(
-      pair.executionWorkspaceId,
-    );
-    if (laterSuccessfulFinalize && laterSuccessfulFinalize > latest.startedAt)
-      continue;
-    pending.add(pair.blockerIssueId);
+  // Each pair occurs in both the source and the workspace scope.
+  for (const chunk of chunkList(pairs, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE / 2)) {
+    const values = sql.join(chunk.map(pair => sql`(${pair.blockerIssueId}::uuid, ${pair.executionWorkspaceId}::uuid)`), sql`, `);
+    const rows = await dbOrTx.select({ id: sql<string>`blocker_source.issue_id` })
+      .from(sql`(values ${values}) as blocker_source(issue_id, workspace_id)`)
+      .leftJoin(blockerWorkspaceFacts(companyId, sql`select workspace_id from (values ${values}) workspace_scope(issue_id, workspace_id)`),
+        sql`blocker_workspace_facts.workspace_id = blocker_source.workspace_id`)
+      .where(pendingFinalizeBlockerCondition(companyId, sql`blocker_source.issue_id`, sql`blocker_source.workspace_id`));
+    for (const row of rows) pending.add(row.id);
   }
-
   return pending;
 }
 
@@ -3432,6 +3411,7 @@ type IssueBlockerAttentionEdge = {
   blockerIssueId: string;
 };
 type IssueBlockerAttentionQueryRow = IssueBlockerAttentionNode & {
+  executionWorkspaceId?: string | null;
   issueId: string | null;
   blockerIssueId: string;
 };
@@ -3820,11 +3800,15 @@ async function terminalExplicitBlockersByRoot(
   return terminalByRoot;
 }
 
-async function listIssueBlockerAttentionMap(
+async function listIssueBlockerAttentionMap(dbOrTx: any, companyId: string, issueRows: IssueBlockerAttentionInputNode[]) {
+  return (await readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows)).attention;
+}
+
+async function readIssueBlockerAttentionBatch(
   dbOrTx: any,
   companyId: string,
   issueRows: IssueBlockerAttentionInputNode[],
-): Promise<Map<string, IssueBlockerAttention>> {
+) {
   const roots = issueRows.filter(
     (row) => row.companyId === companyId && row.status === "blocked",
   );
@@ -3834,42 +3818,44 @@ async function listIssueBlockerAttentionMap(
       attentionMap.set(row.id, createIssueBlockerAttention());
     }
   }
-  if (roots.length === 0) return attentionMap;
+  const deferredRootIds = new Set<string>(roots.slice(BLOCKER_ATTENTION_MAX_NODES).map(root => root.id));
+  let edgeCount = 0, fetchedRows = 0;
+  const result = () => ({ attention: attentionMap, deferredRootIds, nodeCount: nodesById.size, edgeCount, fetchedRows });
+  if (roots.length === 0) return { attention: attentionMap, deferredRootIds, nodeCount: 0, edgeCount, fetchedRows };
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
-  for (const root of roots) nodesById.set(root.id, { ...root });
+  // Returned rows are already bounded by the residual fetch budget. Keep their
+  // positive live-work evidence even when they cannot enter the traversal graph.
+  const observedNodes = new Map<string, IssueBlockerAttentionNode>();
+  const observedChildrenByParent = new Map<string, Set<string>>();
+  const admittedRoots = roots.slice(0, BLOCKER_ATTENTION_MAX_NODES);
+  for (const root of admittedRoots) nodesById.set(root.id, { ...root });
 
-  let frontier = roots.map((root) => root.id);
-  let truncated = false;
+  type Traversal = { rootId: string; nodes: Set<string>; expanded: Set<string>; frontier: string[]; truncated: boolean };
+  const traversals = new Map<string, Traversal>(admittedRoots.map(root => [root.id, {
+    rootId: root.id, nodes: new Set([root.id]), expanded: new Set<string>(), frontier: [root.id], truncated: false,
+  }]));
+  const expanded = new Set<string>();
+  const queried = new Set<string>();
   const pendingFinalizeBlockerIssueIds = new Set<string>();
-  for (
-    let depth = 0;
-    frontier.length > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH;
-    depth += 1
-  ) {
-    const nextFrontier = new Set<string>();
+  for (let depth = 0; depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
+    const active = [...traversals.values()].filter(traversal => !traversal.truncated && traversal.frontier.length > 0);
+    if (active.length === 0) break;
+    const unread = new Set<string>();
+    for (const traversal of active) for (const id of traversal.frontier) if (!expanded.has(id)) unread.add(id);
+    const frontier = [...unread];
 
     for (const chunk of chunkList(
-      [...new Set(frontier)],
+      frontier,
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
-      const readinessByIssueId = await listIssueDependencyReadinessMap(
-        dbOrTx,
-        companyId,
-        chunk,
-      );
-      for (const readiness of readinessByIssueId.values()) {
-        for (const blockerIssueId of readiness.pendingFinalizeBlockerIssueIds) {
-          pendingFinalizeBlockerIssueIds.add(blockerIssueId);
-        }
-      }
-      const explicitBlockerRowsPromise: Promise<
-        IssueBlockerAttentionQueryRow[]
-      > = dbOrTx
+      const remaining = Math.min(BLOCKER_ATTENTION_MAX_NODES - nodesById.size,
+        BLOCKER_ATTENTION_MAX_NODES * 2 - edgeCount);
+      if (remaining <= 0) break;
+      const rowLimit = remaining + 1;
+      const explicitBlocker = dbOrTx
         .select({
-          issueId: issueRelations.relatedIssueId,
-          blockerIssueId: issues.id,
           id: issues.id,
           companyId: issues.companyId,
           parentId: issues.parentId,
@@ -3877,19 +3863,55 @@ async function listIssueBlockerAttentionMap(
           title: issues.title,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          executionWorkspaceId: issues.executionWorkspaceId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
         })
+        // Resolve the globally unique relation target first. The company guard
+        // below remains authoritative, without a repeated company-index scan.
+        .from(issues).where(eq(issues.id, issueRelations.issueId))
+        .limit(1).as("explicit_blocker");
+      const workspaceScope = sql`select distinct candidate.execution_workspace_id
+        from issue_relations workspace_relation
+        inner join lateral (
+          select company_id, status, execution_workspace_id from issues
+          where id = workspace_relation.issue_id limit 1
+        ) candidate on true
+        where workspace_relation.company_id = ${companyId}::uuid
+          and workspace_relation.type = 'blocks'
+          and workspace_relation.related_issue_id in (${sql.join(chunk.map(id => sql`${id}::uuid`), sql`, `)})
+          and candidate.company_id = ${companyId}::uuid
+          and candidate.status = 'done' and candidate.execution_workspace_id is not null`;
+      const explicitBlockerRowsPromise: Promise<
+        IssueBlockerAttentionQueryRow[]
+      > = dbOrTx
+        .select({
+          issueId: issueRelations.relatedIssueId,
+          blockerIssueId: explicitBlocker.id,
+          id: explicitBlocker.id,
+          companyId: explicitBlocker.companyId,
+          parentId: explicitBlocker.parentId,
+          identifier: explicitBlocker.identifier,
+          title: explicitBlocker.title,
+          status: explicitBlocker.status,
+          executionRunId: explicitBlocker.executionRunId,
+          executionWorkspaceId: explicitBlocker.executionWorkspaceId,
+          assigneeAgentId: explicitBlocker.assigneeAgentId,
+          assigneeUserId: explicitBlocker.assigneeUserId,
+        })
         .from(issueRelations)
-        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .innerJoinLateral(explicitBlocker, sql`true`)
+        .leftJoin(blockerWorkspaceFacts(companyId, workspaceScope),
+          sql`blocker_workspace_facts.workspace_id = ${explicitBlocker.executionWorkspaceId}`)
         .where(
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
-            eq(issues.companyId, companyId),
+            eq(explicitBlocker.companyId, companyId),
+            or(ne(explicitBlocker.status, "done"), pendingFinalizeBlockerCondition(companyId, sql`${explicitBlocker.id}`, sql`${explicitBlocker.executionWorkspaceId}`)),
           ),
-        );
+        ).limit(rowLimit);
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
         .select({
           issueId: issues.parentId,
@@ -3914,68 +3936,83 @@ async function listIssueBlockerAttentionMap(
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
             ),
           ),
-        );
+        ).limit(rowLimit);
       const [explicitBlockerRows, childRows] = await Promise.all([
         explicitBlockerRowsPromise,
         childRowsPromise,
       ]);
 
+      for (const id of chunk) queried.add(id);
+      fetchedRows += explicitBlockerRows.length + childRows.length;
+      const pendingFinalize = await listPendingFinalizeBlockerIssueIds(dbOrTx, companyId,
+        explicitBlockerRows.flatMap(row => row.status === "done" && row.executionWorkspaceId
+          ? [{ blockerIssueId: row.blockerIssueId, executionWorkspaceId: row.executionWorkspaceId }] : []));
+      for (const id of pendingFinalize) pendingFinalizeBlockerIssueIds.add(id);
+      let complete = explicitBlockerRows.length < rowLimit && childRows.length < rowLimit;
       const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
         (row) =>
           row.status !== "done" ||
           pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
       );
-      appendBlockerAttentionEdges(edgesByIssueId, [
-        ...unresolvedExplicitBlockerRows
-          .filter(
-            (row): row is IssueBlockerAttentionQueryRow & { issueId: string } =>
-              row.issueId !== null,
-          )
-          .map((row) => ({
-            issueId: row.issueId,
-            blockerIssueId: row.blockerIssueId,
-          })),
-        ...childRows
-          .filter(
-            (row): row is IssueBlockerAttentionQueryRow & { issueId: string } =>
-              row.issueId !== null,
-          )
-          .map((row) => ({
-            issueId: row.issueId,
-            blockerIssueId: row.blockerIssueId,
-          })),
-      ]);
-
       for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
-        if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
-        nodesById.set(row.blockerIssueId, {
-          id: row.blockerIssueId,
-          companyId: row.companyId,
-          parentId: row.parentId,
-          identifier: row.identifier,
-          title: row.title,
-          status: row.status,
-          executionRunId: row.executionRunId,
-          assigneeAgentId: row.assigneeAgentId,
-          assigneeUserId: row.assigneeUserId,
-        });
-        nextFrontier.add(row.blockerIssueId);
+        if (!row.issueId) continue;
+        observedNodes.set(row.blockerIssueId, row);
+        const observed = observedChildrenByParent.get(row.issueId) ?? new Set<string>();
+        observed.add(row.blockerIssueId);
+        observedChildrenByParent.set(row.issueId, observed);
+        if (!nodesById.has(row.blockerIssueId)) {
+          if (nodesById.size >= BLOCKER_ATTENTION_MAX_NODES) { complete = false; continue; }
+          nodesById.set(row.blockerIssueId, {
+            id: row.blockerIssueId, companyId: row.companyId, parentId: row.parentId, identifier: row.identifier,
+            title: row.title, status: row.status, executionRunId: row.executionRunId,
+            assigneeAgentId: row.assigneeAgentId, assigneeUserId: row.assigneeUserId,
+          });
+        }
+        const edges = edgesByIssueId.get(row.issueId) ?? [];
+        if (edges.some(edge => edge.blockerIssueId === row.blockerIssueId)) continue;
+        if (edgeCount >= BLOCKER_ATTENTION_MAX_NODES * 2) { complete = false; continue; }
+        edges.push({ issueId: row.issueId, blockerIssueId: row.blockerIssueId });
+        edgesByIssueId.set(row.issueId, edges);
+        edgeCount++;
       }
+      if (complete) for (const id of chunk) expanded.add(id);
+
     }
 
-    if (nodesById.size > BLOCKER_ATTENTION_MAX_NODES) {
-      truncated = true;
-      break;
+    for (const traversal of active) {
+      if (traversal.frontier.some(id => !expanded.has(id))) {
+        for (const id of traversal.frontier) if (queried.has(id)) {
+          traversal.expanded.add(id);
+          for (const edge of edgesByIssueId.get(id) ?? []) if (nodesById.has(edge.blockerIssueId)) traversal.nodes.add(edge.blockerIssueId);
+        }
+        traversal.truncated = true;
+        traversal.frontier = [];
+        deferredRootIds.add(traversal.rootId);
+        continue;
+      }
+      const nextFrontier = new Set<string>();
+      for (const id of traversal.frontier) {
+        traversal.expanded.add(id);
+        for (const edge of edgesByIssueId.get(id) ?? []) {
+          if (traversal.nodes.has(edge.blockerIssueId) || !nodesById.has(edge.blockerIssueId)) continue;
+          traversal.nodes.add(edge.blockerIssueId);
+          nextFrontier.add(edge.blockerIssueId);
+        }
+      }
+      traversal.truncated = traversal.nodes.size > BLOCKER_ATTENTION_MAX_NODES;
+      traversal.frontier = traversal.truncated ? [] : [...nextFrontier];
     }
-    frontier = [...nextFrontier];
   }
-  if (frontier.length > 0) truncated = true;
+  for (const traversal of traversals.values()) {
+    if (traversal.frontier.length > 0) traversal.truncated = true;
+  }
 
-  const nodeIds = [...nodesById.keys()];
+  const evidenceNodes = new Map([...nodesById, ...observedNodes]);
+  const nodeIds = [...evidenceNodes.keys()];
   const activeIssueIds = new Set<string>();
   const agentIds = new Set<string>();
   const issueIdByExecutionRunId = new Map<string, string>();
-  for (const node of nodesById.values()) {
+  for (const node of evidenceNodes.values()) {
     if (node.assigneeAgentId) agentIds.add(node.assigneeAgentId);
     if (node.executionRunId)
       issueIdByExecutionRunId.set(node.executionRunId, node.id);
@@ -4033,7 +4070,7 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
-  const explicitWaitCandidateIds = [...nodesById.values()]
+  const explicitWaitCandidateIds = [...evidenceNodes.values()]
     .filter((node) => node.status !== "done")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
@@ -4108,23 +4145,26 @@ async function listIssueBlockerAttentionMap(
       ownerType: string;
       ownerAgentId: string | null;
       ownerUserId: string | null;
-    }> = await dbOrTx
-      .select({
-        id: issueRecoveryActions.id,
-        sourceIssueId: issueRecoveryActions.sourceIssueId,
-        status: issueRecoveryActions.status,
-        ownerType: issueRecoveryActions.ownerType,
-        ownerAgentId: issueRecoveryActions.ownerAgentId,
-        ownerUserId: issueRecoveryActions.ownerUserId,
-      })
-      .from(issueRecoveryActions)
-      .where(
-        and(
-          eq(issueRecoveryActions.companyId, companyId),
-          inArray(issueRecoveryActions.status, ["active", "escalated"]),
-          inArray(issueRecoveryActions.sourceIssueId, explicitWaitCandidateIds),
-        ),
-      );
+    }> = [];
+    for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      recoveryActionRows.push(...await dbOrTx
+        .select({
+          id: issueRecoveryActions.id,
+          sourceIssueId: issueRecoveryActions.sourceIssueId,
+          status: issueRecoveryActions.status,
+          ownerType: issueRecoveryActions.ownerType,
+          ownerAgentId: issueRecoveryActions.ownerAgentId,
+          ownerUserId: issueRecoveryActions.ownerUserId,
+        })
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            inArray(issueRecoveryActions.sourceIssueId, chunk),
+          ),
+        ));
+    }
     const recoveryActionIds = recoveryActionRows.map((row) => row.id);
     const liveRecoveryActionIds = new Set<string>();
     for (const chunk of chunkList(
@@ -4187,22 +4227,11 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
-  const agentRows: IssueBlockerAttentionAgentRow[] =
-    agentIds.size > 0
-      ? await dbOrTx
-          .select({
-            id: agents.id,
-            companyId: agents.companyId,
-            status: agents.status,
-          })
-          .from(agents)
-          .where(
-            and(
-              eq(agents.companyId, companyId),
-              inArray(agents.id, [...agentIds]),
-            ),
-          )
-      : [];
+  const agentRows: IssueBlockerAttentionAgentRow[] = [];
+  for (const chunk of chunkList([...agentIds], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    agentRows.push(...await dbOrTx.select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+      .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, chunk))));
+  }
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
 
   type PathClassification = {
@@ -4215,6 +4244,7 @@ async function listIssueBlockerAttentionMap(
   const classifyPath = (
     nodeId: string,
     seen: Set<string>,
+    truncated: boolean,
   ): PathClassification => {
     const sample = blockerSampleIdentifier(nodesById.get(nodeId));
     if (truncated || seen.has(nodeId)) {
@@ -4319,7 +4349,7 @@ async function listIssueBlockerAttentionMap(
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
       const classified = downstream.map((edge) =>
-        classifyPath(edge.blockerIssueId, nextSeen),
+        classifyPath(edge.blockerIssueId, nextSeen, truncated),
       );
       const stalledChild = classified.find(
         (result) => result.stalled || result.sampleStalledBlockerIdentifier,
@@ -4385,18 +4415,22 @@ async function listIssueBlockerAttentionMap(
     };
   };
 
-  const pathHasLiveWork = (nodeId: string, seen: Set<string>): boolean => {
-    if (seen.has(nodeId)) return false;
+  const nodeHasLiveWork = (node: IssueBlockerAttentionNode) =>
+    node.status === "in_progress" || activeIssueIds.has(node.id) ||
+    explicitWaitingIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+  const observedChildHasLiveWork = (parentId: string) =>
+    [...observedChildrenByParent.get(parentId) ?? []].some(id => {
+      const node = observedNodes.get(id);
+      return node?.companyId === companyId && nodeHasLiveWork(node);
+    });
+  const pathHasLiveWork = (nodeId: string, seen: Set<string>, traversal: Traversal): boolean => {
+    if (seen.has(nodeId) || !traversal.nodes.has(nodeId)) return false;
     const node = nodesById.get(nodeId);
     if (!node || node.companyId !== companyId) return false;
-    if (
-      node.status === "in_progress" ||
-      activeIssueIds.has(node.id) ||
-      explicitWaitingIssueIds.has(node.id) ||
-      Boolean(node.assigneeUserId)
-    )
-      return true;
+    if (nodeHasLiveWork(node)) return true;
 
+    if (!traversal.expanded.has(nodeId)) return false;
+    if (observedChildHasLiveWork(nodeId)) return true;
     const nextSeen = new Set(seen);
     nextSeen.add(nodeId);
     return (edgesByIssueId.get(node.id) ?? []).some((edge) => {
@@ -4406,7 +4440,7 @@ async function listIssueBlockerAttentionMap(
         !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
       )
         return false;
-      return pathHasLiveWork(edge.blockerIssueId, nextSeen);
+      return pathHasLiveWork(edge.blockerIssueId, nextSeen, traversal);
     });
   };
 
@@ -4419,6 +4453,7 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
+    const traversal = traversals.get(root.id)!;
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return (
@@ -4440,7 +4475,7 @@ async function listIssueBlockerAttentionMap(
 
     const classified = topLevelEdges.map((edge) => ({
       edge,
-      result: classifyPath(edge.blockerIssueId, new Set([root.id])),
+      result: classifyPath(edge.blockerIssueId, new Set([root.id]), traversal.truncated),
     }));
     const coveredBlockerCount = classified.filter(
       (entry) => entry.result.covered,
@@ -4522,8 +4557,8 @@ async function listIssueBlockerAttentionMap(
           stalledEntry?.result.sampleStalledBlockerIdentifier ??
           sampleStalledFromChain ??
           null,
-        blockingTreeLive: topLevelEdges.some((edge) =>
-          pathHasLiveWork(edge.blockerIssueId, new Set([root.id])),
+        blockingTreeLive: observedChildHasLiveWork(root.id) || topLevelEdges.some((edge) =>
+          pathHasLiveWork(edge.blockerIssueId, new Set([root.id]), traversal),
         ),
         directBlockerIssueId: sampleEntry?.edge.blockerIssueId ?? null,
         terminalBlockerIssueId,
@@ -4538,7 +4573,7 @@ async function listIssueBlockerAttentionMap(
     );
   }
 
-  return attentionMap;
+  return result();
 }
 
 type IssueReviewAttentionInput = Pick<IssueRow, "id" | "companyId" | "status">;
@@ -7598,7 +7633,7 @@ export function issueService(db: Db) {
     companyId: string,
     blockedByIssueIds: string[],
     actor: { agentId?: string | null; userId?: string | null } = {},
-    dbOrTx: any = db,
+    dbOrTx: any,
   ) {
     const deduped = [...new Set(blockedByIssueIds)];
     if (deduped.some((candidate) => candidate === issueId)) {
@@ -7627,6 +7662,9 @@ export function issueService(db: Db) {
       await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
     }
 
+    await notifyIssueAttentionRetentionWork(dbOrTx, { companyId, issueId });
+    await notifyIssueRecovery(dbOrTx, { companyId });
+    await notifyDeferredExecutionEligibility(dbOrTx, { companyId });
     await dbOrTx
       .delete(issueRelations)
       .where(
@@ -7730,6 +7768,7 @@ export function issueService(db: Db) {
       }
 
       const now = new Date();
+      await notifyStatusCardIssueChange(tx, lockedIssue.companyId);
       const adopted = await tx
         .update(issues)
         .set({
@@ -7783,13 +7822,14 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
       const actorRun = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, companyId: heartbeatRuns.companyId })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, input.actorRunId))
         .then((rows) => rows[0] ?? null);
       if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status))
         return null;
 
+      await notifyStatusCardIssueChange(tx, actorRun.companyId);
       const now = new Date();
       const adopted = await tx
         .update(issues)
@@ -9372,6 +9412,9 @@ export function issueService(db: Db) {
       return listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds);
     },
 
+    listBlockerAttentionBatch: async (companyId: string, issueRows: IssueBlockerAttentionInputNode[], dbOrTx: any = db) =>
+      readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows),
+
     listBlockerAttention: async (
       companyId: string,
       issueRows: IssueBlockerAttentionInputNode[],
@@ -9675,27 +9718,32 @@ export function issueService(db: Db) {
       });
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
-          .select({ blockerIssueId: issueRelations.issueId })
-          .from(issueRelations)
-          .where(
-            and(
-              eq(issueRelations.companyId, parent.companyId),
-              eq(issueRelations.relatedIssueId, parent.id),
-              eq(issueRelations.type, "blocks"),
-            ),
+        await db.transaction(async tx => {
+          await tx.select({ id: issues.id }).from(issues).where(and(
+            eq(issues.companyId, parent.companyId), eq(issues.id, parent.id))).for("update");
+          const existingBlockers = await tx
+            .select({ blockerIssueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, parent.companyId),
+                eq(issueRelations.relatedIssueId, parent.id),
+                eq(issueRelations.type, "blocks"),
+              ),
+            );
+          await syncBlockedByIssueIds(
+            parent.id,
+            parent.companyId,
+            [
+              ...new Set([
+                ...existingBlockers.map((row) => row.blockerIssueId),
+                child.id,
+              ]),
+            ],
+            { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            tx,
           );
-        await syncBlockedByIssueIds(
-          parent.id,
-          parent.companyId,
-          [
-            ...new Set([
-              ...existingBlockers.map((row) => row.blockerIssueId),
-              child.id,
-            ]),
-          ],
-          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
-        );
+        });
         [child] = await withIssueRelationSummaries(
           parent.companyId,
           [child],
@@ -10606,7 +10654,13 @@ export function issueService(db: Db) {
             : values.parentId ? `issue:${values.parentId}` : undefined);
         }
         if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        await notifyRunDispatch(tx, { companyId: values.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: values.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        values.id ??= randomUUID();
+        await notifyStatusCardIssueChange(tx, companyId);
+        await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
+        if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
@@ -10891,6 +10945,7 @@ export function issueService(db: Db) {
           }
         }
 
+        await notifyStatusCardIssueChange(tx, companyId);
         await insertRowsInChunks(tx, issues, issueRows);
         await insertRowsInChunks(tx, issueLabels, labelRows);
       });
@@ -10907,6 +10962,7 @@ export function issueService(db: Db) {
       const censorUsernameInLogs = (await instanceSettings.getGeneral())
         .censorUsernameInLogs;
       await db.transaction(async (tx) => {
+        for (const companyId of new Set(rows.map(row => row.companyId))) await notifyStatusCardIssueChange(tx, companyId);
         const commentRows = rows.map((row) => {
           const createdAt = row.createdAt ? new Date(row.createdAt) : null;
           return {
@@ -11470,6 +11526,15 @@ export function issueService(db: Db) {
           // Invalidate human direction at the common assignment boundary, including
           // plugin/service writes that do not go through HTTP run cancellation.
           // Keep the requester attribution for audit; cancellation revokes its use.
+          const affectedWakes = await tx.select({ agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, receiptExisting.companyId), eq(agentWakeupRequests.requestedByActorType, "user"),
+            sql`(${sql.raw(finishedIdleWake("agent_wakeup_requests"))}) IS NOT TRUE`,
+            sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId',
+              ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId',
+              ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId') = ${id}`,
+          )).for("update");
+          for (const agentId of new Set<string>(affectedWakes.map((wake: { agentId: string }) => wake.agentId)))
+            await notifyStrandedAgentStatus(tx, { companyId: receiptExisting.companyId, agentId });
           await notifyChatInboundWakeNotices(tx, { companyId: receiptExisting.companyId });
           await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
             .where(and(eq(agentWakeupRequests.companyId, receiptExisting.companyId),
@@ -11487,14 +11552,28 @@ export function issueService(db: Db) {
                 (blockedByIssueIds !== undefined || issueData.unblockDescriptor !== undefined)))) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
         }
+        await notifyStatusCardIssueChange(tx, receiptExisting.companyId);
+        if (patch.status !== undefined || patch.completedAt !== undefined || patch.cancelledAt !== undefined) {
+          await notifyNativeHarnessBackupExpiration(tx, { companyId: receiptExisting.companyId, issueId: id });
+        }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status)
           || patch.completedAt !== undefined || patch.cancelledAt !== undefined
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         }
+        await notifyIssueAttentionRetentionWork(tx, { companyId: receiptExisting.companyId, issueId: id, parentId: patch.parentId, originKind: patch.originKind, originId: patch.originId });
+        if (patch.status !== undefined || patch.hiddenAt !== undefined) {
+          await notifyMergeConfirmationWork(tx, { companyId: receiptExisting.companyId, issueId: id });
+        }
         if (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined
-          || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined) {
+          || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined || patch.parentId !== undefined
+          || patch.executionState !== undefined || patch.executionRunId !== undefined || patch.checkoutRunId !== undefined
+          || blockedByIssueIds !== undefined) {
+          await notifyRunDispatch(tx, { companyId: receiptExisting.companyId });
+          await notifyDeferredExecutionEligibility(tx, { companyId: receiptExisting.companyId });
+          await notifyActiveRunSilence(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyRoutineExecutionStatus(tx, id);
         }
         if (patch.monitorNextCheckAt !== undefined || (receiptExisting.monitorNextCheckAt &&
           (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined))) {
@@ -11542,6 +11621,9 @@ export function issueService(db: Db) {
           await notifyNativeResultCommit(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeWorkspaceFinalization(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeStatusReassessment(tx, { companyId: receiptExisting.companyId, issueId: id });
+        }
+        if (patch.originKind !== undefined || patch.originRunId !== undefined || patch.originId !== undefined) {
+          await notifyRoutineExecutionStatus(tx, id);
         }
         const updated = await tx
           .update(issues)
@@ -11920,7 +12002,9 @@ export function issueService(db: Db) {
         );
         if (settings?.environmentId !== environmentId) continue;
 
-        await db
+        await db.transaction(async tx => {
+          await notifyStatusCardIssueChange(tx, companyId);
+          await tx
           .update(issues)
           .set({
             executionWorkspaceSettings: {
@@ -11930,6 +12014,7 @@ export function issueService(db: Db) {
             updatedAt: new Date(),
           })
           .where(eq(issues.id, row.id));
+        });
         cleared += 1;
       }
 
@@ -11953,12 +12038,28 @@ export function issueService(db: Db) {
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
           const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
           if (owner) {
+            await notifyIssueAttentionRetentionWork(tx, { companyId: owner.companyId, issueId: id });
             await notifyExternalConversationSettlement(tx, { companyId: owner.companyId });
+            const mentionedObjects = await tx.selectDistinct({ objectId: externalObjectMentions.objectId })
+              .from(externalObjectMentions)
+              .where(and(
+                eq(externalObjectMentions.companyId, owner.companyId),
+                eq(externalObjectMentions.sourceIssueId, id),
+                isNotNull(externalObjectMentions.objectId),
+              ));
+            for (const mention of mentionedObjects) await notifyExternalObjectRefresh(tx, owner.companyId, mention.objectId!);
             await notifyApprovalWork(tx, owner.companyId);
+            await notifyStatusCardIssueChange(tx, owner.companyId);
           }
           await notifyDecisionTargetIssueRemoval(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyRunDispatch(tx, owner ? { companyId: owner.companyId } : undefined);
+          if (owner) {
+            await notifyDeferredExecutionEligibility(tx, owner);
+            await notifyActiveRunSilence(tx, { companyId: owner.companyId, issueId: id });
+          }
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyRoutineExecutionStatus(tx, id);
           removedIssue = await tx
             .delete(issues)
             .where(eq(issues.id, id))
@@ -12085,8 +12186,13 @@ export function issueService(db: Db) {
           )
         : isNull(issues.executionRunId);
       const updated = await db.transaction(async tx => {
+        await notifyStatusCardIssueChange(tx, issueCompany.companyId);
+        await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: issueCompany.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyRoutineExecutionStatus(tx, id);
         return tx
           .update(issues)
           .set({
@@ -12137,7 +12243,9 @@ export function issueService(db: Db) {
           current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
+        const adopted = await db.transaction(async tx => {
+          await notifyStatusCardIssueChange(tx, issueCompany.companyId);
+          return tx
           .update(issues)
           .set({
             checkoutRunId,
@@ -12158,6 +12266,7 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
+        });
         if (adopted) return adopted;
       }
 
@@ -12214,8 +12323,13 @@ export function issueService(db: Db) {
           }
           const staleExecutionRunId = current.executionRunId;
           const adopted = await db.transaction(async tx => {
+            await notifyStatusCardIssueChange(tx, issueCompany.companyId);
+            await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+            await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
+            await notifyDeferredExecutionEligibility(tx, { companyId: issueCompany.companyId });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+            await notifyRoutineExecutionStatus(tx, id);
             return tx
               .update(issues)
               .set(adoptionSet)
@@ -12469,8 +12583,12 @@ export function issueService(db: Db) {
           existing.status === "in_progress" ? "todo" : existing.status;
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
+        await notifyIssueAttentionRetentionWork(tx, { companyId: existing.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        await notifyRunDispatch(tx, { companyId: existing.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: existing.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyRoutineExecutionStatus(tx, id);
         const updated = await tx
           .update(issues)
           .set({
@@ -12521,6 +12639,8 @@ export function issueService(db: Db) {
           patch.assigneeAgentId = null;
         }
 
+        await notifyStatusCardIssueChange(tx, existing.companyId);
+        await notifyIssueAttentionRetentionWork(tx, { companyId: existing.companyId, issueId: id });
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         if (existing.checkoutRunId || existing.executionRunId || options.clearAssignee) {
           await notifyExternalConversationSettlement(tx, { companyId: existing.companyId, issueId: id });
@@ -12530,7 +12650,10 @@ export function issueService(db: Db) {
           await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: existing.companyId, issueId: id });
         }
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        await notifyRunDispatch(tx, { companyId: existing.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: existing.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyRoutineExecutionStatus(tx, id);
         const updated = await tx
           .update(issues)
           .set(patch)
@@ -12578,12 +12701,12 @@ export function issueService(db: Db) {
       return created;
     },
 
-    deleteLabel: async (id: string) =>
-      db
-        .delete(labels)
-        .where(eq(labels.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+    deleteLabel: async (id: string) => db.transaction(async tx => {
+      const [label] = await tx.select({ companyId: labels.companyId }).from(labels).where(eq(labels.id, id));
+      if (!label) return null;
+      await notifyStatusCardIssueChange(tx, label.companyId);
+      return tx.delete(labels).where(eq(labels.id, id)).returning().then(rows => rows[0] ?? null);
+    }),
 
     listComments: async (
       issueId: string,
@@ -12727,6 +12850,7 @@ export function issueService(db: Db) {
           .from(issueComments).where(eq(issueComments.id, commentId));
         if (!source) return null;
         await notifyExternalConversationSettlement(tx, source);
+        await notifyStatusCardIssueChange(tx, source.companyId);
         const [comment] = await tx
           .delete(issueComments)
           .where(eq(issueComments.id, commentId))
@@ -12766,6 +12890,7 @@ export function issueService(db: Db) {
           .for("update");
         if (!source) return null;
         await notifyExternalConversationSettlement(tx, source);
+        await notifyStatusCardIssueChange(tx, source.companyId);
         await notifyChatInboundWakeNotices(tx, source);
         const now = new Date();
         const [comment] = await tx
@@ -12834,7 +12959,7 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
-      if (dbOrTx === db && (actor.runId || actor.userId)) {
+      if (dbOrTx === db) {
         const append = () =>
           measureRunTransaction(db, "response", async (tx) => {
             // Serialize run-authored comments on the issue so a provider retry
@@ -13094,6 +13219,7 @@ export function issueService(db: Db) {
               currentUserRedactionOptions.enabled,
             );
           }
+          await notifyStatusCardIssueChange(dbOrTx, issue.companyId);
           comment =
             shouldUpgradeExternalAuthorization ||
             shouldUpgradeAttachmentAuthorization
@@ -13808,6 +13934,7 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
         return existing;

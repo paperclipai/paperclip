@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agentFileStore, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
-import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb } from "@paperclipai/db";
+import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb, fileStorageDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService, instructionWorkingCopyGuidance } from "../services/agent-instruction-working-copies.js";
@@ -399,12 +399,11 @@ describe("persistent agent directories", () => {
       expect(await copies.hasChanges({ companyId, runId: first.runId })).toBe(false);
       await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native" }).where(eq(heartbeatRuns.id, first.runId));
       const secondId = await nextRun();
-      const transaction = db.transaction.bind(db);
-      let transactions = 0;
+      const fileDb = fileStorageDb(db);
+      const transaction = fileDb.transaction.bind(fileDb);
       let injected = false;
-      const spy = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
-        transactions++;
-        if (transactions === 2 && !injected) {
+      const spy = vi.spyOn(fileDb, "transaction").mockImplementation((async (callback, options) => {
+        if (!injected) {
           injected = true;
           const before = (await copies.get(companyId, first.runId))!;
           vi.useFakeTimers({ toFake: ["Date"] });
@@ -432,11 +431,11 @@ describe("persistent agent directories", () => {
       const secondId = await nextRun();
       const warning = vi.spyOn(logger, "warn");
       const privateValue = "private-materialization-/tmp/untrusted-token-do-not-log";
-      const transaction = db.transaction.bind(db);
-      let calls = 0;
+      const fileDb = fileStorageDb(db);
+      const transaction = fileDb.transaction.bind(fileDb);
       let injected = false;
-      const spy = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
-        if (++calls === 2) {
+      const spy = vi.spyOn(fileDb, "transaction").mockImplementation((async (callback, options) => {
+        if (!injected) {
           injected = true;
           const prior = (await copies.get(companyId, first.runId))!;
           const values = change === "materialization" ? { receipt: { ...prior.receipt, materializationIdentity: privateValue } }

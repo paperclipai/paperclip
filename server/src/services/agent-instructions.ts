@@ -1,8 +1,9 @@
-import { inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
+import { adoptAgentFiles, inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
+import { invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agentInstructionHeads, agents, type Db } from "@paperclipai/db";
+import { agentInstructionHeads, agents, fileStorageDb, type Db } from "@paperclipai/db";
 import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -250,7 +251,13 @@ export function deriveBundleState(agent: AgentLike): BundleState {
   const legacyInstructionsPath = asString(config[FILE_KEY]);
 
   let mode: BundleMode | null = isBundleMode(storedModeRaw) ? storedModeRaw : null;
-  let rootPath = storedRootRaw ? resolveHomeAwarePath(storedRootRaw) : null;
+  // A managed root belongs to this process's disposable projection. Saved
+  // absolute paths describe the old host, never a different storage authority.
+  const managedSuffix = path.join("companies", agent.companyId, "agents", agent.id, "instructions");
+  const portableManagedRoot = mode === "managed" && storedRootRaw
+    && path.isAbsolute(storedRootRaw) && path.normalize(storedRootRaw).endsWith(`${path.sep}${managedSuffix}`);
+  let rootPath = portableManagedRoot ? resolveManagedInstructionsRoot(agent)
+    : storedRootRaw ? resolveHomeAwarePath(storedRootRaw) : null;
   let entryFile = ENTRY_FILE_DEFAULT;
 
   const storedEntryRaw = asString(config[ENTRY_KEY]);
@@ -295,6 +302,13 @@ export function deriveBundleState(agent: AgentLike): BundleState {
   };
 }
 
+/** Configuration mutations cannot introduce authority on disposable disk. */
+export function assertEphemeralAgentInstructions(agent: AgentLike) {
+  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && agentInstructionsBundleMode(agent) === "external") {
+    throw unprocessable("Volume-free servers require managed agent instructions");
+  }
+}
+
 /** Classify the configured bundle without touching the filesystem. */
 export function agentInstructionsBundleMode(agent: AgentLike): BundleMode | null {
   const state = deriveBundleState(agent);
@@ -334,7 +348,8 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
 
   if (state.mode === "external") return state;
 
-  const resolvedConfiguredRoot = path.resolve(state.rootPath);
+  const configuredRoot = asString(state.config[ROOT_KEY]) ?? state.rootPath;
+  const resolvedConfiguredRoot = path.resolve(configuredRoot);
   const configuredRootMatchesManaged = resolvedConfiguredRoot === managedRootPath;
   const hasEntryMismatch = recoveredEntryFile !== state.entryFile;
 
@@ -345,7 +360,7 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
   const warnings = [...state.warnings];
   if (!configuredRootMatchesManaged) {
     warnings.push(
-      `Recovered managed instructions from disk at ${managedRootPath}; ignoring stale configured root ${state.rootPath}.`,
+      `Recovered managed instructions from disk at ${managedRootPath}; ignoring stale configured root ${configuredRoot}.`,
     );
   }
   if (hasEntryMismatch) {
@@ -426,7 +441,8 @@ function buildPersistedBundleConfig(
   options?: { clearLegacyPromptTemplate?: boolean },
 ): Record<string, unknown> {
   const currentRootPath = current.rootPath ? path.resolve(current.rootPath) : null;
-  const derivedRootPath = derived.rootPath ? path.resolve(derived.rootPath) : null;
+  const storedRoot = asString(derived.config[ROOT_KEY]) ?? derived.rootPath;
+  const derivedRootPath = storedRoot ? path.resolve(storedRoot) : null;
   const configMatchesRecoveredState =
     derived.mode === current.mode
     && derivedRootPath !== null
@@ -489,6 +505,7 @@ export function syncInstructionsBundleConfigFromFilePath(
 }
 
 export function agentInstructionsService(db?: Db) {
+  if (db) db = fileStorageDb(db);
   async function assertUnversionedEntry(agent: AgentLike, entryFile: string, connection: Db | Parameters<Parameters<Db["transaction"]>[0]>[0] | undefined = db) {
     if (!connection) throw unprocessable("Bundle initialization requires the database-backed instructions service");
     const [head] = await connection.select().from(agentInstructionHeads).where(and(eq(agentInstructionHeads.companyId, agent.companyId),
@@ -597,6 +614,9 @@ export function agentInstructionsService(db?: Db) {
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     const nextMode = input.mode ?? state.mode ?? "managed";
+    if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && nextMode === "external") {
+      throw unprocessable("Volume-free servers require managed agent instructions");
+    }
     const nextEntryFile = input.entryFile ? normalizeRelativeFilePath(input.entryFile) : state.entryFile;
     let nextRootPath: string;
 
@@ -717,7 +737,12 @@ export function agentInstructionsService(db?: Db) {
         // Historical entries also remain projections if the configured entry changes.
         await assertUnversionedEntry(current, normalizeRelativeFilePath(relativePath), tx);
       }
-      return operation(current);
+      const managed = agentInstructionsBundleMode(current) !== "external";
+      const root = managed ? await adoptAgentFiles(tx, current) : null;
+      if (root) await invalidateAgentFileProjection(root);
+      const result = await operation(current);
+      if (root) await persistDurableAgentFiles(tx, current, root);
+      return result;
     });
   }
   async function writeFile(...args: Parameters<typeof writeFileUnversioned>) {
@@ -810,7 +835,7 @@ export function agentInstructionsService(db?: Db) {
     if (!db) throw unprocessable("Bundle initialization requires the database-backed instructions service");
     return db.transaction(async (tx) => {
       const agent = args[0];
-      const [owner] = await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId))).for("update");
+      const [owner] = await tx.select().from(agents).where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId))).for("update");
       if (!owner) throw notFound("Agent not found");
       await assertUnversionedEntry(agent, args[2]?.entryFile ? normalizeRelativeFilePath(args[2].entryFile) : ENTRY_FILE_DEFAULT, tx);
       if (args[2]?.replaceExisting) {
@@ -818,19 +843,42 @@ export function agentInstructionsService(db?: Db) {
           .where(and(eq(agentInstructionHeads.companyId, agent.companyId), eq(agentInstructionHeads.agentId, agent.id))).limit(1);
         if (existingHead) throw unprocessable("Replacing this bundle would remove a versioned entry. Use canonical content commits.", { code: "INSTRUCTION_REVISION_REQUIRED" });
       }
-      return materializeManagedBundleUnversioned(...args);
+      const root = resolveManagedInstructionsRoot(owner);
+      if (agentInstructionsBundleMode(owner) === "external") await restoreDurableAgentFiles(tx, owner, root);
+      else await adoptAgentFiles(tx, owner);
+      await invalidateAgentFileProjection(root);
+      const result = await materializeManagedBundleUnversioned(...args);
+      await persistDurableAgentFiles(tx, owner, root);
+      return result;
+    });
+  }
+
+  // Public managed reads and configuration changes share the same row lock as
+  // editor/runtime writes. Internal helpers operate on the already-loaded tree.
+  async function withProjection<T>(agent: AgentLike, write: boolean, operation: (current: AgentLike) => Promise<T>, managedDestination = false) {
+    if (!db) return operation(agent);
+    return db.transaction(async tx => {
+      const [current] = await tx.select().from(agents).where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId))).for("update");
+      if (!current) throw notFound("Agent not found");
+      const managed = agentInstructionsBundleMode(current) !== "external";
+      const root = managed ? await adoptAgentFiles(tx, current) : managedDestination ? resolveManagedInstructionsRoot(current) : null;
+      if (!managed && root) await restoreDurableAgentFiles(tx, current, root);
+      if (write && root) await invalidateAgentFileProjection(root);
+      const result = await operation(current);
+      if (write && root) await persistDurableAgentFiles(tx, current, root);
+      return result;
     });
   }
 
   return {
-    getBundleLocation,
-    getBundle,
-    readFile,
-    updateBundle,
+    getBundleLocation: (agent: AgentLike) => withProjection(agent, false, getBundleLocation),
+    getBundle: (agent: AgentLike) => withProjection(agent, false, getBundle),
+    readFile: (agent: AgentLike, relativePath: string) => withProjection(agent, false, current => readFile(current, relativePath)),
+    updateBundle: (agent: AgentLike, input: Parameters<typeof updateBundle>[1]) => withProjection(agent, true, current => updateBundle(current, input), input.mode === "managed"),
     writeFile,
     deleteFile,
-    exportFiles,
-    ensureManagedBundle: ensureWritableBundle,
+    exportFiles: (agent: AgentLike, options?: Parameters<typeof exportFiles>[1]) => withProjection(agent, false, current => exportFiles(current, options)),
+    ensureManagedBundle: (agent: AgentLike, options?: Parameters<typeof ensureWritableBundle>[1]) => withProjection(agent, true, current => ensureWritableBundle(current, options)),
     materializeManagedBundle,
   };
 }

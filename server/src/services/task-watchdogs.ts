@@ -1,3 +1,5 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -831,7 +833,7 @@ async function updateIssueWatchdogRow(
   return updated;
 }
 
-export async function upsertIssueWatchdogForIssue(
+async function upsertIssueWatchdogInTransaction(
   dbOrTx: any,
   companyId: string,
   issueId: string,
@@ -847,12 +849,13 @@ export async function upsertIssueWatchdogForIssue(
     .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
     .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
 
+  await notifyIssueRecovery(dbOrTx, { companyId });
   if (existing) {
     const updated = await updateIssueWatchdogRow(dbOrTx, existing, input, now);
     return { watchdog: toIssueWatchdog(updated), created: false };
   }
 
-  const insertResult: { row: IssueWatchdogRow; created: boolean } = await dbOrTx
+  const insertResult: { row: IssueWatchdogRow; created: boolean } = await dbOrTx.transaction(async (tx: Db) => tx
     .insert(issueWatchdogs)
     .values({
       companyId,
@@ -870,7 +873,7 @@ export async function upsertIssueWatchdogForIssue(
       updatedAt: now,
     })
     .returning()
-    .then((rows: IssueWatchdogRow[]) => ({ row: rows[0], created: true }))
+    .then((rows: IssueWatchdogRow[]) => ({ row: rows[0], created: true })))
     .catch(async (error: unknown) => {
       if (!isIssueWatchdogUniqueConflict(error)) throw error;
       const winner = await dbOrTx
@@ -883,6 +886,15 @@ export async function upsertIssueWatchdogForIssue(
       return { row: updated, created: false };
     });
   return { watchdog: toIssueWatchdog(insertResult.row), created: insertResult.created };
+}
+
+export function upsertIssueWatchdogForIssue(
+  dbOrTx: Db | Parameters<Parameters<Db["transaction"]>[0]>[0],
+  companyId: string,
+  issueId: string,
+  input: IssueWatchdogUpsertInput,
+): Promise<{ watchdog: IssueWatchdog; created: boolean }> {
+  return dbOrTx.transaction(tx => upsertIssueWatchdogInTransaction(tx, companyId, issueId, input));
 }
 
 export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) {
@@ -1398,10 +1410,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         }) ?? fallback
         : fallback;
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
-        await db
+        await db.transaction(async tx => {
+          await notifyStatusCardIssueChange(tx, input.watchdog.companyId);
+          await tx
           .update(issues)
           .set({ originFingerprint: input.classification.stopFingerprint, updatedAt: new Date() })
           .where(and(eq(issues.companyId, input.watchdog.companyId), eq(issues.id, watchdogIssue.id)));
+        });
         watchdogIssue.originFingerprint = input.classification.stopFingerprint;
       }
       await issuesSvc.addComment(
@@ -1478,7 +1493,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return created;
   }
 
-  async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
+  async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null; onDeferredDeadline?: (at: number) => void } = {}) {
     const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
     const sourceIssue = await db
       .select()
@@ -1491,6 +1506,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
+    if (classification.state === "pending_first_run") {
+      const pending = new Set(classification.pendingIssueIds);
+      for (const issue of input.issues) if (pending.has(issue.id)) {
+        const createdAt = toEpochMs(issue.createdAt);
+        if (createdAt !== null) opts.onDeferredDeadline?.(createdAt + TASK_WATCHDOG_FIRST_RUN_GRACE_MS);
+      }
+    }
     if (classification.state !== "stopped") {
       return { state: classification.state, reason: classification.reason, classification };
     }
@@ -1610,13 +1632,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     };
   }
 
-  async function listActiveWatchdogsForCompany(companyId?: string | null) {
+  async function listActiveWatchdogsForCompany(companyId?: string | null, watchdogId?: string) {
     return db
       .select()
       .from(issueWatchdogs)
       .where(and(
         eq(issueWatchdogs.status, "active"),
         ...(companyId ? [eq(issueWatchdogs.companyId, companyId)] : []),
+        watchdogId ? eq(issueWatchdogs.id, watchdogId) : undefined,
       ));
   }
 
@@ -1746,14 +1769,16 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       issueId: string,
       actor: ActorFields = {},
     ): Promise<IssueWatchdog | null> => {
-      await assertWatchedIssue(db, companyId, issueId);
-      const existing = await db
+      return db.transaction(async tx => {
+      await assertWatchedIssue(tx, companyId, issueId);
+      const existing = await tx
         .select()
         .from(issueWatchdogs)
         .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
         .then((rows) => rows[0] ?? null);
       if (!existing || existing.status === "disabled") return null;
-      const [updated] = await db
+      await notifyIssueRecovery(tx, { companyId });
+      const [updated] = await tx
         .update(issueWatchdogs)
         .set({
           status: "disabled",
@@ -1765,14 +1790,17 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(eq(issueWatchdogs.id, existing.id))
         .returning();
       return toIssueWatchdog(updated);
+      });
     },
 
     reconcileTaskWatchdogs: async (opts: {
       companyId?: string | null;
       runId?: string | null;
+      watchdogId?: string;
+      onDeferredDeadline?: (at: number) => void;
       issueCreatedAtGte?: Date | null;
     } = {}) => {
-      let rows = await listActiveWatchdogsForCompany(opts.companyId ?? null);
+      let rows = await listActiveWatchdogsForCompany(opts.companyId ?? null, opts.watchdogId);
       if (opts.issueCreatedAtGte) {
         const watchdogIssueIds = [...new Set(rows.map((row) => row.issueId))];
         const eligibleIssueIds = new Set(
@@ -1802,7 +1830,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
       for (const row of rows) {
         result.checked += 1;
-        const evaluated = await evaluateWatchdog(row, { runId: opts.runId ?? null });
+        const evaluated = await evaluateWatchdog(row, { runId: opts.runId ?? null, onDeferredDeadline: opts.onDeferredDeadline });
         if (evaluated.state === "triggered") {
           result.triggered += 1;
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);

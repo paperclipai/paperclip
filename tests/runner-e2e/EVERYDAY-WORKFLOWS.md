@@ -114,6 +114,13 @@ effects with different tool IDs cannot repeat.
 `remote-restart-before.json`, `remote-restart-after.json` and
 `remote-restart-final.json` retain receipt identities and hashes. They exclude
 provider text, tool arguments, command output, and raw provider sandbox IDs.
+The dedicated explicit-only `daytona-restart-continuity` definition 7 additionally
+replaces the controller after completion, then posts its unchanged saved-project
+follow-up through the normal authenticated task-comment API. Exactly one matching
+persisted user comment, consumed wake, same native/provider identity, new completed
+tool and useful output are required. Its initial browser journey remains; post-C
+readback is API-only and does not qualify browser reconnection or rendered status.
+The definition 6 browser timeout remains failed with an unknown browser cause.
 The suite definition version and harness digest change with this oracle.
 Its deterministic calibration is not a claim that a live Daytona run passed.
 

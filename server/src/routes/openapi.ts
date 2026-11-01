@@ -1297,6 +1297,7 @@ function registerCurrentRoute(input: {
   path: string;
   tags: string[];
   summary: string;
+  description?: string;
   query?: z.ZodTypeAny;
   body?: z.ZodTypeAny;
   responses?: Record<string, OpenApiResponse>;
@@ -1316,6 +1317,7 @@ function registerCurrentRoute(input: {
     ...(input["x-paperclip-transport"] ? { "x-paperclip-transport": input["x-paperclip-transport"], "x-paperclip-connection-management": input["x-paperclip-connection-management"] } : {}),
     tags: input.tags,
     summary: input.summary,
+    ...(input.description ? { description: input.description } : {}),
     ...(request ? { request } : {}),
     responses: input.responses ?? {
       200: r.ok(),
@@ -1372,6 +1374,8 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/liveness",
   "HEAD /api/liveness",
+  "GET /api/ready",
+  "HEAD /api/ready",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -1819,6 +1823,25 @@ registry.registerPath({
   tags: ["health"],
   summary: "Process startup status without a response body",
   responses: { 200: { description: "Process startup recovery is complete" }, 503: { description: "Startup recovery is not complete" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/ready",
+  tags: ["health"],
+  summary: "Deployment readiness without database access",
+  description: "Public in-memory admission status after startup dependencies and recovery have been verified. Returns 503 immediately during shutdown. Responses are not cached; an unavailable server supplies Retry-After: 1.",
+  responses: {
+    200: r.ok(z.object({ status: z.literal("ready") }).strict()),
+    503: { description: "Starting, recovering, or draining", content: {
+      "application/json": { schema: z.object({ status: z.enum(["starting", "recovering", "draining"]) }).strict() },
+    } },
+  },
+});
+registry.registerPath({
+  method: "head", path: "/api/ready", tags: ["health"],
+  summary: "Deployment readiness without a response body",
+  responses: { 200: { description: "Ready to receive traffic" }, 503: { description: "Starting, recovering, or draining" } },
 });
 
 // Shared by the healthy and database-unreachable responses: full details
@@ -5056,7 +5079,8 @@ registry.registerPath({
   method: "patch",
   path: "/api/projects/{id}",
   tags: ["projects"],
-  summary: "Update a project",
+  summary: "Update project properties and defaults",
+  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateProjectSchema),
@@ -10360,7 +10384,8 @@ registerCurrentRoute({
   method: "post",
   path: "/api/health/dev-server/restart",
   tags: ["health"],
-  summary: "Request a managed dev-server restart",
+  summary: "Request a managed dev-server instance restart",
+  description: "Request a restart of this Paperclip instance through its managed development-server supervisor. In authenticated deployments this requires a board identity; an agent credential does not inherit board access from its responsible user or from a chat request. Hand that operation to an authorized board/operator when the route denies the current agent. Returns 404 when no managed supervisor is available and 409 when no restart is required. Acceptance is not proof that the restart completed. This operation does not delete stored conversations or task comments.",
   responses: {
     202: r.ok(),
     403: r.forbidden,

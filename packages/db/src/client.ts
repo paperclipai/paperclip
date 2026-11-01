@@ -295,9 +295,10 @@ export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<v
 }
 
 // Control checkpoints must not occupy the request or lease-renewal pools
-// during an aligned burst. Share at most two lazy connections per owner.
+// during an aligned burst. Share at most three lazy connections per owner.
 const checkpointDbFactories = new WeakMap<object, () => Db>();
 const checkpointDbs = new WeakMap<object, Db>();
+const CHECKPOINT_POOL_MAX_CONNECTIONS = 3;
 const closedCheckpointOwners = new WeakSet<object>();
 
 /** The bounded controller checkpoint pool; transactions and test doubles keep
@@ -317,6 +318,27 @@ export function checkpointDb(db: Db): Db {
 export async function closeCheckpointDb(db: Db, timeoutSeconds: number): Promise<void> {
   closedCheckpointOwners.add(db);
   await checkpointDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+}
+
+// Managed file publication holds an agent lock while transferring bytes. A
+// stalled object store must not consume request or controller-renewal capacity.
+const fileStorageDbFactories = new WeakMap<object, () => Db>();
+const fileStorageDbs = new WeakMap<object, Db>();
+const closedFileStorageOwners = new WeakSet<object>();
+export function fileStorageDb(db: Db): Db {
+  const existing = fileStorageDbs.get(db);
+  if (existing) return existing;
+  const factory = fileStorageDbFactories.get(db);
+  if (!factory) return db; // Preserve the caller's transaction/savepoint.
+  if (closedFileStorageOwners.has(db)) throw new Error("file_storage_pool_closed");
+  const created = factory();
+  fileStorageDbs.set(db, created);
+  fileStorageDbs.set(created, created);
+  return created;
+}
+export async function closeFileStorageDb(db: Db, timeoutSeconds: number): Promise<void> {
+  closedFileStorageOwners.add(db);
+  await fileStorageDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
 }
 
 export function createDb(url: string, options?: DatabaseClientOptions) {
@@ -342,7 +364,10 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
     ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 2, applicationName: "paperclip-runner-checkpoint",
+    ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
+  }, db));
+  fileStorageDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 2, applicationName: "paperclip-file-storage",
   }, db));
   return db;
 }

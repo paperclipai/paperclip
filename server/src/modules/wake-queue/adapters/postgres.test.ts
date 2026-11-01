@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -37,7 +38,8 @@ import type { TransactionScope } from "../application/ports.js";
 // a foreign-company row is invisible to a read, and a deferred-status
 // compare-and-set that affects no row leaves no other trace. The decision
 // branching itself is proven against plain facts in `domain/policy.test.ts`.
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WAKE_QUEUE_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -57,8 +59,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   };
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-wake-queue-postgres-adapter-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-wake-queue-postgres-adapter-");
+    db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 20_000);
 
   afterEach(async () => {
@@ -78,6 +80,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -868,7 +871,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(candidate?.id).toBe(wakeId);
       const agent = await ports.transaction.findInvokableAgent({ companyId, agentId: foreignAgentId });
       expect(agent).toBeNull();
-      const failed = await ports.transaction.failDeferredWake({ companyId, wakeId: candidate!.id, now: new Date() });
+      const failed = await ports.transaction.failDeferredWake({ companyId, wakeId: candidate!.id, agentId: candidate!.agentId, now: new Date() });
       expect(failed).toBe(true);
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
@@ -900,6 +903,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       async (_locked, ports) => {
         const cancelledUnderWrongCompany = await ports.transaction.cancelDeferredWake({
           companyId: otherCompanyId,
+          agentId,
           wakeId,
           reason: "cross-company cancel attempt",
           now: new Date(),
@@ -908,6 +912,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
 
         const failedUnderWrongCompany = await ports.transaction.failDeferredWake({
           companyId: otherCompanyId,
+          agentId,
           wakeId,
           now: new Date(),
         });

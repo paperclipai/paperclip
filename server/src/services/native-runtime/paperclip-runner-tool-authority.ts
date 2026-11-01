@@ -1,4 +1,6 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { requiredQualityReviewSchema } from "@paperclipai/shared";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -1340,6 +1342,19 @@ export class PaperclipRunnerToolAuthority {
       return { bytes, filename: basename(file.path!), contentType: "application/octet-stream" };
     }
     const resolved = await workspaceFileResourceService(this.db).prepareDownload(this.binding.issueId, { path: file.path!, workspace: "auto" });
+    if ("stream" in resolved) {
+      try {
+        const chunks: Buffer[] = [];
+        let length = 0;
+        for await (const chunk of resolved.stream) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          length += bytes.length;
+          if (length > RUNNER_API_MAX_BYTES) throw badRequest("Workspace file exceeds API transfer limit");
+          chunks.push(bytes);
+        }
+        return { bytes: Buffer.concat(chunks), filename: resolved.resource.title, contentType: resolved.resource.contentType ?? "application/octet-stream" };
+      } finally { await resolved.cleanup(); }
+    }
     const handle = await openRunnerApiWorkspaceFile(resolved.realPath);
     try {
       const stat = await handle.stat();
@@ -2079,8 +2094,10 @@ export class PaperclipRunnerToolAuthority {
         replayMonitor = summarizeIssueMonitor(target, normalizeIssueExecutionPolicy(target.executionPolicy));
         return { taskId: target.id, status: target.status, monitor: replayMonitor };
       }
+      await notifyAttentionRetentionWork(tx, { companyId: this.binding.companyId });
       const patch = prepareIssueMonitorUpdate(target, input.monitor, actor);
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyStatusCardIssueChange(tx, this.binding.companyId);
       const [updated] = await tx.update(issues).set({ ...patch, updatedAt: new Date() })
         .where(and(eq(issues.id, target.id), eq(issues.companyId, this.binding.companyId))).returning();
       if (!updated) throw notFound("Task not found");
