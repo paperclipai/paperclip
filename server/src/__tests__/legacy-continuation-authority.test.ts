@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issueApprovals, approvals, issueWorkProducts, issues, routines, routineTriggers } from "@paperclipai/db";
+import { refreshIssueContinuationSummary, continuationSummaryParksExecutor } from "../services/issue-continuation-summary.js";
+import { routineService } from "../services/routines.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -251,4 +253,84 @@ describe("legacy continuation persisted authority", () => {
     const repair = (await f.runs()).find(r => r.id !== f.runId)!;
     expect(repair.contextSnapshot).toMatchObject({ legacyDispositionEpisode: { id: f.runId, attempt: 1 } });
   });
+  it("clears only a persisted obsolete review wait", async () => {
+    const f = await fixture();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const summaryAgent = { id: f.agentId, name: "Worker", adapterType: "codex_local" };
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, f.issueId));
+    await refreshIssueContinuationSummary({ db, issueId: f.issueId, run, agent: summaryAgent });
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Approve?" } });
+    const current = await refreshIssueContinuationSummary({ db, issueId: f.issueId, run, agent: summaryAgent });
+    expect(continuationSummaryParksExecutor(current?.body)).toBe(true);
+    await db.update(issueThreadInteractions).set({ status: "withdrawn" }).where(eq(issueThreadInteractions.issueId, f.issueId));
+    const obsolete = await refreshIssueContinuationSummary({ db, issueId: f.issueId, run, agent: summaryAgent });
+    expect(continuationSummaryParksExecutor(obsolete?.body)).toBe(false);
+  });
+  it("PASS next scheduled sweep executes", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    const [routine] = await db.insert(routines).values({ companyId: f.companyId, title: "Sweep", parentIssueId: f.issueId, assigneeAgentId: f.agentId, responsibleUserId: "fixture-owner" }).returning();
+    const firstTick = new Date("2026-10-01T08:00:00Z");
+    await db.insert(routineTriggers).values({ companyId: f.companyId, routineId: routine.id, kind: "schedule", cronExpression: "0 8 * * *", timezone: "UTC", nextRunAt: firstTick });
+    for (let replay = 0; replay < 2; replay++) await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    expect(await f.runs()).toHaveLength(1);
+    expect(await f.actions()).toHaveLength(0);
+    const wakes: string[] = [];
+    const scheduler = routineService(db, { heartbeat: { wakeup: async (_agentId, opts) => { wakes.push(String(opts.payload?.issueId)); return null; } } });
+    expect(await scheduler.tickScheduledTriggers(firstTick)).toEqual({ triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    const [child] = await db.select().from(issues).where(eq(issues.id, wakes[0]));
+    expect(child).toMatchObject({ parentId: f.issueId, assigneeAgentId: f.agentId, status: "todo" });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, child.id));
+    await scheduler.reconcileExecutionRunStatuses();
+    const [nextSweep] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded", runtimeMode: "legacy", contextSnapshot: { issueId: f.issueId }, finishedAt: new Date() }).returning();
+    await f.createRecovery().reconcileLegacyContinuation(nextSweep.id);
+    await f.createRecovery().reconcileLegacyContinuation(nextSweep.id);
+    expect(await f.actions()).toHaveLength(0);
+    expect(await scheduler.tickScheduledTriggers(new Date("2026-10-02T08:00:00Z"))).toEqual({ triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    expect(wakes[1]).not.toBe(wakes[0]);
+    const [parent] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(parent.status).toBe("todo");
+  });
+
+  it.each(["approval", "work_product", "child_review"])("preserves a current persisted %s target", async target => {
+    const f = await fixture();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const summaryAgent = { id: f.agentId, name: "Worker", adapterType: "codex_local" };
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, f.issueId));
+    await refreshIssueContinuationSummary({ db, issueId: f.issueId, run, agent: summaryAgent });
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    if (target === "approval") {
+      const [approval] = await db.insert(approvals).values({ companyId: f.companyId, type: "approve_ceo_strategy", payload: {} }).returning();
+      await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId: approval.id });
+    } else if (target === "work_product") {
+      await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId, type: "pull_request", provider: "github", title: "Change", status: "ready_for_review", reviewState: "needs_board_review" });
+    } else {
+      await db.insert(issues).values({ companyId: f.companyId, title: "Review child", parentId: f.issueId, status: "in_review" });
+    }
+    const summary = await refreshIssueContinuationSummary({ db, issueId: f.issueId, run, agent: summaryAgent });
+    expect(continuationSummaryParksExecutor(summary?.body)).toBe(true);
+  });
+  it.each(["paused", "disabled", "archived", "no_owner", "no_schedule"])("recovers todo when recurrence is %s", async invalid => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+    const [routine] = await db.insert(routines).values({ companyId: f.companyId, title: "Sweep", parentIssueId: f.issueId, assigneeAgentId: invalid === "no_owner" ? null : f.agentId, status: invalid === "paused" ? "paused" : "active" }).returning();
+    if (invalid !== "no_schedule") await db.insert(routineTriggers).values({ companyId: f.companyId, routineId: routine.id, kind: "schedule", enabled: invalid !== "disabled", archived: invalid === "archived", cronExpression: "0 8 * * *", timezone: "UTC", nextRunAt: new Date("2099-01-01") });
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    expect(await f.runs()).toHaveLength(2);
+    expect(await f.actions()).toHaveLength(1);
+  });
+
+  it("checks current wait targets before parking a queued continuation", async () => {
+    const f = await fixture();
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "queued", runtimeMode: "legacy", responsibleUserId: "fixture-owner", contextSnapshot: { issueId: f.issueId, wakeReason: "issue_continuation_needed", paperclipContinuationSummary: { body: "## Next Action\n\n- Wait for reviewer feedback or approval before continuing executor work." } } }).returning();
+    const { createPostgresRunDispatchAdapter } = await import("../modules/run-dispatch/adapters/postgres.js");
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.cancelStaleQueuedRun({ companyId: f.companyId, runId: queued.id, expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "not_stale" });
+    await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Approve?" } });
+    expect(await adapter.cancelStaleQueuedRun({ companyId: f.companyId, runId: queued.id, expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled" });
+  });
+
 });

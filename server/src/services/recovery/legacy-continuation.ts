@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { RecurringLoopDisposition } from "../recurring-loop-disposition.js";
 
 /** This contract deliberately has no narrative, liveness label or progress count. */
 export interface LegacyContinuationInput {
@@ -6,6 +7,7 @@ export interface LegacyContinuationInput {
   issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; assigneeUserId?: string | null } | null;
   agent: { id: string; companyId: string; status: string } | null;
   episode: LegacyDispositionEpisode;
+  recurringLoop?: RecurringLoopDisposition | null;
   gates: {
     stopped: boolean;
     paused: boolean;
@@ -76,6 +78,12 @@ export function decideLegacyContinuation(input: LegacyContinuationInput):
     [gates.conversation, "conversation"],
     [!gates.agentInvokable || ["paused", "terminated", "pending_approval"].includes(agent.status), "agent_not_invokable"],
   ] as const) if (blocked) return { kind: "skip", reason };
+  const loop = input.recurringLoop;
+  if (issue.status === "todo" && loop && loop.companyId === issue.companyId &&
+    loop.issueId === issue.id && loop.agentId === run.agentId &&
+    Number.isFinite(loop.nextRunAt.getTime())) {
+    return { kind: "skip", reason: "registered_recurring_loop" };
+  }
   if (episode.attempt >= episode.maxAttempts) return { kind: "exhausted", attempt: episode.attempt, maxAttempts: episode.maxAttempts };
   const nextAttempt = episode.attempt + 1;
   return {

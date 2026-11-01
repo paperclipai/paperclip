@@ -1,3 +1,4 @@
+import { readCurrentIssueWaitTarget } from "../../../services/issue-wait-target.js";
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
@@ -607,6 +608,11 @@ export function createPostgresRunDispatchAdapter(
         : await getIssueContinuationSummaryDocument(dbOrTx, issueId);
       continuationSummaryBody = queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
       continuationParksExecutor = continuationSummaryParksExecutor(continuationSummaryBody);
+      if (continuationParksExecutor && issue) {
+        continuationParksExecutor = continuationSummaryParksExecutor(
+          continuationSummaryBody, await readCurrentIssueWaitTarget(dbOrTx, issue),
+        );
+      }
     }
 
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
