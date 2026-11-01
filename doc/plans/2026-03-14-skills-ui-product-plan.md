@@ -39,7 +39,7 @@ Current limitations:
 1. There is no company-level skill library UI.
 2. There is no package import flow for skills in the website.
 3. There is no distinction between skill package management and per-agent skill attachment.
-4. There is no multi-agent desired-vs-actual view.
+4. The company Skills Coverage view shows desired attachments against the installed library. Live `actualState` probing is not part of that read.
 5. The current UI is adapter-sync-oriented, not package-oriented.
 6. Unsupported adapters degrade safely, but not elegantly.
 
@@ -700,9 +700,9 @@ Goals:
 
 Goals:
 
-- desired-vs-actual diffing
+- desired-vs-actual diffing. Desired-state coverage against the company library is shipped; live `actualState` probing remains a follow-up
 - drift resolution actions
-- multi-agent skill usage and sync reporting
+- multi-agent skill usage and sync reporting. The Skills Coverage view ships desired-state usage; live adapter sync reporting remains a follow-up
 
 ## 15. Design Risks
 

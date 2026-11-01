@@ -321,6 +321,13 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents missingOnly as an optional boolean defaulting to false", () => {
+    const document = buildOpenApiSpec() as any;
+    const parameter = document.paths["/api/companies/{companyId}/skills/coverage"].get.parameters
+      .find((entry: { name: string; in: string }) => entry.name === "missingOnly" && entry.in === "query");
+    expect(parameter).toMatchObject({ required: false, schema: { type: "boolean", default: false } });
+  });
+
   it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;

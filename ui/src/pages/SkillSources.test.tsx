@@ -73,6 +73,7 @@ describe('GitHub skill source import', () => {
       ['Installed', '/skills'],
       ['Discover', '/skills?tab=discover'],
       ['My Skills', '/skills/studio'],
+      ['Coverage', '/skills?tab=coverage'],
     ]);
     expect(navigation!.querySelector('[aria-current="page"]')).toBeNull();
   });

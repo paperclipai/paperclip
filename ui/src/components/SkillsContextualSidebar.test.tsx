@@ -56,6 +56,7 @@ describe("SkillsContextualSidebar", () => {
 
     expect(container.textContent).toContain("Installed");
     expect(container.textContent).toContain("Discover");
+    expect(container.textContent).toContain("Coverage");
     expect(container.textContent).toContain("My Skills");
     expect(container.textContent).toContain("Skills you create, edit, and test.");
     expect(container.textContent).not.toContain("Paperclip");
@@ -98,6 +99,7 @@ describe("SkillsContextualSidebar", () => {
       "/skills",
       "/skills?tab=discover",
       "/skills/sources",
+      "/skills?tab=coverage",
       "/skills/studio",
     ]);
 
@@ -110,6 +112,15 @@ describe("SkillsContextualSidebar", () => {
     const root = render();
 
     expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("My Skills");
+
+    act(() => root.unmount());
+  });
+
+  it("activates Coverage for the coverage query", () => {
+    mockLocation.search = "?tab=coverage";
+    const root = render();
+
+    expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("Coverage");
 
     act(() => root.unmount());
   });

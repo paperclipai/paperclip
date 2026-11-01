@@ -39,6 +39,7 @@ App-shipped catalog (read-only browse + company install):
 Company library:
 
 - `GET /api/companies/:companyId/skills`
+- `GET /api/companies/:companyId/skills/coverage`
 - `GET /api/companies/:companyId/skills/:skillId`
 - `GET /api/companies/:companyId/skills/:skillId/files?path=SKILL.md`
 - `POST /api/companies/:companyId/skills` (managed local create)
@@ -165,6 +166,16 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+```
+
+Company coverage is a desired-state grid of installed library skills against each active (including paused) agent. It does not probe adapter runtimes; `actualState` stays null. Use `missingOnly=true` to return only cells where an agent does not desire an installed skill.
+
+```sh
+curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/coverage" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+
+curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/coverage?missingOnly=true" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
