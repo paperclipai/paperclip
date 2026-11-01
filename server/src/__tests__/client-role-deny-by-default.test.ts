@@ -547,6 +547,14 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     "services/git-credentials.ts",
     "services/muse-identity.ts",
     "services/native-runtime/chat-attachment-reuse.ts",
+    // Arrived after this branch opened, which is what the ratchet is for. Its
+    // `authorize` re-checks the resolver at consumption time and reads
+    // `membershipRole === "viewer"` to deny, so every other role passes. It is
+    // in the gated subset rather than the externally-reached one: the only
+    // route that enqueues the work, POST /heartbeat-runs/:runId/runtime-
+    // requests/:requestId/resolve, calls getAccessibleResource first, so the
+    // deny in authz.ts already denies a client before this runs.
+    "services/native-runtime/native-runtime-response-delivery.ts",
     "services/plugin-host-services.ts",
     "services/project-git-authorization.ts",
     "services/public-mcp/capabilities.ts",
