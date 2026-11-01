@@ -11,7 +11,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, not, notInArray, lte, or, isNull, isNotNull, sql, type SQL } from "drizzle-orm";
 import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, databaseWorkScopeKey, type Db } from "@paperclipai/db";
 import {
   prepareAdapterExecutionTargetRuntime,
@@ -40,6 +40,19 @@ const MAX_COLLECTION_ATTEMPTS = 3;
 const liveTargets = new Map<string, AdapterExecutionTarget>();
 const targetKey = (companyId: string, runId: string) => `${companyId}:${runId}`;
 const copySaves = new WeakMap<object, Map<string, Promise<void>>>();
+
+/** A terminal run does not establish that its private local edits were saved.
+ * Enrollment may discard these paths only after this owner's save/resolution
+ * or explicit ownership transfer. A rejected directory save is settled only
+ * after this owner confirms both process stop and completed no-save cleanup. */
+export async function hasUnsettledLocalInstructionCopies(db: Db): Promise<boolean> {
+  return (await db.select({ runId: copies.runId }).from(copies).where(and(
+    eq(copies.location, "local"), notInArray(copies.state, ["saved", "unchanged", "resolved", "superseded"]),
+    not(and(eq(copies.state, "unavailable"), isNotNull(copies.processStoppedAt),
+      sql`coalesce(${copies.receipt}->>'schema', '') = 'paperclip.agent-files.v1'`,
+      sql`coalesce(${copies.receipt}->>'cleanupPending', '') = 'false'`)!),
+  )).limit(1)).length > 0;
+}
 
 function serializeCopySave<T>(db: Db, companyId: string, runId: string, save: () => Promise<T>): Promise<T> {
   const scope = databaseWorkScopeKey(db);

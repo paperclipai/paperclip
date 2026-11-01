@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
@@ -95,4 +96,35 @@ export async function collectAgentFileObjects(db: Db, provider: Pick<StorageProv
     });
   }
   return { retained, eligible, deleted, next: page.continuationToken ?? null };
+}
+
+/** Verify all authoritative bytes before the legacy volume can be detached.
+ * This runs only with writers stopped, using bounded pages and streams. */
+export async function verifyAgentFileObjects(db: Db, storage: StorageService, signal: AbortSignal): Promise<number> {
+  if (storage.provider !== "s3") throw new Error("shared_object_storage_required");
+  let after: string | undefined;
+  let verified = 0;
+  for (;;) {
+    signal.throwIfAborted();
+    const heads = await db.select().from(agentFileRoots).where(after ? gt(agentFileRoots.agentId, after) : undefined)
+      .orderBy(asc(agentFileRoots.agentId)).limit(25);
+    for (const head of heads) for (const file of head.entries) {
+      if (file.kind !== "file") continue;
+      const hash = createHash("sha256");
+      let bytes = 0;
+      if (file.objectKey !== null) {
+        const object = await storage.getObject(head.companyId, file.objectKey, { signal });
+        for await (const chunk of object.stream) {
+          signal.throwIfAborted(); bytes += chunk.length;
+          if (bytes > file.size) throw new Error("agent_file_object_size_mismatch");
+          hash.update(chunk);
+        }
+      }
+      if (bytes !== file.size || hash.digest("hex") !== file.sha256) throw new Error("agent_file_object_digest_mismatch");
+      verified++;
+    }
+    if (heads.length < 25) break;
+    after = heads.at(-1)!.agentId;
+  }
+  return verified;
 }

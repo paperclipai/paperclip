@@ -392,3 +392,139 @@ attempt has been made. Remaining acceptance still includes live Stop/answer/
 follow-up/continuation, packaged overlap with migrated data and large cold
 restoration, ten staging deployments including rollback, repair/sleep/wake and
 idle suspension, and one internal production canary forward/rollback.
+
+
+### 2026-11-01 09:50 UTC qualification update
+
+Merged: Core runtime #18518 (`006d5691a6`), overlap workflow #18526
+(`16787e4167`), prompt native-answer delivery #18530 (`73cd8eb9a5`);
+Cloud shape #1096 and enrollment #1098 (`316163b28d`). The staging controller
+reports `316163b28d` from `/healthz`. Core maintenance #18529 is at
+`a4db955403`; all review findings are resolved and its final CI is running.
+
+The released Linux/amd64 image at Core `16787e4167`, digest
+`sha256:e383df8503e8bf160646d7ec42c3eb2d94979fb10b7ef4e6bf01a5057571166f`,
+passed authenticated private-mode overlap: 130 reads, 26 acknowledged saves,
+zero failures, two full predecessor-container/home deletions, the same browser
+session cookie, shared-file reads and unready replacement rejection. Every
+normal container exited cleanly. Test PostgreSQL and S3 resources were removed.
+Receipt: `/private/tmp/paperclip-zdt-container-eVSi2A/evidence.json`.
+This is HTTP session and storage proof; it does not qualify browser rendering,
+distinct versions or active model execution. Earlier failed fixtures retain
+receipts: local-trusted non-loopback bind refusal, loopback auth-origin rewrite,
+and incomplete public-origin configuration. They reached no overlap assertions.
+
+A 1,024-file, 64 MiB cold directory exposed sequential restoration timing out
+at 30.065s with 25ms added latency per GET. Receipt:
+`/private/tmp/paperclip-zdt-cold-cAEX5q/evidence.json`. The file authority owner
+now restores with eight bounded streams, cancelling and awaiting every sibling
+on failure. The same real PG/S3 experiment passed in 4.180s (1,025 GETs including
+instructions), with the entire predecessor home deleted and local adoption
+disabled. Receipt: `/private/tmp/paperclip-zdt-cold-C0DRZV/evidence.json`;
+tested source patch: `/private/tmp/paperclip-zdt-cold-restore-tested.patch`.
+Eight durable-file regressions passed, including corruption, cancellation,
+retained previous projection and successful retry. This qualifies the recorded
+size and latency; the unchanged upper storage limits are not a performance claim.
+
+The existing staging volume E2E target was selected after browser access and
+idle-agent checks. Its active fleet campaign was allowed to finish; the target
+was then pinned through the audited user-managed API. Exact private target,
+prior version, audit and resulting version are recorded in
+`/private/tmp/paperclip-zdt-staging-pin.json`. No volume has been detached or
+hosted overlap sequence started by this chat. Deploy and qualify the merged
+maintenance image before calling enrollment; the enrollment/campaign owners
+must continue to hold their normal operation leases.
+
+The local paid-run gate is still the saved E2E OpenAI credential returning 401.
+The credential file has not changed since August; a refresh request is pending.
+No paid model ran and no attempt-specific Daytona credential was minted through
+the new launcher. Existing live failure/cleanup receipts remain unchanged.
+Still required: active execution and continuation, cross-process follow-up,
+migrated packaged overlap, ten staging replacements including rollback, browser
+and sleep/wake/idle verification there, and one internal production canary.
+
+### 2026-11-01 10:12 UTC hosted qualification preparation
+
+Core maintenance #18529 merged as `d941ed3879`; bounded cold restore #18531
+merged as `1d348bbef0`. Both passed all current-head CI and Greptile 5/5 with
+no unresolved review threads. This checkout now starts from the latter merge.
+Published image and Cloud composition qualification are still pending.
+
+The earlier staging target was superseded: its historical local execution
+workspaces require their own migration review. It was unpinned at 09:59 UTC
+without a volume or deployment mutation by this chat. The superseded browser
+fixture auto-assigned an agent despite the composer showing no assignee;
+that attempted run failed. The task was then unassigned, paused and hidden.
+Do not count this as successful agent execution or assume it incurred no cost.
+Private setup and restoration receipts remain under `/private/tmp/paperclip-zdt-`.
+
+A dedicated staging fixture was provisioned through the normal signup API.
+Its concrete host and stack identity remain in the private qualification receipt.
+It is pinned through the audited user-managed API, and the existing operator
+was added through the audited membership API. Normal organization-launcher
+entry reached its dashboard. A separate synthetic fixture owner authenticated
+through the normal Cloud entry-code/session flow. The tenant serves Core
+`16787e4167` in Cloud distribution `cloud-41292158258-1`.
+
+The fixture contains a paused, wake-disabled agent with 34 synthetic files
+(524,936 bytes), all read back through the API, and unassigned backlog task
+with one saved comment. The data will exercise volume enrollment and
+subsequent replacement. Receipt: `/private/tmp/paperclip-zdt-hosted-fixture.json`.
+No hosted enrollment or overlap has yet run; the original volume is attached.
+This controlled fixture does not qualify arbitrary historic local workspaces.
+The saved E2E model credential remains an external blocker for paid-agent proof.
+
+The published Linux/amd64 maintenance image for `d941ed3879`, digest
+`sha256:5370ef6c938a639d5994bb20fb85e0a07b9210b264389b2076cc5890f66ea686`,
+passed the real-volume migration rehearsal. A legacy container wrote two files
+and generated its decision-signing key on its volume. After confirmed shutdown,
+the packaged maintenance entry migrated the files, verified shared objects and
+exported that exact original key; unauthenticated status was denied and ordinary
+app routes were absent. Both predecessor containers and the entire volume were
+then deleted. A new empty-home container retained the original session and read
+the migrated files. Two further replacements served 111 reads and 23 saves with
+zero failures; unready replacement refusal and clean exits passed. Owned test
+resources were removed. Receipt: `/private/tmp/paperclip-zdt-container-7r1Nwv/evidence.json`.
+This small-file Core image rehearsal complements the multi-page migration tests;
+it does not qualify Cloud routing, large cold folders or active agents.
+
+### 2026-11-01 10:29 UTC packaged Cloud proof
+
+The exact Cloud composition `cloud-41296664811-1`, Core `d941ed3879`,
+digest `sha256:bce104e05623bd365740013c8fbb87680da7e152f9c94bd099884a9a5f6367cc`,
+passed the same real-volume maintenance, key preservation, full volume removal
+and empty-home replacement rehearsal: 121 reads, 25 saves, zero failures.
+Receipt: `/private/tmp/paperclip-zdt-container-JBK8C7/evidence.json`.
+This verifies the private Cloud packaging contains the working maintenance entry;
+it does not substitute for Railway routing or active-agent acceptance.
+
+The dedicated hosted fixture passed a ten-second authenticated baseline with
+19 reads, three saves, one WebSocket connection and all 34 file hashes intact.
+Normal browser entry and an issue-title edit persisted. Receipt:
+`/private/tmp/paperclip-zdt-hosted-smoke-s1Q33a/evidence.json`.
+The first named-stack deployment was refused before creating a campaign because
+an existing fleet campaign still reserved the fixture. That campaign completed
+at 10:24:40 UTC and skipped the now-pinned fixture. Its operation lease was not
+held; the campaign reservation was the actual conflict. The refused workflow
+was explicitly retried, and the named-stack request
+is deploying the qualified maintenance composition. No hosted enrollment has
+started and no controller allowlist has changed yet.
+
+The named-stack request completed at 10:31 UTC with serving commit verification
+for `d941ed3879`. A new continuous deployment campaign then started. The controller
+restart guard correctly refuses the allowlist change until that campaign finishes.
+The original volume remains attached and the fixture is pinned.
+
+Core `1d348bbef0` published its image, but its post-merge Cloud-source check
+timed out after 15 seconds in the new cold-folder regression. All other shards
+passed. The unchanged test passed locally against the owned PostgreSQL fixture;
+the eight-test file took 10.03 seconds. Native `Buffer.equals` retains complete
+byte equality while avoiding generic assertion traversal over 40 large buffers.
+After that assertion-only change, all eight tests passed in 5.90 seconds, with
+the cold-folder case taking 561 ms. The 15-second test timeout and 30-second
+production deadline remain unchanged. The original CI failure is retained at
+`/private/tmp/paperclip-zdt-final-source-verification-failed.log`; local before
+and after logs are `/private/tmp/paperclip-zdt-buffer-test-{before,after}-pg.log`.
+A first local attempt failed before tests because embedded PostgreSQL could not
+start; the existing external test database enabled the comparison. The failed
+post-merge shard was retried once while the assertion fix proceeds through review.
