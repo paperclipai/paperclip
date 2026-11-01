@@ -146,6 +146,51 @@ describe("opencode remote environment diagnostics", () => {
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledOnce();
   });
 
+  it("probes the SSH environment's workspace, not the host cwd configured on the agent", async () => {
+    vi.mocked(discoverOpenCodeModels).mockResolvedValueOnce([{ id: "provider/model", label: "Model" }]);
+    vi.mocked(ensureOpenCodeModelConfiguredAndAvailable).mockResolvedValueOnce([{ id: "provider/model", label: "Model" }]);
+    const remoteTarget: AdapterExecutionTarget = {
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/remote/workspace",
+      spec: {
+        host: "127.0.0.1",
+        port: 22,
+        username: "agent",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        remoteCwd: "/remote/workspace",
+        remoteWorkspacePath: "/remote/workspace",
+        strictHostKeyChecking: false,
+      },
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "opencode_local",
+      config: {
+        command: "opencode",
+        model: "provider/model",
+        cwd: "/Users/host/project",
+        env: { XDG_CONFIG_HOME: configHome },
+      },
+      executionTarget: remoteTarget,
+      environmentName: "QA SSH",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(ensureAdapterExecutionTargetDirectory).toHaveBeenCalledWith(
+      expect.any(String),
+      remoteTarget,
+      "/remote/workspace",
+      expect.anything(),
+    );
+    const runtimeInput = (prepareAdapterExecutionTargetRuntime.mock.calls as unknown as Array<[
+      { workspaceRemoteDir?: string },
+    ]>)[0]?.[0];
+    expect(runtimeInput?.workspaceRemoteDir).toBe("/remote/workspace");
+  });
+
   it.each([false, true])("stages remote runtime config assets for sandbox hello probes (managed=%s)", async (managed) => {
     const configHome = await mkdtemp(path.join(os.tmpdir(), "opencode-remote-test-config-"));
     configHomes.push(configHome);

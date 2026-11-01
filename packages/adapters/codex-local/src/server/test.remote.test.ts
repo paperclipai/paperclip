@@ -211,6 +211,48 @@ describe("codex remote environment diagnostics", () => {
     expect(restoreWorkspace).toHaveBeenCalledTimes(1);
   });
 
+  it("probes the SSH environment's workspace, not the host cwd configured on the agent", async () => {
+    const remoteTarget: AdapterExecutionTarget = {
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/remote/workspace",
+      spec: {
+        host: "127.0.0.1",
+        port: 22,
+        username: "agent",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        remoteCwd: "/remote/workspace",
+        remoteWorkspacePath: "/remote/workspace",
+        strictHostKeyChecking: false,
+      },
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        command: "codex",
+        cwd: "/Users/host/project",
+      },
+      executionTarget: remoteTarget,
+      environmentName: "QA SSH",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(ensureAdapterExecutionTargetDirectory).toHaveBeenCalledWith(
+      expect.any(String),
+      remoteTarget,
+      "/remote/workspace",
+      expect.anything(),
+    );
+    const runtimeInput = (prepareAdapterExecutionTargetRuntime.mock.calls as unknown as Array<[
+      { workspaceRemoteDir?: string },
+    ]>)[0]?.[0];
+    expect(runtimeInput?.workspaceRemoteDir).toBe("/remote/workspace");
+  });
+
   it("avoids /tmp CODEX_HOME for remote API-key hello probes", async () => {
     const remoteTarget: AdapterExecutionTarget = {
       kind: "remote",
