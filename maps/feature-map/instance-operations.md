@@ -51,6 +51,12 @@ It remains reachable during an idle drain. Use `/api/health` for explicit databa
 readiness, signed bootstrap, and authorized diagnostics; liveness does not
 establish database health or claim a workspace.
 
+Deployment routing uses public `GET /api/ready` (or `HEAD`). It returns 200 only
+after startup recovery finishes and 503 while starting, recovering, or draining.
+The probe reads in-memory state without SQL or session resolution. Local
+[readiness tests](../../server/src/__tests__/liveness.test.ts) establish that
+boundary; hosted overlap and active-run continuity require separate qualification.
+
 Automated: [static UI idle completion](../../server/src/__tests__/static-ui-idle.test.ts)
 covers real aborted file streams, disconnects before file lookup, nested routers,
 and unfinished parent/fallback writes. Mounted Express applications retain their

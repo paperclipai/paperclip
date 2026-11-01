@@ -213,3 +213,47 @@ Cloud review corrections cover partial-create retries, legacy shape preservation
 pre-allocation image qualification, actual extra-service detection and protected
 storage settings. Fresh ephemeral stacks now initialize a decision key in the
 vault before deployment; already-started stacks require their existing key.
+
+
+### 2026-11-01 overlap workflow qualification
+
+Core `0b8fcca44f42d9d43894e728e42fa55545cc3665` and Cloud
+`bd772707a0f7398990d0d84a2b75bd242445ffaf` both received fresh 5/5 reviews.
+All checks on those pushed heads pass. The Cloud local suite passed 4,795 tests
+with 129 explicit skips. The superseded Core full local run was stopped after
+three hours after its pushed head passed CI; its historical failures are not
+relabeled. Fresh recovery-file verification passed all 75 tests.
+
+The next Core commit adds the explicit Product E2E `rolling-web-deployment`
+cell. It reuses the remote workspace, active execution and later retained-session
+oracles, with a separate ready-before-handoff receipt. An independent home and
+compiled build are used for A/B/C; Postgres, S3 and generated secrets are shared.
+Read/save probes perform no HTTP retries. The old five-minute outage suites retain
+their contract. The observer captures A before handoff so B cannot adopt before
+the baseline is recorded. The normal recovery code owns all leases and replay.
+
+Credential-free evidence: 143 affected harness tests, 120 catalog/fixture/report
+tests, E2E typecheck, and map structure checks passed. Discovery selects one
+explicit Codex Daytona cell, four expected admissions, one attempt, $10 company
+budget and the existing 30-minute limit. This does not establish live execution.
+
+The actual supervisor passed two replacements with no model calls, 436 ordinary
+reads and 45 saved/read-back comments, zero request failures, old homes removed,
+and owned database/bucket/process cleanup confirmed. B readiness was 18,694 ms;
+C readiness was 109,182 ms. Receipt (private local):
+`/private/var/folders/74/zhncxl_j05xb5_r6_vfbk73h0000gn/T/paperclip-runner-e2e-meJSIF/replacement-evidence.json`.
+It is source/compiled-with-workspace-dependencies, not a released container.
+The prior attempt `srF1rz` timed out on C and remains failed; its first replacement
+had 107 reads and 11 saves without failures. The initial `Ro7sxQ` setup failed
+because a partial TypeScript build had not copied the compiled Runner vendor;
+the normal build vendoring step corrected it. All three attempts cleaned up.
+
+Staging read-only discovery and authentication work with AWS `paperclip-dev`
+(account `078455283791`); production `paperclip-prod` is also authenticated.
+The existing shared `canary-staging` stack is `stack-pool-8fabb27531db77af`.
+Do not assume it is exclusively owned: select a dedicated zero-downtime test
+stack or acquire the existing stack operation lock before any hosted mutation.
+No hosted mutation or paid model call has occurred for this task yet.
+
+Remaining: live overlap proof; released artifacts; migration/enrollment and
+compatible rollback; ten staging deployments; internal production canary.
