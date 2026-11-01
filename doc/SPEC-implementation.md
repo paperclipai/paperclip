@@ -2636,6 +2636,11 @@ the supported command path. Disabling new enrollment preserves existing authorit
 and recovery. An enrolled workspace whose persistence prerequisites are lost
 must fail admission rather than fall back to a controller checkout.
 
+A reference to an authorized project with no configured workspace source does
+not attach a folder. It adds a resolution warning and preserves the task's
+workspace. A configured cross-project source remains subject to the read-only
+folder restriction.
+
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new
 remote acquisition. Saves reject unfinished Git operations, including rebase,

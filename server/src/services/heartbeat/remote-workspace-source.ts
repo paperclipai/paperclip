@@ -77,7 +77,8 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
         onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId },
       issues: issueService(db), projects: projectService(db), access: authorizationService(db),
     }) : { additional: [], warnings: [], failures: [] };
-    if (referenced.additional.length > 0) {
+    const sourceLess = referenced.additional.filter(({ project }) => Array.isArray(project.workspaces) && project.workspaces.length === 0);
+    if (referenced.additional.length > sourceLess.length) {
       if (!isMultiProjectWorkspaceSyncRemoteEnabled()) throw new WorkspaceValidationFailure(
         "Referenced remote workspace access is disabled.", { reason: "remote_referenced_workspace_disabled" });
       // Native sandbox providers currently run with external sandbox authority.
@@ -87,7 +88,10 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
     }
     return { authority: "remote", source: { ...base, ...(extra.length ? { repositories: extra } : { repositories: undefined }) },
       projectId: anchorProjectId, projectWorkspaceId: sourceId,
-      warnings: referenced.warnings, referencedProjectFailures: referenced.failures };
+      warnings: [...referenced.warnings, ...sourceLess.map(({ projectId }) =>
+        `Referenced project ${projectId} has no configured workspace source; no project folder was attached.`)],
+      referencedProjectFailures: [...referenced.failures, ...sourceLess.map(({ projectId }) =>
+        ({ projectId, reason: "resolution" as const }))] };
   };
   const existing = readRemoteWorkspaceAuthority(input.existingWorkspace?.metadata);
   if (existing) return withReferences(existing.source, input.existingWorkspace!.projectId,
