@@ -816,6 +816,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         // a recovery action is `resumeExecutionWaitComments`'s to resume, and
         // its action is the record of work this pass must not step over.
         sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
+        // Durable admission gates resume on their producer's eligibility event.
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' = 'execution_recovery'`,
         // A live holder of the execution lock is the gate itself, not a stale
         // receipt. Only a fully released task is reconsidered here.
         isNull(issues.executionRunId),

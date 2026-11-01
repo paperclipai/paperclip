@@ -15,8 +15,8 @@ type NativeIntentOptions = DeferredExecutionScope & {
 type Receipt = { status: string; payload: Record<string, unknown> | null; updatedAt: Date; readmissionEligible: boolean };
 
 function isGateOnly(receipt: Pick<Receipt, "status" | "payload">) {
-  const wait = receipt.payload?.executionWait as { recoveryActionId?: unknown } | undefined;
-  return receipt.status === "deferred_issue_execution" && Boolean(wait) && !wait?.recoveryActionId
+  const wait = receipt.payload?.executionWait as { recoveryActionId?: unknown; reason?: unknown } | undefined;
+  return receipt.status === "deferred_issue_execution" && wait?.reason === "execution_recovery" && !wait.recoveryActionId
     && !receipt.payload?.queuedCommentInterrupt;
 }
 
@@ -144,6 +144,9 @@ export function registerDeferredReceiptWork(
           const failed = (error: unknown) => { if (!(error instanceof PersistedExecutionWaitRefusal)) errors.push(error); };
           try { await owner.resume({ ...scope, onError: failed }); }
           catch (error) { failed(error); }
+          // Preserve the failure instant used by the worker's backoff; a failed
+          // admission must not perform another database round trip first.
+          if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
           // A live gate or a concurrent claim can leave this receipt held.
           // Retain its deadline without requiring another notification/restart.
           const [remaining] = await db.select({ status: agentWakeupRequests.status,

@@ -6,13 +6,13 @@ import { registerDeferredReceiptWork } from "./deferred-receipt-work.js";
 
 afterEach(() => vi.useRealTimers());
 
-it("keeps a gate-only receipt scheduled until admission settles it", async () => {
+it.each(["skipped", "budget_pause", "operator_pause", "issue_tree_hold_active"])("keeps recovery scheduled until admission settles or changes to %s", async outcome => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const start = Date.now();
   const row = {
     id: "receipt", companyId: "company", status: "deferred_issue_execution",
     updatedAt: new Date(start), claimedAt: null, error: null,
-    payload: { executionWait: { recoveryActionId: null } },
+    payload: { executionWait: { recoveryActionId: null, reason: "execution_recovery" } },
     delayed: true, interruptedLegacy: false,
     readmissionEligible: true,
   };
@@ -33,7 +33,10 @@ it("keeps a gate-only receipt scheduled until admission settles it", async () =>
   let gateHeld = true;
   const resume = vi.fn(async () => {
     row.updatedAt = new Date(Date.now());
-    if (!gateHeld) row.status = "skipped";
+    if (!gateHeld) {
+      if (outcome === "skipped") row.status = "skipped";
+      else row.payload.executionWait.reason = outcome;
+    }
   });
   const workers = registerDeferredReceiptWork(db, coordinator, {
     resume, settleTaskChat: vi.fn(), createNativeBatch: () => vi.fn(),
@@ -57,7 +60,7 @@ it("keeps a gate-only receipt scheduled until admission settles it", async () =>
   await pass();
   expect(resume).toHaveBeenCalledTimes(2);
   expect(resume).toHaveBeenLastCalledWith(expect.objectContaining({ companyId: "company", requestId: "receipt" }));
-  expect(row.status).toBe("skipped");
+  expect(row.status).toBe(outcome === "skipped" ? "skipped" : "deferred_issue_execution");
   expect(task.nextRunAt?.()).toBeNull();
   vi.setSystemTime(start + 240_000);
   await pass();
