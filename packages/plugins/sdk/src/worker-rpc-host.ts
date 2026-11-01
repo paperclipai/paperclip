@@ -377,8 +377,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>;
   }>();
 
-  // Agent session event callbacks (populated by sendMessage, cleared by close)
-  const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
+  // Agent session event callbacks, keyed by run id. Every sendMessage gets its
+  // own run, so each send owns the callback for that run and two sends on one
+  // session never share a callback. A run's callback is released on its
+  // terminal ("done" / "error") event or when its session is closed.
+  const sessionRunCallbacks = new Map<string, {
+    sessionId: string;
+    onEvent: (event: AgentSessionEvent) => void;
+  }>();
+  // Sends with an onEvent callback whose run id is not known yet, per session.
+  // The host forwards a run's events as soon as the run exists, so they can
+  // arrive before the send's response. Events of a session's unknown runs wait
+  // here until a pending send resolves with their run id; the rest are dropped
+  // once the session has no pending send left.
+  type PendingSessionSends = {
+    count: number;
+    held: Array<{ event: AgentSessionEvent; invocation?: PluginInvocationContext }>;
+  };
+  const pendingSessionSends = new Map<string, PendingSessionSends>();
 
   // Pending outbound (worker→host) requests
   const pendingRequests = new Map<string | number, {
@@ -1245,26 +1261,42 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async sendMessage(sessionId: string, companyId: string, opts: {
             prompt: string;
             reason?: string;
+            actorUserId?: string;
+            projectId?: string;
             onEvent?: (event: AgentSessionEvent) => void;
           }) {
-            if (opts.onEvent) {
-              sessionEventCallbacks.set(sessionId, opts.onEvent);
+            const send = () => callHost("agents.sessions.sendMessage", {
+              sessionId,
+              companyId,
+              prompt: opts.prompt,
+              reason: opts.reason,
+              actorUserId: opts.actorUserId,
+              projectId: opts.projectId,
+            });
+            const onEvent = opts.onEvent;
+            if (!onEvent) return send();
+
+            let pending = pendingSessionSends.get(sessionId);
+            if (!pending) {
+              pending = { count: 0, held: [] };
+              pendingSessionSends.set(sessionId, pending);
             }
+            pending.count += 1;
+            let runId: string | null = null;
             try {
-              return await callHost("agents.sessions.sendMessage", {
-                sessionId,
-                companyId,
-                prompt: opts.prompt,
-                reason: opts.reason,
-              });
-            } catch (err) {
-              sessionEventCallbacks.delete(sessionId);
-              throw err;
+              const result = await send();
+              runId = typeof result?.runId === "string" ? result.runId : null;
+              return result;
+            } finally {
+              settlePendingSessionSend(sessionId, pending, runId, onEvent);
             }
           },
 
           async close(sessionId: string, companyId: string) {
-            sessionEventCallbacks.delete(sessionId);
+            pendingSessionSends.delete(sessionId);
+            for (const [runId, owner] of sessionRunCallbacks) {
+              if (owner.sessionId === sessionId) sessionRunCallbacks.delete(runId);
+            }
             await callHost("agents.sessions.close", { sessionId, companyId });
           },
         },
@@ -1657,7 +1689,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     switch (method) {
       case "prepareIdleSleep": {
         const hold = params as { ownerId: string; expiresAt: number };
-        const backgroundWork = !initialized || sessionEventCallbacks.size > 0
+        const backgroundWork = !initialized || sessionRunCallbacks.size > 0 || pendingSessionSends.size > 0
           ? "present"
           : await idleDrain.prepare(hold, plugin.definition.onIdleDrain?.bind(plugin.definition));
         return { ...hold, backgroundWork };
@@ -2402,14 +2434,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       if (notif.method === "releaseIdleSleep" && notif.params) {
         idleDrain.release((notif.params as { ownerId: string }).ownerId);
       } else if (notif.method === "agents.sessions.event" && notif.params) {
-        const event = notif.params as AgentSessionEvent;
-        const cb = sessionEventCallbacks.get(event.sessionId);
-        if (cb) void runNotification(() => cb(event)).catch((err) => {
-          notifyHost("log", {
-            level: "error",
-            message: `Failed to handle session event notification: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        });
+        dispatchSessionEvent(notif.params as AgentSessionEvent, notif.paperclipInvocation);
       } else if (notif.method === "onEvent" && notif.params) {
         // Plugin event bus notifications — dispatch to registered event handlers
         Promise.resolve(runNotification(() => handleOnEvent(notif.params as OnEventParams))).catch((err) => {
@@ -2420,6 +2445,60 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         });
       }
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // Agent session events
+  // -----------------------------------------------------------------------
+
+  /**
+   * Deliver a session event to the callback of the send that created its run.
+   * An event of a run whose send has not resolved yet waits for that send.
+   */
+  function dispatchSessionEvent(event: AgentSessionEvent, invocation?: PluginInvocationContext): void {
+    const owner = sessionRunCallbacks.get(event.runId);
+    if (!owner || owner.sessionId !== event.sessionId) {
+      pendingSessionSends.get(event.sessionId)?.held.push({ event, invocation });
+      return;
+    }
+    if (event.eventType === "done" || event.eventType === "error") {
+      sessionRunCallbacks.delete(event.runId);
+    }
+    const done = idleDrain.begin();
+    const deliver = async () => {
+      try {
+        await (invocation
+          ? invocationContextStorage.run(invocation, () => owner.onEvent(event))
+          : owner.onEvent(event));
+      } finally { done(); }
+    };
+    void deliver().catch((err) => {
+      notifyHost("log", {
+        level: "error",
+        message: `Failed to handle session event notification: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    });
+  }
+
+  /**
+   * Finish a pending send: bind its callback to its run and deliver the run's
+   * events that arrived before the send resolved. Does nothing for a send
+   * whose session was closed meanwhile.
+   */
+  function settlePendingSessionSend(
+    sessionId: string,
+    pending: PendingSessionSends,
+    runId: string | null,
+    onEvent: (event: AgentSessionEvent) => void,
+  ): void {
+    if (pendingSessionSends.get(sessionId) !== pending) return;
+    pending.count -= 1;
+    const held = runId ? pending.held.filter((entry) => entry.event.runId === runId) : [];
+    if (runId) pending.held = pending.held.filter((entry) => entry.event.runId !== runId);
+    if (pending.count === 0) pendingSessionSends.delete(sessionId);
+    if (!runId) return;
+    sessionRunCallbacks.set(runId, { sessionId, onEvent });
+    for (const entry of held) dispatchSessionEvent(entry.event, entry.invocation);
   }
 
   // -----------------------------------------------------------------------
@@ -2448,7 +2527,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       );
     }
     pendingRequests.clear();
-    sessionEventCallbacks.clear();
+    sessionRunCallbacks.clear();
+    pendingSessionSends.clear();
   }
 
   // -----------------------------------------------------------------------
