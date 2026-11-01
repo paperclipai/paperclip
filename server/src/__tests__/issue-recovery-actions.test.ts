@@ -12,23 +12,36 @@ import {
   costEvents,
   agents,
   agentRuntimeState,
+  approvals,
   authUsers,
   agentWakeupRequests,
   activityLog,
   caseHandoffs,
   cases,
+  chatConversations,
+  chatEndpoints,
   companies,
+  companyMemberships,
+  companySkills,
   createDb,
   documentRevisions,
   documents,
   environmentLeases,
   environments,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
+  issueExecutionDecisions,
   issueInboxArchives,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
+  issueTreeHolds,
+  nativeRunFinalizations,
+  projects,
+  toolApplications,
+  toolConnections,
   workspaceOperations,
   issues,
 } from "@paperclipai/db";
@@ -40,6 +53,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbeat.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
@@ -3204,5 +3218,511 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  describe("pending review resume after a verified pre-start cancelled reviewer run", () => {
+    const killSpies: Array<{ mockRestore(): void }> = [];
+
+    afterEach(async () => {
+      for (const spy of killSpies.splice(0)) spy.mockRestore();
+      await db.delete(heartbeatRunEvents);
+      await db.delete(companyMemberships);
+      await db.delete(companySkills);
+      await db.delete(chatConversations);
+      await db.delete(chatEndpoints);
+      await db.delete(toolConnections);
+      await db.delete(toolApplications);
+      await db.delete(issueApprovals);
+      await db.delete(approvals);
+      await db.delete(issueTreeHolds);
+      await db.delete(nativeRunFinalizations);
+      await db.delete(issueExecutionDecisions);
+      await db.update(issues).set({ projectId: null, parentId: null });
+      await db.delete(projects);
+    });
+
+    async function seedPreStartCancelledReview() {
+      const fixture = await seedCompany();
+      const { companyId, coderId, sourceIssueId: issueA } = fixture;
+      const responsibleUserId = randomUUID();
+      await db.insert(authUsers).values({
+        id: responsibleUserId,
+        name: "Recovery operator",
+        email: `${responsibleUserId}@example.test`,
+        emailVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.update(companies).set({ defaultResponsibleUserId: responsibleUserId }).where(eq(companies.id, companyId));
+      const reviewerId = randomUUID();
+      await db.insert(agents).values({
+        id: reviewerId,
+        companyId,
+        name: "Reviewer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+        permissions: {},
+      });
+      const stageId = randomUUID();
+      const [priorDecision] = await db.insert(issueExecutionDecisions).values({
+        companyId,
+        issueId: issueA,
+        stageId,
+        stageType: "review",
+        actorAgentId: reviewerId,
+        outcome: "changes_requested",
+        body: "Earlier review round requested changes.",
+      }).returning();
+      const executionState = {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId },
+        returnAssignee: { type: "agent", agentId: coderId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: priorDecision!.id,
+        lastDecisionOutcome: "changes_requested",
+        changesRequestedCount: 2,
+      };
+      await db.update(issues).set({
+        status: "in_review",
+        assigneeAgentId: reviewerId,
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [{
+            id: stageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }],
+          }],
+        },
+        executionState,
+      }).where(eq(issues.id, issueA));
+      const run1 = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: run1,
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "cancelled",
+        errorCode: "issue_assignee_changed",
+        startedAt: null,
+        processPid: null,
+        processGroupId: null,
+        finishedAt: new Date(),
+        contextSnapshot: { issueId: issueA },
+      });
+      const [action1] = await db.insert(issueRecoveryActions).values({
+        companyId,
+        sourceIssueId: issueA,
+        kind: "active_run_watchdog",
+        status: "resolved",
+        outcome: "blocked",
+        ownerType: "board",
+        returnOwnerAgentId: reviewerId,
+        cause: "legacy_execution_requires_reconciliation",
+        fingerprint: run1,
+        nextAction: "Preserve recorded work without replay.",
+        evidence: {
+          runId: run1,
+          automaticRecovery: { policy: "preserve_without_replay_v1", runId: run1, replay: "blocked", actionOutcome: "unknown" },
+        },
+        resolvedAt: new Date(),
+      }).returning();
+      expect(await getExecutionBlocker(db, companyId, issueA)).not.toBeNull();
+      const chatRunRetries = {
+        prepareFailedChatRunRetry: vi.fn(async () => ({ actionId: randomUUID(), issueId: issueA })),
+        processFailedChatRunRetry: vi.fn(async () => undefined),
+      };
+      return {
+        ...fixture,
+        issueA,
+        reviewerId,
+        stageId,
+        executionState,
+        run1,
+        action1: action1!,
+        chatRunRetries,
+        app: createApp(undefined, { chatRunRetries } as never),
+      };
+    }
+
+    type ReviewFixture = Awaited<ReturnType<typeof seedPreStartCancelledReview>>;
+
+    function resolveBody(fixture: ReviewFixture, overrides: Record<string, unknown> = {}) {
+      return {
+        actionId: fixture.action1.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        executionReconciliation: {
+          runId: fixture.run1,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "The run was cancelled before it started; no provider process or side effects exist.",
+        },
+        ...overrides,
+      };
+    }
+
+    async function snapshot(fixture: ReviewFixture) {
+      const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueA));
+      return {
+        issue: {
+          status: issue!.status,
+          assigneeAgentId: issue!.assigneeAgentId,
+          executionState: issue!.executionState,
+          executionRunId: issue!.executionRunId,
+          checkoutRunId: issue!.checkoutRunId,
+        },
+        decisions: await db.select().from(issueExecutionDecisions)
+          .where(eq(issueExecutionDecisions.issueId, fixture.issueA)),
+        action: (await db.select().from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.id, fixture.action1.id)))[0],
+      };
+    }
+
+    async function expectUnchanged(fixture: ReviewFixture, before: Awaited<ReturnType<typeof snapshot>>) {
+      expect(await snapshot(fixture)).toEqual(before);
+      expect(before.action!.status).toBe("resolved");
+      expect(before.action!.evidence).toHaveProperty("automaticRecovery");
+      expect(await getExecutionBlocker(db, fixture.companyId, fixture.issueA)).not.toBeNull();
+      const wake = vi.fn(async () => null);
+      await deliverReconciledExecutions(db, wake as never);
+      expect(wake).not.toHaveBeenCalled();
+      expect(await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(0);
+      expect(fixture.chatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
+    }
+
+    async function expectRejected(
+      fixture: ReviewFixture,
+      status: number,
+      code?: string,
+      body: Record<string, unknown> = resolveBody(fixture),
+    ) {
+      const before = await snapshot(fixture);
+      const response = await request(fixture.app)
+        .post(`/api/issues/${fixture.issueA}/recovery-actions/resolve`)
+        .send(body);
+      expect(response.status).toBe(status);
+      if (code) expect(response.body.details?.code ?? response.body.code).toBe(code);
+      await expectUnchanged(fixture, before);
+      return response;
+    }
+
+    it("keeps refusing a todo hand-back that would bypass the pending review stage", async () => {
+      const fixture = await seedPreStartCancelledReview();
+      await expectRejected(fixture, 409, "recovery_governed_stage_pending", resolveBody(fixture, { sourceIssueStatus: "todo" }));
+    });
+
+    it("clears the hold and wakes the current reviewer without touching the review stage", async () => {
+      const fixture = await seedPreStartCancelledReview();
+      const before = await snapshot(fixture);
+      const response = await request(fixture.app)
+        .post(`/api/issues/${fixture.issueA}/recovery-actions/resolve`)
+        .send(resolveBody(fixture))
+        .expect(200);
+      expect(response.body.issue.status).toBe("in_review");
+      const after = await snapshot(fixture);
+      expect(after.issue).toEqual(before.issue);
+      expect(after.issue.executionState).toEqual(fixture.executionState);
+      expect(after.decisions).toEqual(before.decisions);
+      expect(after.action!.evidence).not.toHaveProperty("automaticRecovery");
+      expect(after.action!.evidence).toMatchObject({
+        executionReconciliation: { runId: fixture.run1, actionOutcome: "not_performed" },
+        continuationDelivery: "pending",
+      });
+      expect(await getExecutionBlocker(db, fixture.companyId, fixture.issueA)).toBeNull();
+      expect(fixture.chatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
+
+      await request(fixture.app)
+        .post(`/api/issues/${fixture.issueA}/recovery-actions/resolve`)
+        .send(resolveBody(fixture))
+        .expect(200);
+      expect((await snapshot(fixture)).action).toEqual(after.action);
+
+      await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.reviewerId, runId: randomUUID(), status: "running" });
+      const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      const wakes = await db.select().from(agentWakeupRequests).where(
+        eq(agentWakeupRequests.idempotencyKey, `execution-reconciliation:${fixture.action1.id}`),
+      );
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0]!.agentId).toBe(fixture.reviewerId);
+      expect((await snapshot(fixture)).issue.executionState).toEqual(fixture.executionState);
+    });
+
+    it("starts the reviewer again on the same pending review stage once its run slot frees up", async () => {
+      const fixture = await seedPreStartCancelledReview();
+      await db.update(agents).set({
+        adapterType: "process",
+        adapterConfig: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+      }).where(eq(agents.id, fixture.reviewerId));
+      const [company] = await db.select().from(companies).where(eq(companies.id, fixture.companyId));
+      await db.insert(companyMemberships).values({
+        companyId: fixture.companyId,
+        principalType: "user",
+        principalId: company!.defaultResponsibleUserId!,
+        membershipRole: "operator",
+        status: "active",
+      });
+      await request(fixture.app)
+        .post(`/api/issues/${fixture.issueA}/recovery-actions/resolve`)
+        .send(resolveBody(fixture))
+        .expect(200);
+
+      const slotRunId = randomUUID();
+      await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.reviewerId, runId: slotRunId, status: "running" });
+      const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      const [wake] = await db.select().from(agentWakeupRequests).where(
+        eq(agentWakeupRequests.idempotencyKey, `execution-reconciliation:${fixture.action1.id}`),
+      );
+      expect(wake).toMatchObject({ agentId: fixture.reviewerId, status: "queued" });
+      const continuationRunId = wake!.runId!;
+      const [queued] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuationRunId));
+      expect(queued).toMatchObject({ agentId: fixture.reviewerId, status: "queued", startedAt: null });
+      expect(queued!.contextSnapshot).toMatchObject({ issueId: fixture.issueA });
+
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, slotRunId));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+
+      const [started] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuationRunId));
+      expect(started).toMatchObject({ status: "succeeded", exitCode: 0 });
+      expect(started!.startedAt).not.toBeNull();
+      const [issueAfter] = await db.select().from(issues).where(eq(issues.id, fixture.issueA));
+      expect(issueAfter!.status).toBe("in_review");
+      expect(issueAfter!.executionState).toEqual(fixture.executionState);
+    }, 20_000);
+
+    function stubProcessKill(code: string) {
+      const spy = vi.spyOn(process, "kill").mockImplementation((() => {
+        throw Object.assign(new Error(code), { code });
+      }) as never);
+      killSpies.push(spy);
+    }
+
+    async function patchExecutionState(fixture: ReviewFixture, patch: Record<string, unknown> | null) {
+      await db.update(issues).set({ executionState: patch && { ...fixture.executionState, ...patch } })
+        .where(eq(issues.id, fixture.issueA));
+    }
+
+    async function seedOtherRun(fixture: ReviewFixture) {
+      const runId = randomUUID();
+      await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.coderId, runId, issueId: fixture.issueA, status: "queued" });
+      return runId;
+    }
+
+    type Counterexample = {
+      setup: (fixture: ReviewFixture) => Promise<{ body?: Record<string, unknown>; app?: ReturnType<typeof createApp> } | void>;
+      status: number;
+      code?: string;
+      message?: RegExp;
+    };
+
+    const unverified = { status: 409, code: "recovery_review_resume_unverified" };
+    const counterexamples: Record<string, Counterexample> = {
+      "N1 the run started": {
+        setup: async (f) => { await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, f.run1)); },
+        ...unverified,
+      },
+      "N2 the run recorded a process": {
+        setup: async (f) => {
+          stubProcessKill("ESRCH");
+          await db.update(heartbeatRuns).set({ processPid: 424242 }).where(eq(heartbeatRuns.id, f.run1));
+        },
+        ...unverified,
+      },
+      "N3 the run recorded a process group": {
+        setup: async (f) => {
+          stubProcessKill("ESRCH");
+          await db.update(heartbeatRuns).set({ processGroupId: 424242 }).where(eq(heartbeatRuns.id, f.run1));
+        },
+        ...unverified,
+      },
+      "N4 process ownership cannot be verified": {
+        setup: async (f) => {
+          stubProcessKill("EPERM");
+          await db.update(heartbeatRuns).set({ processPid: 424242 }).where(eq(heartbeatRuns.id, f.run1));
+        },
+        status: 409,
+        message: /process ownership cannot be verified/,
+      },
+      "N5 the current stage is an approval stage": {
+        setup: (f) => patchExecutionState(f, { currentStageType: "approval" }),
+        ...unverified,
+      },
+      "N6a there is no execution state": {
+        setup: (f) => patchExecutionState(f, null),
+        ...unverified,
+      },
+      "N6b the stage is not pending": {
+        setup: (f) => patchExecutionState(f, { status: "changes_requested" }),
+        ...unverified,
+      },
+      "N7 the action outcome is mixed": {
+        setup: async (f) => ({
+          body: resolveBody(f, { executionReconciliation: { ...resolveBody(f).executionReconciliation, actionOutcome: "mixed" } }),
+        }),
+        ...unverified,
+      },
+      "N8 the action outcome is completed": {
+        setup: async (f) => ({
+          body: resolveBody(f, { executionReconciliation: { ...resolveBody(f).executionReconciliation, actionOutcome: "completed" } }),
+        }),
+        ...unverified,
+      },
+      "N9a the return owner is not the assignee": {
+        setup: async (f) => {
+          await db.update(issueRecoveryActions).set({ returnOwnerAgentId: f.coderId }).where(eq(issueRecoveryActions.id, f.action1.id));
+        },
+        ...unverified,
+      },
+      "N9b the participant is not the run agent": {
+        setup: (f) => patchExecutionState(f, { currentParticipant: { type: "agent", agentId: f.coderId } }),
+        ...unverified,
+      },
+      "N10 the task is bound to a restricted chat conversation": {
+        setup: async (f) => {
+          const endpointId = randomUUID();
+          const [application] = await db.insert(toolApplications).values({
+            companyId: f.companyId, applicationKey: `chat:telegram:${endpointId}`, name: "Telegram", type: "chat", status: "active",
+          }).returning();
+          const [connection] = await db.insert(toolConnections).values({
+            companyId: f.companyId, applicationId: application!.id, name: "Telegram", uid: `chat-telegram-${endpointId}`,
+            connectionPurpose: "channel", transport: "chat_sdk", status: "active", enabled: true,
+          }).returning();
+          const [endpoint] = await db.insert(chatEndpoints).values({
+            id: endpointId,
+            companyId: f.companyId,
+            connectionId: connection!.id,
+            provider: "telegram",
+            publicId: `endpoint-${randomUUID()}`,
+            externalExecutionPolicy: "restricted",
+            assignedAgentId: f.reviewerId,
+          }).returning();
+          await db.insert(chatConversations).values({
+            companyId: f.companyId,
+            endpointId: endpoint!.id,
+            issueId: f.issueA,
+            externalConversationId: "conversation-1",
+            externalLabel: "Conversation 1",
+          });
+        },
+        status: 409,
+        code: "chat_recovery_review_resume_unsupported",
+      },
+      "N11 another run holds the execution lock": {
+        setup: async (f) => {
+          await db.update(issues).set({ executionRunId: await seedOtherRun(f) }).where(eq(issues.id, f.issueA));
+        },
+        status: 409,
+        code: "recovery_source_run_lock",
+      },
+      "N12 another run holds the checkout lock": {
+        setup: async (f) => {
+          await db.update(issues).set({ checkoutRunId: await seedOtherRun(f) }).where(eq(issues.id, f.issueA));
+        },
+        status: 409,
+        code: "recovery_source_run_lock",
+      },
+      "N13 an ancestor has an active pause hold": {
+        setup: async (f) => {
+          const parentId = randomUUID();
+          await db.insert(issues).values({
+            id: parentId, companyId: f.companyId, title: "Parent", status: "in_progress", priority: "medium",
+            issueNumber: 2, identifier: `${f.prefix}-2`,
+          });
+          await db.update(issues).set({ parentId }).where(eq(issues.id, f.issueA));
+          await db.insert(issueTreeHolds).values({ companyId: f.companyId, rootIssueId: parentId, mode: "pause", status: "active" });
+        },
+        status: 409,
+        message: /subtree pause hold/,
+      },
+      "N14 the project is paused": {
+        setup: async (f) => {
+          const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Paused project", pausedAt: new Date() }).returning();
+          await db.update(issues).set({ projectId: project!.id }).where(eq(issues.id, f.issueA));
+        },
+        status: 409,
+        message: /^Project is paused$/,
+      },
+      "N15 a governed approval is pending": {
+        setup: async (f) => {
+          const [approval] = await db.insert(approvals).values({ companyId: f.companyId, type: "issue_review", status: "pending", payload: {} }).returning();
+          await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueA, approvalId: approval!.id });
+        },
+        status: 409,
+        code: "recovery_governed_approval_pending",
+      },
+      "N16 the reviewer reached its budget hard-stop": {
+        setup: async (f) => {
+          await db.update(agents).set({ status: "paused", pauseReason: "budget" }).where(eq(agents.id, f.reviewerId));
+        },
+        status: 409,
+        code: "recovery_safe_hand_back_budget_blocked",
+      },
+      "N17 a coordinator still leases the run": {
+        setup: async (f) => {
+          await db.update(heartbeatRuns).set({ nativeIssueId: f.issueA }).where(eq(heartbeatRuns.id, f.run1));
+          await db.insert(nativeRunFinalizations).values({
+            runId: f.run1, companyId: f.companyId, issueId: f.issueA, phase: "terminal_failure", leaseOwner: "controller-1",
+          });
+        },
+        status: 409,
+        message: /coordinator or a linked continuation/,
+      },
+      "N18 the run has a linked successor": {
+        setup: async (f) => {
+          await db.update(heartbeatRuns).set({ nativeIssueId: f.issueA }).where(eq(heartbeatRuns.id, f.run1));
+          await db.insert(nativeRunFinalizations).values({
+            runId: f.run1, companyId: f.companyId, issueId: f.issueA, phase: "terminal_failure",
+            failureDetail: { successorRunId: randomUUID() },
+          });
+        },
+        status: 409,
+        message: /coordinator or a linked continuation/,
+      },
+      "N19 the run's environment lease is unreleased": {
+        setup: async (f) => {
+          await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueA, heartbeatRunId: f.run1 });
+        },
+        status: 409,
+        message: /environment has not finished releasing/,
+      },
+      "N20 the actor is not the board": {
+        setup: async (f) => {
+          const runId = randomUUID();
+          await seedHeartbeatRun({ companyId: f.companyId, agentId: f.reviewerId, runId, issueId: f.issueA, status: "running" });
+          return {
+            app: createApp({ type: "agent", agentId: f.reviewerId, companyId: f.companyId, runId, source: "agent_jwt" },
+              { chatRunRetries: f.chatRunRetries } as never),
+          };
+        },
+        status: 403,
+        message: /^Board access required$/,
+      },
+    };
+
+    it.each(Object.entries(counterexamples))("fails closed when %s", async (_name, example) => {
+      const fixture = await seedPreStartCancelledReview();
+      const override = (await example.setup(fixture)) ?? {};
+      const response = await expectRejected(
+        override.app ? { ...fixture, app: override.app } : fixture,
+        example.status,
+        example.code,
+        override.body ?? resolveBody(fixture),
+      );
+      if (example.message) expect(response.body.error).toMatch(example.message);
+    });
   });
 });
