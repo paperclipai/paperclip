@@ -1,3 +1,4 @@
+import { providerRetryAt } from "./provider-retry-after.js";
 import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   createDecipheriv,
@@ -114,6 +115,7 @@ type ConnectorResponse = {
   events?: unknown;
   acknowledged?: unknown;
   githubApps?: { version: number };
+  eventWakeVersion?: unknown;
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
@@ -189,6 +191,7 @@ export class PaperclipCloudConnectorError extends Error {
     message: string,
     readonly code: string,
     readonly status?: number,
+    readonly retryAt?: number,
   ) {
     super(message);
     this.name = "PaperclipCloudConnectorError";
@@ -272,10 +275,11 @@ export function createPaperclipCloudConnector(input: {
   const now = input.now ?? Date.now;
   const signingKey = privateKey(config.signPrivateKey, "ed25519");
   const sealKey = privateKey(config.sealPrivateKey, "x25519");
+  let eventWakeVersion: 1 | null = null;
 
   async function call(
     operation: PaperclipCloudConnectorOperation,
-    claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string },
+    claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string; eventWakeVersion?: 0 | 1 },
     secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement"; value: string },
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
@@ -291,6 +295,7 @@ export function createPaperclipCloudConnector(input: {
       exp: issuedAt + 60,
       jti: randomUUID(),
     };
+    if (claims.eventWakeVersion !== undefined) payload.ewv = claims.eventWakeVersion;
     if (claims.returnUri !== undefined) payload.ruri = claims.returnUri;
     if (claims.returnState !== undefined) payload.rst = claims.returnState;
     if (claims.claimId !== undefined) payload.cl = claims.claimId;
@@ -327,6 +332,7 @@ export function createPaperclipCloudConnector(input: {
         `Paperclip Cloud connector rejected the request (operation=${operation}, status=${response.status}, reason=${reason})`,
         response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED",
         response.status,
+        providerRetryAt(response.headers.get("retry-after"), now()),
       );
     }
     try {
@@ -374,6 +380,7 @@ export function createPaperclipCloudConnector(input: {
   }
 
   return {
+    eventWakeVersion: () => eventWakeVersion,
     async githubAppsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.githubApps?.version === 2;
@@ -520,8 +527,9 @@ export function createPaperclipCloudConnector(input: {
       });
       await call("webhook-bind", { ...values, profile: "github.code" }, { field: "binding", value: binding });
     },
-    async leaseEvents(values: { subject: string; companyId: string }): Promise<{ leaseId: string; events: SealedConnectorEvents["events"]; failedEventIds?: string[] } | null> {
+    async leaseEvents(values: { subject: string; companyId: string; eventWakeVersion?: 0 | 1 }): Promise<{ leaseId: string; events: SealedConnectorEvents["events"]; failedEventIds?: string[] } | null> {
       const response = await call("event-lease", values);
+      eventWakeVersion = response.eventWakeVersion === 1 && values.eventWakeVersion !== 0 ? 1 : null;
       if (Array.isArray(response.events) && response.events.length === 0) return null;
       if (typeof response.leaseId !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid event lease", "CONNECTOR_BAD_RESPONSE");

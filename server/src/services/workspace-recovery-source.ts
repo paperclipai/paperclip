@@ -1,14 +1,50 @@
+import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
-import { environmentLeases, environments, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { SystemRecoveryFailure } from "./system-recovery-state.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
+import { ENVIRONMENT_LEASE_POLICIES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLeasePolicy,
+  type WorkspaceSourceVerificationFailure } from "@paperclipai/shared";
 
 export const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 export const terminalWorkspaceRunStates = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 export type WorkspaceRecoverySourceIdentity = { companyId: string; issueId: string; runId: string; actionId: string };
+
+export function workspaceSourceBindingFailure(reason: WorkspaceSourceVerificationFailure["reason"], policy?: unknown) {
+  const observedLeasePolicy = typeof policy === "string" && (ENVIRONMENT_LEASE_POLICIES as readonly string[]).includes(policy)
+    ? policy as EnvironmentLeasePolicy : "unrecognized";
+  return new SystemRecoveryFailure("source_binding_invalid", "service_required", undefined, {
+    reason, ...(reason === "lease_policy_not_retained" ? { observedLeasePolicy } : {}),
+  });
+}
+
+export class WorkspaceSourceInspectionLimit extends Error {}
+
+export function workspaceRecoverySourceEligible(includeCompleted = false) {
+  const actionEligible = sql`(${issueRecoveryActions.status} in ('active', 'escalated') or
+    (${issueRecoveryActions.status} = 'resolved' and (
+      (${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'
+        and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+        and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${heartbeatRuns.id}::text) or
+      (${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,schema}' = 'paperclip.historical-workspace-source.v1'
+        and ${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,runId}' = ${heartbeatRuns.id}::text))))`;
+  return and(
+    sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
+    includeCompleted ? sql`(${actionEligible} or ${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete')` : actionEligible,
+    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,sourceRunId}' = ${heartbeatRuns.id}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,runId}' = ${heartbeatRuns.id}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,policyVersion}' = '1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,schema}' = 'paperclip.system-recovery.v1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,schema}' = 'paperclip.workspace-recovery.v1'`,
+    sql`(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+      or ${issueRecoveryActions.evidence}->'historicalWorkspaceSource'->>'schema' = 'paperclip.historical-workspace-source.v1'
+      or ${issueRecoveryActions.cause} in ('native_workspace_sync_out_unrecoverable', 'native_workspace_sync_out_retry_exhausted'))`,
+  );
+}
 
 /** The preservation owner may reopen only its exact stop-only allocation.
  * This does not release the source's ordinary execution or destruction fence. */
@@ -18,59 +54,142 @@ export async function ownedWorkspaceRecoveryLease(db: Db, input: WorkspaceRecove
   await input.ownership.assertHeld();
   const inspected = await inspectWorkspaceRecoverySource(db, input);
   const source = inspected.sources.find(item => item.lease.id === input.leaseId);
-  if (!source || source.environment.id !== input.environmentId || source.lease.status !== "pending_cleanup"
-    || source.lease.metadata?.pendingCleanupInFlight !== true
-    || source.lease.metadata?.pendingCleanupAttemptId !== input.ownership.token
-    || !readStopOnlyCleanup(source.lease)) {
-    throw new SystemRecoveryFailure("source_binding_invalid", "service_required");
-  }
+  if (!source) throw workspaceSourceBindingFailure("recovery_lease_not_selected");
+  if (source.environment.id !== input.environmentId) throw workspaceSourceBindingFailure("recovery_environment_mismatch");
+  if (source.lease.status !== "pending_cleanup" || source.lease.metadata?.pendingCleanupInFlight !== true)
+    throw workspaceSourceBindingFailure("recovery_lease_not_claimed");
+  if (source.lease.metadata?.pendingCleanupAttemptId !== input.ownership.token)
+    throw workspaceSourceBindingFailure("recovery_owner_mismatch");
+  if (!readStopOnlyCleanup(source.lease)) throw workspaceSourceBindingFailure("recovery_stop_intent_missing");
   await input.ownership.assertHeld();
   return source;
 }
 
 /** Resolve only the immutable source recorded by the failed run. Never discover
  * a candidate by recency, mutable adapter configuration, or a provider search. */
-export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRecoverySourceIdentity) {
-  const invalid = () => new SystemRecoveryFailure("source_binding_invalid", "service_required");
+export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRecoverySourceIdentity,
+  options: { maximumSources?: number } = {}) {
+  const invalid = workspaceSourceBindingFailure;
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
     eq(issueRecoveryActions.sourceIssueId, input.issueId), eq(issueRecoveryActions.id, input.actionId)));
-  if (!run || !action || action.evidence.runId !== run.id || !terminalWorkspaceRunStates.includes(run.status) ||
-      (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) !== input.issueId) throw invalid();
+  if (!run) throw invalid("source_run_missing");
+  if (!action) throw invalid("recovery_action_missing");
+  if (action.evidence.runId !== run.id) throw invalid("recovery_action_run_mismatch");
+  if (!terminalWorkspaceRunStates.includes(run.status)) throw invalid("source_run_not_terminal");
+  if ((run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) !== input.issueId) throw invalid("source_issue_mismatch");
   const rawReference = run.runnerProfileJson?.nativeWorkspaceSync;
   const reference = readNativeWorkspaceSyncReference(rawReference);
-  if (rawReference != null && !reference) throw invalid();
+  if (rawReference != null && !reference) throw invalid("native_reference_invalid");
+  const rawRemoteReference = run.runnerProfileJson?.remoteWorkspace;
+  const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(rawRemoteReference);
+  const remoteReference = parsedRemote.success ? parsedRemote.data : null;
+  if ((rawRemoteReference != null && !remoteReference) || (reference && remoteReference)) throw invalid("native_reference_invalid");
+  const recoveryReference = reference ?? remoteReference;
+  const [remoteWorkspace] = remoteReference ? await db.select().from(executionWorkspaces).where(and(
+    eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, remoteReference.workspaceId),
+  )) : [];
+  const remoteAuthority = readRemoteWorkspaceAuthority(remoteWorkspace?.metadata);
+  if (remoteReference && (!remoteWorkspace || !remoteAuthority?.location || remoteAuthority.epoch !== remoteReference.epoch
+    || remoteAuthority.location.leaseId !== remoteReference.leaseId || remoteAuthority.location.providerLeaseId !== remoteReference.providerLeaseId
+    || remoteAuthority.location.remoteCwd !== remoteReference.remoteCwd
+    || (remoteReference.state === "prepared" ? !remoteAuthority.dirty || remoteAuthority.writerRunId !== run.id
+      : remoteAuthority.dirty || remoteAuthority.writerRunId !== null || remoteAuthority.snapshotId !== remoteReference.snapshotId))) {
+    throw invalid("workspace_reference_mismatch");
+  }
+  if (remoteReference?.state === "saved") {
+    const [snapshot] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.companyId, input.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, remoteReference.workspaceId),
+      eq(executionWorkspaceSnapshots.id, remoteReference.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
+    ));
+    if (!snapshot) throw invalid("workspace_reference_mismatch");
+  }
   const recorded = run.resultJson?.workspaceRestoreRecovery as { schema?: unknown; leaseIds?: unknown } | undefined;
-  if (recorded != null && recorded.schema !== "paperclip.workspace-restore-recovery.v1") throw invalid();
+  if (recorded != null && recorded.schema !== "paperclip.workspace-restore-recovery.v1") throw invalid("restore_reference_invalid");
   const historical = action.evidence.historicalWorkspaceSource as { schema?: unknown; runId?: unknown; leaseIds?: unknown } | undefined;
-  if (historical != null && (historical.schema !== "paperclip.historical-workspace-source.v1" || historical.runId !== run.id)) throw invalid();
+  if (historical != null && (historical.schema !== "paperclip.historical-workspace-source.v1" || historical.runId !== run.id)) throw invalid("historical_reference_invalid");
   const leaseIds = recorded ? recorded.leaseIds
-    : reference && workspaceExportCauses.includes(action.cause) ? [reference.leaseId]
+    : recoveryReference && workspaceExportCauses.includes(action.cause) ? [recoveryReference.leaseId]
     : historical?.leaseIds;
   if (!Array.isArray(leaseIds) || leaseIds.length === 0)
     throw new SystemRecoveryFailure("historical_source_missing", "use_alternative_strategy");
+  if (options.maximumSources !== undefined && leaseIds.length > options.maximumSources)
+    throw new WorkspaceSourceInspectionLimit();
   if (leaseIds.some(id => typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) ||
-      new Set(leaseIds).size !== leaseIds.length || (reference && !leaseIds.includes(reference.leaseId))) throw invalid();
+      new Set(leaseIds).size !== leaseIds.length || (recoveryReference && !leaseIds.includes(recoveryReference.leaseId))) throw invalid("lease_reference_invalid");
   const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id)));
   if (coordinator?.leaseOwner || adapterExecutionControls.has(run.id) ||
       (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()))
     throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
+  // Reusable allocations can still owe copyback for a completed native result.
+  // This authorizes only preservation of the exact descriptor, never reuse for
+  // agent execution. Stop verification and physical ownership checks remain below.
+  const acceptedExportResult = recoveryReference && workspaceExportCauses.includes(action.cause)
+    && run.runtimeMode === "native" && coordinator?.issueId === input.issueId
+    && coordinator.resultId && run.completionContractId
+    ? (await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+      eq(nativeRunResults.companyId, input.companyId), eq(nativeRunResults.issueId, input.issueId),
+      eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
+      eq(nativeRunResults.completionContractId, run.completionContractId),
+      eq(nativeRunResults.schemaStatus, "accepted"),
+      sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+    )).limit(1))[0] : null;
   const sources = [];
   for (const leaseId of leaseIds as string[]) {
     const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.id, leaseId), eq(environmentLeases.heartbeatRunId, run.id)));
-    const descriptor = reference?.leaseId === leaseId ? reference : null;
+    const legacyDescriptor = reference?.leaseId === leaseId ? reference : null;
+    const remoteDescriptor = remoteReference?.leaseId === leaseId ? remoteReference : null;
+    const descriptor = legacyDescriptor ?? remoteDescriptor;
     const remoteCwd = lease?.metadata?.remoteCwd;
-    if (!lease || lease.issueId !== input.issueId || !lease.environmentId || !lease.providerLeaseId ||
-        !lease.provider || lease.provider === "local" || !["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) ||
-        typeof remoteCwd !== "string" || !remoteCwd.startsWith("/") ||
-        (descriptor && (lease.providerLeaseId !== descriptor.providerLeaseId || remoteCwd !== descriptor.remoteCwd ||
-          (lease.executionWorkspaceId && lease.executionWorkspaceId !== descriptor.workspaceId)))) throw invalid();
-    const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    if (!lease) throw invalid("source_lease_not_bound");
+    if (lease.issueId !== input.issueId) throw invalid("lease_issue_mismatch");
+    if (!lease.environmentId) throw invalid("lease_environment_missing");
+    if (!lease.providerLeaseId) throw invalid("lease_allocation_missing");
+    if (!lease.provider || lease.provider === "local") throw invalid("lease_provider_invalid");
+    const reusableExport = descriptor && (acceptedExportResult || remoteDescriptor && remoteAuthority)
+      && ["reuse_by_environment", "reuse_by_execution_workspace"].includes(lease.leasePolicy);
+    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) && !reusableExport)
+      throw invalid("lease_policy_not_retained", lease.leasePolicy);
+    if (typeof remoteCwd !== "string" || !remoteCwd.startsWith("/")) throw invalid("lease_cwd_invalid");
+    if (descriptor && lease.providerLeaseId !== descriptor.providerLeaseId) throw invalid("allocation_reference_mismatch");
+    if (descriptor && remoteCwd !== descriptor.remoteCwd) throw invalid("cwd_reference_mismatch");
+    if (descriptor && lease.executionWorkspaceId && lease.executionWorkspaceId !== descriptor.workspaceId)
+      throw invalid("workspace_reference_mismatch");
+    if (remoteDescriptor && lease.environmentId !== remoteAuthority!.location!.environmentId)
+      throw invalid("workspace_reference_mismatch");
+    const history = await db.select().from(environmentLeases).where(and(
       ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider),
-      eq(environmentLeases.providerLeaseId, lease.providerLeaseId))).limit(1);
-    if (other) throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+      eq(environmentLeases.providerLeaseId, lease.providerLeaseId)));
+    const predecessors = retiredReusableLeasePredecessors(lease, history);
+    if (!predecessors || (predecessors.length && ((run.runtimeMode !== "native" && !remoteDescriptor) || !descriptor || lease.metadata?.agentId !== run.agentId)))
+      throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+    const predecessorRuns = predecessors.map(item => item.heartbeatRunId!);
+    const priors = predecessorRuns.length ? await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, predecessorRuns))) : [];
+    const priorOwners = predecessorRuns.length ? await db.select({ runId: nativeRunFinalizations.runId,
+      phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, input.companyId), inArray(nativeRunFinalizations.runId, predecessorRuns),
+        eq(nativeRunFinalizations.issueId, input.issueId))) : [];
+    for (const predecessor of predecessors) {
+      const prior = priors.find(item => item.id === predecessor.heartbeatRunId);
+      const priorReference = readNativeWorkspaceSyncReference(prior?.runnerProfileJson?.nativeWorkspaceSync);
+      const parsedPriorRemote = remoteWorkspaceRunReferenceSchema.safeParse(prior?.runnerProfileJson?.remoteWorkspace);
+      const priorRemote = parsedPriorRemote.success ? parsedPriorRemote.data : null;
+      const priorDescriptor = priorReference ?? priorRemote;
+      const priorSaved = priorReference ? priorReference.state === "finalized" && Boolean(priorReference.finalHostSha256)
+        : priorRemote?.state === "saved" && Boolean(priorRemote.snapshotId) && Boolean(remoteDescriptor)
+          && priorRemote.epoch < remoteDescriptor!.epoch;
+      const priorOwner = priorOwners.find(item => item.runId === predecessor.heartbeatRunId);
+      if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId || prior.nativeIssueId !== input.issueId ||
+          !terminalWorkspaceRunStates.includes(prior.status) || adapterExecutionControls.has(prior.id) ||
+          (prior.controllerLeaseExpiresAt && prior.controllerLeaseExpiresAt > new Date()) ||
+          !priorOwner || priorOwner.leaseOwner || !["committed", "terminal_failure", "applied"].includes(priorOwner.phase) ||
+          !priorDescriptor || !priorSaved || priorDescriptor.leaseId !== predecessor.id || priorDescriptor.providerLeaseId !== lease.providerLeaseId ||
+          priorDescriptor.workspaceId !== descriptor!.workspaceId || priorDescriptor.remoteCwd !== remoteCwd)
+        throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+    }
     // Snapshot export writes only a new staging directory. A native baseline
     // merge additionally needs exclusive ownership of its host destination.
     if (descriptor) {
@@ -88,7 +207,8 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     }
     const [environment] = await db.select().from(environments).where(eq(environments.id, lease.environmentId));
     if (!environment) throw new SystemRecoveryFailure("source_unavailable", "service_required");
-    sources.push({ lease, environment, reference: descriptor, remoteCwd });
+    sources.push({ lease, environment, reference: legacyDescriptor, remoteReference: remoteDescriptor,
+      remoteWorkspace: remoteDescriptor ? remoteWorkspace : null, remoteCwd });
   }
   return { run, action, sources };
 }

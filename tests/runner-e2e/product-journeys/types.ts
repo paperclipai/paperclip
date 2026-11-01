@@ -2,7 +2,8 @@ import type { BrowserContext, Page } from "@playwright/test";
 import type { ConnectionApi } from "../connection-target.js";
 
 export type JourneyOutcome = "passed" | "failed" | "blocked" | "unsupported";
-export type JourneyId = "task-properties" | "cloud-onboarding";
+export type JourneyId = "task-properties" | "task-create" | "project-task-context" | "task-document-persistence" | "ask-question" | "cloud-onboarding"
+  | "question-answer-resume" | "task-search-filter" | "followup-while-running" | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";
@@ -28,6 +29,8 @@ export interface JourneyEvidence {
   attemptId?: string;
   operations?: JourneyOperations;
   artifact?: OnboardingArtifactEvidence;
+  onboardingConnect?: import("./onboarding-connect.js").OnboardingConnectEvidence;
+  onboardingPreAcceptance?: import("./onboarding-pre-acceptance.js").OnboardingPreAcceptanceEvidence;
 }
 export interface OnboardingArtifactEvidence {
   schema: "paperclip.product-journey.artifact/v1";
@@ -78,7 +81,11 @@ export interface JourneyContext {
   identity: DeploymentIdentity;
   capabilities: string[];
   startingState: "recipe" | "onboarding";
-  fixtures?: { backlogTask?: PreparedBacklogTask };
+  agent?: { id: string; name: string; provider: string; model: string; runtimeMode: "native" | "legacy" };
+  fixtures?: {
+    backlogTask?: PreparedBacklogTask;
+    reviewService?: { connectionId: string; name: string; marker: string; invocationCount(): number };
+  };
 }
 export interface PreparedBacklogTask {
   id: string;
@@ -104,7 +111,7 @@ export interface TargetSession {
   /** Publish the observed finalization failure without releasing resources or leases. */
   checkpointEvidence?(input?: TargetLifecycleInput): Promise<void>;
   /** Durable intent before creation; receipt immediately after creation. */
-  own(resource: { kind: "issue" | "agent" | "connection"; name: string; id?: string }): Promise<void>;
+  own(resource: { kind: "issue" | "project" | "agent" | "connection" | "tool-connection" | "skill"; name: string; id?: string; journeyId?: JourneyId }): Promise<void>;
 }
 export interface TargetProvider {
   version: 1;

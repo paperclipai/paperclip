@@ -2,6 +2,10 @@ import type { ChatEndpoint } from "../../packages/shared/src/types/chat-channels
 import { ConnectionFailure } from "./connection-config.js";
 import type { GitHubReviewJourneyConfig } from "./github-review-config.js";
 import type { ConnectionApi } from "./connection-target.js";
+import { randomUUID } from "node:crypto";
+import { awaitJourneyCondition } from "./github-review-browser.js";
+
+const liveRunStatuses = new Set(["queued", "running", "scheduled_retry"]);
 
 /** The issue run source includes history beyond company list windows. Related
  * activity can name a run for another task, so hydrate and check direct ownership. */
@@ -11,6 +15,33 @@ export async function readOwnedGitHubReviewRuns(api: Pick<ConnectionApi, "get">,
   const runs = await Promise.all([...new Set(rows.map(row => row.runId))].map(id => api.get<Record<string, any>>(`/api/heartbeat-runs/${id}`)));
   if (runs.some(run => run.companyId !== scope.companyId)) throw new ConnectionFailure("issue_run_company_mismatch");
   return runs.filter(run => run.issueId === scope.issueId && run.agentId === scope.agentId);
+}
+
+/** A failed native run can still own a durable retry. Stop it through the
+ * normal audited route and require acknowledgement, not just terminal status. */
+export async function stopOwnedGitHubReviewRun(api: Pick<ConnectionApi, "get" | "post">, runId: string,
+  scope: { companyId: string; agentId: string; issueId: string }, signal: AbortSignal, timeoutMs = 30_000) {
+  const read = async () => {
+    const run = await api.get<Record<string, any>>(`/api/heartbeat-runs/${runId}`);
+    if (run.id !== runId || run.companyId !== scope.companyId || run.agentId !== scope.agentId || run.issueId !== scope.issueId) {
+      throw new ConnectionFailure("cleanup_run_owner_mismatch");
+    }
+    return run;
+  };
+  const run = await read();
+  const retry = run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure";
+  if (!liveRunStatuses.has(run.status) && !retry) return;
+  await api.post(`/api/heartbeat-runs/${runId}/cancel`, run.runtimeMode === "native" ? { cancellationRequestId: randomUUID() } : {});
+  await awaitJourneyCondition(async () => {
+    const stopped = await read();
+    if (run.runtimeMode !== "native") return !liveRunStatuses.has(stopped.status);
+    const intent = stopped.resultJson?.nativeCancellation;
+    return stopped.status === "cancelled" && intent?.schema === "paperclip.native-cancellation.v1"
+      && intent.runId === runId && intent.companyId === scope.companyId && intent.issueId === scope.issueId
+      && intent.scope === "run" && intent.reasonCode === "cancellation_run_only" && typeof intent.dispatched === "boolean"
+      && intent.dispatchState === "acknowledged" && typeof intent.intentAuditId === "string" && intent.intentAuditId.length > 0
+      && typeof intent.acknowledgementAuditId === "string" && intent.acknowledgementAuditId.length > 0;
+  }, timeoutMs, "owned_run_cancellation_unconfirmed", signal, "failed");
 }
 
 export interface GitHubJourneyResources {

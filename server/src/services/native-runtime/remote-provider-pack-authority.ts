@@ -33,7 +33,7 @@ export function resolveRemoteProviderPackAuthority<T extends ProviderPackIdentit
   reattach: boolean;
   current: () => T;
   runnerArtifact: () => RunnerArtifactIdentity;
-}): { manifest: T; runnerArtifact: RunnerArtifactIdentity; verified: () => void } {
+}): { manifest: T; runnerArtifact: RunnerArtifactIdentity; select: (manifest: T) => void; verified: () => void } {
   const root = lstatSync(input.stateDirectory);
   if (!root.isDirectory() || root.isSymbolicLink()) {
     throw new Error("runner_remote_provider_artifact_incompatible: provider pack authority directory is unsafe");
@@ -68,11 +68,22 @@ export function resolveRemoteProviderPackAuthority<T extends ProviderPackIdentit
   assertManifest(manifest);
   runnerArtifact ??= input.runnerArtifact();
   const selectedRunner = structuredClone(runnerArtifact);
-  const selected = structuredClone(manifest);
-  const receipt = JSON.stringify({ schema, binding: input.binding, manifest: selected, runnerArtifact: selectedRunner });
-  if (Buffer.byteLength(receipt) > maximumBytes) throw new Error("runner_remote_provider_artifact_incompatible: provider pack authority exceeds its size limit");
+  let selected = structuredClone(manifest);
+  const serialize = (manifest: T) => {
+    const receipt = JSON.stringify({ schema, binding: input.binding, manifest, runnerArtifact: selectedRunner });
+    if (Buffer.byteLength(receipt) > maximumBytes) throw new Error("runner_remote_provider_artifact_incompatible: provider pack authority exceeds its size limit");
+    return receipt;
+  };
+  let receipt = serialize(selected);
   return {
-    manifest: selected,
+    get manifest() { return selected; },
+    select: (manifest: T) => {
+      if (input.reattach) throw new Error("runner_remote_provider_artifact_incompatible: cannot replace an attached pack authority");
+      assertManifest(manifest);
+      const next = structuredClone(manifest);
+      receipt = serialize(next);
+      selected = next;
+    },
     runnerArtifact: selectedRunner,
     verified: () => {
       const temporary = `${path}.${randomUUID()}.tmp`;

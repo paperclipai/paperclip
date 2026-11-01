@@ -150,7 +150,7 @@ export function TrustPresetSection({
                     : "This agent is set to low-trust review, but no project, root issue, or issue scope is set in the core policy. Add a scope before this agent can run without denial."}
                 </p>
               </div>
-              {projectAccessEditor && (boundary?.projectIds?.length ?? 0) > 0 ? null : boundaryEditable ? (
+              {projectAccessEditor && (boundary?.projectIds?.length ?? 0) > 1 ? null : boundaryEditable ? (
                 <div className="rounded-md border border-border/70 bg-background/70 p-3 text-foreground space-y-3">
                   <div className="grid gap-3 sm:grid-cols-(--gtc-12)">
                     <Field label="Boundary type">

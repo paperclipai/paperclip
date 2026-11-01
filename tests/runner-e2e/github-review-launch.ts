@@ -12,7 +12,7 @@ import { createPrivateJourneyRepository, ensureGitHubJourneyLogin, closeOwnedGit
 import { loadGitHubReviewJourneyConfig } from "./github-review-config.js";
 import { gradeGitHubReviewJourney, type GitHubReviewJourneyEvidence } from "./github-review-evidence.js";
 import { runGitHubReviewFlow } from "./github-review-flow.js";
-import { captureOwnedGitHubApp, readOwnedGitHubReviewRuns, type GitHubJourneyResources } from "./github-review-ownership.js";
+import { captureOwnedGitHubApp, readOwnedGitHubReviewRuns, stopOwnedGitHubReviewRun, type GitHubJourneyResources } from "./github-review-ownership.js";
 import { JourneyDependencyError, resolveJourneyCredential } from "./journey-dependencies.js";
 import { sanitizeJson, assertSecretFree } from "./redaction.js";
 import { writeGitHubReviewReport } from "./github-review-report.js";
@@ -101,7 +101,14 @@ export async function runGitHubReviewCampaign(input: { executions: readonly Matr
       const identity = await verifyConnectionTarget(config.target.baseURL, common, browser.context.request);
       evidence.targetCommit = identity.commit; evidence.checkpoints.target = true;
       await runGitHubReviewFlow({ page, github, githubUsername: config.github.account, api, config, resources, evidence, signal,
-        phase: checkpoint, persistResources: () => save("owned-resources.json", resources), checkpoint: async (id, tab) => {
+        phase: checkpoint, persistResources: () => save("owned-resources.json", resources),
+        ...(typeof authentication?.authenticateGitHubJourneyRegistration === "function" ? {
+          authenticateRegistration: (tab: Page) => authentication.authenticateGitHubJourneyRegistration({ page: tab,
+            configFile: config!.authentication!.configFile, expectedAccount: config!.github.account, signal,
+            deadlineAt: Date.now() + Math.min(config!.browser.loginTimeoutMs, 120_000),
+            registerSecret: (value: string) => secrets.push(value), checkpoint: (id: string) => checkpoint(id) }),
+        } : {}),
+        recordRegistrationBoundary: boundary => save("github-registration-boundary.json", boundary), checkpoint: async (id, tab) => {
         evidence.checkpoints[id] = true;
         // Authentication pages and forms are deliberately never captured.
         const consentUrl = new URL(tab.url());
@@ -180,12 +187,8 @@ export async function runGitHubReviewCampaign(input: { executions: readonly Matr
           await save("owned-resources.json", resources);
           await api.post(`/api/chat-endpoints/${resources.endpointId}/setup`, { action: "remove" });
           for (const runId of resources.runIds) {
-            const run = await api.get(`/api/heartbeat-runs/${runId}`);
-            if (run.companyId !== config!.target.companyId || run.agentId !== config!.agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
-            if (["queued", "running"].includes(run.status)) {
-              await api.post(`/api/heartbeat-runs/${runId}/cancel`);
-              await awaitJourneyCondition(async () => !["queued", "running"].includes((await api!.get(`/api/heartbeat-runs/${runId}`)).status), 30_000, "owned_run_cancellation_unconfirmed", cleanupSignal, "failed");
-            }
+            if (!resources.issueId) throw new ConnectionFailure("cleanup_run_issue_missing");
+            await stopOwnedGitHubReviewRun(api, runId, { companyId: config!.target.companyId, agentId: config!.agent.id, issueId: resources.issueId }, cleanupSignal);
           }
           if (resources.issueId && result.status !== "passed") {
             const issue = await api.get(`/api/issues/${resources.issueId}`);

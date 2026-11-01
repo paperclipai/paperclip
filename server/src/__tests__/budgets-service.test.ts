@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +28,8 @@ vi.mock("../services/activity-log.js", () => ({
 // Budget behavior is exercised against PostgreSQL below and in
 // cost-accounting-reliability.test.ts, including transaction and retry paths.
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_BUDGETS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("budgetService release gate enforcement", () => {
@@ -34,8 +37,9 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-budgets-service-");
-    db = createDb(tempDb.connectionString);
+    await import("../services/agent-lifecycle.js");
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-budgets-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -50,6 +54,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -258,6 +263,31 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       scopeId: companyId,
       reason: "Company is paused and cannot start new work.",
     });
+  });
+
+  it.each([false, true])("only signals a real project budget pause with concurrent admission checks (already paused: %s)", async alreadyPaused => {
+    const { companyId, agentId, projectId } = await createBudgetFixture();
+    await db.insert(budgetPolicies).values({ companyId, scopeType: "project", scopeId: projectId,
+      metric: "billed_cents", windowKind: "lifetime", amount: 100, hardStopEnabled: true, notifyEnabled: false });
+    await insertCostEvent({ companyId, agentId, projectId, costCents: 125 });
+    const pausedAt = new Date("2020-01-01T00:00:00.000Z");
+    if (alreadyPaused) await db.update(projects).set({ pausedAt, pauseReason: "manual" }).where(eq(projects.id, projectId));
+    const dispatch = vi.fn(), deferred = vi.fn();
+    const unsubscribe = [subscribeDeliveryWork(db, DELIVERY_QUEUES.queuedRunDispatch, dispatch),
+      subscribeDeliveryWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, deferred)];
+    try {
+      const service = budgetService(db);
+      const blocks = await Promise.all(Array.from({ length: 4 }, () => service.getInvocationBlock(companyId, agentId, { projectId })));
+      expect(blocks.every(block => block?.scopeType === "project" && block.scopeId === projectId)).toBe(true);
+      const [paused] = await db.select().from(projects).where(eq(projects.id, projectId));
+      expect(paused).toMatchObject({ pauseReason: alreadyPaused ? "manual" : "budget", pausedAt: alreadyPaused ? pausedAt : expect.any(Date) });
+      expect(dispatch).toHaveBeenCalledTimes(alreadyPaused ? 0 : 1);
+      expect(deferred).toHaveBeenCalledTimes(alreadyPaused ? 0 : 1);
+      await Promise.all(Array.from({ length: 4 }, () => service.getInvocationBlock(companyId, agentId, { projectId })));
+      expect((await db.select().from(projects).where(eq(projects.id, projectId)))[0]).toEqual(paused);
+      expect(dispatch).toHaveBeenCalledTimes(alreadyPaused ? 0 : 1);
+      expect(deferred).toHaveBeenCalledTimes(alreadyPaused ? 0 : 1);
+    } finally { unsubscribe.forEach(stop => stop()); }
   });
 
   it("hard-stops project work until a valid budget raise resumes it and overview reconciles ledger spend", async () => {

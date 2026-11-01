@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { writeGitHubReviewReport } from "./github-review-report.js";
+import { githubJourneyCheckpoints } from "./github-review-evidence.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import type { RunnerE2EResult } from "./types.js";
 
@@ -48,4 +49,31 @@ it("refuses an altered screenshot rather than retaining its claimed digest", asy
   await writeFile(path.join(output, "failure.png"), "altered");
   await expect(writeGitHubReviewReport({ output, campaignId: "altered", result: fixture(), resources: { branch: "owned", appName: "owned", runIds: [] }, catalog: runnerMatrix, secrets: [] }))
     .rejects.toThrow("journey_screenshot_digest_mismatch");
+});
+
+it("stages the verified persisted checkpoint as the standard report's final state", async () => {
+  const output = await mkdtemp(path.join(os.tmpdir(), "github-report-test-")); temporary.push(output);
+  const input = fixture();
+  input.status = "passed"; delete input.error;
+  input.githubReviewJourney!.outcome = "passed";
+  input.githubReviewJourney!.checkpoints = Object.fromEntries(githubJourneyCheckpoints.map(id => [id, true]));
+  input.screenshots = [{ id: "persisted", label: "Persisted completion", file: "persisted.png", sha256: createHash("sha256").update(pixel).digest("hex") }];
+  await writeFile(path.join(output, "persisted.png"), pixel);
+  const result = await writeGitHubReviewReport({ output, campaignId: "passing-journey", result: input, resources: { branch: "owned", appName: "owned", runIds: ["run"] }, catalog: runnerMatrix, secrets: [] });
+  expect(result.status).toBe("passed");
+  const manifest = JSON.parse(await readFile(path.join(output, "evidence/evidence-manifest.json"), "utf8"));
+  expect(manifest.files).toContain("final-state.png");
+  expect(await readFile(path.join(output, "evidence/final-state.png"))).toEqual(pixel);
+  expect(await readFile(path.join(output, "evidence/snapshots/persisted.png"))).toEqual(pixel);
+});
+
+it("refuses a passing report without its persisted screenshot", async () => {
+  const output = await mkdtemp(path.join(os.tmpdir(), "github-report-test-")); temporary.push(output);
+  const input = fixture();
+  input.status = "passed"; delete input.error;
+  input.githubReviewJourney!.outcome = "passed";
+  input.githubReviewJourney!.checkpoints = Object.fromEntries(githubJourneyCheckpoints.map(id => [id, true]));
+  await writeFile(path.join(output, "failure.png"), pixel);
+  await expect(writeGitHubReviewReport({ output, campaignId: "missing-final-state", result: input, resources: { branch: "owned", appName: "owned", runIds: ["run"] }, catalog: runnerMatrix, secrets: [] }))
+    .rejects.toThrow("journey_final_state_missing");
 });

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
+import { installPreparedQueries } from "./prepared-queries.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -73,19 +74,25 @@ function registerClient(key: string, client: RegisteredPostgresClient): void {
  * client that outlives the cluster it points at can crash the process (a
  * reserved connection's deferred write firing after the socket is gone).
  * Swallows individual `end()` errors so one bad client cannot block the rest.
+ * An owned database on a shared test host must select database scope instead;
+ * its teardown cannot close another fixture's clients on that host.
  */
-export async function closeRegisteredClients(url: string): Promise<void> {
+export async function closeRegisteredClients(url: string, options?: { scope: "database" }): Promise<void> {
   const key = hostPortKey(url);
+  const database = options?.scope === "database" ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined;
+  if (database === "") throw new Error("Database-scoped teardown requires an explicit database name");
   const refs = clientsByHostPort.get(key);
   if (!refs) return;
 
-  clientsByHostPort.delete(key);
   const clients: RegisteredPostgresClient[] = [];
   for (const ref of refs) {
-    clientFinalizer.unregister(ref);
     const client = ref.deref();
+    if (client && database !== undefined && client.options.database !== database) continue;
+    refs.delete(ref);
+    clientFinalizer.unregister(ref);
     if (client) clients.push(client);
   }
+  if (refs.size === 0) clientsByHostPort.delete(key);
 
   await Promise.all(clients.map((client) => client.end({ timeout: 1 }).catch(() => {})));
 }
@@ -129,13 +136,6 @@ export type MigrationState =
     };
 
 export interface DatabaseClientOptions {
-  /**
-   * postgres.js `prepare`. Set false when connecting through a
-   * transaction-mode pooler (pgbouncer / Neon `-pooler` endpoints /
-   * Supabase Supavisor transaction ports) so the client does not rely on
-   * session-scoped prepared statements. Defaults to the driver default
-   * (enabled), preserving existing behavior on direct connections.
-   */
   prepare?: boolean;
   /** postgres.js `max` — connection pool size (driver default: 10). */
   maxConnections?: number;
@@ -294,6 +294,32 @@ export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<v
   await livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
 }
 
+// Control checkpoints must not occupy the request or lease-renewal pools
+// during an aligned burst. Share at most three lazy connections per owner.
+const checkpointDbFactories = new WeakMap<object, () => Db>();
+const checkpointDbs = new WeakMap<object, Db>();
+const CHECKPOINT_POOL_MAX_CONNECTIONS = 3;
+const closedCheckpointOwners = new WeakSet<object>();
+
+/** The bounded controller checkpoint pool; transactions and test doubles keep
+ * their existing database when they have no owning client factory. */
+export function checkpointDb(db: Db): Db {
+  const existing = checkpointDbs.get(db);
+  if (existing) return existing;
+  const factory = checkpointDbFactories.get(db);
+  if (!factory) return db;
+  if (closedCheckpointOwners.has(db)) throw new Error("checkpoint_pool_closed");
+  const created = factory();
+  checkpointDbs.set(db, created);
+  return created;
+}
+
+/** Fence lazy creation immediately, and keep any ended pool cached. */
+export async function closeCheckpointDb(db: Db, timeoutSeconds: number): Promise<void> {
+  closedCheckpointOwners.add(db);
+  await checkpointDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return createDbClient(url, resolved);
@@ -301,6 +327,7 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
 
 function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
   const sql = postgres(url, postgresJsOptions(resolved));
+  if (resolved.prepare === true) installPreparedQueries(sql);
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
   // A disconnect can lose the response after a statement has committed.
@@ -314,6 +341,9 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   }, db));
   livenessDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
+  }, db));
+  checkpointDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
   }, db));
   return db;
 }
@@ -506,6 +536,40 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0332_little_night_nurse.sql",
   "0345_luxuriant_carmella_unuscione.sql",
   "0369_late_logan.sql",
+  "0381_mean_scream.sql",
+  "0382_narrow_the_executioner.sql",
+  "0385_open_madame_web.sql",
+  "0386_steady_epoch.sql",
+  "0387_boring_professor_monster.sql",
+  "0388_ambitious_micromax.sql",
+  "0389_brave_hulk.sql",
+  "0390_salty_killraven.sql",
+  "0391_third_roulette.sql",
+  "0392_small_frightful_four.sql",
+  "0393_open_grandmaster.sql",
+  "0395_tranquil_firestar.sql",
+  "0396_tan_paladin.sql",
+  "0397_known_madrox.sql",
+  "0398_yielding_random.sql",
+  "0399_ambitious_onslaught.sql",
+  "0400_absent_phantom_reporter.sql",
+  "0401_yummy_ultimates.sql",
+  "0402_ancient_malice.sql",
+  "0403_natural_cerise.sql",
+  "0406_zippy_war_machine.sql",
+  "0407_greedy_star_brand.sql",
+  "0408_short_red_skull.sql",
+  "0409_uneven_zuras.sql",
+  "0410_freezing_kinsey_walden.sql",
+  "0411_real_scrambler.sql",
+  "0412_tearful_squadron_supreme.sql",
+  "0413_tired_kronos.sql",
+  "0414_closed_edwin_jarvis.sql",
+  "0419_slippery_impossible_man.sql",
+
+
+  "0384_funny_adam_warlock.sql",
+  "0383_tool_review_company_expiry.sql",
 ]);
 
 async function applyPendingMigrationsManually(

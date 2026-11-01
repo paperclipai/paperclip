@@ -49,7 +49,13 @@ start execution. This preference does not change the org chart or permissions.
 
 ### Agent Execution
 
-Existing Claude and Codex agents can upgrade from the legacy runner on their
+Agents have an **Advanced** tab for editing their settings across all configuration tabs
+as a versioned YAML document. Instructions, skills, tools, channels, trust,
+secret operations, API keys, and revision restore use their existing domain APIs.
+It edits the same configuration as the regular settings pages, validates before saving, preserves masked secrets, and rejects
+stale edits. See [Agent configuration YAML](agent-configuration-yaml.md).
+
+Existing Claude, Codex, and Grok Build agents can upgrade from the legacy runner on their
 Harness / Runtime page when Paperclip Runner is the qualified default for their
 environment. One action saves pending edits and translates compatible settings
 while keeping the harness, selected model, account bindings, instructions, and
@@ -87,6 +93,16 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+When an agent creates a subtask or follow-up task, its source task's feed shows
+a linked card at creation time with the current title, task number, and status.
+The Tasks tab keeps the full relationship list.
+
+Automatic monitor checks pause when a task is blocked. A person can use Check now
+to request one check of a retained monitor through normal execution admission.
+Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
+recovery stays paused until the task resumes. A check that
+cannot start reports that result instead of claiming it was queued.
+
 The experimental Cases feature also supports persistent work records and
 prompt-driven agent handoffs. Native case creation requires kickoff and creates
 one primary task; later handoffs move that same task
@@ -122,8 +138,15 @@ choice stays selected while task data refreshes.
 
 ### Task collection creation filters
 
+The task Filters menu also offers **Routine tasks**. It selects tasks with
+`originKind=routine_execution`, including manually triggered routine runs, even
+when other automatic tasks are hidden. The routines list's **View all tasks**
+link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+selected. The URL retains the selection across reloads and task navigation.
+Search and pagination apply the routine origin filter on the server.
+
 Tasks and project lists hide agent-created and system-created tasks by default.
-The Filters menu's **show agent-created tasks** checkbox includes routine runs,
+The Filters menu's **Show agent-created tasks** checkbox includes routine runs,
 recovery/watchdog tasks, chat-channel tasks, and other automation. Channel tasks
 remain bot-created for this filter even when a human starts the conversation. The choice is saved per company
 and collection; Clear filters restores the hidden default. Nested lists preserve
@@ -165,6 +188,16 @@ Source feeds and project task lists retain their existing access rules.
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.
 
+Paperclip-managed skills are immutable saved versions. Studio and API authoring
+publish complete content before acknowledging a save; stale edits return a version
+conflict and Studio retains the draft. Installed repository skills use the same
+version-based reads and execution selection. Web-server files are disposable caches
+and staging, so compatible replacement servers can read, edit and deliver protected
+versions from the same database and remote object storage. Explicit linked-local
+sources retain local behavior. Active or recovering run pins prevent deletion even
+after an agent detaches the skill. See [ephemeral-server skills](skill-ephemeral-web-servers.md)
+for conversion, compatibility and qualification boundaries.
+
 The governing rule is: **skill permissions are opt-in restrictions, not opt-in capabilities**. Missing skill grants never create a denial in an otherwise unconfigured company, and ordinary skill work does not require board confirmation, a draft-only workflow, or an activation approval.
 
 Core Paperclip owns the skill runtime, company-boundary enforcement, policy evaluation contract, API denials, validation, path containment, secret redaction, and activity logging. Those safety invariants cannot be disabled by policy. Open-by-default skill work never authorizes arbitrary host-path reads, unsafe executable content, or policy edits: local imports and scans must stay within Paperclip-known workspace or managed-skill roots, remote sources must resolve to validated immutable content, and platform safety denials must stay distinct from optional administrative restrictions. Paperclip EE may provide detailed administration for per-agent, per-role, per-action, per-source, and protected-skill rules, but EE is not required to use skills and is not an enforcement boundary. Without EE, companies remain open by default and any already-configured restrictions continue to be enforced by core.
@@ -186,6 +219,12 @@ Missing references are advisory: a valid selected skill can still be imported.
 Unavailable files are listed, and existing installed dependencies are retained
 when a bounded refresh cannot preserve them. File limits and content validation
 still apply; importing never executes repository code.
+Authored and unproven legacy versions retain an independent recovery copy. Unused Git
+packages with an exact restore recipe may expire; later use requires access to that
+original repository and commit.
+External package storage keeps repository contents out of the control-plane database;
+per-turn checks reuse verified local files while rechecking current skill access.
+See [automatic storage and recovery](skill-package-storage.md).
 
 Project-derived skills inherit current project access. Access through any originating
 project is sufficient, including the responsible-user restrictions on agent execution.
@@ -323,6 +362,14 @@ See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
 ### Experimental persistent agent conversations
 
+Agents can deliver proactive task and routine results into their own chat with
+the task's responsible human. A morning PR digest arrives as an agent message
+with a source-task link and unread indicators, even before the first human
+message. The person can reply using the digest as context. Publishing a message
+and completing work are separate actions; sending never starts or interrupts a
+chat turn. Delivery obeys membership, run authority and task privacy, and stays
+behind the Agent Chat setting. This version delivers in-app only.
+
 Agent Chat is an opt-in core task presentation (`enableAgentChat`, off by default). Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 
 ### Agent chat project handoff (2026-09-11)
@@ -391,3 +438,13 @@ operation logs retain their app authorization. Workspace `_issuePrivacySources` 
 operation privacy metadata protect app-record disclosure; they do not grant or deny
 filesystem execution or task-bound file browsing. Current trust and sandbox policy,
 publication receipts, binding checks, and lifecycle locks remain authoritative.
+
+## Agent connection administration (2026-10-13)
+
+Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.
+
+The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
+
+Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

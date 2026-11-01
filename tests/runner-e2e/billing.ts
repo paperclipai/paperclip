@@ -278,9 +278,16 @@ export function summarizeExecutionBilling(
   result: Pick<
     RunnerE2EResult,
     "runIds" | "usage" | "environmentId" | "durationMs" | "runtimeUsage" | "firstTaskQuality" | "completionQuality" | "publicMcp" | "productJourney"
-  > & Partial<Pick<RunnerE2EResult, "runtimeMode">>,
+  > & Partial<Pick<RunnerE2EResult, "runtimeMode" | "billing">>,
 ): RunnerE2EBillingSummary {
-  const browserOnly = Boolean(result.productJourney && result.runtimeMode === "none" && !result.runIds?.length);
+  // Some retained journeys store their measured summary without raw run usage.
+  // Regeneration must preserve those measurements, including unknown prices.
+  if (result.usage === undefined && result.billing) return structuredClone(result.billing);
+  const capturedEmptyUsage = Array.isArray(result.usage?.runs) && result.usage.runs.length === 0 &&
+    Object.keys(result.usage).length === 1;
+  const browserOnly = result.runtimeMode === "none" && !result.runIds?.length &&
+    (result.usage == null ? Boolean(result.productJourney)
+      : capturedEmptyUsage && (Boolean(result.productJourney) || Array.isArray(result.runIds)));
   const requestedRunCount = browserOnly ? 0 : Math.max(result.runIds?.length ?? 0, 1);
   const entries = browserOnly ? [] : usageEntries(result.usage, requestedRunCount);
   let inputTokens = 0;
@@ -332,7 +339,7 @@ export function summarizeExecutionBilling(
   const runCount = Math.max(requestedRunCount, entries.length);
   const costStatus = costCoverageStatus(runCount, runsWithTokenUsage, runsWithReportedCost, runsWithEstimatedCost, runsWithPartialReportedCost);
   const runtime = { ...fallbackRuntimeUsage(result) };
-  if (browserOnly) runtime.agentRunDurationMs = 0;
+  if (browserOnly && runCount === 0) runtime.agentRunDurationMs = 0;
   const estimatedRuntimeCostUsd = runtime.estimatedListCostUsd ?? 0;
   const judgments = [...(result.firstTaskQuality ? [result.firstTaskQuality] : []), ...(result.completionQuality ?? [])];
   const sumKnown = (key: "inputTokens" | "outputTokens" | "estimatedCostUsd") => judgments.some(q => q[key] === null) ? null : judgments.reduce((sum, q) => sum + (q[key] ?? 0), 0);

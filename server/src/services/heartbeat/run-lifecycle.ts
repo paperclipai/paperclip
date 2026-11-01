@@ -1,3 +1,17 @@
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
+import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
+import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
+import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
+import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
+import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
+import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import os from "node:os";
 import {
@@ -1012,13 +1026,30 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
   }
 
-  async function writeRunStatus<T>(status: string, companyId: string | undefined, write: (tx: Db) => Promise<T>) {
+  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "runtimeMode" | "nativeIssueId" | "issueId" | "contextSnapshot"> | null,
+    write: (tx: Db) => Promise<T>) {
+    const companyId = previous?.companyId;
     // Register on the outer transaction before the terminal write. An unknown
     // commit cannot strand newly-actionable accounting after the live event.
     return db.transaction(async transaction => {
       const tx = transaction as unknown as Db;
+      if (previous?.runtimeMode === "native" && isHeartbeatRunTerminalStatus(status))
+        await notifyExternalAgentSettlement(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous?.runtimeMode === "native") await notifyNativeRecoveryNotices(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous?.runtimeMode === "native") await notifyNativeRunProjection(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous?.runtimeMode === "native") await notifyNativeEnvironmentSettlement(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous && previous.status !== status) await notifyUnsafeWorkspaceExportRunChange(tx, previous);
+      if (previous && (previous.status === "scheduled_retry" || status === "scheduled_retry"))
+        await notifyScheduledRetryCancellation(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous) await notifyInstructionCollection(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous) await notifyCancelledWorkspacePreservation(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous && isHeartbeatRunTerminalStatus(status))
+        await notifyRetainedNativeSessionCleanup(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
-      await notifyExecutionRunWork(tx);
+      await notifyExecutionRunWork(tx, previous ? { companyId: previous.companyId, runId: previous.id,
+        issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
+      if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
+        issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
       return write(tx);
     });
   }
@@ -1063,7 +1094,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus?.companyId, writer =>
+    const updated = await writeRunStatus(status, previousStatus, writer =>
       previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
             db: writer,
@@ -1159,7 +1190,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus?.companyId, writer =>
+    const updated = await writeRunStatus(status, previousStatus, writer =>
       previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
             db: writer,
@@ -1175,6 +1206,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
+              ...(patch?.usageJson ? { usageJson: preserveAcceptedRunUsageProjectionSql(patch.usageJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
@@ -1387,12 +1419,20 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     patch?: Partial<typeof agentWakeupRequests.$inferInsert>,
   ) {
     if (!wakeupRequestId) return;
-    await db
-      .update(agentWakeupRequests)
-      .set({ status, ...patch, updatedAt: new Date() })
-      // Reassignment revokes requests transactionally. Late execution settlement
-      // must not turn a revoked request back into authority for a later retry.
-      .where(and(eq(agentWakeupRequests.id, wakeupRequestId), ne(agentWakeupRequests.status, "cancelled")));
+    await db.transaction(async tx => {
+      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status })
+        .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)).for("update");
+      if (!current || current.status === "cancelled") return;
+      if (current.status !== (patch?.status ?? status) || patch?.payload !== undefined || patch?.runId !== undefined) {
+        await notifyExternalConversationSettlement(tx, { companyId: current.companyId });
+      }
+      await notifyStrandedAgentStatus(tx, { companyId: current.companyId, agentId: current.agentId });
+      await tx.update(agentWakeupRequests)
+        .set({ status, ...patch, updatedAt: new Date() })
+
+
+        .where(and(eq(agentWakeupRequests.id, wakeupRequestId), ne(agentWakeupRequests.status, "cancelled")));
+    });
   }
 
   async function addContinuationExhaustedCommentOnce(input: {
@@ -2351,7 +2391,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryContext(
+    const retryContextSnapshot: Record<string, unknown> = withRecoveryContext(
       {
         ...contextSnapshot,
         retryOfRunId: run.id,
@@ -2361,6 +2401,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       },
       "status_only",
     );
+    delete retryContextSnapshot.skillVersions;
+    delete retryContextSnapshot.skillSelectionSnapshot;
+    delete retryContextSnapshot.shadowedSkills;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,
@@ -2408,6 +2451,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         .returning()
         .then((rows) => rows[0]);
 
+      await notifyRunDispatch(tx, { companyId: run.companyId });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({

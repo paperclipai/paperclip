@@ -37,7 +37,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { settleConversationTurn } from "../services/agent-conversations.js";
 import { buildLowTrustSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 import { deliverBudgetEnforcement } from "../services/budgets.js";
-let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
+let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined,
   db: ReturnType<typeof createDb>,
   home: string;
 beforeAll(async () => {
@@ -46,12 +46,15 @@ beforeAll(async () => {
   );
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "fast-response-fixture");
-  database = await startEmbeddedPostgresTestDatabase(
+  const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
+  if (external && !new URL(external).pathname.endsWith("_test")) throw new Error("Fast-response tests require a database ending in _test");
+  database = external ? undefined : await startEmbeddedPostgresTestDatabase(
     "paperclip-fast-response-db-",
   );
-  db = createDb(database.connectionString);
+  db = createDb(external ?? database!.connectionString);
 }, 90000);
 afterAll(async () => {
+  await db?.$client.end({ timeout: 1 });
   await database?.cleanup();
   vi.unstubAllEnvs();
   if (home) await rm(home, { recursive: true, force: true });

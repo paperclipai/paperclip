@@ -2,9 +2,13 @@
 
 The server materializes immutable skill versions under
 `<instance>/skills/<company>/__versions__/<skill>/<version>`. These are disposable
-disk copies: the company-scoped version and repository snapshot rows retain the
-contents, including binary files and executable flags. Normal skill resolution
-rebuilds a missing copy from the database without contacting its upstream source.
+disk copies: company-scoped versions reference durable packages in the configured
+storage backend, or retain legacy database inventories. Normal skill resolution
+rebuilds missing copies, preserving binary bytes and executable flags. New Git packages
+can also restore the exact original commit from their saved recipe using current
+repository access. Authored/legacy packages without that recipe require independent
+external durability before eviction; unavailable storage leaves those caches intact. Shared extracted packages have a
+separate cold-fill capacity policy. See [package storage](skill-package-storage.md).
 
 ## Skill version caches
 
@@ -89,9 +93,42 @@ The rest of the session directory, including its control-plane state, is kept.
 | `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED` | `true` | Set `false` to stop expiring copies |
 | `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN` | `false` | Set `true` to report candidates without deleting copies or task sessions |
 | `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DAYS` | `7` | Days an issue must be closed before its sessions' copies expire (minimum `1`) |
+| `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS` | `7` | Days continuity-break archives and quarantined session state are kept (minimum `1`) |
 
 Each batch that finds candidates logs them with candidate and reclaimed allocated
 bytes, cleared task sessions, and skip reasons.
+
+### Continuity-break archives and quarantined session state
+
+The same sweep also removes two kinds of evidence that native sessions leave behind
+under the same root:
+
+- `<session>/continuity-breaks/<epoch ms>-<UUID>/`, written when a session starts a
+  fresh provider session and moves the retired session's state aside. Nothing reads
+  these archives again.
+- `quarantine/<session>.<reason>.<epoch ms>.<pid>.<UUID>/`, written when a session's
+  state loses authority. Recovery and failed-run retry still consult these entries.
+
+An entry's age comes from the epoch in its name, or from its modification time when
+that epoch is in the future. An entry is removed once it is older than
+`PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS` and its session is not executing,
+initializing, warm, or closing in this process. Quarantine entries created by
+native cleanup (`<session>.identity_indeterminate.cleanup.<UUID>`) are referenced
+from recovery history and kept. Symlinks are never followed or removed. Once a
+quarantined entry is removed, recovery and failed-run retry no longer see it, so a
+later run of that session may start a fresh provider session instead of refusing.
+
+The evidence check runs on the sweep only when something is due: once at startup,
+then when the oldest retained entry, or an entry the executor has written since,
+reaches the window, and on the next sweep after a busy session, a failed removal,
+or a full batch. It only reads the filesystem and never queries the
+database. A dry run reports each candidate once until newly written evidence comes due.
+
+An entry is renamed to `.expired-<UUID>` in its folder before it is deleted, and a
+later sweep finishes an interrupted deletion. An empty `continuity-breaks` folder
+is removed. Archives, quarantine entries, and leftovers count toward the batch
+limits of 200 entries and 50 removals shared with backup copies, and
+`PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED` and `_DRY_RUN` apply to both.
 
 ## Native workspace sync folders
 

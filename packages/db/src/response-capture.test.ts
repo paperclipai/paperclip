@@ -1,6 +1,6 @@
 import { integer, pgTable } from "drizzle-orm/pg-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture, publicDatabaseCallers, responseCaptureWindow } from "./response-capture.js";
+import { createDatabaseResponseCapture, databaseResponseCaptureFromEnv, installDatabaseResponseCapture, publicDatabaseCallers, responseCaptureWindow } from "./response-capture.js";
 
 const epoch = Date.parse("2020-01-01T00:00:00Z");
 const metadata = { operation: "select", table: "capture_fixture", callers: ["services/fixture.ts:4:2"] };
@@ -16,6 +16,56 @@ function fixture(emitOverride?: (event: Record<string, unknown>) => void) {
 }
 
 describe("bounded database response capture", () => {
+  it("paces a complete environment capture without extending the measurement window or leaving timers", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(epoch);
+    const emitted: Array<{ at: number; event: Record<string, unknown> }> = [];
+    const log = vi.spyOn(console, "info").mockImplementation(value => emitted.push({ at: Date.now(), event: JSON.parse(value) }));
+    try {
+      const capture = databaseResponseCaptureFromEnv({ PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW: "2020-01-01T00:00:00Z/2020-01-01T00:01:00Z" })!;
+      captures.push(capture);
+      const rows = [{ secret: "capture-response-sentinel" }];
+      for (let index = 0; index < 2200; index++) {
+        expect(capture.execute(() => rows, { ...metadata, callers: [`services/capture.ts:${index + 1}:1`] })).toBe(rows);
+      }
+      vi.advanceTimersByTime(60_001);
+      expect(emitted.length).toBeGreaterThan(0);
+      expect(emitted.length).toBeLessThanOrEqual(64);
+      expect(capture.active()).toBe(false);
+      expect(capture.execute(() => rows, metadata)).toBe(rows);
+      capture.flush();
+      vi.advanceTimersByTime(32_000);
+      expect(emitted).toHaveLength(2049);
+      const groups = emitted.filter(item => item.event.event === "paperclip.db_response_capture.entry.v1");
+      const summary = emitted.at(-1)!.event;
+      expect(groups).toHaveLength(2048);
+      expect(summary).toMatchObject({ event: "paperclip.db_response_capture.summary.v1", completedQueries: 2200,
+        groups: 2048, closedAt: "2020-01-01T00:01:00.000Z" });
+      expect(groups.reduce((calls, item) => calls + Number(item.event.calls), 0)).toBe(summary.completedQueries);
+      expect(groups.reduce((bytes, item) => bytes + Number(item.event.responseValueBytes), 0)).toBe(summary.responseValueBytes);
+      expect(groups.map(item => item.event.groupIndex)).toEqual(Array.from({ length: 2048 }, (_, index) => index));
+      for (const { at } of emitted) expect(emitted.filter(item => item.at >= at && item.at < at + 1000).length).toBeLessThanOrEqual(64);
+      expect(JSON.stringify(emitted)).not.toContain("capture-response-sentinel");
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(60_000);
+      expect(emitted).toHaveLength(2049);
+    } finally { log.mockRestore(); vi.clearAllTimers(); vi.useRealTimers(); }
+  });
+
+  it("contains deferred logger failures and finishes its bounded output", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(epoch + 120_000);
+    const log = vi.spyOn(console, "info").mockImplementation(() => { throw new Error("fixture logger failure"); });
+    try {
+      const capture = databaseResponseCaptureFromEnv({ PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW: "2020-01-01T00:02:00Z/2020-01-01T00:03:00Z" })!;
+      captures.push(capture);
+      expect(capture.execute(() => 7, metadata)).toBe(7);
+      expect(() => vi.advanceTimersByTime(60_001)).not.toThrow();
+      expect(log).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { log.mockRestore(); vi.clearAllTimers(); vi.useRealTimers(); }
+  });
+
   it.each([undefined, "", "sentinel-invalid-input", "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z/2020-01-01T00:00:00Z",
     "2020-01-01T00:00:00Z/2020-01-01T00:01:01Z", "2020-01-01T01:00:00Z/2020-01-01T01:01:00Z",
     "2020-01-01T00:00:00Z/2020-01-01T00:01:00Z/extra",
@@ -107,11 +157,31 @@ describe("bounded database response capture", () => {
   });
   it("bounds cardinality without dropping response-byte totals", () => {
     const f = fixture();
-    for (let i = 0; i < 200; i += 1) f.capture.execute(() => [i], { ...metadata, callers: [`services/f${i}.ts:1:1`] });
+    for (let i = 0; i < 2200; i += 1) f.capture.execute(() => [i], { ...metadata, callers: [`services/f${i}.ts:1:1`] });
     f.capture.flush();
     const summary = f.events.at(-1)!;
-    expect(summary).toMatchObject({ startedQueries: 200, completedQueries: 200, groups: 128, overflowCalls: 73 });
-    expect(summary.responseValueBytes).toBe(Array.from({ length: 200 }, (_, i) => Buffer.byteLength(JSON.stringify([i]))).reduce((a, b) => a + b, 0));
+    expect(summary).toMatchObject({ startedQueries: 2200, completedQueries: 2200, groups: 2048, overflowCalls: 153,
+      groupPageSize: 128, groupPages: 16 });
+    expect(f.events).toHaveLength(2049);
+    const entries = f.events.slice(0, -1);
+    expect(entries.map(entry => entry.groupIndex)).toEqual(Array.from({ length: 2048 }, (_, index) => index));
+    for (let page = 0; page < 16; page += 1) {
+      expect(entries.filter(entry => entry.groupPage === page)).toHaveLength(128);
+    }
+    expect(entries.reduce((sum, entry) => sum + Number(entry.calls), 0)).toBe(2200);
+    expect(summary.responseValueBytes).toBe(Array.from({ length: 2200 }, (_, i) => Buffer.byteLength(JSON.stringify([i]))).reduce((a, b) => a + b, 0));
+  });
+  it.each([0, 129])("numbers every page including an empty or partial final page (%s)", count => {
+    const f = fixture();
+    for (let index = 0; index < count; index += 1) {
+      f.capture.execute(() => [index], { ...metadata, callers: [`services/page${index}.ts:1:1`] });
+    }
+    f.capture.flush();
+    const entries = f.events.slice(0, -1), summary = f.events.at(-1)!;
+    expect(summary).toMatchObject({ groups: count, groupPageSize: 128, groupPages: Math.ceil(count / 128) });
+    expect(entries.map(entry => entry.groupIndex)).toEqual(Array.from({ length: count }, (_, index) => index));
+    expect(entries.filter(entry => entry.groupPage === 0)).toHaveLength(Math.min(count, 128));
+    expect(entries.filter(entry => entry.groupPage === 1)).toHaveLength(Math.max(0, count - 128));
   });
   it("does not execute builders or prepared statements until requested", async () => {
     const f = fixture(), rows = [{ id: 1 }], execute = vi.fn(async () => rows);

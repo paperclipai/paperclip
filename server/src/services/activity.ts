@@ -13,6 +13,7 @@ import {
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issueComments,
   issueDocuments,
   issues,
@@ -109,7 +110,7 @@ export function activityService(db: Db) {
             )
           ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
           then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
@@ -396,8 +397,24 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
-    forIssue: (issueId: string) =>
-      db
+    inputFactsForIssue: async (companyId: string, issueId: string, commentIds: string[]) => {
+      if (!commentIds.length) return [];
+      const commentId = sql<string>`${activityLog.details}->>'commentId'`;
+      return db.selectDistinctOn([commentId, activityLog.action])
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          inArray(commentId, commentIds),
+          inArray(activityLog.action, ["issue.queued_comment_steered", "issue.comment_added"]),
+          sql`${activityLog.details}->>'duplicate' is distinct from 'true'`,
+        ))
+        .orderBy(commentId, activityLog.action, asc(activityLog.createdAt), asc(activityLog.id));
+    },
+
+    forIssue: (issueId: string, limit?: number) => {
+      const query = db
         .select()
         .from(activityLog)
         .where(
@@ -407,11 +424,14 @@ export function activityService(db: Db) {
               sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
           ),
         )
-        .orderBy(desc(activityLog.createdAt)),
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+      return limit === undefined ? query : query.limit(limit);
+    },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+      if (selectedRunIds && !selectedRunIds.length) return [];
       scheduleRunLivenessBackfill(companyId, issueId);
-      const runs = await db
+      const runsQuery = db
         .select({
           runId: heartbeatRuns.id,
           runtimeMode: heartbeatRuns.runtimeMode,
@@ -460,6 +480,11 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
+            sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
+              and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
+              or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
+            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (
@@ -473,7 +498,8 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+      const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);

@@ -229,7 +229,9 @@ describe("run failure diagnostics", () => {
     const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: thrown }));
     expect(result.execution).toEqual({ remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running" });
     expect(result.exceptions).toMatchObject([{ code: "runner_remote_process_identity_unavailable" }]);
-    expect(JSON.stringify(result)).not.toContain("private");
+    expect(JSON.stringify(result)).not.toContain("private-path");
+    expect(result.exceptions[0]).not.toHaveProperty("path");
+    expect(result.exceptions[0]).not.toHaveProperty("pid");
 
     const transport = attachRemoteRunnerRecoveryDiagnostic(new Error("socket closed"),
       { stage: "identity_marker", reason: "probe_transport_failed" });

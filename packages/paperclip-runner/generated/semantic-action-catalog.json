@@ -535,6 +535,45 @@
   },
   {
     "allowedModes": [
+      "standard"
+    ],
+    "description": "Send a Markdown message directly to your own persistent chat with this task's responsible human. The destination is automatic. Use for requested digests and proactive task updates; report_progress writes to this task and comment_on_task writes to a chosen task. This sends no message to other agents, starts no chat run, and changes no task status. Reuse idempotencyKey on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The message the human should see.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Stable key for this message within the source task, including across run retries.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "operationId": "send_chat_message",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Send message to your chat",
+    "version": 1
+  },
+  {
+    "allowedModes": [
       "standard",
       "ask",
       "planning",
@@ -780,6 +819,10 @@
           "maxLength": 10000,
           "minLength": 1,
           "type": "string"
+        },
+        "resolverPolicy": {
+          "const": "human_only",
+          "description": "Optionally require an authenticated human response."
         },
         "targetRevisionId": {
           "description": "Optional bound document revision.",
@@ -3318,6 +3361,46 @@
             "string",
             "null"
           ]
+        },
+        "requiredQualityReview": {
+          "additionalProperties": false,
+          "properties": {
+            "deliverables": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Stable output key, e.g. copy or visual.",
+                    "maxLength": 80,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-readable output name.",
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "maxItems": 10,
+              "minItems": 1,
+              "type": "array"
+            },
+            "version": {
+              "const": 1
+            }
+          },
+          "required": [
+            "version",
+            "deliverables"
+          ],
+          "type": "object"
         },
         "status": {
           "description": "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved).",

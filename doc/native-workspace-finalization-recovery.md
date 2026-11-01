@@ -1,5 +1,15 @@
 # Native workspace finalization ownership and recovery
 
+Periodic heartbeat recovery runs one pass at a time in each server process.
+A tick that arrives during a slow pass reports its age and starts no duplicate.
+A later tick can start a fresh pass after the current work settles. Shutdown
+and idle sleep still track the actual recovery promise through cleanup. Direct
+run operations and scheduled work delivery keep their existing paths. A pass
+that remains active for three scheduler intervals produces an error log with its
+age. A waiting timeout does not admit another pass: the actual work must settle
+before ownership is released. A stuck operation requires investigation and
+recovery at the operation or provider boundary.
+
 A native provider can fail before it submits a result while its workspace still
 contains unpublished edits. A prepared workspace reference is not an export
 receipt. Terminal provider failure pins the exact bound sandbox and records a
@@ -8,6 +18,17 @@ failure handlers record that obligation before their terminal writer and provide
 cleanup run. This includes descriptor reads that fail inside runtime selection. Only its exact live recovery claim can settle an owned
 preparation failure; another owner or a stale claim prevents cleanup. Settling
 that claim and recording file retention share a transaction.
+
+The reconciliation candidate scan selects the complete workspace-sync record and
+the native status wake identifier from each saved run. It keeps their JSON types
+and reads full evidence later where finalization or recovery needs it. Saved
+execution input, runner profiles, and logs stay in the stored run.
+
+Wake-queue release reads keep complete context and result receipts. Native runs
+omit runner profiles and log excerpts from this read; cleanup and execution
+read their own current evidence. Legacy runs retain the full release row so
+workspace-restore and pre-dispatch proofs keep their existing inputs. The
+selection is one scoped database query for either runtime.
 
 The recovery card names the original run and requires evidence that its exact
 allocation stopped and its files were recovered. Recording that evidence does
@@ -58,6 +79,32 @@ keeps a live copyback from losing its lock only because filesystem work has no
 database statements. It does not disable the database timeout or reconnect a
 failed lock session. Publication still requires the physical connection and
 the exact durable owner token. A disabled timeout adds no periodic probe.
+
+## Remote startup cancellation and retained uncertainty
+
+Remote artifact staging can outlast the transport's shutdown preparation wait.
+The remote launcher keeps cancellation until staging settles and checks it
+before launch dispatch. A cancelled, undispatched launch starts no process. A
+stop during an in-flight launch waits for the exact process identity before the
+existing guarded signal path can run. An accepted signal request does not prove
+that the process stopped.
+
+Read-only health retries are bounded by three attempts and 30 seconds. An
+unavailable health RPC, missing identity, or changed process generation retains
+the allocation and its files. A healthy listener alone is not identity or stop
+proof. Confirmed predecessor exit can permit bounded transport recovery, but an
+unrelated listener must remain untouched. A close timeout does not certify
+cleanup settlement, file restoration, or provider continuation admission.
+
+A runner receipt that its reconnect grace expired ends that incident. The
+transport recognizes both the coded error and the runner's plain-text message.
+It must not open another recovery window after that receipt.
+
+Verify file restoration independently of runner connection and provider activity.
+A file hash receipt proves the restored bytes only. The normal continuation gates
+must still check current ownership, pause, approval and budget state. Retained
+unknown effects remain unknown; successful file recovery does not authorize
+replay of a historical turn.
 
 ## Automatic cloud recovery
 
@@ -465,3 +512,33 @@ For a cancelled native run, the file-recovery form also offers an optional
 confirmation that no external actions were performed. Leave it unchecked unless
 the run history verifies that fact. The default records files without certifying
 action outcomes. Changing the selected source clears the evidence and confirmations.
+
+Committed chat response authorization reads current run identity, completion
+binding, and chat source fields under the existing nonblocking share lock.
+It excludes saved execution input, runner profiles, and log excerpts. Actual
+retry admission still reads the complete run and its recovery evidence. These
+reads preserve stored run data, source revocation checks, and JSON value types.
+External review-wait discovery selects only chat authorization context fields.
+It keeps the current endpoint, membership, resource, and question-receipt checks;
+saved prompts remain stored and do not cross this discovery query.
+
+Legacy continuation recovery rejects native runs before it loads their saved
+execution input. The persisted disposition check reads only the task binding
+for a native run. It keeps the same task-binding and native-finalization skip
+reasons, including the original nonblank binding values. Native input and history
+stay stored. Real legacy recovery still reads
+its complete context, profile, excerpts, and required failure evidence.
+
+The native Stop continuation recheck reads current run identity, the full Stop
+acknowledgement receipt, and process identity. It does not load saved execution
+input, runner profiles, excerpts, or unrelated result fields. Lease cleanup,
+remote termination receipts, local process checks, task ownership, and admission
+checks keep their existing behavior. Stored runs retain all of their data.
+
+One periodic stranded-message pass coalesces successful native release checks
+for the same company, task, source run, and current source row version. The release
+path already drains that
+task's queue through current admission checks. Each saved request still advances
+its recovery cursor. Rejected attempts, changed source runs, and updated source evidence remain eligible,
+and the next pass checks current state again. Legacy per-request handling stays
+unchanged. Pending work is awaited before a source is marked checked.

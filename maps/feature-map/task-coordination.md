@@ -25,6 +25,11 @@ Agent access: [companion](../agent-access-map/task-coordination.md).
 
 Open the task’s parent/child and dependency links in task detail.
 
+The task feed shows a linked card when an agent creates a direct subtask or a
+follow-up task from that task. The card stays at its creation time beside
+documents and artifacts. It shows the current task title, number, and status.
+The Tasks tab retains the complete relationship list.
+
 ### `review-and-controls`
 
 Inspect the task’s execution policy and available review, pause, resume, or stop controls.
@@ -41,6 +46,11 @@ creates a hold; it does not change task statuses to a paused status.
 
 Automated: [dependency wakeups](../../server/src/__tests__/issue-dependency-wakeups-routes.test.ts) checks server behavior; visual relationship navigation remains a manual check.
 
+The [created task card stories](../../ui/storybook/stories/task-coordination/task-created-inline.stories.tsx)
+render the production feed with fixture task reads. The
+[task feed tests](../../ui/src/components/TaskChatThread.task-creation-order.test.tsx)
+check creation order, current status, links, and duplicate suppression.
+
 Manual: Block one task on another, finish the prerequisite, and observe the dependent task’s eligible continuation. Follow parent/child links back to the source request. Verify no duplicate run or false parent completion occurs.
 
 ### `review-and-controls`
@@ -48,6 +58,37 @@ Manual: Block one task on another, finish the prerequisite, and observe the depe
 Automated: [execution policy](../../server/src/__tests__/issue-execution-policy.test.ts), [tree control](../../server/src/__tests__/issue-tree-control-service.test.ts), and [signoff browser suite](../../tests/e2e/signoff-policy.spec.ts) target these layers. A linked suite is not a claim that its current run is green.
 
 Manual: Complete implementation under a review-required policy and confirm it waits for the required review outcome. Exercise rejection and later approval. Pause the parent while child work is pending, then verify resumption respects budget and ownership gates.
+
+Resume removes the pause without changing task status. Its wake count includes only
+current agent assignees on todo, in-progress, or in-review tasks. The dialog explains
+that blocked, backlog, and unassigned tasks remain idle. Verify this in both task
+interfaces with [the paused composer browser suite](../../tests/e2e/paused-composer.spec.ts).
+Release rechecks tasks reopened after the pause; another active pause still prevents
+their execution, and uncertain prior executions must be reconciled before waking.
+
+### Plugin task panels
+
+An installed plugin can offer an agent detail tab in the task side panel through
+its optional `taskSidePanel` declaration. The launcher offers that view for the
+running agent, or the task's assigned agent when idle. Manual selection mounts
+the same authorized viewer used on the agent page and needs no activity event.
+The view remains selectable after the run ends.
+
+A declared activation pair controls automatic opening. The runtime captures
+Runner context before use and records `runtime.activity.recorded` after success.
+Core maps that namespace/activity key to the declaration and restores it from
+the run log on reload or reconnect. After matching activity, readiness gets
+three bounded attempts with no periodic availability poll. A ready view opens
+the pane and selects its tab once per run, respecting dismissal during that run.
+Declarations without a mapping support manual selection. Plugins own viewer
+content, readiness, and authorization. Missing or disabled plugins add no view.
+
+Implementation: [panel discovery](../../ui/src/hooks/useTaskPluginPanels.ts) and
+[task panel](../../ui/src/components/task-side-panel/TaskSidePanel.tsx).
+Automated: [discovery tests](../../ui/src/hooks/useTaskPluginPanels.test.tsx) and
+[task panel tests](../../ui/src/components/task-side-panel/TaskSidePanel.test.tsx)
+cover availability, task/agent changes, failures, inactivity and dismissal.
+These mocks do not establish a particular plugin's live transport behavior.
 
 ## Gotchas
 

@@ -1,3 +1,4 @@
+import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -296,6 +297,22 @@ export function projectRoutes(db: Db) {
     res.json(await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted));
   });
 
+  router.get("/projects/:id/git-authorization", async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    if (!req.actor.userId) throw forbidden("A signed-in user is required");
+    res.json(await projectGitAuthorizationService(db).read(project.companyId, project.id, req.actor.userId));
+  });
+
+  router.put("/projects/:id/git-authorization", validate(z.object({ grantId: z.string().uuid().nullable() }).strict()), async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project)) || !(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
+    if (!req.actor.userId) throw forbidden("A signed-in user is required");
+    res.json(await projectGitAuthorizationService(db).set(project.companyId, project.id, req.actor.userId, req.body.grantId));
+  });
+
   router.put("/projects/:id/repositories", validate(z.object({ repositoryIds: z.array(z.string().regex(/^\d+$/)) })), async (req, res) => {
     assertBoard(req);
     const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
@@ -367,6 +384,8 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
+    if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
@@ -406,7 +425,7 @@ export function projectRoutes(db: Db) {
         // The receipt lock can wait too. Keep current authority behind every
         // admission wait and ahead of both receipt replay and project creation.
         await withExternalExecutionAdmission(tx, actorCompanyId, agentId, runId, async () => {
-          const current = await projectToolContext(tx as unknown as Db, museActor, true);
+          const current = await projectToolContext(tx as unknown as Db, museActor, true, "Project", { includeExecutionInput: true });
           try {
             const execution = parseNativeExecutionInput(current.run.runnerProfileJson?.nativeExecutionInput);
             const broker = museExternalAgents(db);
@@ -422,6 +441,7 @@ export function projectRoutes(db: Db) {
           }
         });
       }
+      if (receiptOnly && runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       if (receiptKey) {
         const [prior] = await tx.select().from(activityLog).where(and(
           eq(activityLog.companyId, companyId), eq(activityLog.action, "project.created"),
@@ -434,6 +454,7 @@ export function projectRoutes(db: Db) {
           return { project, publication: null, duplicate: true };
         }
       }
+      if (receiptOnly) return null;
       if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
       const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
@@ -466,6 +487,7 @@ export function projectRoutes(db: Db) {
       });
       return { project: hydrated ?? project, publication: activity.publication, duplicate: false };
     });
+    if (!result) { res.status(204).end(); return; }
     if (result.publication) publishActivity(result.publication);
     if (result.project.env) await secretsSvc.syncEnvBindingsForTarget?.(companyId, { targetType: "project", targetId: result.project.id }, result.project.env);
     if (result.duplicate) { res.status(200).json(result.project); return; }

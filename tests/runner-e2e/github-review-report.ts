@@ -29,6 +29,7 @@ export async function writeGitHubReviewReport(input: {
   try {
     await mkdir(path.join(stage, "snapshots"), { mode: 0o700 });
     const result = structuredClone(input.result);
+    let finalStateStaged = false;
     for (const shot of result.screenshots ?? []) {
       const source = path.resolve(output, shot.file);
       if (!source.startsWith(`${output}${path.sep}`) || !/^[a-z0-9_-]+$/.test(shot.id) || path.extname(source) !== ".png") throw new Error("unsafe_journey_screenshot_reference");
@@ -37,8 +38,13 @@ export async function writeGitHubReviewReport(input: {
       if (shot.sha256 && createHash("sha256").update(bytes).digest("hex") !== shot.sha256) throw new Error("journey_screenshot_digest_mismatch");
       shot.file = `snapshots/${shot.id}.png`;
       await writeFile(path.join(stage, shot.file), bytes, { mode: 0o600 });
+      if (result.status === "passed" && shot.id === "persisted" && result.githubReviewJourney?.checkpoints.persisted === true) {
+        await writeFile(path.join(stage, "final-state.png"), bytes, { mode: 0o600 });
+        finalStateStaged = true;
+      }
     }
     validateRetainedRunnerResult(result);
+    if (result.status === "passed" && !finalStateStaged) throw new Error("journey_final_state_missing");
     await save(stage, "result.json", result);
     await save(stage, "snapshots/journey-resources.json", input.resources);
     await save(stage, "snapshots/journey-evidence.json", result.githubReviewJourney);

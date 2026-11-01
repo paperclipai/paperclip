@@ -3,7 +3,7 @@ import type { GitHubTaskReview } from "../../packages/shared/src/types/chat-gith
 import type { GitHubRepositoryPage } from "../../packages/shared/src/types/chat-channels.js";
 import { ConnectionBlock, ConnectionFailure } from "./connection-config.js";
 import { ConnectionApi } from "./connection-target.js";
-import { awaitJourneyCondition, createGitHubJourneyPullRequest, enterGitHubJourneyCompany, observeGitHubHead, selectGitHubJourneyRepository } from "./github-review-browser.js";
+import { assertGitHubJourneyCheck, assertGitHubJourneyTaskDone, awaitJourneyCondition, createGitHubJourneyPullRequest, enterGitHubJourneyCompany, observeGitHubHead, selectGitHubJourneyRepository, waitForGitHubRegistrationControl, type GitHubRegistrationBoundary } from "./github-review-browser.js";
 import { githubCartFixture, hasOnlyOpenedAutomaticReview, matchesGitHubJourneyEnvironment, retainGitHubReview, verifyGitHubReview, verifyGitHubReviewRun, type GitHubReviewJourneyEvidence } from "./github-review-evidence.js";
 import type { GitHubReviewJourneyConfig } from "./github-review-config.js";
 import { captureOwnedGitHubApp, readOwnedGitHubReviewRuns, type GitHubJourneyResources } from "./github-review-ownership.js";
@@ -15,6 +15,8 @@ export async function runGitHubReviewFlow(input: {
   checkpoint(id: keyof GitHubReviewJourneyEvidence["checkpoints"], page: Page): Promise<void>;
   phase(id: string): Promise<void>;
   persistResources(): Promise<void>;
+  recordRegistrationBoundary?(boundary: GitHubRegistrationBoundary): Promise<void>;
+  authenticateRegistration?(page: Page): Promise<void>;
 }) {
   const { page, github, api, config, resources, evidence } = input;
   const capabilities = await api.get('/api/instance/settings/experimental');
@@ -69,8 +71,8 @@ export async function runGitHubReviewFlow(input: {
   // Manifest flow navigates the same tab. External App grants remain attended.
   evidence.assisted = true;
   await awaitJourneyCondition(async () => new URL(page.url()).hostname === "github.com", 30_000, "github_manifest_handoff_missing", input.signal);
-  const createApp = page.getByRole("button", { name: new RegExp(`^Create GitHub App(?: for ${config.github.appOwner})?$`) });
-  await createApp.waitFor({ timeout: config.browser.loginTimeoutMs });
+  const createApp = await waitForGitHubRegistrationControl(page, config.github.appOwner, config.browser.loginTimeoutMs,
+    input.recordRegistrationBoundary, input.authenticateRegistration ? () => input.authenticateRegistration!(page) : undefined);
   await page.bringToFront();
   await input.checkpoint("app_creation_consent", page);
   console.log(`[github-review-journey] Authorize creation of only ${resources.appName} in the dedicated QA browser. Install it only on ${config.github.repository}.`);
@@ -220,17 +222,20 @@ export async function runGitHubReviewFlow(input: {
     text: await inline.locator(".review-comment .comment-body").filter({ hasText: /precision|decimal|floating|cents/i }).first().innerText() };
   await inline.scrollIntoViewIfNeeded();
   await input.checkpoint("github_inline_delivery", github);
+  await input.phase("github_check_projection");
+  if (!review!.checkUrl) throw new ConnectionFailure("github_check_reference_missing");
   const checkPopup = page.context().waitForEvent("page");
   await page.getByRole("link", { name: "Check", exact: true }).click();
   const check = await checkPopup;
-  await expect(check.getByText(`${evidence.score}/5`, { exact: false }).first()).toBeVisible();
-  await expect(check.getByText(/failed/i).first()).toBeVisible();
+  await assertGitHubJourneyCheck(check, { repository: config.github.repository, url: review!.checkUrl, headSha, score: evidence.score });
   await input.checkpoint("check_projection", check);
+  await input.phase("task_done");
   await page.getByRole("link", { name: "Paperclip task", exact: true }).click();
-  await expect(page.getByText("Done", { exact: true }).first()).toBeVisible();
+  await assertGitHubJourneyTaskDone(page);
   await input.checkpoint("task_done", page);
+  await input.phase("persisted");
   await page.reload(); await github.reload();
-  await expect(page.getByText("Done", { exact: true }).first()).toBeVisible();
+  await assertGitHubJourneyTaskDone(page);
   await expect(github.getByText(`${evidence.score}/5`, { exact: false }).first()).toBeVisible();
   await input.checkpoint("persisted", page);
 }

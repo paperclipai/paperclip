@@ -406,6 +406,14 @@ export class CodexAppServerDriver implements HarnessDriver {
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const initialize = await cancellation.wait(this.#initialize(transport));
+      if (transport.prepareConversationResume) {
+        const resumeDirectory = snapshot.workingDirectory
+          ? validateWorkingDirectory(snapshot.workingDirectory, this.#options.environment, this.#options.workingDirectoryAuthority)
+          : undefined;
+        await cancellation.wait(transport.prepareConversationResume(resumeDirectory
+          ? this.#resumeThreadParams(snapshot.driverSessionId, resumeDirectory)
+          : { threadId: snapshot.driverSessionId }));
+      }
       const existing = await cancellation.wait(
         readCodexThreadState(transport, snapshot.driverSessionId),
       );
@@ -436,23 +444,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         };
       }
       const response = await cancellation.wait(
-        transport.request("thread/resume", {
-          excludeTurns: true,
-          threadId: snapshot.driverSessionId,
-          ...createSecuredCodexThreadParams(
-            workingDirectory,
-            this.#options.requestedCollaborationMode ?? "default",
-            this.#options.includeCollaborationModeInstructions ?? true,
-            this.#options.includeSkillInstructions ?? false,
-            this.#options.environment,
-          ),
-          ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
-          approvalPolicy: this.#options.approvalPolicy ?? "never",
-          ...(this.#options.model ? { model: this.#options.model } : {}),
-          dynamicTools: this.#providerDynamicTools(),
-          ...(this.#prepared() ? { conversationMode: "prepared" } : {}),
-          persistExtendedHistory: false,
-        }),
+        transport.request("thread/resume", this.#resumeThreadParams(snapshot.driverSessionId, workingDirectory)),
       );
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const collaborationMode = await cancellation.wait(
@@ -686,6 +678,22 @@ export class CodexAppServerDriver implements HarnessDriver {
     }
   }
 
+  #resumeThreadParams(threadId: string, workingDirectory: string): Record<string, unknown> {
+    return {
+      excludeTurns: true, threadId,
+      ...createSecuredCodexThreadParams(workingDirectory,
+        this.#options.requestedCollaborationMode ?? "default",
+        this.#options.includeCollaborationModeInstructions ?? true,
+        this.#options.includeSkillInstructions ?? false, this.#options.environment),
+      ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
+      approvalPolicy: this.#options.approvalPolicy ?? "never",
+      ...(this.#options.model ? { model: this.#options.model } : {}),
+      dynamicTools: this.#providerDynamicTools(),
+      ...(this.#prepared() ? { conversationMode: "prepared" } : {}),
+      persistExtendedHistory: false,
+    };
+  }
+
   #transport(context?: {
     workingDirectory?: string;
     providerRecoveryPolicy?: PersistedHarnessSession["providerRecoveryPolicy"];
@@ -710,7 +718,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       this.#options.transportFactory?.(context) ??
       new ProcessCodexAppServerTransport({
         workingDirectory,
-        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot),
+        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot, [], this.#options.disableWebSearch),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
         onDiagnostic: message => this.#options.onDiagnostic?.(redactObservabilityDiagnostic(message, this.#options.environment, this.#options.observability?.otelConfig)),
         processGroup: true,

@@ -1,11 +1,16 @@
-import { parseFinalizationCrashBinding, readFinalizationCrashBoundary, type FinalizationCrashBinding } from "./finalization-crash-boundary.js";
-import { parseRestartRunnerIdentity, type RestartRunnerIdentity } from "./process-tree-owner.js";
+import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
+import { prepareControllerDatabase } from "./controller-database.js";
+import { readUpgradeArtifacts, verifyUpgradeArtifact, assertServingArtifact, upgradeArtifactKey, type ServingArtifact } from "./upgrade-artifacts.js";
+import { createControllerRecoveryObserver } from "./controller-recovery-observer.js";
+import { readFinalizationCrashBoundary } from "./finalization-crash-boundary.js";
+import { replaceController, retireControllerCache, type ControllerOutageReceipt } from "./controller-outage.js";
 import { recoverInterruptedFeedback } from "./feedback-recovery.js";
 import { normalizedSecrets } from "./redaction.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
 import { runnerMatrix } from "./catalog.js";
+import { remoteWorkspaceStorageServerEnvironment } from "./remote-workspace-storage.js";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
@@ -36,7 +41,10 @@ const port = required("PAPERCLIP_RUNNER_E2E_PORT");
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts");
 const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
-const selectedExecutions = usesInstalledCli(process.env) ? executionIds.map(id => {
+const upgradeArtifacts = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
+let artifactIndex = 0;
+let kimiCandidateAdmission: RestartRequest["kimiCandidateAdmission"];
+const selectedExecutions = usesInstalledCli(process.env) || upgradeArtifacts ? executionIds.map(id => {
   const execution = runnerMatrix.find(row => row.id === id);
   if (!execution) throw new Error("Unknown installed CLI proof execution");
   return execution;
@@ -48,8 +56,13 @@ const {
 } = runnerE2EServerControlPaths(temporaryRoot);
 const restartTimeoutMs = 180_000;
 const gracefulStopTimeoutMs = 30_000;
-const installedRelease = process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI
-  ? installedReleaseLaunch(process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI) : null;
+const initialCli = upgradeArtifacts?.artifacts.A.pins.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI ?? process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI;
+const installedRelease = initialCli ? installedReleaseLaunch(initialCli) : null;
+const workspaceStorage = remoteWorkspaceStorageServerEnvironment({
+  executions: executionIds.map(id => runnerMatrix.find(execution => execution.id === id)).filter((execution): execution is typeof runnerMatrix[number] => Boolean(execution)),
+  env: process.env, instanceId: required("PAPERCLIP_INSTANCE_ID"),
+});
+const servingArtifacts = new WeakMap<ChildProcess, ServingArtifact>();
 const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
   ? installedReleaseEnvironment(process.env, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
   : process.env, {
@@ -92,11 +105,13 @@ const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
   // Onboarding normally opens the app after listen. Browser ownership belongs
   // to Playwright in this harness, so never create a developer desktop tab.
   PAPERCLIP_OPEN_ON_LISTEN: "false",
+  ...workspaceStorage,
 });
 assertIsolatedServerEnvironment(serverEnvironment, {
   temporaryRoot,
   paperclipHome,
   configPath,
+  workspaceStorage,
 });
 const definedServerEnvironment = Object.fromEntries(
   Object.entries(serverEnvironment).filter(
@@ -104,7 +119,7 @@ const definedServerEnvironment = Object.fromEntries(
   ),
 );
 
-await prepareSourceServerDependencies(repositoryRoot, definedServerEnvironment, usesInstalledCli(process.env));
+await prepareSourceServerDependencies(repositoryRoot, definedServerEnvironment, Boolean(installedRelease));
 
 await Promise.all([
   mkdir(path.dirname(logPath), { recursive: true }),
@@ -122,6 +137,7 @@ let unexpectedChildFailure: Error | null = null;
 let shutdownSignal: NodeJS.Signals | null = null;
 let activeRestartRequestId: string | null = null;
 let feedbackRecovery: Promise<void> | undefined;
+let controllerDatabase: Awaited<ReturnType<typeof prepareControllerDatabase>> | undefined;
 
 function recoverFeedbackBeforeShutdown() {
   return feedbackRecovery ??= (async () => {
@@ -183,13 +199,25 @@ async function startServer() {
     throw new Error("Refusing to start Paperclip after wrapper shutdown");
   }
   // Recheck bytes and dependency resolution on every controller restart.
-  const installed = await verifyInstalledCli(process.env, selectedExecutions);
+  const selected = upgradeArtifacts?.sequence[artifactIndex];
+  if (upgradeArtifacts && !selected) throw new Error("Upgrade artifact sequence exhausted");
+  const verified = selected ? await verifyUpgradeArtifact(upgradeArtifacts!.artifacts[selected], process.env, selectedExecutions) : undefined;
+  const installed = verified?.installed ?? await verifyInstalledCli(process.env, selectedExecutions);
+  const launch = installed ? installedReleaseLaunch(installed.entry) : null;
+  // The serving process must report its baked-in revision, never a test-supplied SHA.
+  const environment = { ...definedServerEnvironment };
+  if (kimiCandidateAdmission) environment.PAPERCLIP_ACPX_CANDIDATE_ADMISSION = JSON.stringify(kimiCandidateAdmission);
+  if (upgradeArtifacts) {
+    delete environment.PAPERCLIP_BUILD_COMMIT;
+    delete environment[upgradeArtifactKey];
+    environment.GIT_CEILING_DIRECTORIES = upgradeArtifacts.artifacts[selected!].root;
+  }
   const candidate = spawn(
     process.execPath,
     installed ? [installed.entry, "onboard", "--yes", "--run"] : runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
     {
-      cwd: installedRelease?.cwd ?? repositoryRoot,
-      env: definedServerEnvironment,
+      cwd: launch?.cwd ?? repositoryRoot,
+      env: environment,
       stdio: ["ignore", "pipe", "pipe"],
       // Playwright signals the wrapper's group. Keep that signal from bypassing
       // our single graceful stop; the launcher still tracks descendant groups.
@@ -197,6 +225,7 @@ async function startServer() {
     },
   );
   child = candidate;
+  if (verified) servingArtifacts.set(candidate, verified.receipt);
 
   candidate.stdout?.on("data", (chunk) => {
     process.stdout.write(chunk);
@@ -261,8 +290,13 @@ async function waitForHealth(candidate: ChildProcess) {
       const response = await fetch(healthUrl, {
         signal: AbortSignal.timeout(1_000),
       });
-      if (response.ok) return;
-    } catch {
+      if (response.ok) {
+        const artifact = servingArtifacts.get(candidate);
+        if (artifact) assertServingArtifact(await response.json(), artifact);
+        return;
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("serving server revision")) throw error;
       // The replacement process may still be booting.
     }
     await delay(250);
@@ -291,47 +325,14 @@ async function waitForHealthToStop() {
   );
 }
 
-interface RestartRequest {
-  requestId: string;
-  preserveRunner?: RestartRunnerIdentity;
-  crashAfterResult?: FinalizationCrashBinding;
-}
-
-async function readRestartRequest(): Promise<RestartRequest | null> {
-  let encoded: string;
-  try {
-    encoded = await readFile(restartRequestPath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(encoded);
-  } catch {
-    // The writer may not have completed its atomic replacement yet.
-    return null;
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const requestId = (value as { requestId?: unknown }).requestId;
-  if (
-    typeof requestId !== "string" ||
-    !/^[A-Za-z0-9._:-]{1,200}$/.test(requestId)
-  ) {
-    return null;
-  }
-  const preserveRunner = (value as { preserveRunner?: unknown }).preserveRunner;
-  const crashAfterResult = (value as { crashAfterResult?: unknown }).crashAfterResult;
-  if (crashAfterResult !== undefined && preserveRunner !== undefined) throw new Error("A finalization crash cannot preserve a running provider");
-  return { requestId, ...(preserveRunner === undefined ? {} : { preserveRunner: parseRestartRunnerIdentity(preserveRunner) }),
-    ...(crashAfterResult === undefined ? {} : { crashAfterResult: parseFinalizationCrashBinding(crashAfterResult) }) };
-}
 
 async function writeRestartAck(
   requestId: string,
   status: "ready" | "failed",
   message?: string,
+  controllerCacheDiscarded = false,
   crashBoundary?: Awaited<ReturnType<typeof readFinalizationCrashBoundary>>,
+  controllerOutage?: ControllerOutageReceipt,
 ) {
   const temporaryAckPath = `${restartAckPath}.${process.pid}.tmp`;
   await writeFile(
@@ -339,20 +340,55 @@ async function writeRestartAck(
     `${JSON.stringify({
       requestId,
       status,
+      controllerCacheDiscarded,
       completedAt: new Date().toISOString(),
       ...(message ? { message } : {}),
       ...(crashBoundary ? { crashBoundary } : {}),
+      ...(controllerOutage ? { controllerOutage } : {}),
     })}\n`,
     { encoding: "utf8", mode: 0o600 },
   );
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer({ requestId, preserveRunner, crashAfterResult }: RestartRequest) {
+async function restartServer({ requestId, kimiCandidateAdmission: stagedKimiAdmission, preserveRunner, discardControllerCache, crashAfterResult, controllerOutage, recoveryBinding, controllerDowntimeMs = 0 }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
   if (!previous) throw new Error("No Paperclip server is available to restart");
+  const discardCache = async () => {
+    const cache = path.join(paperclipHome, "instances", required("PAPERCLIP_INSTANCE_ID"), "runtime", "paperclip-runner");
+    await retireControllerCache(cache, path.join(controlDirectory, `retired-controller-cache-${requestId}`));
+    appendLog(`Restart request ${requestId}: old controller cache made unavailable\n`);
+  };
+  if (controllerOutage) {
+    if (upgradeArtifacts) artifactIndex += 1;
+    const previousArtifact = servingArtifacts.get(previous);
+    const observer = recoveryBinding ? await createControllerRecoveryObserver(configPath, recoveryBinding) : undefined;
+    try {
+      const receipt = await replaceController({ requestId, previousPid: previous.pid!, outage: controllerOutage,
+        stop: async signal => {
+          if (signal === "SIGKILL") await stopServer.crashForRestart(previous);
+          else await stopServer(previous);
+          if (child === previous) child = null;
+        },
+        waitForUnhealthy: waitForHealthToStop, discardCache, start: startServer, waitForReady: waitForHealth,
+        ...(previousArtifact ? { previousArtifact, replacementArtifact: () => child && servingArtifacts.get(child) || undefined } : {}),
+        cancelled: shutdownRequested,
+        afterStopped: observer?.stopped,
+        afterReady: observer ? (receipt, record) => observer.recovered(receipt, record, shutdownRequested) : undefined,
+        record: async receipt => {
+          const target = path.join(controlDirectory, `controller-outage-${requestId}.json`);
+          await writeFile(`${target}.tmp`, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+          await rename(`${target}.tmp`, target);
+        },
+      });
+      await writeRestartAck(requestId, "ready", undefined, true, undefined, receipt);
+      appendLog(`Restart request ${requestId}: Paperclip is healthy after ${Math.round(receipt.readyAfterMs!)}ms\n`);
+      activeRestartRequestId = null;
+      return;
+    } finally { await observer?.close(); }
+  }
   const crashBoundary = crashAfterResult ? await readFinalizationCrashBoundary(async route => {
     const response = await fetch(`http://127.0.0.1:${port}${route}`, { signal: AbortSignal.timeout(5_000), cache: "no-store" });
     if (!response.ok) throw new Error("Finalization crash boundary could not be read");
@@ -365,17 +401,26 @@ async function restartServer({ requestId, preserveRunner, crashAfterResult }: Re
   // Do not mistake an orphaned old server for a healthy replacement. The port
   // must stop answering before the next launcher is allowed to start.
   await waitForHealthToStop();
+  const downtimeDeadline = Date.now() + controllerDowntimeMs;
+  while (Date.now() < downtimeDeadline) {
+    if (shutdownRequested()) throw new Error("Wrapper shutdown interrupted controller downtime");
+    await delay(Math.min(250, downtimeDeadline - Date.now()));
+  }
+  if (discardControllerCache) {
+    await discardCache();
+  }
   if (shutdownRequested()) {
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
 
+  if (stagedKimiAdmission) kimiCandidateAdmission = stagedKimiAdmission;
   appendLog(`Restart request ${requestId}: starting Paperclip\n`);
   const replacement = await startServer();
   await waitForHealth(replacement);
   if (shutdownRequested()) {
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
-  await writeRestartAck(requestId, "ready", undefined, crashBoundary);
+  await writeRestartAck(requestId, "ready", undefined, discardControllerCache, crashBoundary);
   appendLog(`Restart request ${requestId}: Paperclip is healthy\n`);
   activeRestartRequestId = null;
 }
@@ -401,11 +446,17 @@ async function supervise() {
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();
-  await startServer();
+  if (upgradeArtifacts || executionIds.some(id => id.endsWith(".recover-controller"))) {
+    // The wrapper owns this sibling process. Killing the serving child must
+    // leave Postgres available to the stopped-controller observer and successor.
+    controllerDatabase = await prepareControllerDatabase(configPath, temporaryRoot);
+  }
+  const initial = await startServer();
+  if (upgradeArtifacts) await waitForHealth(initial);
   let lastRestartRequestId: string | null = null;
   while (!shutdownRequested()) {
     if (unexpectedChildFailure) throw unexpectedChildFailure;
-    const request = await readRestartRequest();
+    const request = await readRestartRequest(restartRequestPath, executionIds);
     if (request && request.requestId !== lastRestartRequestId) {
       lastRestartRequestId = request.requestId;
       await restartServer(request);
@@ -441,5 +492,10 @@ try {
   }
 }
 
+try { await controllerDatabase?.cleanup(); }
+catch (error) {
+  exitCode = 1;
+  appendLog(`Qualification database cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+}
 await new Promise<void>((resolve) => log.end(resolve));
 process.exitCode = exitCode;

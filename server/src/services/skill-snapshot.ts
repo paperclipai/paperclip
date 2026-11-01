@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { CompanySkillVersionFileInventoryEntry } from '@paperclipai/shared';
 
+export const MAX_SKILL_SNAPSHOT_BYTES = 100 * 1024 * 1024;
+export const MAX_SKILL_SNAPSHOT_FILES = 10_000;
+
 export function skillFileBytes(file: { content: string; encoding?: string }): Buffer {
   return Buffer.from(file.content, file.encoding === 'base64' ? 'base64' : 'utf8');
 }

@@ -16,17 +16,21 @@ type Scenario = {
   upgraded?: boolean;
   running?: boolean;
   delay?: number;
+  nativeComputerTest?: boolean;
 };
 
-function installUpgradeFixture({ harness = "codex_local", failOnce = false, incompatible = false, unavailable = false, upgraded = false, running = false, delay = 0 }: Scenario = {}) {
+function installUpgradeFixture({ harness = "codex_local", failOnce = false, incompatible = false, unavailable = false, upgraded = false, running = false, delay = 0, nativeComputerTest = false }: Scenario = {}) {
   resetOnboardingFixtureState();
   setOnboardingFixtureState({ environments: "local", authSignal: "present", localLoginStatus: "ready" });
   const profile = harness === "claude_local" ? { provider: "acpx", acpxAgent: "claude" } : { provider: "codex" };
+  const savedComputer = { id: "environment-native-recovery", name: "Paperclip Computer", driver: "sandbox", status: "active",
+    config: { provider: "daytona", snapshot: "managed-snapshot" }, metadata: { managedByPaperclip: true } };
+  let qualified = false;
   let agent = { ...storybookAgents[0]!, urlKey: "migration-agent", name: harness === "claude_local" ? "ClaudeWriter" : "CodexCoder",
-    status: running ? "running" : "idle", lifecycleState: "ready", defaultEnvironmentId: null,
-    adapterType: upgraded ? "paperclip_runner" : harness,
+    status: running ? "running" : "idle", lifecycleState: "ready", defaultEnvironmentId: nativeComputerTest ? savedComputer.id : null,
+    adapterType: upgraded || nativeComputerTest ? "paperclip_runner" : harness,
     adapterConfig: { model: harness === "claude_local" ? "claude-sonnet-4-6" : "gpt-5.4", modelReasoningEffort: "medium", timeoutSec: 180,
-      ...(upgraded ? profile : {}), ...(incompatible ? { chrome: true } : {}), env: { MIGRATION_MARKER: { type: "plain", value: "keep-this-setting" } } },
+      ...(nativeComputerTest ? { provider: "opencode" } : upgraded ? profile : {}), ...(incompatible ? { chrome: true } : {}), env: { MIGRATION_MARKER: { type: "plain", value: "keep-this-setting" } } },
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
     chainOfCommand: [], access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
   };
@@ -34,6 +38,16 @@ function installUpgradeFixture({ harness = "codex_local", failOnce = false, inco
   const fixtureFetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
     const method = init?.method ?? "GET";
+    if (nativeComputerTest && url.pathname === `/api/companies/${agent.companyId}/environments`) return Response.json([savedComputer]);
+    if (nativeComputerTest && url.pathname === `/api/agents/${agent.id}/qualify-runner`) {
+      if (JSON.parse(String(init?.body ?? "{}")).expectedEnvironmentId !== savedComputer.id) return Response.json({ error: "Computer changed." }, { status: 409 });
+      qualified = true;
+      return Response.json({ ok: true, driver: "sandbox", details: { platformQualificationRecorded: true } });
+    }
+    if (nativeComputerTest && url.pathname.endsWith("/adapters/paperclip_runner/test-environment")) {
+      return Response.json({ adapterType: "paperclip_runner", status: qualified ? "pass" : "fail", testedAt: new Date().toISOString(),
+        checks: [{ code: "native_runtime_test", level: qualified ? "info" : "error", message: qualified ? "Native runtime ready." : "Saved computer qualification is stale." }] });
+    }
     if (url.pathname === "/api/adapters") {
       const response = await previous(input, init);
       return Response.json((await response.json()).map((item: { type: string }) => ["codex_local", "claude_local"].includes(item.type)
@@ -140,3 +154,18 @@ export const UnavailableEnvironment: Story = { parameters: { runnerUpgrade: { un
 export const AgentRunning: Story = { parameters: { runnerUpgrade: { running: true } } };
 export const Mobile: Story = { globals: { viewport: { value: "mobile1", isRotated: false } } };
 export const Light: Story = { globals: { theme: "light" } };
+
+export const NativeComputerRecovery: Story = {
+  name: "Native saved computer Test",
+  parameters: { runnerUpgrade: { nativeComputerTest: true }, paperclip: {
+    notes: "Production native agent page. The normal Run test action qualifies its saved computer before runtime testing. Both responses are simulated; real provider qualification is separate.",
+  } },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement);
+    await userEvent.click(await page.findByRole("button", { name: /^Run test$/ }));
+    await expect(await page.findByRole("heading", { name: "Connection successful" })).toBeVisible();
+    await userEvent.click(page.getByText("Test details", { exact: true }));
+    await expect(await page.findByText("Native runtime ready.")).toBeVisible();
+    await expect(page.queryByRole("button", { name: "Upgrade runner" })).not.toBeInTheDocument();
+  },
+};

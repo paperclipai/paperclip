@@ -298,7 +298,7 @@ export function readAcceptedTaskContinuationSummary(
   const result = record(resultJson);
   if (result.finalizationPhase !== "committed") return null;
   const kind = result.finalizationReasonCode === "live_continuation_registered" ? "same_agent"
-    : ["scheduled_monitor_waiting", "scheduled_monitor_dispatched"].includes(String(result.finalizationReasonCode)) ? "monitor" : null;
+    : ["scheduled_monitor_waiting", "scheduled_monitor_dispatched", "scheduled_monitor_preserved"].includes(String(result.finalizationReasonCode)) ? "monitor" : null;
   if (!kind) return null;
   for (const candidate of semanticResultCandidates(result)) {
     const continuation = record(candidate.continuation);

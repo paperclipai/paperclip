@@ -32,6 +32,8 @@ import { renderRunnerHistoryIndex } from "./history-index.js";
 import { renderPublicCampaignSummary } from "./public-summary-image.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
 import { connectionCheckpoints, type ConnectionEvidence } from "./connection-evidence.js";
+import { githubJourneyCheckpoints, type GitHubReviewJourneyEvidence } from "./github-review-evidence.js";
+import { antigravityEvidenceFixture } from "./antigravity-journey-test-fixtures.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -65,6 +67,19 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
     durationMs: 1_000,
     cleanup: "passed",
     ...(execution.task.flow === "provider_connection" ? { providerConnection: { version: 1, outcome: status, phase: "finished", assisted: false, authFreshness: "signed-in", target: { mode: "attach", origin: "http://127.0.0.1:3100", commit: "a".repeat(40), deploymentMode: "local_trusted" }, entry: "agent", method: "api-key", checkpoints: Object.fromEntries(connectionCheckpoints.map(key => [key, true])), waits: [] } satisfies ConnectionEvidence } : {}),
+    ...(execution.task.flow === "github_review_journey" ? { githubReviewJourney: {
+      version: 1, outcome: status, phase: "finished", setupId: "fixture", hosting: "self-hosted",
+      targetCommit: "a".repeat(40), assisted: false, dependencies: [],
+      checkpoints: Object.fromEntries(githubJourneyCheckpoints.map(key => [key, true])),
+      cleanup: { endpoint: true, pullRequest: true, branch: true, app: true },
+    } satisfies GitHubReviewJourneyEvidence } : {}),
+    // Synthetic campaign calibration must satisfy the same strict retained
+    // contract as a live result; it is never provider qualification evidence.
+    ...(execution.task.flow === "antigravity_agent_journey" ? {
+      issueId: "task", runIds: ["run-first", "run-second"],
+      antigravityJourney: { ...antigravityEvidenceFixture(), outcome: status },
+      screenshots: [{ id: "persisted", label: "Synthetic Antigravity persistence calibration", file: "synthetic-persisted.png", sha256: "a".repeat(64) }],
+    } : {}),
   } satisfies RunnerE2EResult;
 }
 
@@ -172,7 +187,7 @@ describe("runner E2E campaign history", () => {
     expect(history.latestGreenCampaignId).toBeNull();
     expect(history.latestGreenBySuite["first-task"]).toBeUndefined();
     expect(renderRunnerHistoryIndex(history)).toContain("1 incomplete");
-    expect(renderRunnerHistoryIndex(history)).toContain('data-history-status="incomplete"');
+    expect(renderRunnerHistoryIndex(history)).toContain('data-index-status="incomplete"');
   });
 
   it("shows unknown campaign costs without plotting zero dollars", () => {
@@ -312,8 +327,8 @@ describe("runner E2E campaign history", () => {
     expect(dashboard).not.toContain('class="history-section"');
     const index = renderRunnerHistoryIndex(history);
     expect(index).toContain("Campaign trends");
-    expect(index).toContain("data-history-from");
-    expect(index).toContain("data-history-through");
+    expect(index).toContain('data-index-filter="from"');
+    expect(index).toContain('data-index-filter="through"');
     expect(index).toContain(
       'data-history-suite-trends="core-compatibility"',
     );
@@ -326,7 +341,7 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("Suite pass rate");
     expect(index).toContain("lines break at definition changes");
     expect(index).toContain("cleanup passed");
-    expect(index).toContain("Runner E2E campaigns");
+    expect(index).toContain("E2E tests");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
     expect(index).toContain(`${runnerMatrix.length}/${runnerMatrix.length} passed`);
