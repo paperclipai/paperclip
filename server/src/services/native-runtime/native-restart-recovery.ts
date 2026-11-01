@@ -560,11 +560,17 @@ export async function claimNativeRestartRecoveries(input: {
       await tx.execute(
         sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
       );
-      await tx
+      const busy = () => ({ kind: "awaiting_evidence" as const, runId: candidate.runId,
+        reason: "recovery_rows_busy", retryAt: new Date(now.getTime() + 1_000) });
+      // During overlap the serving controller can be committing this run.
+      // Defer that concrete recovery obligation instead of failing startup
+      // or waiting while holding a lock the serving controller needs.
+      const [issue] = await tx
         .select({ id: issues.id })
         .from(issues)
         .where(eq(issues.id, candidate.issueId))
-        .for("update");
+        .for("update", { skipLocked: true });
+      if (!issue) return busy();
       const row = await tx
         .select({
           run: heartbeatRuns,
@@ -586,15 +592,11 @@ export async function claimNativeRestartRecoveries(input: {
           ),
         )
         .where(eq(heartbeatRuns.id, candidate.runId))
-        .for("update")
+        .for("update", { skipLocked: true })
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (!row) {
-        return {
-          kind: "blocked",
-          runId: candidate.runId,
-          reason: "recovery_rows_missing",
-        } as const;
+        return busy();
       }
       if (isNativeRunnerOwnershipHeld(row.run)) {
         return {

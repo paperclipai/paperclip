@@ -1,6 +1,6 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 14:28 UTC): existing-volume staging enrollment
+Date: 2026-10-31. Status (2026-11-01 14:40 UTC): existing-volume staging enrollment
 and manual sleep/wake preserve saved files and read/save behavior. The full local
 active-agent journey, natural database idling and ten-deploy staging campaign
 remain unqualified. No production canary yet.
@@ -29,7 +29,20 @@ paths; the native receipt transaction publishes its accepted terminal contract
 without depending on the originating adapter returning. Both regressions failed
 before the changes. All 249 affected workspace/session, durable-file and control-
 plane persistence tests pass, as does server typecheck. Assembled admission suites
-and a fresh real Codex/Daytona journey are next. Real content, skill-version,
+ran 59 passing cases, but native resumption teardown closed every client on the
+shared database host, including its fixture's admin connection. This reproduces
+on clean master; limiting teardown to the owned database makes all 16 native
+resumption cases pass. PR #18552 has a 5/5 review for the initial fix.
+
+The next real attempt at `d2165dec5d` failed before B became ready: startup
+recovery tried to lock a run still owned by A, hit a one-second PostgreSQL lock
+timeout, and aborted startup. Its credential and bucket were cleaned; provider
+cleanup is independently checked after the asynchronous stop/delete transition.
+A three-case regression reproduces this for locked issue, run and coordinator
+rows. The fix skips those locked rows, schedules the same concrete run through
+the existing recovery retry, and avoids a diagnostic write that would wait on the
+same lock. The three claim/retry cases pass; full recovery and caller checks are
+running before another live attempt. Real content, skill-version,
 model, credential and task boundaries remain compatibility checks.
 
 Review also identified save quotas incorrectly applied during cache recovery.

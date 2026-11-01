@@ -1530,7 +1530,7 @@ describe("goal-less native task-session publication", () => {
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
-    await closeRegisteredClients(process.env.PAPERCLIP_TEST_DATABASE_URL ?? database!.connectionString);
+    await closeRegisteredClients(process.env.PAPERCLIP_TEST_DATABASE_URL ?? database!.connectionString, { scope: "database" });
     await database?.cleanup();
   });
 

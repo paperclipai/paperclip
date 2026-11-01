@@ -1012,6 +1012,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (disposition.kind === "awaiting_evidence" && disposition.retryAt) {
           scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");
         }
+        // No ownership decision was made for a locked row. Writing an event
+        // would wait on that same row and defeat the non-blocking startup scan.
+        if (disposition.kind === "awaiting_evidence" && disposition.reason === "recovery_rows_busy") continue;
         const run = await getRun(disposition.runId);
         if (run) {
           const isClaim =

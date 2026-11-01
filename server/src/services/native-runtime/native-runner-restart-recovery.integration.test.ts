@@ -36,6 +36,7 @@ import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
 } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { heartbeatService } from "../heartbeat.js";
 
 import {
   canonicalNativeRuntimeContextDigest,
@@ -321,6 +322,41 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         }),
     };
   }
+
+  it.each(["issue", "run", "coordinator"] as const)("defers a busy %s row without blocking replacement startup", async kind => {
+    const fixture = await seedRun(`OVERLAP-BUSY-${kind}`);
+    let acquired!: () => void, release!: () => void;
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const holder = fixture.db.transaction(async tx => {
+      if (kind === "issue") await tx.select().from(issues).where(eq(issues.id, fixture.issueId)).for("update");
+      else if (kind === "run") await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)).for("update");
+      else await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)).for("update");
+      acquired(); await released;
+    });
+    await locked;
+    const now = new Date();
+    const heartbeat = heartbeatService(fixture.db);
+    try {
+      const dispositions = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId], now });
+      expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: fixture.runId,
+        reason: "recovery_rows_busy", retryAt: new Date(now.getTime() + 1_000) }]);
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator.controllerGeneration).toBe(0);
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const startup = await Promise.race([
+          heartbeat.recoverNativeRunsAfterRestart(now, [fixture.runId]),
+          new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error("startup blocked on the serving controller")), 2_000); }),
+        ]);
+        expect(startup).toMatchObject({ claims: [], awaitingEvidenceRunIds: [fixture.runId] });
+      } finally { clearTimeout(deadline); }
+    } finally { await heartbeat.drainActiveRunExecutions(); release(); await holder; }
+    const [next] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(next.kind).toBe("bootstrap_incomplete");
+  });
 
   it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = !["warm", "same-server"].includes(scenario);
