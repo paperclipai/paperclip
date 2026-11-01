@@ -10,7 +10,7 @@ RUN chmod -R a+rX /opt/paperclip-runner/provider-pack
 USER daytona
 RUN test -r /opt/paperclip-runner/provider-pack/provider-pack.json \
     && test "$(claude --version)" = "2.1.286 (Claude Code)" \
-    && test "$(codex --version)" = "codex-cli 0.160.0" \
+    && test "$(codex --version)" = "codex-cli 0.166.0" \
     && test "$(acpx --version)" = "0.13.1"
 LABEL io.paperclip.runner.content-id="release-${SOURCE_REVISION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"

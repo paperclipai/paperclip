@@ -146,10 +146,10 @@ describe("ACPX installation integrity", () => {
     const runtime = join(root, "node_modules/@openai/codex/package.json");
     const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
     const platform = join(platformRoot, "package.json");
-    const alias = "npm:@openai/codex@0.160.0-linux-x64";
+    const alias = "npm:@openai/codex@0.166.0-linux-x64";
     const selected = { name: "@paperclipai/server", optionalDependencies: { "@openai/codex-linux-x64": alias } };
-    const runtimeMetadata = { name: "@openai/codex", version: "0.160.0", ...(!publishedDeclaration && { optionalDependencies: selected.optionalDependencies }) };
-    const platformMetadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+    const runtimeMetadata = { name: "@openai/codex", version: "0.166.0", ...(!publishedDeclaration && { optionalDependencies: selected.optionalDependencies }) };
+    const platformMetadata = { name: "@openai/codex", version: "0.166.0-linux-x64", os: ["linux"], cpu: ["x64"] };
     await mkdir(dirname(runtime), { recursive: true });
     await mkdir(platformRoot, { recursive: true });
     const reset = async () => Promise.all([
@@ -193,14 +193,14 @@ describe("ACPX installation integrity", () => {
     const runtime = join(bridge, "node_modules/@openai/codex");
     const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
     const native = join(platformRoot, "vendor/x86_64-unknown-linux-musl/bin/codex");
-    const optionalDependencies = { "@openai/codex-linux-x64": "npm:@openai/codex@0.160.0-linux-x64" };
+    const optionalDependencies = { "@openai/codex-linux-x64": "npm:@openai/codex@0.166.0-linux-x64" };
     await Promise.all([mkdir(runtime, { recursive: true }), mkdir(dirname(native), { recursive: true })]);
     const command = 'process.stdout.write("unexecuted fixture");';
     await Promise.all([
       writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/server", optionalDependencies })),
       writeFile(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.6.2", bin: "server.js" })),
       writeFile(join(bridge, "server.js"), command),
-      writeFile(join(runtime, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.160.0" })),
+      writeFile(join(runtime, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.166.0" })),
       writeFile(native, "unqualified native bytes", { mode: 0o755 }),
     ]);
     const profile = { ...resolveQualifiedAcpxProfile("codex", "gpt-5.6-sol"), commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}` };
@@ -208,7 +208,7 @@ describe("ACPX installation integrity", () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue("x64");
     try {
-      const metadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+      const metadata = { name: "@openai/codex", version: "0.166.0-linux-x64", os: ["linux"], cpu: ["x64"] };
       await writeFile(join(platformRoot, "package.json"), JSON.stringify(metadata));
       // A stale in-bundle package shadows the correct declared npm slot and
       // must fail rather than falling through to the hoisted installation.

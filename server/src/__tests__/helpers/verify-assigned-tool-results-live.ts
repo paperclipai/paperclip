@@ -56,7 +56,7 @@ try {
   let retrieved = "";
   const started = Date.now();
   bundle = createRunnerdCodexTransport({
-    codexCommand: process.env.PAPERCLIP_LIVE_CODEX_COMMAND ?? fileURLToPath(new URL("../../../../node_modules/.pnpm/@openai+codex@0.160.0/node_modules/@openai/codex/bin/codex.js", import.meta.url)),
+    codexCommand: process.env.PAPERCLIP_LIVE_CODEX_COMMAND ?? fileURLToPath(new URL("../../../../node_modules/.pnpm/@openai+codex@0.166.0/node_modules/@openai/codex/bin/codex.js", import.meta.url)),
     sourceCodexHome: codexHome, environment: { ...process.env, CODEX_HOME: codexHome },
     disableCodexProjectInstructions: true,
     stateDirectory: join(root, "runner"),
