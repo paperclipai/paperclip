@@ -1888,7 +1888,6 @@ describe("agent issue mutation checkout ownership", () => {
       .find((details): details is Record<string, unknown> =>
         Boolean(details) && typeof details === "object" && "unblockDescriptorFingerprint" in details);
     expect(loggedDetails).toBeDefined();
-    // Same composition logActivity applies before storage, with censoring on.
     const stored = redactCurrentUserValue(sanitizeRecord(loggedDetails!),
       { userNames: ["alice"], homeDirs: ["/home/alice"] });
     expect((stored.unblockDescriptor as { action: string }).action).not.toContain("alice");

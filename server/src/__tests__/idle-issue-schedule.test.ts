@@ -142,9 +142,6 @@ if (!support.supported) console.warn(`Skipping issue schedule Postgres tests: ${
 
   it("allows a blocked task when redaction rewrote the stored action text", async () => {
     const f = await selfAcknowledgedUnblockRequest();
-    // Simulate username censoring: the stored copy no longer matches the
-    // issue row, but the fingerprint written alongside it still binds the
-    // exact descriptor the author wrote.
     const stored = f.activity.details as Record<string, unknown>;
     await db.update(activityLog).set({ details: { ...stored,
       unblockDescriptor: { owner: { agentId: f.agentId }, action: "Provide the * input" } } }).where(eq(activityLog.id, f.activity.id));

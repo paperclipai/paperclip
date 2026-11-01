@@ -16,12 +16,6 @@ type ProspectiveBlockedIssue = RoutableBlockedIssue & {
   blockedTransitionAt: Date;
 };
 
-// Stable fingerprint binding an activity entry to the exact unblock descriptor
-// the author wrote. Activity details pass through secret and username
-// redaction before they are stored, so the proof cannot compare the raw
-// action text; the hex digest survives that redaction. MD5 (not SHA) because
-// Postgres md5() is built-in with no extension, and this is binding, not
-// security. Returns null for malformed input so callers fail closed.
 export function unblockDescriptorFingerprint(descriptor: unknown): string | null {
   if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) return null;
   const { owner, action } = descriptor as { owner?: unknown; action?: unknown };
@@ -58,9 +52,6 @@ export async function deliverAgentUnblockNotification(input: {
   const owner = issue.unblockDescriptor.owner;
   if (owner === "board" || !("agentId" in owner)) return false;
   if (input.actorAgentId && input.actorAgentId === owner.agentId) {
-    // Self-authored blocked write: the owner already knows, so do not wake
-    // it. Still record the acknowledgment so the passive-wait proof can
-    // recognize this transition once the authoring run finishes.
     await input.markNotified((input.now ?? (() => new Date()))());
     return true;
   }

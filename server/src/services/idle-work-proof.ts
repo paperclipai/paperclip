@@ -48,17 +48,6 @@ export function completedAgentUnblockRequest(issue: string): string {
             AND ${finishedIdleRun('unblock_target')}))`;
 }
 
-// A blocked write authored by the named unblock owner itself needs no wake:
-// the author already knows. The notification helper records blockedOwnerNotifiedAt
-// without enqueueing one, so this proof keys on the durable activity entry for
-// that exact transition instead of a wake receipt. An agent may only name itself
-// as unblock owner, so a matching self-authored entry exists exactly for the
-// transitions where the wake was suppressed. The descriptor binding is a
-// fingerprint, not the raw text: activity details pass through secret and
-// username redaction before storage, while the issue row keeps the original.
-// When the write came from a run, that run must be finished so a still-live
-// author cannot certify its own in-flight work as passive; a run-less write
-// (agent key without run context) has no execution in flight to wait for.
 export function selfAcknowledgedAgentUnblockRequest(issue: string): string {
   return `${issue}.blocked_transition_at IS NOT NULL
     AND ${issue}.blocked_owner_notified_at >= ${issue}.blocked_transition_at

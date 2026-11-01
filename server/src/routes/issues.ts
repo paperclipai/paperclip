@@ -14994,9 +14994,6 @@ export function issueRoutes(
           activeRecoveryAction: null,
         };
       }
-      // Fingerprint of the exact descriptor written, for the self-authored
-      // passive-wait proof. Stored separately because details pass through
-      // redaction while the proof compares against the unredacted issue row.
       const unblockDescriptorActivityFingerprint =
         unblockDescriptorFingerprint(updateFields.unblockDescriptor);
       if (!persistReviewActivityTransactionally)
