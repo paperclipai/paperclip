@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { posix as pathPosix } from "node:path";
 import type { Agent, AgentSessionEvent, Issue, IssueComment, PluginContext, PluginEvent, PluginLocalFolderEntry, Project, ToolResult } from "@paperclipai/plugin-sdk";
 import type { IssueDocument, PluginIssueOriginKind, PluginManagedRoutineResolution, PluginManagedSkillResolution } from "@paperclipai/plugin-sdk/types";
 import {
@@ -1659,20 +1660,74 @@ function inferPageType(path: string): string | null {
   return match?.[1] ?? (path === "index.md" || path === "wiki/index.md" ? "index" : path === "log.md" || path === "wiki/log.md" ? "log" : null);
 }
 
-function extractWikiLinks(contents: string): string[] {
+function normalizeWikiLink(sourcePath: string, rawTarget: string): string | null {
+  const withoutFragment = rawTarget.split("#", 1)[0]?.trim().replace(/^<|>$/g, "");
+  if (!withoutFragment || /^[a-z][a-z0-9+.-]*:/i.test(withoutFragment) || withoutFragment.startsWith("//")) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(withoutFragment);
+  } catch {
+    return null;
+  }
+  const resolved = decoded.startsWith("wiki/")
+    ? pathPosix.normalize(decoded)
+    : pathPosix.normalize(pathPosix.join(pathPosix.dirname(sourcePath), decoded));
+  if (!resolved.startsWith("wiki/") || !resolved.endsWith(".md") || resolved.includes("\0")) return null;
+  return resolved;
+}
+
+function extractWikiLinks(sourcePath: string, contents: string): string[] {
   const links = new Set<string>();
   const markdownLinkPattern = /\[[^\]]+\]\(([^)]+)\)/g;
   for (const match of contents.matchAll(markdownLinkPattern)) {
-    const target = match[1]?.split("#")[0]?.trim();
-    if (target && (target.startsWith("wiki/") || target === "index.md" || target === "log.md" || target === "AGENTS.md" || target === "IDEA.md")) {
-      links.add(target);
-    }
+    const target = match[1] ? normalizeWikiLink(sourcePath, match[1]) : null;
+    if (target) links.add(target);
   }
   const wikiTokenPattern = /\bwiki\/[A-Za-z0-9._/-]+\.md\b/g;
   for (const match of contents.matchAll(wikiTokenPattern)) {
     links.add(match[0]);
   }
   return [...links].sort();
+}
+
+function inspectFrontmatter(contents: string): { keys: string[]; valueHashes: Record<string, string>; declaredSourceRefs: string[] } {
+  const match = contents.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match?.[1]) return { keys: [], valueHashes: {}, declaredSourceRefs: [] };
+  const values = new Map<string, string[]>();
+  let currentKey: string | null = null;
+  for (const line of match[1].split(/\r?\n/)) {
+    const property = line.match(/^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/);
+    if (property) {
+      currentKey = property[1]!;
+      values.set(currentKey, property[2] ? [property[2].trim()] : []);
+      continue;
+    }
+    const item = line.match(/^\s+-\s+(.+)$/);
+    if (currentKey && item?.[1]) values.get(currentKey)?.push(item[1].trim());
+  }
+  const keys = [...values.keys()].sort();
+  const valueHashes = Object.fromEntries(keys.map((key) => [key, contentHash(values.get(key)!.join("\n"))]));
+  const declaredSourceRefs = [...values.entries()]
+    .filter(([key]) => /^(sources?|source_refs?)$/i.test(key))
+    .flatMap(([, rawValues]) => rawValues.flatMap((value) => value.replace(/^\[|\]$/g, "").split(",")))
+    .map((value) => value.trim().replace(/^['"]|['"]$/g, ""))
+    .filter((value) => /^(?:raw|wiki)\/[A-Za-z0-9._/-]+\.md$/.test(value))
+    .sort();
+  return { keys, valueHashes, declaredSourceRefs: [...new Set(declaredSourceRefs)] };
+}
+
+function safeIndexedSourceRefs(sourceRefs: unknown): string[] {
+  if (!Array.isArray(sourceRefs)) return [];
+  const safeFields = new Set(["rawPath", "path", "issueIdentifier", "commentId", "documentKey", "querySessionId"]);
+  const safeValue = /^[A-Za-z0-9._/-]{1,200}$/;
+  const refs = sourceRefs.flatMap((sourceRef) => {
+    if (typeof sourceRef === "string") return safeValue.test(sourceRef) ? [sourceRef] : [];
+    if (!sourceRef || typeof sourceRef !== "object") return [];
+    return Object.entries(sourceRef as Record<string, unknown>)
+      .filter(([key, value]) => safeFields.has(key) && typeof value === "string" && safeValue.test(value))
+      .map(([key, value]) => `${key}:${value as string}`);
+  });
+  return [...new Set(refs)].sort();
 }
 
 async function readCurrentWithHash(
@@ -1799,7 +1854,7 @@ async function upsertPageMetadata(ctx: PluginContext, input: {
   const hash = contentHash(input.contents);
   const title = inferTitle(input.path, input.contents);
   const pageType = inferPageType(input.path);
-  const backlinks = extractWikiLinks(input.contents);
+  const backlinks = extractWikiLinks(input.path, input.contents);
   const sourceRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs : [];
 
   await ctx.db.execute(
@@ -4098,6 +4153,35 @@ export async function registerWikiTools(ctx: PluginContext) {
     const path = assertPagePath(requireString(input.path, "path"));
     const contents = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
     return { content: contents, data: { companyId, wikiId, spaceSlug: space.slug, path, hash: contentHash(contents) } };
+  });
+
+  ctx.tools.register("wiki_inspect_page", {
+    displayName: "Inspect Wiki Page Metadata",
+    description: "Inspect a wiki page's hash, frontmatter shape, and declared source references without returning its body.",
+    parametersSchema: ctx.manifest.tools?.find((tool) => tool.name === "wiki_inspect_page")?.parametersSchema ?? { type: "object" },
+  }, async (params: unknown): Promise<ToolResult> => {
+    const input = params as ToolParams;
+    const companyId = requireString(input.companyId, "companyId");
+    const wikiId = normalizeWikiId(input.wikiId);
+    const space = await resolveSpace(ctx, { companyId, wikiId, spaceSlug: input.spaceSlug as string | null | undefined });
+    const path = assertPagePath(requireString(input.path, "path"));
+    const contents = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
+    const rows = await ctx.db.query<{ source_refs: unknown }>(
+      `SELECT source_refs FROM ${tableName(ctx.db.namespace, "wiki_pages")}
+        WHERE company_id = $1 AND wiki_id = $2 AND space_id = $4 AND path = $3
+        LIMIT 1`,
+      [companyId, wikiId, path, space.id],
+    );
+    const frontmatter = inspectFrontmatter(contents);
+    return {
+      content: `Inspected metadata for ${path}; body omitted.`,
+      data: {
+        companyId, wikiId, spaceSlug: space.slug, path,
+        hash: contentHash(contents), bodyIncluded: false, frontmatter,
+        indexedSourceRefs: safeIndexedSourceRefs(rows[0]?.source_refs),
+        indexedSourceRefsHash: contentHash(JSON.stringify(rows[0]?.source_refs ?? [])),
+      },
+    };
   });
 
   ctx.tools.register("wiki_write_page", {
