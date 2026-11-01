@@ -660,6 +660,31 @@ it("reads valid control-plane history above 64 MiB and rejects it above 256 MiB"
   }
 });
 
+it("seeds a rotated attachment from the restored controller checkpoint, not its external marker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-external-marker-seed-"));
+  try {
+    const prior = { runnerInstanceId: "runner-marker", environmentLeaseId: "lease-marker", normalizedSessionId: "session-marker",
+      runId: "run-prior", turnId: "turn-prior", itemId: "item-prior" };
+    const next = { ...prior, runId: "run-next", turnId: "turn-next", itemId: "item-next" };
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: prior,
+      expectedRunnerVersion: "fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    core.persistRunAttachTemplate({ provider: { kind: "codex", command: "codex", args: [], model: "gpt-6.1-sol" }, workspace: { cwd: root } });
+    let checkpoint: { restoreSessionDirectory(root: string): void } | undefined;
+    core.setCheckpointPersistence(async saved => { checkpoint = saved; });
+    await core.flushCheckpoint();
+    await core.stop();
+    const onDisk = async () => JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8"));
+    const marker = await onDisk();
+    expect(() => runnerdRecoveryInternals.rotatedRunAttachPayload(marker, next, null, undefined))
+      .toThrow("native_runner_authority_rotation_seed_unavailable");
+    checkpoint!.restoreSessionDirectory(root);
+    expect(runnerdRecoveryInternals.rotatedRunAttachPayload(await onDisk(), next, null, undefined))
+      .toMatchObject({ provider: { kind: "codex", command: "codex" }, workspace: { cwd: root } });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("carries the provider attachment seed across consecutive authority rotations", () => {
   const baseIdentity = {
     runnerInstanceId: "runner-warm-seed",
