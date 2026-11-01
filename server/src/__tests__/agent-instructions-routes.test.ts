@@ -3,6 +3,7 @@ import request from "supertest";
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import { unprocessable } from "../errors.js";
 
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -808,6 +809,88 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+
+  it("refuses instruction writes before touching disk when the stored config cannot be saved", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: { env: { OPENAI_API_KEY: { type: "plain", value: "sk-test" } } },
+    });
+    mockSecretService.normalizeAdapterConfigForPersistence.mockRejectedValue(
+      unprocessable("Strict secret mode requires secret references for sensitive key: OPENAI_API_KEY"),
+    );
+    mockAgentInstructionsService.updateBundle.mockResolvedValue({
+      bundle: { mode: "managed", entryFile: "AGENTS.md", files: [] },
+      adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: "/tmp/agent-1", instructionsEntryFile: "AGENTS.md" },
+    });
+    const app = await createApp();
+
+    const put = await requestApp(app, (baseUrl) => request(baseUrl)
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file")
+      .send({ path: "notes.md", content: "# notes\n" }));
+    const patch = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle")
+      .send({ mode: "managed" }));
+
+    for (const res of [put, patch]) {
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error).toContain("OPENAI_API_KEY");
+    }
+    expect(mockAgentInstructionsService.writeFile).not.toHaveBeenCalled();
+    expect(mockAgentInstructionsService.updateBundle).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("writes instruction files and saves the normalized config when the stored config is valid", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: { env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-1" } } },
+    });
+    mockAgentInstructionsService.writeFile.mockResolvedValue({
+      bundle: null,
+      file: { path: "notes.md", size: 8, language: "markdown", markdown: true, isEntryFile: false, editable: true, deprecated: false, virtual: false, content: "# notes\n" },
+      adapterConfig: {
+        env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-1" } },
+        instructionsBundleMode: "managed",
+        instructionsRootPath: "/tmp/agent-1",
+        instructionsEntryFile: "AGENTS.md",
+      },
+    });
+    mockAgentInstructionsService.updateBundle.mockResolvedValue({
+      bundle: { mode: "managed", entryFile: "AGENTS.md", files: [] },
+      adapterConfig: {
+        env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-1" } },
+        instructionsBundleMode: "managed",
+        instructionsRootPath: "/tmp/agent-1",
+        instructionsEntryFile: "AGENTS.md",
+      },
+    });
+    const app = await createApp();
+
+    const put = await requestApp(app, (baseUrl) => request(baseUrl)
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file")
+      .send({ path: "notes.md", content: "# notes\n" }));
+    const patch = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle")
+      .send({ mode: "managed" }));
+
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    expect(patch.status, JSON.stringify(patch.body)).toBe(200);
+    expect(mockAgentInstructionsService.writeFile).toHaveBeenCalledTimes(1);
+    expect(mockAgentInstructionsService.updateBundle).toHaveBeenCalledTimes(1);
+    expect(mockAgentService.update).toHaveBeenCalledTimes(2);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence.mock.calls.map(
+      (call) => ((call as unknown[])[2] as { validateOnly?: boolean } | undefined)?.validateOnly === true,
+    )).toEqual([true, false, true, false]);
+    for (const [id, patchArg] of mockAgentService.update.mock.calls) {
+      expect(id).toBe("11111111-1111-4111-8111-111111111111");
+      expect(patchArg).toEqual({
+        adapterConfig: expect.objectContaining({
+          env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-1" } },
+          instructionsBundleMode: "managed",
+        }),
+      });
+    }
   });
 });
 

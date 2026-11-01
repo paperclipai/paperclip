@@ -1242,6 +1242,46 @@ describeEmbeddedPostgres("secretService", () => {
     expect(secret?.status).toBe("active");
   });
 
+  it("checks adapter-schema secret fields without creating a secret when validateOnly is set", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const config = { apiKey: `plain-api-key-${randomUUID()}` };
+    const companySecretRows = () => db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
+
+    const checked = await svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      config,
+      { adapterType: "hermes_gateway", validateOnly: true },
+    );
+    expect((checked as Record<string, unknown>).apiKey).toEqual({ type: "plain", value: config.apiKey });
+    expect(await companySecretRows()).toHaveLength(0);
+
+    await expect(svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { apiKey: "***REDACTED***" },
+      { adapterType: "hermes_gateway", validateOnly: true },
+    )).rejects.toThrow(/redacted placeholder/i);
+    await expect(svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { apiKey: { type: "secret_ref", secretId: randomUUID(), version: "latest" } },
+      { adapterType: "hermes_gateway", validateOnly: true },
+    )).rejects.toThrow();
+    await expect(svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { ...config, env: { OPENAI_API_KEY: { type: "plain", value: "sk-test" } } },
+      { adapterType: "hermes_gateway", strictMode: true, validateOnly: true },
+    )).rejects.toThrow(/strict secret mode/i);
+    expect(await companySecretRows()).toHaveLength(0);
+
+    const normalized = await svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      config,
+      { adapterType: "hermes_gateway" },
+    );
+    expect(((normalized as Record<string, unknown>).apiKey as { type: string }).type).toBe("secret_ref");
+    expect(await companySecretRows()).toHaveLength(1);
+  });
+
   it("validates the access namespace as agent-only with env-style aliases", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
