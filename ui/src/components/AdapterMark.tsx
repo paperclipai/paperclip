@@ -2,10 +2,16 @@ import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
 
 const brandMarks: Record<string, { src: string; dark?: string }> = {
+  openai_dot: { src: "/brands/adapters/openai-dot.svg" },
   claude_local: { src: "/brands/claude-color.svg" },
   codex_local: { src: "/brands/codex-color.svg" },
   gemini_local: { src: "/brands/adapters/gemini-color.svg" },
+  antigravity_runtime: { src: "/brands/apps/google.svg" },
   kimi_local: {
+    src: "/brands/adapters/kimi-color-light.svg",
+    dark: "/brands/adapters/kimi-color.svg",
+  },
+  kimi_runtime: {
     src: "/brands/adapters/kimi-color-light.svg",
     dark: "/brands/adapters/kimi-color.svg",
   },
@@ -14,6 +20,7 @@ const brandMarks: Record<string, { src: string; dark?: string }> = {
       ["cursor", "cursor"],
       ["cursor_cloud", "cursor"],
       ["grok_local", "grok"],
+      ["grok_bot", "grok"],
       ["hermes_local", "hermesagent"],
       ["hermes_gateway", "hermesagent"],
       ["pi_local", "pi"],

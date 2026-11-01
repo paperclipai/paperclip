@@ -1,5 +1,7 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
-import { adoptAgentFiles, agentFileToken } from "./agent-file-store.js";
+import { adoptAgentFiles, agentFileToken, isAgentFileSaveRecorded } from "./agent-file-store.js";
+import { invalidateAgentFileProjection, persistDurableAgentFiles } from "./agent-file-durability.js";
 import { and, desc, eq, getTableColumns, lt, or, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -8,6 +10,7 @@ import {
   pluginManagedResources,
   agentInstructionHeads as heads,
   agentInstructionRevisions as revisions,
+  fileStorageDb,
   type Db,
 } from "@paperclipai/db";
 import type {
@@ -80,6 +83,7 @@ function headOwner(target: InstructionTarget, entryFile: string) {
 }
 
 export function agentInstructionRevisionService(db: Db) {
+  db = fileStorageDb(db);
   async function lockTarget(
     tx: Tx,
     target: InstructionTarget,
@@ -246,30 +250,33 @@ export function agentInstructionRevisionService(db: Db) {
             )
           : null;
       const candidate = bytes ?? Buffer.from(restored!.contentBase64, "base64");
+      const recordSave = (row: Revision) => tx.insert(activityLog).values({ companyId: input.companyId,
+        actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
+        actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
+        agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
+        responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
+        details: { path: input.entryFile, contentHash: row.contentHash, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
       const bindEntry = async () => {
         if (
           !state.agent.adapterConfig.instructionsRootPath ||
           !state.agent.adapterConfig.instructionsBundleMode ||
           (bound.type === "plugin" && configuredEntryFile !== input.entryFile)
         ) {
-          await tx
-            .update(agents)
-            .set({
-              adapterConfig: {
-                ...state.agent.adapterConfig,
-                instructionsBundleMode: "managed",
-                instructionsRootPath: state.root,
-                instructionsEntryFile: state.entryFile,
-                instructionsFilePath: `${state.root}/${state.entryFile}`,
-              },
-              updatedAt: new Date(),
-            })
-            .where(eq(agents.id, state.agent.id));
+          await updateAgentConfigurationInTransaction(tx as unknown as Db, state.agent.id, {
+            adapterConfig: {
+              ...state.agent.adapterConfig,
+              instructionsBundleMode: "managed",
+              instructionsRootPath: state.root,
+              instructionsEntryFile: state.entryFile,
+              instructionsFilePath: `${state.root}/${state.entryFile}`,
+            },
+          }, { allowPendingApprovalConfigUpdate: true });
         }
       };
       // An exact replay can safely return the durable receipt even after its base
       // advanced. Restore also deduplicates identical content, preserving history.
       if (current && current.contentBase64 === candidate.toString("base64")) {
+        if (!await isAgentFileSaveRecorded(tx, state.agent, input.entryFile, current.contentHash)) await recordSave(current);
         await bindEntry();
         return { row: current, changed: false };
       }
@@ -288,14 +295,11 @@ export function agentInstructionRevisionService(db: Db) {
           },
         );
       }
+      await invalidateAgentFileProjection(state.root);
       await materializeInstructionBytes(state.root, state.entryFile, candidate);
+      await persistDurableAgentFiles(tx, state.agent, state.root);
       const row = currentRow(input, input.entryFile, candidate, bound);
-      await tx.insert(activityLog).values({ companyId: input.companyId,
-        actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
-        actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
-        agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
-        responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
-        details: { path: input.entryFile, contentHash: row.contentHash, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
+      await recordSave(row);
       await bindEntry();
       return { row, changed: true };
     });

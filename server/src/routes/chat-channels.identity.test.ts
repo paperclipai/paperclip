@@ -65,6 +65,19 @@ describe("chat identity-link preview authority", () => {
     expect(f.requestIdentityAccess).not.toHaveBeenCalled();
   });
 
+  it.each(["github", "slack"])("uses the token’s verified provider when only GitHub bots are enabled (%s)", async (provider) => {
+    settings.getExperimental.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+    const f = fixture();
+    f.previewIdentityLink.mockResolvedValue({ ...preview, provider } as typeof preview);
+    await request(f.app).get("/api/chat-identity-links/preview").query({ token }).expect(provider === "github" ? 200 : 403);
+    await request(f.app).post("/api/chat-identity-links/confirm").send({ token }).expect(provider === "github" ? 200 : 403);
+    expect(f.confirmIdentityLink.mock.calls.length).toBe(provider === "github" ? 1 : 0);
+  });
+  it("does not admit GitHub links under chat-only opt-in", async () => {
+    const f = fixture();
+    f.previewIdentityLink.mockResolvedValue({ ...preview, provider: "github" } as unknown as typeof preview);
+    await request(f.app).get("/api/chat-identity-links/preview").query({ token }).expect(403);
+  });
   it("returns the preview to a Board member of its exact company", async () => {
     const { app, previewIdentityLink } = fixture();
     const response = await request(app)

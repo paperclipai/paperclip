@@ -87,7 +87,7 @@ export interface AccountingHealth {
   oldestPendingAt: string | null;
   pendingCancellationCount: number;
   heldReservationCents: string;
-  items: Array<{ runId: string | null; costEventId?: string; agentId: string; state: "waiting_for_receipt" | "retryable" | "unpriced"; lastError: string | null; attempts: number; since: string; lastAttemptAt: string | null }>;
+  items: Array<{ runId: string | null; costEventId?: string; agentId: string | null; state: "waiting_for_receipt" | "retryable" | "unpriced"; lastError: string | null; attempts: number; since: string; lastAttemptAt: string | null }>;
 }
 export interface BillingInvoice {
   id: string; companyId: string; biller: string; externalId: string; currency: string; createdAt: string;

@@ -1,3 +1,5 @@
+import { beginIdleTrackedWork } from "./task-admission.js";
+import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -6,13 +8,17 @@ import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult, AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
-import { pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
+import { idleAccountingSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import { ensureDurableDirectory, syncDirectory } from "../lib/durable-directory.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { knownRunCostCents } from "./budget-exposure.js";
+import { createLiveRunUsageProjection, liveRunUsageCostCents } from "./budget-live-usage.js";
+import { budgetServiceInTransaction } from "./budgets.js";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -34,11 +40,19 @@ const envelopeSchema = z.object({
   schema: z.literal("paperclip/accounting-receipt/v1"), id: z.string().uuid(), companyId: z.string().uuid(),
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
+  producerEvent: z.object({ sourceEventId: z.string(), turnId: z.string().optional(), providerTurnId: z.string().optional(),
+    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).optional(),
+  // Derived by the recorder, not a provider's final charge. Keeping it in the
+  // fsynced envelope preserves known partial attempts through database replay.
+  liveCostCents: z.string().max(160).refine(value => {
+    try { return compareCents(value, 0) >= 0; } catch { return false; }
+  }, "Invalid live cost").transform(normalizeCents).nullable().optional(),
 });
 export type UsageReceiptEnvelope = z.infer<typeof envelopeSchema>;
-export const usageReceiptSpoolPath = () => path.join(resolvePaperclipInstanceRoot(), "accounting-receipts");
+export const usageReceiptSpoolPath = idleAccountingSpoolPath;
 
 export async function spoolUsageReceipt(envelope: UsageReceiptEnvelope, directory = usageReceiptSpoolPath()) {
+  registerIdleSpoolDirectory(directory);
   const parsed = envelopeSchema.parse(envelope);
   await ensureDurableDirectory(directory);
   const target = path.join(directory, `${parsed.id}.json`);
@@ -55,11 +69,35 @@ export async function spoolUsageReceipt(envelope: UsageReceiptEnvelope, director
 export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   const envelope = envelopeSchema.parse(raw);
   const hash = receiptFingerprint(envelope);
-  return withAccountingTransaction(db, envelope.companyId, async tx => {
-    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, envelope.runId), eq(heartbeatRuns.companyId, envelope.companyId))).for("update");
+  return withAccountingTransaction(db, envelope.companyId, async (tx, publications) => {
+    const [run] = await tx.select({
+      id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
+      usageJson: heartbeatRuns.usageJson, costAccountedAt: heartbeatRuns.costAccountedAt,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, envelope.runId), eq(heartbeatRuns.companyId, envelope.companyId))).for("update");
     if (!run) throw notFound("Accounting run not found");
     const [existing] = await tx.select().from(runUsageReceipts).where(and(eq(runUsageReceipts.companyId, envelope.companyId), eq(runUsageReceipts.runId, envelope.runId), eq(runUsageReceipts.sourceId, envelope.sourceId), eq(runUsageReceipts.sequence, envelope.sequence)));
     if (existing && existing.receiptHash !== hash) throw conflict("Conflicting usage checkpoint replay");
+    if (!existing && run.costAccountedAt && envelope.producerEvent) {
+      const previous = run.usageJson ?? {};
+      const [saved] = await tx.select({ receiptJson: runUsageReceipts.receiptJson }).from(runUsageReceipts).where(and(
+        eq(runUsageReceipts.companyId, envelope.companyId), eq(runUsageReceipts.runId, envelope.runId),
+        sql`${runUsageReceipts.id}::text = ${previous.accountingReceiptId ?? null}`));
+      const accepted = saved ? envelopeSchema.parse(saved.receiptJson).receipt : undefined;
+      const monetaryAmount = (receipt: UsageReceiptEnvelope["receipt"] | undefined) => {
+        const value = receipt?.cacheAdjustedCostUsd ?? receipt?.costUsdExact ?? receipt?.costUsd;
+        return value == null ? null : usdToUnits(value);
+      };
+      const incomingMoney = monetaryAmount(envelope.receipt);
+      const authoritativeMoney = incomingMoney !== null && envelope.receipt.pricingProvenance?.source !== "rate_card";
+      const authoritativeProvenance = envelope.receipt.pricingProvenance
+        && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
+      if ((envelope.producerEvent.eventType === "usage.reported" && (!envelope.receipt.usage || !accepted))
+        || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
+        || (authoritativeMoney && incomingMoney !== monetaryAmount(accepted))
+        || (authoritativeProvenance && receiptFingerprint(envelope.receipt.pricingProvenance) !== receiptFingerprint(accepted?.pricingProvenance ?? null))) {
+        throw conflict("native_usage_after_finalization_requires_reconciliation");
+      }
+    }
     if (!existing) await tx.insert(runUsageReceipts).values({
       id: envelope.id, companyId: envelope.companyId, runId: envelope.runId, sourceId: envelope.sourceId,
       sequence: envelope.sequence, receiptHash: hash, receiptJson: envelope, complete: envelope.receipt.complete, receivedAt: new Date(envelope.receivedAt),
@@ -70,6 +108,23 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
     if (run.costAccountedAt || previous.accountingReceiptSourceId !== envelope.sourceId || Number(previous.accountingReceiptSequence ?? 0) >= envelope.sequence) return;
     const receipt = envelope.receipt;
     const billingType = receipt.billingType === "api" ? "metered_api" : receipt.billingType === "subscription" ? "subscription_included" : receipt.billingType ?? "unknown";
+    const oldProjection = previous.budgetExposure && typeof previous.budgetExposure === "object"
+      ? previous.budgetExposure as Record<string, unknown> : {};
+    const canonicalProjection = typeof oldProjection.sourceId === "string" && typeof oldProjection.sequence === "number";
+    let previousCost = canonicalProjection ? null : knownRunCostCents(previous);
+    if (typeof oldProjection.costCents === "string") {
+      try {
+        const projected = normalizeCents(oldProjection.costCents);
+        if (compareCents(projected, 0) >= 0 && (canonicalProjection || compareCents(projected, previousCost ?? "0") > 0)) previousCost = projected;
+      } catch { /* Older malformed projections are not billing evidence. */ }
+    }
+    const reportedCost = envelope.liveCostCents !== undefined ? envelope.liveCostCents
+      : liveRunUsageCostCents({ ...receipt, billingType } as AdapterUsageCheckpoint);
+    const observedCost = reportedCost === null ? previousCost
+      : !receipt.complete && previousCost !== null && compareCents(previousCost, reportedCost) > 0 ? previousCost : reportedCost;
+    // Running checkpoints cannot settle yet. Their terminal transition owns
+    // the accounting wake; only a late receipt needs to reactivate that worker.
+    if (!["queued", "running"].includes(run.status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, envelope.companyId);
     await tx.update(heartbeatRuns).set({
       costAccountingPending: true,
       accountingLastError: previous.accountingCaptureFailed === true ? "usage_capture_failed" : null,
@@ -80,9 +135,15 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
         accountingReceiptReady: previous.accountingCaptureFailed !== true && receipt.complete && receipt.usageBasis !== "session_cumulative", accountingReceiptId: envelope.id,
         accountingReceiptSequence: envelope.sequence, accountingReceiptReceivedAt: envelope.receivedAt,
         costStatus: receipt.costStatus ?? null,
+        budgetExposure: { sourceId: envelope.sourceId, sequence: envelope.sequence, costCents: observedCost },
         pricingProvenance: receipt.pricingProvenance ?? { source: receipt.costUsd != null || receipt.costUsdExact != null ? "provider_reported" : "unknown", version: "accounting-receipt/v1" },
       },
     }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
+    if (observedCost !== null && compareCents(observedCost, previousCost ?? "0") !== 0) {
+      const scope = previous.ledgerScope && typeof previous.ledgerScope === "object" ? previous.ledgerScope as Record<string, unknown> : {};
+      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(envelope.companyId, run.agentId,
+        typeof scope.projectId === "string" ? scope.projectId : null);
+    }
   });
 }
 
@@ -184,6 +245,7 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
 }
 
 export async function createRunUsageRecorder(db: Db, input: { companyId: string; runId: string; adapterType: string }, directory = usageReceiptSpoolPath()) {
+  registerIdleSpoolDirectory(directory);
   const sourceId = randomUUID();
   // Verify durable storage before starting paid work, including a directory
   // sync. The database binding fences checkpoints from replaced controllers.
@@ -198,6 +260,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
   let sequence = 0;
   let currentAttempt = "default";
   const attempts = new Map<string, AdapterUsageCheckpoint>();
+  let initialLiveUsage: Parameters<typeof createLiveRunUsageProjection>[0];
   // Native run deltas retain their baseline across same-run recovery. Restore
   // the previous snapshot as the same attempt, never add it a second time.
   // An empty final result must not erase the last durable observation.
@@ -206,30 +269,41 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     const [previous] = await db.select().from(runUsageReceipts).where(and(
       eq(runUsageReceipts.id, priorReceiptId), eq(runUsageReceipts.runId, input.runId), eq(runUsageReceipts.companyId, input.companyId),
     ));
-    if (previous) attempts.set("default", envelopeSchema.parse(previous.receiptJson).receipt as AdapterUsageCheckpoint);
+    if (previous) {
+      const restored = envelopeSchema.parse(previous.receiptJson);
+      const receipt = restored.receipt as AdapterUsageCheckpoint;
+      attempts.set("default", receipt);
+      initialLiveUsage = { receipt, costCents: restored.liveCostCents };
+    }
   }
+  const projectLiveUsage = createLiveRunUsageProjection(initialLiveUsage);
   let chain = Promise.resolve();
   let captureFailed = bound[0].usageJson?.accountingCaptureFailed === true;
+  let finishFailedCapture: (() => void) | undefined;
   async function persistFailure() {
     if (!captureFailed) return;
-    await withAccountingTransaction(db, input.companyId, async tx => {
-      await tx.update(heartbeatRuns).set({
+    const persisted = await withAccountingTransaction(db, input.companyId, async tx => {
+      const rows = await tx.update(heartbeatRuns).set({
         costAccountingPending: true, accountingLastError: "usage_capture_failed",
         usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingCaptureFailed":true,"accountingReceiptReady":false}'::jsonb`,
       }).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-        isNull(heartbeatRuns.costAccountedAt), sql`${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}`));
+        isNull(heartbeatRuns.costAccountedAt), sql`${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}`)).returning({ id: heartbeatRuns.id });
+      return rows.length === 1;
     });
+    if (persisted) { finishFailedCapture?.(); finishFailedCapture = undefined; }
   }
   function enqueue(action: () => Promise<AdapterUsageCheckpoint>) {
+    const finishQueuedCapture = beginIdleTrackedWork();
     const result = chain.then(action).catch(async error => {
       captureFailed = true;
+      finishFailedCapture ??= beginIdleTrackedWork();
       // Persist before exposing rejection: the adapter's flush may throw before
       // complete(), and failure finalization must not settle an older receipt.
       try { await persistFailure(); }
       catch (failure) { logger.error({ err: failure, runId: input.runId }, "Usage capture failure fence requires retry before finalization"); }
       throw error;
     });
-    chain = result.then(() => undefined, () => undefined);
+    chain = result.then(() => undefined, () => undefined).finally(finishQueuedCapture);
     return result;
   }
   async function capture(raw: AdapterUsageCheckpoint) {
@@ -237,13 +311,14 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     const attempt = parsed.attemptId ?? currentAttempt;
     if (!attempts.has(attempt)) currentAttempt = attempt;
     const previous = attempts.get(attempt);
-    const priced = priceCodexReceipt({ ...parsed, usage: parsed.usage ?? previous?.usage,
-      complete: parsed.complete && !(previous?.usage && !parsed.usage) });
+    const priced = priceAnthropicReceipt(priceCodexReceipt({ ...parsed, usage: parsed.usage ?? previous?.usage,
+      complete: parsed.complete && !(previous?.usage && !parsed.usage) }));
     priced.pricingProvenance ??= {
       source: priced.costUsd != null || priced.costUsdExact != null || priced.cacheAdjustedCostUsd != null ? "provider_reported" : "unknown",
       version: "accounting-receipt/v1",
     };
     attempts.set(attempt, priced);
+    const liveCostCents = projectLiveUsage(attempt, priced);
     const parts = [...attempts.values()];
     const latest = attempts.get(currentAttempt)!;
     const receipt: AdapterUsageCheckpoint = { ...latest, complete: latest.complete && !captureFailed, usage: {
@@ -280,10 +355,16 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // can be considered complete, even if a later attempt succeeded.
       receipt.complete = !captureFailed && parts.every(part => part.complete);
     }
-    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt };
+    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
     const file = await spoolUsageReceipt(envelope, directory);
     try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
-    catch (error) { logger.warn({ err: error, runId: input.runId, receiptId: envelope.id }, "Usage receipt is durable on disk; database replay pending"); }
+    catch (error) {
+      // The fsynced receipt is durable even when the DB transaction failed.
+      // Wake the owned spool recovery path; never certify that failed write as free.
+      const { wakeCostAccountingWork } = await import("./budget-enforcement-worker.js");
+      wakeCostAccountingWork(db);
+      logger.warn({ err: error, runId: input.runId, receiptId: envelope.id }, "Usage receipt is durable on disk; database replay pending");
+    }
     return receipt;
   }
   return {
@@ -308,4 +389,34 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       return capture(final);
     }),
   };
+}
+
+export async function readAcceptedRunUsageCheckpoint(db: Db, input: { companyId: string; runId: string }): Promise<AdapterUsageCheckpoint | undefined> {
+  const [run] = await db.select({ usageJson: heartbeatRuns.usageJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  const state = run?.usageJson;
+  if (typeof state?.accountingReceiptId !== "string") return undefined;
+  const [saved] = await db.select({ receiptJson: runUsageReceipts.receiptJson }).from(runUsageReceipts).where(and(
+    eq(runUsageReceipts.companyId, input.companyId), eq(runUsageReceipts.runId, input.runId),
+    sql`${runUsageReceipts.id}::text = ${state.accountingReceiptId}`));
+  if (!saved) return undefined;
+  const receipt = envelopeSchema.parse(saved.receiptJson);
+  if (receipt.sourceId !== state.accountingReceiptSourceId || receipt.sequence !== state.accountingReceiptSequence) return undefined;
+  return { ...receipt.receipt, complete: receipt.receipt.complete && state.accountingReceiptReady === true } as AdapterUsageCheckpoint;
+}
+
+const producerAccountingProjectionFields = [
+  "accountingReceiptOwner", "accountingReceiptSourceId", "accountingReceiptSequence", "accountingReceiptReady",
+  "accountingReceiptId", "accountingReceiptReceivedAt", "accountingCaptureFailed",
+  "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens",
+  "provider", "biller", "model", "billingType", "usageSource", "providerRequestId", "usageByModel",
+  "costUsd", "costUsdExact", "cacheAdjustedCostUsd", "costStatus", "pricingProvenance", "budgetExposure",
+];
+
+export function preserveAcceptedRunUsageProjectionSql(patch: Record<string, unknown>) {
+  const fields = sql.join(producerAccountingProjectionFields.map(field => sql`${field}`), sql`, `);
+  return sql`case when ${heartbeatRuns.usageJson}->>'accountingReceiptOwner' = 'native_producer'
+    then ${JSON.stringify(patch)}::jsonb || (select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
+      from jsonb_each(coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb)) where key in (${fields}))
+    else ${JSON.stringify(patch)}::jsonb end`;
 }

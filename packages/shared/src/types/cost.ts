@@ -2,9 +2,12 @@ import type { AgentAppearance } from "../agent-appearance.js";
 import type { BillingType, CostStatus } from "../constants.js";
 
 export interface CostEvent {
+  subscriptionId?: string | null;
+  usageKind?: "agent" | "decision" | "fast_response" | "prompt_injection";
+  responsibleUserId?: string | null;
   id: string;
   companyId: string;
-  agentId: string;
+  agentId: string | null;
   issueId: string | null;
   projectId: string | null;
   goalId: string | null;
@@ -30,12 +33,38 @@ export interface CostSummary {
   pendingRunCount: number;
   unpricedEventCount: number;
   estimatedEventCount?: number;
+  /** Receipts whose API/subscription billing identity was not established. */
+  unknownBillingEventCount?: number;
   pricingComplete: boolean;
   companyId: string;
   spendCents: number;
   spendCentsExact?: string;
   budgetCents: number;
   utilizationPercent: number;
+}
+
+export type CostDataQualityReason = "unknown_billing" | "missing_model" | "missing_price"
+  | "waiting_for_receipt" | "receipt_unavailable" | "retryable";
+
+export interface CostDataQualityItem {
+  id: string;
+  runId: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  agentAppearance?: AgentAppearance | null;
+  occurredAt: string;
+  provider: string | null;
+  model: string | null;
+  reason: CostDataQualityReason;
+}
+
+export interface CostDataQualityReport {
+  canRetry: boolean;
+  /** Each category is bounded independently so one cannot hide another. */
+  events: CostDataQualityItem[];
+  runs: CostDataQualityItem[];
+  hasMoreEvents: boolean;
+  hasMoreRuns: boolean;
 }
 
 export interface IssueCostSummary {
@@ -80,7 +109,7 @@ export interface CostByUserReport {
 }
 
 export interface CostByAgent {
-  agentId: string;
+  agentId: string | null;
   agentName: string | null;
   agentAppearance?: AgentAppearance | null;
   avatarUrl?: string;
@@ -107,6 +136,9 @@ export interface CostByProviderModel {
   model: string;
   costCents: number;
   costCentsExact?: string;
+  eventCount?: number;
+  estimatedEventCount?: number;
+  unpricedEventCount?: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -121,6 +153,9 @@ export interface CostByBiller {
   biller: string;
   costCents: number;
   costCentsExact?: string;
+  eventCount?: number;
+  estimatedEventCount?: number;
+  unpricedEventCount?: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -135,7 +170,7 @@ export interface CostByBiller {
 
 /** per-agent breakdown by provider + model, for identifying token-hungry agents */
 export interface CostByAgentModel {
-  agentId: string;
+  agentId: string | null;
   agentName: string | null;
   agentAppearance?: AgentAppearance | null;
   avatarUrl?: string;
@@ -172,6 +207,9 @@ export interface CostWindowSpendRow {
 export interface CostByProject {
   projectId: string | null;
   projectName: string | null;
+  /** Ledger events in this project and selected date range, not distinct runs. */
+  eventCount: number;
+  estimatedEventCount: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;

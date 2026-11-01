@@ -1,15 +1,17 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { eq, inArray } from "drizzle-orm";
+import { companies, companyTransferRuns, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
 import { sweepAbandonedImportTransferSpools } from "../services/company-import-transfers.js";
 
@@ -87,12 +89,14 @@ vi.mock("../services/company-import-transfers.js", async (importOriginal) => {
   };
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_IMPORT_TRANSFER_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
 
-const companyId = "11111111-1111-4111-8111-111111111111";
+const companyId = randomUUID();
+const actorKeys = new Set<string>();
 const TEST_USER_HEADER = "x-test-user-id";
 
 function boardActor(userId: string) {
@@ -241,7 +245,9 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     built.use((req, _res, next) => {
       const header = req.headers[TEST_USER_HEADER];
       const userId = typeof header === "string" && header.length > 0 ? header : "board-user-a";
-      (req as any).actor = boardActor(userId);
+      const scopedUserId = `${userId}-${companyId}`;
+      actorKeys.add(`board:${scopedUserId}`);
+      (req as any).actor = boardActor(scopedUserId);
       next();
     });
     built.use("/api/companies", companyRoutes(db, undefined, { importTransferSpoolRoot: spoolRoot }));
@@ -250,18 +256,26 @@ describeEmbeddedPostgres("company import transfer routes", () => {
   }
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-import-transfer-routes-");
-    db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-import-transfer-routes-");
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
     // The mocked import result points at this company; the ledger's
     // company_id foreign key needs the row to exist.
-    await db.insert(companies).values({ id: companyId, name: "Chunked Import Target" });
+    await db.insert(companies).values({ id: companyId, name: "Chunked Import Target", issuePrefix: `IT${companyId.slice(0, 6)}` });
     spoolRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-import-transfer-spool-"));
     app = await createApp();
   });
 
   afterAll(async () => {
-    await tempDb?.cleanup();
-    await fs.rm(spoolRoot, { recursive: true, force: true });
+    try {
+      if (db) {
+        if (actorKeys.size) await db.delete(companyTransferRuns).where(inArray(companyTransferRuns.actorKey, [...actorKeys]));
+        await db.delete(companies).where(eq(companies.id, companyId));
+      }
+    } finally {
+      await db?.$client.end({ timeout: 1 });
+      await tempDb?.cleanup();
+      if (spoolRoot) await fs.rm(spoolRoot, { recursive: true, force: true });
+    }
   });
 
   beforeEach(() => {
@@ -886,6 +900,27 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     expect(malformed.status).toBe(404);
   });
 
+  it("preserves a verified upload when cleanup runs before its part receipt commits", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    await db.update(companyTransferRuns).set({ updatedAt: new Date(Date.now() - 25 * 3600_000) })
+      .where(eq(companyTransferRuns.id, transferId));
+    const record = companyTransferRunService.completePart.bind(companyTransferRunService);
+    const interleave = vi.spyOn(companyTransferRunService, "completePart").mockImplementationOnce(async (...args) => {
+
+
+      await sweepAbandonedImportTransferSpools(db, spoolRoot);
+      return record(...args);
+    });
+    try {
+      expect((await putPart(transferId, 0, slices[0]!)).status).toBe(200);
+      expect(await fs.readFile(path.join(spoolRoot, transferId, "part-0"))).toEqual(slices[0]);
+      expect((await companyTransferRunService.getRun(db, transferId))!.completedParts).toEqual(["part-0"]);
+    } finally { interleave.mockRestore(); }
+  });
+
   it("sweeps abandoned spools and cancels their open runs", async () => {
     const zip = buildFixtureZip();
     const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
@@ -930,7 +965,7 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     // — as if a part upload bumped the row right after that read — while the
     // guarded UPDATE sees the fresh row in the database and must miss.
     const real = (await companyTransferRunService.getRun(db, transferId))!;
-    const staleRead = vi.spyOn(companyTransferRunService, "getRun").mockResolvedValue({
+    const staleRead = vi.spyOn(companyTransferRunService, "getCleanupState").mockResolvedValue({
       ...real,
       updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
     });

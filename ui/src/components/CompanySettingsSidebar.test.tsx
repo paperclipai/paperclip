@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
+import { CompanySettingsSidebar as ProductionCompanySettingsSidebar } from "./CompanySettingsSidebar.production";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
@@ -65,6 +66,10 @@ vi.mock("./SidebarNavItem", () => ({
     sidebarNavItemMock(props);
     return <div>{props.label}</div>;
   },
+}));
+
+vi.mock("./SidebarNavItem.production", () => ({
+  SidebarNavItem: ({ label, to }: { label: string; to: string }) => <a href={to}>{label}</a>,
 }));
 
 vi.mock("./SidebarCompanyMenu", () => ({
@@ -167,6 +172,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).not.toContain("Company Settings");
     expect(container.textContent).not.toContain("Instance Settings");
     expect(container.textContent).toContain("General");
+    expect(container.textContent).toContain("Connections");
     expect(container.textContent).toContain("Environments");
     expect(container.textContent).toContain("Export");
     expect(container.textContent).toContain("Import");
@@ -262,6 +268,16 @@ describe("CompanySettingsSidebar", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("shows Connections in the production sidebar without a Fast Responses query", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><ProductionCompanySettingsSidebar /></QueryClientProvider>));
+    await flushReact();
+    expect(container.querySelector('a[href="/company/settings/connections"]')?.textContent).toBe("Connections");
+    expect(queryClient.getQueryCache().getAll().some(query => String(query.queryKey[0]).includes("experimental"))).toBe(false);
+    await act(async () => root.unmount());
   });
 
   it("renders company settings pages contributed by ready plugins", async () => {

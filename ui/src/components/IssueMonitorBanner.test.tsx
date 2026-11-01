@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue, type IssueWorkProduct } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -145,6 +146,35 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     } as unknown as Issue;
   }
 
+  it("requires confirmation, keeps the monitor on dismissal, and reports cancellation errors", async () => {
+    const issue = issueWithMonitor(new Date(NOW.getTime() + 60_000).toISOString());
+    const onCancel = vi.fn().mockRejectedValueOnce(new Error("Unable to save monitor")).mockResolvedValueOnce(undefined);
+    const root = createRoot(container);
+    flushSync(() => root.render(<IssueMonitorBanner issue={issue} onCancelMonitor={onCancel} />));
+    const open = () => flushSync(() => (container.querySelector('[aria-label="Cancel monitor"]') as HTMLButtonElement).click());
+    open();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("no longer resume");
+    flushSync(() => (Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Keep monitor")!).click());
+    expect(onCancel).not.toHaveBeenCalled();
+    open();
+    await act(async () => { Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click(); });
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe("Unable to save monitor");
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    await act(async () => { Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click(); });
+    expect(onCancel).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("does not offer monitor cancellation for automatic retries", () => {
+    const issue = { scheduledRetry: { status: "scheduled_retry", scheduledRetryAt: NOW.toISOString() } } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<IssueMonitorBanner issue={issue} onCancelMonitor={vi.fn()} />));
+    expect(container.querySelector('[aria-label="Cancel monitor"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
   it("shows the saved PR and a status check above the composer during a GitHub review wait", () => {
     const issue = issueWithMonitor(new Date(NOW.getTime() + 6 * 60 * 60_000).toISOString());
     issue.executionState!.monitor!.serviceName = "github";
@@ -227,6 +257,49 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     flushSync(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onCheckNow).toHaveBeenCalledTimes(1);
 
+    flushSync(() => root.unmount());
+  });
+
+  it("offers a manual check on a blocked task without promising an automatic wake", () => {
+    const onCheckNow = vi.fn();
+    const issue = { ...issueWithMonitor(new Date(NOW.getTime() - 12 * 60_000).toISOString()), status: "blocked" as const };
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={onCheckNow} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={onCheckNow} />
+    </>));
+    expect(container.textContent).toContain("Automatic checks paused");
+    expect(container.textContent).not.toMatch(/overdue|next tick|scheduled check/i);
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.map(button => button.textContent)).toEqual(["Check now", "Check now"]);
+    flushSync(() => buttons[1]!.click());
+    expect(onCheckNow).toHaveBeenCalledTimes(1);
+    flushSync(() => root.unmount());
+  });
+
+  it.each(["backlog", "todo"] as const)("does not offer a monitor check on a %s task", (status) => {
+    const issue = { ...issueWithMonitor(NOW.toISOString()), status };
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} />
+    </>));
+    expect(container.textContent).toContain("Resume this task to continue checking.");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.textContent).not.toMatch(/next tick|momentarily|reply wakes/i);
+    flushSync(() => root.unmount());
+  });
+
+  it("keeps blocked quota recovery paused until the task resumes", () => {
+    const issue = { ...issueWithMonitor(NOW.toISOString()), status: "blocked" as const };
+    issue.executionState!.monitor!.serviceName = PROVIDER_QUOTA_MONITOR_SERVICE_NAME;
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} />
+    </>));
+    expect(container.textContent).toContain("Resume this task to continue checking.");
+    expect(container.querySelector("button")).toBeNull();
     flushSync(() => root.unmount());
   });
 

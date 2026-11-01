@@ -205,8 +205,13 @@ Dynamic registration uses public clients, exact registered HTTPS redirect URIs
 (or HTTP loopback), authorization code flow, S256 PKCE and exact resource
 binding to the endpoint. Authorization requests expire in ten minutes; codes
 expire one minute after consent and are single-use. Access tokens expire in
-fifteen minutes. `offline_access` issues a thirty-day rotating refresh token;
-replaying a consumed refresh token revokes its entire grant. Tokens and codes
+fifteen minutes. `offline_access` issues a thirty-day rotating refresh token for
+personal assistant connections. Dedicated Dot agent connections instead receive
+rotating refresh tokens without an inactivity expiry: they stay connected until
+revoked or their agent/operator loses access. Migration `0319_heavy_captain_midlands.sql`
+removes the old expiry from valid, unused Dot refresh tokens on unrevoked grants.
+Expired credentials remain expired.
+Replaying a consumed refresh token still revokes its entire grant. Tokens and codes
 are hashed at rest. `paperclip:read` is required; `paperclip:write` adds only task
 work and attachment mutations on direct connections. The `paperclip:configure`
 scope covers allowed configuration operations. One **Write all of your Paperclip

@@ -4,7 +4,10 @@ import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 
 const state = vi.hoisted(() => ({ blockers: 0 }));
-vi.mock("./native-deliverable-feedback.js", () => ({ validateNativeDeliverableEvidence: vi.fn(async () => undefined) }));
+vi.mock("./native-deliverable-feedback.js", () => ({
+  validateNativeDeliverableEvidence: vi.fn(async () => undefined),
+  publishedTaskDocuments: vi.fn(async () => []),
+}));
 vi.mock("./automatic-completion-reviews.js", () => ({ findAutomaticCompletionReviews: vi.fn(async () => []) }));
 vi.mock("../agent-invokability.js", () => ({ evaluateAgentInvokabilityFromDb: vi.fn() }));
 vi.mock("../issues.js", () => ({ issueService: () => ({ getDependencyReadiness: async () => ({ unresolvedBlockerCount: state.blockers }) }) }));
@@ -19,7 +22,7 @@ function database(options: { interaction?: boolean; approval?: boolean; review?:
       : table === issues ? [{ id: "issue", companyId: "company", status: "in_progress", ...(options.review ? { executionState: { status: "pending" } } : {}) }]
       : table === issueThreadInteractions && options.interaction ? [{ id: "request", kind: "request_confirmation", title: "Decision" }]
       : table === issueApprovals && options.approval ? [{ id: "approval" }] : [];
-    const query = { where: () => query, limit: () => query, innerJoin: () => query, then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
+    const query = { where: () => query, limit: () => query, orderBy: () => query, innerJoin: () => query, then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
     return query;
   } }) } as unknown as Db;
 }

@@ -1,7 +1,5 @@
-import { isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import type {
   Approval,
-  DashboardSummary,
   HeartbeatRun,
   InboxDismissal,
   Issue,
@@ -17,7 +15,6 @@ import {
 import { formatAssigneeUserLabel } from "./assignees";
 
 export const RECENT_ISSUES_LIMIT = 100;
-export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
 export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
@@ -77,15 +74,6 @@ export type InboxWorkItem =
       timestamp: number;
       joinRequest: JoinRequest;
     };
-
-export interface InboxBadgeData {
-  inbox: number;
-  approvals: number;
-  failedRuns: number;
-  joinRequests: number;
-  mineIssues: number;
-  alerts: number;
-}
 
 export interface InboxWorkItemGroup {
   key: string;
@@ -217,7 +205,10 @@ export function loadInboxFilterPreferences(
     return {
       allCategoryFilter: normalizeInboxCategoryFilter(parsed.allCategoryFilter),
       allApprovalFilter: normalizeInboxApprovalFilter(parsed.allApprovalFilter),
-      issueFilters: normalizeIssueFilterState(parsed.issueFilters),
+      issueFilters: {
+        ...normalizeIssueFilterState(parsed.issueFilters),
+        workspaces: [],
+      },
     };
   } catch {
     return {
@@ -240,7 +231,10 @@ export function saveInboxFilterPreferences(
       JSON.stringify({
         allCategoryFilter: normalizeInboxCategoryFilter(preferences.allCategoryFilter),
         allApprovalFilter: normalizeInboxApprovalFilter(preferences.allApprovalFilter),
-        issueFilters: normalizeIssueFilterState(preferences.issueFilters),
+        issueFilters: {
+          ...normalizeIssueFilterState(preferences.issueFilters),
+          workspaces: [],
+        },
       }),
     );
   } catch {
@@ -419,32 +413,25 @@ export function shouldResetInboxWorkspaceGrouping(
   return experimentalSettingsLoaded && groupBy === "workspace" && !isolatedWorkspacesEnabled;
 }
 
-export function shouldIncludeRoutineExecutionIssue(
-  issue: Pick<Issue, "originKind">,
-  hideRoutineExecutions: boolean,
-): boolean {
-  return !hideRoutineExecutions || issue.originKind !== "routine_execution";
-}
 
-export function filterInboxIssues(issues: Issue[], hideRoutineExecutions: boolean): Issue[] {
-  if (!hideRoutineExecutions) return issues;
-  return issues.filter((issue) => shouldIncludeRoutineExecutionIssue(issue, hideRoutineExecutions));
-}
 
 export function matchesInboxIssueSearch(
-  issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
+  issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId"> & { id?: string },
   query: string,
   {
     isolatedWorkspacesEnabled = false,
+    matchedIssueIds,
     executionWorkspaceById,
     projectWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
   }: InboxWorkspaceGroupingOptions & {
     isolatedWorkspacesEnabled?: boolean;
+    matchedIssueIds?: ReadonlySet<string>;
   } = {},
 ): boolean {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return true;
+  if (issue.id && matchedIssueIds?.has(issue.id)) return true;
   if (issue.title.toLowerCase().includes(normalizedQuery)) return true;
   if (issue.identifier?.toLowerCase().includes(normalizedQuery)) return true;
   if (issue.description?.toLowerCase().includes(normalizedQuery)) return true;
@@ -462,6 +449,7 @@ export function getArchivedInboxSearchIssues({
   visibleIssues,
   searchableIssues,
   query,
+  matchedIssueIds,
   isolatedWorkspacesEnabled = false,
   executionWorkspaceById,
   projectWorkspaceById,
@@ -470,6 +458,7 @@ export function getArchivedInboxSearchIssues({
   visibleIssues: Issue[];
   searchableIssues: Issue[];
   query: string;
+  matchedIssueIds?: ReadonlySet<string>;
   isolatedWorkspacesEnabled?: boolean;
   executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
   projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
@@ -483,6 +472,7 @@ export function getArchivedInboxSearchIssues({
     .filter((issue) => !visibleIssueIds.has(issue.id))
     .filter((issue) =>
       matchesInboxIssueSearch(issue, normalizedQuery, {
+        matchedIssueIds,
         isolatedWorkspacesEnabled,
         executionWorkspaceById,
         projectWorkspaceById,
@@ -499,7 +489,7 @@ export function getInboxSearchSupplementIssues({
   remoteIssues,
   issueFilters,
   currentUserId,
-  enableRoutineVisibilityFilter = false,
+  enableAgentCreatedVisibilityFilter = false,
   liveIssueIds,
   issueFilterContext = {},
 }: {
@@ -509,7 +499,7 @@ export function getInboxSearchSupplementIssues({
   remoteIssues: Issue[];
   issueFilters: IssueFilterState;
   currentUserId?: string | null;
-  enableRoutineVisibilityFilter?: boolean;
+  enableAgentCreatedVisibilityFilter?: boolean;
   liveIssueIds?: ReadonlySet<string>;
   issueFilterContext?: IssueFilterWorkspaceContext;
 }): Issue[] {
@@ -525,7 +515,7 @@ export function getInboxSearchSupplementIssues({
     remoteIssues,
     issueFilters,
     currentUserId,
-    enableRoutineVisibilityFilter,
+    enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
   )
@@ -729,20 +719,7 @@ export function getInboxKeyboardSelectionIndex(
     : Math.max(previousIndex - 1, 0);
 }
 
-export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
-  const latestByAgent = new Map<string, HeartbeatRun>();
-
-  for (const run of sorted) {
-    if (!latestByAgent.has(run.agentId)) {
-      latestByAgent.set(run.agentId, run);
-    }
-  }
-
-  return Array.from(latestByAgent.values()).filter((run) => FAILED_RUN_STATUSES.has(run.status));
-}
+export { latestFailedRunsByAgent as getLatestFailedRunsByAgent } from "@paperclipai/shared";
 
 export function normalizeTimestamp(value: string | Date | null | undefined): number {
   if (!value) return 0;
@@ -1260,61 +1237,4 @@ export function shouldShowInboxSection({
   if (tab === "recent") return showOnRecent;
   if (tab === "unread") return showOnUnread;
   return showOnAll;
-}
-
-export function computeInboxBadgeData({
-  approvals,
-  joinRequests,
-  dashboard,
-  heartbeatRuns,
-  mineIssues,
-  dismissedAlerts,
-  dismissedAtByKey,
-  currentUserId,
-}: {
-  approvals: Approval[];
-  joinRequests: JoinRequest[];
-  dashboard: DashboardSummary | undefined;
-  heartbeatRuns: HeartbeatRun[];
-  mineIssues: Issue[];
-  dismissedAlerts: Set<string>;
-  dismissedAtByKey: ReadonlyMap<string, number>;
-  currentUserId?: string | null;
-}): InboxBadgeData {
-  const actionableApprovals = approvals.filter(
-    (approval) =>
-      isApprovalVisibleInMine(approval, currentUserId) &&
-      ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
-      !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
-  ).length;
-  const visibleFailedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
-    (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
-  );
-  const failedRuns = visibleFailedRuns.filter((run) => isHeartbeatRunVisibleInMine(run, currentUserId)).length;
-  const visibleJoinRequests = joinRequests.filter(
-    (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
-  ).length;
-  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
-  const agentErrorCount = dashboard?.agents.error ?? 0;
-  const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
-  const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;
-  const showAggregateAgentError =
-    agentErrorCount > 0 &&
-    visibleFailedRuns.length === 0 &&
-    !dismissedAlerts.has("alert:agent-errors");
-  const showBudgetAlert =
-    monthBudgetCents > 0 &&
-    monthUtilizationPercent >= 80 &&
-    !dismissedAlerts.has("alert:budget");
-  const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
-
-  return {
-    // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
-    approvals: actionableApprovals,
-    failedRuns,
-    joinRequests: visibleJoinRequests,
-    mineIssues: visibleMineIssues,
-    alerts,
-  };
 }

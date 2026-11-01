@@ -221,6 +221,19 @@ describe("IssueScheduledRetryCard", () => {
     expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
   });
 
+  it("shows cleanup waiting without claiming success or disabling Retry now", async () => {
+    const message = "Waiting for execution cleanup. Paperclip will retry automatically once cleanup finishes.";
+    retryNowMock.mockResolvedValue({ outcome: "waiting", message, scheduledRetry: baseRetry });
+    renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />);
+    act(() => { getRetryNowButton()!.click(); });
+    await waitForUi(() => {
+      expect(getCard()?.textContent).toContain(message);
+      expect(getCard()?.textContent).not.toContain("run starting");
+      expect(getRetryNowButton()!.disabled).toBe(false);
+      expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
+    });
+  });
+
   it("renders an inline error band on backend failure", async () => {
     retryNowMock.mockRejectedValue(new Error("Server error"));
     renderWithProviders(

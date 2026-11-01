@@ -25,8 +25,8 @@ The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:
 | --- | --- | --- |
 | Claude / Anthropic | Claude subscription token or Anthropic API key | Claude |
 | OpenAI | ChatGPT/Codex subscription or OpenAI API key | Codex |
-| OpenRouter (legacy, no routing metadata) | API key | OpenCode, with an `openrouter/` model |
-| Google | API key | Gemini CLI |
+| OpenRouter (legacy, no routing metadata) | API key | OpenCode or Pi, with an `openrouter/` model |
+| Google | Gemini API key; separate local Antigravity sign-in | Gemini CLI / Pi (API key); Antigravity candidate (pending execution acceptance) |
 | Grok / xAI | Grok subscription or xAI API key | Grok |
 
 Native runner supports the corresponding existing Codex, OpenCode, and Claude
@@ -58,6 +58,12 @@ A connection choice never changes the harness or model. For a routed connection,
 the selected connection owns its provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
+
+Agent account choices and legacy-adoption confirmations show the sign-in method,
+personal or company-shared scope, and available account or owner identity beside
+the connection name. Accounts with the same provider name can be distinguished
+before selection. These labels use existing authorized account metadata, never
+credentials or authentication paths.
 
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 The first successful personal connection sets a default only when none exists.
@@ -115,6 +121,11 @@ remote environment blocks validation rather than probing the server host. The
 runtime test accepts the form’s prospective adapter selection before it is saved.
 For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
 Sending `environmentId: null` tests a change back to the instance default.
+
+Saved-agent lifecycle verification checks managed account access before it
+allocates a test execution environment. Missing defaults, revoked accounts, and
+incompatible selections fail without creating a sandbox. The managed probe
+checks account access again after allocation so changes during setup still apply.
 
 ## On-demand usage limits
 
@@ -414,6 +425,22 @@ allow managed runs to invalidate credentials still used by legacy agents or the
 operator's terminal. The user completes browser sign-in, then clicks Connect.
 Grok retains its terminal sign-in flow until it has a local browser login runner.
 
+Google Antigravity sign-in uses the pinned native ACP runtime installed with
+`paperclipai runtime setup antigravity`. Its browser redirect returns to a
+loopback listener; no code is pasted into Paperclip. Setup sends only initialize
+and authenticate, verifies the Google account email, then saves the credential
+through the existing encrypted connection grant. It never imports an existing
+Google CLI, browser, Workspace, or Drive credential. Connection readiness waits
+for native onboarding and physical login-process retirement. Cancellation and
+expiry await retirement before removing the private home. After a server restart,
+start a new Google sign-in attempt.
+
+Antigravity task execution remains pending acceptance. Its managed subscription
+path is local and turn-by-turn: native execution retires before refreshed tokens
+are verified and saved with generation checks. Remote and warm OAuth execution
+are rejected. Browser sign-in success does not qualify a model turn or the native
+Runner task lifecycle.
+
 Attempts reuse `adapter_auth_sessions`, binding company, owner, provider, access
 intent, reconnect target, and a 30-minute expiry. Validation and completion are
 serialized; duplicate completion returns the saved connection. Restart retains
@@ -553,22 +580,33 @@ transaction or an intentional freshness/authorization discard. These retained
 homes are recovery evidence, not a background replay queue; persistent database
 or lock failures still require operator intervention.
 
-Quota OAuth replacement tokens are encrypted with the instance secrets master
-key and fsynced under `<instance-root>/quota-credential-recovery/<company-id>/`
-before vault, grant, or activity writes. Storage and encryption are checked before
-exchanging a single-use refresh token. Failed saves retry without another OAuth
-exchange; persistent failures keep the encrypted record for the next quota poll,
-including after a restart. New OpenAI subscription runtimes serialize credential
-reads with quota exchanges and recover a matching pending replacement before
-materializing an auth home. Authentication-failure handling also recovers a
-matching replacement before marking the grant invalid. A failed recovery save
-defers these actions and leaves both the active grant and journal intact.
-The journal is removed only after database commit (or
-when an authorized newer credential makes it obsolete). Replay checks the grant,
-connection, secret, and original credential fingerprint and cannot reactivate a
-revoked grant or overwrite a reconnect. Back up this directory and the instance
-secrets key with the instance data. Loss of durable storage while receiving a
-provider token can still require reconnecting the account.
+Server-owned quota refresh validates and locks the current grant and secret in
+Postgres before exchanging a token. A failed database prerequisite prevents the
+exchange. A returned replacement is saved directly into the existing secret
+store. The same logical operation keeps it in memory for at most three save
+attempts. A lost commit response is reconciled against the current saved value;
+reconnect, revocation, secret-version and session-epoch changes win over a delayed
+save. Save retries never repeat the OAuth exchange and no new recovery file is
+written for this path, in cloud or local deployments.
+
+If all save attempts fail, the request fails. If the server process then exits,
+the unsaved replacement is lost. V1 accepts signing in again after the next failed
+use; it does not report successful refresh or keep a second credential vault.
+
+Remote Codex Runner tasks retain their private credential until secret writeback
+and the lease's credential handoff commit. Provider completion follows that
+handoff. Failed exports or database saves leave it pending for the existing
+cleanup path, including a replacement web receiver. Its authority still checks
+the company, grant, secret, version selector and session epoch.
+
+Existing encrypted records in
+`<instance-root>/quota-credential-recovery/<company-id>/` remain readable for
+cutover settlement. Do not delete unresolved files or remove the old volume
+before inventory and settlement. Legacy replay cannot reactivate a revoked grant
+or overwrite a reconnect. Local Google Antigravity retirement still uses its
+existing encrypted recovery record and private-home ownership; remote and warm
+Google subscription sessions remain unsupported. This local path is not a cloud
+fallback. Cloud cutover must settle any observed legacy credential files first.
 
 ## Advanced provider routing (2026-10-02)
 
@@ -596,6 +634,7 @@ credentials belong to the connection; the model belongs to the agent.
 | Codex legacy and Codex New Runner (app-server) | OpenRouter; custom/local OpenAI Responses endpoints |
 | Claude legacy and Claude New Runner (ACPX) | OpenRouter; custom/local Anthropic Messages; Bedrock API key |
 | OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions |
+| Pi legacy and New Runner | OpenRouter; native OpenAI, Anthropic, and Google API keys with a matching `provider/model` |
 | Hermes local | OpenRouter; custom/local Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
@@ -605,7 +644,7 @@ environment probes and task execution. The settings file contains no credential.
 
 OpenClaw Gateway, Hermes Gateway, Claude Managed, AWS AgentCore, Process, HTTP,
 and legacy `acpx_local` are excluded: external agents retain their own model
-configuration, and `acpx_local` is retired. Cursor/Pi/Copilot custom routing,
+configuration, and `acpx_local` is retired. Cursor/Copilot custom routing, Pi custom gateways and Bedrock,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
 catalog discovery for custom gateways are not part of this implementation.
 
@@ -717,3 +756,134 @@ requires a complete `response_wake` object.
 
 Task-card account repair uses the provider reconnect form for routed accounts,
 retaining the saved endpoint, protocol, model aliases, and connection identity.
+
+## Subscription cost reporting
+
+The Costs page shows metered API spend beside the **current monthly subscription
+commitment**. API dollars and both token totals follow the selected date range;
+monthly subscription fees do not. Tokens measure Paperclip work only, while a
+subscription fee covers the entire provider account, including other usage.
+Recorded subscription overages remain separate from the recurring fee.
+
+Agent, user, project, and model cost rows use a right-aligned amount with any
+estimate badge underneath. Each badge reflects that row's own ledger events in
+the selected date range.
+
+Discovery uses the managed AI connection actually selected for a run, or the
+connected accounts visible to the user viewing Costs. An administrator cannot
+probe another user's private credentials. OpenAI identity combines workspace and
+seat claims from the exact bearer token accepted by its usage endpoint, with
+the selected workspace checked against those claims. An editable ID token cannot
+establish identity or grant price-edit access. Claude's OAuth profile combines
+organization and account identity when the token allows profile access. Identity
+keys are company-scoped hashes; reporting never exposes tokens, raw provider IDs,
+or credential hashes. Multiple agents and connections sharing a known paid seat
+count once. Distinct seats remain separate even in the same workspace. Before
+provider verification, each connection grant has its own unconfirmed record;
+local claims alone cannot combine another user's account or billing editors.
+
+Supported exact plan identifiers with a stable account identity map to dated, USD, before-tax web list prices
+in `packages/shared/src/subscriptions.ts`. The UI labels these **Estimated** (or
+**Partially estimated** when combined with user-supplied prices). A generic
+OpenAI Pro, Claude Max, team, or enterprise entitlement does not reliably
+identify the price: it stays **Price unknown** until its owner enters an amount.
+Annual prices are divided by 12 using exact decimal arithmetic. Supported
+currencies are totaled separately; Paperclip does not estimate exchange rates.
+
+Use **Subscriptions → View details → Edit price** to record the amount paid,
+billing cadence, and tracking status. Personal prices are editable by their
+owner; shared prices require AI-connection management permission. When the same
+seat is connected both personally and shared, both its personal owners and
+company connection managers can edit the single fee, regardless of discovery
+order. These billing permissions survive disconnecting a connection; they do
+not grant access to its credentials. Viewers cannot
+edit. Updates append an immutable price revision and reject stale concurrent
+edits. Ending or excluding tracking does not cancel the provider subscription.
+Disconnecting a connection also does not prove that billing stopped, so the fee
+continues until explicitly ended or excluded.
+
+Claude setup tokens can lack profile permission. Grok plan observations currently
+do not supply a verified billing identity. Such connections retain an unconfirmed
+identity and may need manual linking after a credential change. An unconfirmed
+identity requires a user-supplied price before contributing a monthly fee, so
+credential rotations cannot multiply automatic list-price estimates. **Link accounts**
+combines usage and keeps the selected account's price; it is restricted to accounts
+the caller can edit and should only join the same subscription or paid seat.
+Provider observations never overwrite a user-supplied price. Conflicting manual
+prices prevent automatic linking rather than silently choosing one.
+
+Monthly totals and account details include only accounts the viewer may see:
+personal billing owners, company managers of shared fees, and the authorized
+audience of active shared grants. Revoking a grant removes its audience's access
+to the fee. Cost-read permission alone does not reveal
+another member's personal plan, price, owner, or account-linked activity. Billing
+editors retain visibility after disconnection so they can end tracking. Aggregate
+API and subscription run-token totals remain company-wide, as in existing cost
+reports; hidden private accounts are not mislabeled as missing attribution.
+Fixed-price, credit-billed, and unknown usage remain in the inference ledger.
+They are reported separately from API and subscription tokens as other or unknown
+billing types; the API retains the `unknown` field name for this combined total.
+
+Provider lookups run in the background, with a six-hour attempt cache shared by
+server replicas, at most four active provider lookups per process, a 15-second
+request deadline, and a 256 KiB response limit. Failed checks preserve the last
+observed plan and price. The report reads the database only and loads just the
+current price for each account; earlier revisions remain stored for auditing.
+Accepted discovery requests wait for provider capacity instead of skipping accounts.
+At most twenty discovery requests run per process; additional requests receive
+HTTP 429 and can be retried using **Retry account check**.
+Failed background UI reloads retain the last loaded values and show a short
+status message. Failed discovery offers **Retry account check**.
+
+Each new managed subscription run snapshots its subscription ID. Its cost receipt
+inherits that server-derived ID, outside the immutable monetary receipt hash.
+Switching accounts cannot move an earlier run to the new subscription. Linking
+duplicates resolves historical IDs in reports without rewriting receipts.
+Legacy and unmanaged subscription usage still contributes to the subscription
+token total but is not retroactively assigned to a guessed account. Subscription
+estimates never create finance events, change the inference ledger's dollar
+amounts, or consume agent budgets.
+
+The company-scoped API is documented in OpenAPI:
+
+- `GET /api/companies/:companyId/costs/subscriptions`: current fees and usage for
+  `from`/`to` (inclusive, matching existing cost reports), or `period=all`.
+- `POST /api/companies/:companyId/costs/subscriptions/refresh`: request background
+  discovery for the caller's authorized connections; returns `202` immediately.
+- `PATCH /api/companies/:companyId/costs/subscriptions/:subscriptionId`: save a
+  price with `expectedRevision`, plan, nullable `amountCents`, currency, cadence,
+  and tracking status.
+- `POST /api/companies/:companyId/costs/subscriptions/:subscriptionId/link`: link
+  a duplicate using `targetId`, `expectedRevision`, and `targetRevision`.
+
+Storybook **Costs / Subscriptions** renders the production Costs page with
+interactive fixtures for normal estimates, unknown prices, provider failures,
+and mobile layouts. Its edits affect fixture data only. Focused verification:
+
+```sh
+pnpm exec vitest run server/src/__tests__/subscriptions.test.ts \
+  server/src/__tests__/subscription-routes.test.ts \
+  ui/src/components/SubscriptionCostCard.test.tsx ui/src/pages/Costs.test.tsx
+pnpm check:token-gates
+pnpm storybook
+```
+
+These tests include real PostgreSQL persistence, migration replay, concurrent
+updates, account changes, duplicate identity resolution, ownership, monetary
+receipt replay, unknown prices, and failed provider observations. Provider payloads
+are fixtures; live provider access still depends on the deployment's credentials
+and scopes.
+
+### Login completion ownership
+
+The internal connection save service takes an internal auth-session row ID for
+every login flow. The setup-token owner resolves its public session ID within
+the company, user, and adapter scope before calling save. Local and device
+logins already use internal IDs. Provider names do not select the ID column.
+
+A login flow can supply a completion callback that runs inside the connection
+save transaction, after the session binding is written. Setup-token completion
+uses its existing conditional transition to `stored`; a rejected transition
+rolls back the credentials and connection binding. Already-bound sessions return
+the existing connection without repeating the callback. Local and device login
+services continue to own their final states.

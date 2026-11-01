@@ -12,6 +12,9 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(async ({ action }: { action: string }) => ({
+    action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
+  })),
   canUser: vi.fn(),
   hasPermission: vi.fn(),
 }));

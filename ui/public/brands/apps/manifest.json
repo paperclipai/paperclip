@@ -2,6 +2,13 @@
   "schemaVersion": 1,
   "providers": [
     {
+      "slug": "1password",
+      "provider": "1Password",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/1password.svg",
+      "darkAsset": "/brands/apps/1password-dark.svg"
+    },
+    {
       "slug": "agentmail",
       "provider": "AgentMail",
       "catalogVisible": true,
@@ -47,7 +54,7 @@
     {
       "slug": "bitly",
       "provider": "Bitly",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/bitly.svg"
     },
     {
@@ -55,6 +62,13 @@
       "provider": "Box",
       "catalogVisible": true,
       "localAsset": "/brands/apps/box.svg"
+    },
+    {
+      "slug": "braintrust",
+      "provider": "Braintrust",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/braintrust.png",
+      "darkAsset": "/brands/apps/braintrust-dark.png"
     },
     {
       "slug": "brex",
@@ -105,7 +119,7 @@
     {
       "slug": "context7",
       "provider": "Context7",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/context7.svg",
       "darkAsset": "/brands/apps/context7-dark.svg"
     },
@@ -115,6 +129,12 @@
       "catalogVisible": true,
       "localAsset": "/brands/apps/discord.svg",
       "darkAsset": "/brands/apps/discord-dark.svg"
+    },
+    {
+      "slug": "ditto",
+      "provider": "Ditto",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/ditto.png"
     },
     {
       "slug": "egnyte",
@@ -139,6 +159,12 @@
       "provider": "Executor",
       "catalogVisible": true,
       "localAsset": "/brands/apps/executor.png"
+    },
+    {
+      "slug": "gauge",
+      "provider": "Gauge",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gauge.png"
     },
     {
       "slug": "github",
@@ -224,6 +250,16 @@
       ]
     },
     {
+      "slug": "google-workspace",
+      "provider": "Google Workspace",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-people.svg",
+      "aliases": [
+        "google suite",
+        "g suite"
+      ]
+    },
+    {
       "slug": "hugging-face",
       "provider": "Hugging Face",
       "catalogVisible": true,
@@ -260,7 +296,7 @@
     {
       "slug": "make",
       "provider": "Make",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/make.svg",
       "darkAsset": "/brands/apps/make-dark.svg"
     },
@@ -450,7 +486,7 @@
     {
       "slug": "vercel",
       "provider": "Vercel",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/vercel.svg",
       "darkAsset": "/brands/apps/vercel-dark.svg"
     },
@@ -591,6 +627,94 @@
       "provider": "Responses API",
       "catalogVisible": true,
       "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "speko",
+      "provider": "Speko",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/speko.svg"
+    },
+    {
+      "slug": "calendly",
+      "provider": "Calendly",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/calendly.png"
+    },
+    {
+      "slug": "exa",
+      "provider": "Exa",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/exa.svg"
+    },
+    {
+      "slug": "firecrawl",
+      "provider": "Firecrawl",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/firecrawl.svg"
+    },
+    {
+      "slug": "gsc-wizard",
+      "provider": "GSC Wizard",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gsc-wizard.png"
+    },
+    {
+      "slug": "parallel-search",
+      "provider": "Parallel Search",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/parallel.svg",
+      "darkAsset": "/brands/apps/parallel-dark.svg"
+    },
+    {
+      "slug": "tavily",
+      "provider": "Tavily",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/tavily.png"
+    },
+    {
+      "slug": "windsor-ai",
+      "provider": "Windsor.ai",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/windsor-ai.png"
+    },
+    {
+      "slug": "clickup",
+      "provider": "ClickUp",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/clickup.png"
+    },
+    {
+      "slug": "klaviyo",
+      "provider": "Klaviyo",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/klaviyo.png"
+    },
+    {
+      "slug": "monday",
+      "provider": "monday.com",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/monday.png",
+      "darkAsset": "/brands/apps/monday-dark.png"
+    },
+    {
+      "slug": "daytona",
+      "provider": "Daytona",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/daytona.svg",
+      "darkAsset": "/brands/apps/daytona-dark.svg"
+    },
+    {
+      "slug": "paperclip-notebook",
+      "provider": "Paperclip Notebook",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/paperclip-notebook.svg",
+      "darkAsset": "/brands/apps/paperclip-notebook-dark.svg"
+    },
+    {
+      "slug": "unikraft",
+      "provider": "Unikraft",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/unikraft.svg"
     }
   ]
 }

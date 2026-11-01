@@ -1,4 +1,6 @@
+import { GROK_ADMISSION_ERROR_CODES } from "../drivers/acpx/grok-effort.js";
 import { enqueueSerialInput } from "./serial-input-queue.js";
+import { acpxAdmissionFailureCode } from "../drivers/acpx/admission-diagnostics.js";
 
 const ACPX_BOOTSTRAP_COMMANDS = new Set(["initialize", "session.open"]);
 
@@ -25,6 +27,7 @@ export function acpxBootstrapBlockedError(
   return failure
     ? new Error(
         `ACPX provider bootstrap failed before ${command}: ${failure.message}`,
+        { cause: failure },
       )
     : null;
 }
@@ -37,10 +40,12 @@ export function acpxBootstrapBlockedError(
 export function acpxSidecarErrorCode(error: Error): string {
   const pending: Error[] = [error];
   const observed = new Set<Error>();
+  let admissionCode: string | undefined;
   while (pending.length > 0 && observed.size < 16) {
     const current = pending.shift()!;
     if (observed.has(current)) continue;
     observed.add(current);
+    admissionCode ??= acpxAdmissionFailureCode(current);
     const code = directAcpxSidecarErrorCode(current);
     if (code !== null) return code;
 
@@ -52,7 +57,7 @@ export function acpxSidecarErrorCode(error: Error): string {
     }
     if (details.cause instanceof Error) pending.push(details.cause);
   }
-  return "acpx_sidecar_command_failed";
+  return admissionCode ?? "acpx_sidecar_command_failed";
 }
 
 function directAcpxSidecarErrorCode(error: Error): string | null {
@@ -130,6 +135,8 @@ const GENERIC_ACPX_OUTPUT_CODES = new Set([
 ]);
 
 const STABLE_ACPX_SIDECAR_CODES = new Set([
+  ...GROK_ADMISSION_ERROR_CODES,
+  "ACPX_RUNTIME_PACKAGE_MISSING",
   "COPILOT_POLICY_VIOLATION",
   "COPILOT_DETACHED_WORK_UNSUPPORTED",
   "ACP_MODEL_UNSUPPORTED",

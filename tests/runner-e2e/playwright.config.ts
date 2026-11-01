@@ -45,7 +45,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "runner.spec.ts",
+  testMatch: process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY === "1" ? "installed-startup.spec.ts" : "runner.spec.ts",
   timeout: Number(process.env.PAPERCLIP_RUNNER_E2E_TEST_TIMEOUT_MS ?? 600_000),
   expect: { timeout: 30_000 },
   fullyParallel: false,
@@ -72,10 +72,13 @@ export default defineConfig({
     // blob reports. The wrapper inherits the test process and strips provider
     // keys before spawning the real Paperclip process.
     command: runnerE2EWebServerCommand(repositoryRoot),
-    gracefulShutdown: runnerE2EWebServerGracefulShutdown,
+    gracefulShutdown: { ...runnerE2EWebServerGracefulShutdown,
+      ...(JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]").some((id: string) => id.startsWith("rolling-web-deployment.")) ? { timeout: 105_000 } : {}),
+    },
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
-    timeout: 180_000,
+    // Fresh databases apply the complete migration history before health is ready.
+    timeout: 300_000,
     stdout: "pipe",
     stderr: "pipe",
   },

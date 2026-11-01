@@ -374,9 +374,10 @@ describe("effective snapshot gates the persistent-session execution decision", (
 
   it("forces the persistent session when the snapshot grants persistent process sessions", async () => {
     const { target, execute } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: false });
-    await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true });
+    await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true, commandTimeoutMs: 12000 });
     const call = execute.mock.calls[0]![0] as { forceSession?: boolean };
     expect(call.forceSession).toBe(true);
+    expect(call).toHaveProperty("commandTimeoutMs", 12000);
   });
 
   it("never forces the persistent session when the snapshot removes persistent process sessions", async () => {
@@ -397,29 +398,6 @@ describe("a rejected capability resolution fails closed for persistent-session b
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
   });
 
-  it("omits the snapshot when the resolution rejects", async () => {
-    // A rejected resolution carries no snapshot; the target never publishes a
-    // guessed capability set.
-    const { target } = await buildSandboxTarget({
-      snapshot: null,
-      supportsSync: false,
-      rejectResolution: true,
-    });
-    expect(target.effectiveCapabilities).toBeUndefined();
-  });
-
-  it("carries no snapshot for session-output streaming when the resolution rejects", async () => {
-    // A rejected resolution must not read as an open grant that enables
-    // streaming. The target carries no snapshot, so the bridge keeps the host
-    // output-file poll path.
-    const { target } = await buildSandboxTarget({
-      snapshot: null,
-      supportsSync: false,
-      rejectResolution: true,
-    });
-    expect(target.effectiveCapabilities).toBeUndefined();
-  });
-
   it("never forces the persistent session when the resolution rejects", async () => {
     // The bridge asks for the session with `useSession`, but a rejected
     // resolution fails closed, so the seam runs the command one-shot instead.
@@ -428,6 +406,7 @@ describe("a rejected capability resolution fails closed for persistent-session b
       supportsSync: false,
       rejectResolution: true,
     });
+    expect(target.effectiveCapabilities).toBeUndefined();
     await target.runner?.execute({ command: "node", args: ["agent.js"], useSession: true });
     const call = execute.mock.calls[0]![0] as { forceSession?: boolean };
     expect(call.forceSession).toBe(false);

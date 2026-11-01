@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -40,7 +41,6 @@ function nativeQuestion() {
             description: "Deploy directly to production.",
           },
         ],
-        custom: true,
       },
       {
         id: "regions",
@@ -92,13 +92,23 @@ let pendingPermission = await readFile(
 let permissionStyle = "v2";
 
 await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+await writeFile(join(process.env.XDG_DATA_HOME, "fake-provider-custody.json"), JSON.stringify({
+  openrouterKey: process.env.OPENROUTER_API_KEY,
+  providerOptions: runtimeConfig.provider?.openrouter?.options,
+}));
 await writeFile(
   join(process.env.XDG_DATA_HOME, "fake-environment.json"),
   JSON.stringify({
     keys: Object.keys(process.env).sort(),
+    notificationContext: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT,
+    notificationHelper: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_HELPER,
+    noProxy: process.env.NO_PROXY,
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,
     projectConfigDisabled: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
+    modelsFetchDisabled: process.env.OPENCODE_DISABLE_MODELS_FETCH,
+    defaultPluginsDisabled: process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS,
+    githubTokenPresent: Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN),
   }),
 );
 
@@ -124,6 +134,24 @@ let promptTurnSeq = 0;
 // sealed.
 let lateStragglerRemaining = 0;
 function emit(value) {
+  if (value.type === "session.idle" && runtimeConfig.experimental?.openTelemetry) {
+    const now=Date.now();
+    const headers=Object.fromEntries((process.env.OTEL_EXPORTER_OTLP_HEADERS??"").split(",").map(entry=>{
+      const i=entry.indexOf("=");return [entry.slice(0,i),entry.slice(i+1)];
+    }));
+    void fetch(`${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`,{method:"POST",headers,
+      body:JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[{name:"ai.streamText",
+        startTimeUnixNano:String(BigInt(now-22)*1000000n),endTimeUnixNano:String(BigInt(now)*1000000n),
+        attributes:[{key:"prompt",value:{stringValue:"private-performance-sentinel"}}],
+      }]}]}]})}).then(response=>{
+      if(!response.ok)throw new Error(`Performance fixture rejected: ${response.status}`);
+      emitFrame(value);
+    }).catch(error=>{process.stderr.write(String(error));process.exit(1)});
+    return;
+  }
+  emitFrame(value);
+}
+function emitFrame(value) {
   const scoped =
     promptTurnSeq > 0 && typeof value.id === "string"
       ? { ...value, id: `${value.id}#${promptTurnSeq}` }
@@ -141,8 +169,9 @@ function parsedPromptText(promptBody) {
   }
 }
 
-async function mcpRequest(method, params) {
+async function mcpRequest(method, params, signal) {
   const response = await fetch(mcp.url, {
+    signal,
     method: "POST",
     headers: {
       ...mcp.headers,
@@ -186,12 +215,13 @@ async function callFirstPaperclipTool() {
   );
 }
 
-async function callTerminalTool(promptBody) {
+async function callTerminalTool(promptBody, signal) {
   const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
+  const monitored = String(prompt.message ?? "").includes("monitor-default");
   const result = {
     schema: "paperclip.run_result.v1",
-    reportedWorkDisposition: blocked ? "blocked" : "done",
+    reportedWorkDisposition: blocked ? "blocked" : monitored ? "yielded" : "done",
     summary: blocked
       ? "Fake provider is blocked."
       : "Fake provider completed the task.",
@@ -243,7 +273,7 @@ async function callTerminalTool(promptBody) {
   const call = () => mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,
-  });
+  }, signal);
   const first = await call();
   if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
     const outcomes = [first];
@@ -283,8 +313,16 @@ const server = createServer(async (request, response) => {
   if (
     request.method === "GET" &&
     request.url === `/session/${session.id}/message`
-  )
-    return json(response, 200, []);
+  ) {
+    // A long-lived session can hold many megabytes of retained message parts.
+    const historyBytes = Number(
+      await readFile(join(process.env.XDG_DATA_HOME, "fake-message-history-bytes"), "utf8").catch(() => "0"),
+    );
+    return json(response, 200, historyBytes > 0
+      ? [{ info: { id: "msg-history-1", sessionID: session.id, role: "assistant" },
+          parts: [{ id: "part-history-1", type: "text", text: "x".repeat(historyBytes) }] }]
+      : []);
+  }
   if (request.method === "GET" && request.url === "/session/status")
     return json(response, 200, { [session.id]: { type: "idle" } });
   if (request.method === "GET" && request.url?.startsWith("/question?"))
@@ -400,8 +438,7 @@ const server = createServer(async (request, response) => {
       const promptPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       await appendFile(join(process.env.XDG_DATA_HOME, "fake-prompt-requests.ndjson"), JSON.stringify(promptPayload) + "\n");
       if (
-        promptPayload.providerID !== "openrouter" ||
-        promptPayload.modelID !== "deepseek/deepseek-v4-flash-0731" ||
+        `${promptPayload.providerID}/${promptPayload.modelID}` !== runtimeConfig.model ||
         "model" in promptPayload
       ) {
         return json(response, 400, {
@@ -427,11 +464,87 @@ const server = createServer(async (request, response) => {
               },
             },
           });
+          emit({
+            type: "message.part.delta",
+            properties: {
+              sessionID: session.id,
+              messageID: "message-late-source",
+              partID: "part-late-straggler",
+              field: "text",
+              delta: "late straggler text must not reach the next turn",
+            },
+          });
         }
       }
       setTimeout(async () => {
-        await callFirstPaperclipTool();
         const parsedPrompt = parsedPromptText(promptPayload);
+        const backlogTool = String(parsedPrompt.message ?? "").match(/stream-backlog-(discovery|completion)/)?.[1];
+        if (backlogTool) {
+          const messageID = "message-stream-backlog";
+          const partID = "part-stream-backlog";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: { id: partID, messageID, sessionID: session.id, type: "text", text: "" } } });
+          for (let i = 0; i < 800; i++) emit({ type: "message.part.delta", properties: {
+            sessionID: session.id, messageID, partID, field: "text", delta: "Streaming progress. ",
+          } });
+          let receipt;
+          try {
+            const result = backlogTool === "completion"
+              ? await callTerminalTool(promptPayload, AbortSignal.timeout(5000))
+              : await mcpRequest("tools/call", { name: "paperclip_search_assigned_tools", arguments: {} }, AbortSignal.timeout(5000));
+            receipt = { acknowledged: result.result?.isError !== true && !!result.result, result };
+          } catch (error) {
+            receipt = { acknowledged: false, timedOut: error.name === "TimeoutError" };
+          }
+          await writeFile(join(process.cwd(), "fake-stream-backlog-receipt.json"), JSON.stringify(receipt));
+          if (backlogTool === "discovery" && receipt.acknowledged) await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        await callFirstPaperclipTool();
+        if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
+          const result = await new Promise(resolve => {
+            execFile("gh", ["api", "user"], { timeout: 5000 }, (error, stdout, stderr) => {
+              resolve({ stdout, stderr, error: error?.message ?? null });
+            });
+          });
+          await writeFile(join(process.env.XDG_DATA_HOME, "fake-github-operation.json"), JSON.stringify(result));
+        }
+        if (String(parsedPrompt.message ?? "").includes("incremental-stream")) {
+          const messageID = `stream-message-${promptTurnSeq}`;
+          const part = { id: `stream-part-${promptTurnSeq}`, messageID, sessionID: session.id, type: "text", text: "" };
+          const reasoning = { ...part, id: `${part.id}-reasoning`, type: "reasoning" };
+          const update = (value) => emit({ type: "message.part.updated", properties: { sessionID: session.id, part: value } });
+          const delta = (value, text, extra = {}) => emit({ type: "message.part.delta", properties: { sessionID: session.id, messageID, partID: value.id, field: "text", delta: text, ...extra } });
+          const announceRole = () => emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          const roleFirst = String(parsedPrompt.message).includes("role-first");
+          const longResponse = String(parsedPrompt.message).includes("role-last-long");
+          if (roleFirst) announceRole();
+          // Parts and deltas can precede the message's role announcement.
+          update(part);
+          update(reasoning);
+          delta(reasoning, "Thinking");
+          delta(part, "Hi ");
+          const emojiCount = longResponse ? 120 : 2;
+          for (let i = 0; i < emojiCount; i++) delta(part, "👋");
+          delta(part, "wrong message", { messageID: "unrelated-message" });
+          delta(part, "wrong session", { sessionID: "unrelated-session" });
+          delta(part, "wrong field", { field: "output" });
+          delta(part, "unknown part", { partID: "unknown-part" });
+          const finalPart = { ...part, text: `Hi ${"👋".repeat(emojiCount)}`, time: { start: 1, end: 2 } };
+          if (longResponse) update(finalPart);
+          if (!roleFirst) announceRole();
+          // The consumer must observe a delta before the completed snapshot
+          // exists. This handshake makes the streaming regression deterministic.
+          for (let i = 0; i < 500; i++) {
+            if (await readFile(join(process.env.XDG_DATA_HOME, "release-stream"), "utf8").catch(() => "") === "ready") break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          await writeFile(join(process.env.XDG_DATA_HOME, "stream-released"), "ready");
+          update(finalPart);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
         if (String(parsedPrompt.message ?? "").includes("native-question")) {
           pendingQuestion = nativeQuestion();
           emit({
@@ -619,6 +732,15 @@ const server = createServer(async (request, response) => {
             },
           },
         });
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("invalid-tool-feedback")) {
+          for (const [status, state] of [
+            ["pending", {}], ["running", { title: "Checking tool name" }],
+            ["error", { error: "Tool not found: fixture_missing" }],
+          ]) emit({ type: "message.part.updated", id: `event-invalid-${status}`, properties: {
+            sessionID: session.id, part: { id: "part-invalid", messageID: "message-assistant",
+              type: "tool", tool: "invalid", callID: "call-invalid", state: { status, ...state } },
+          } });
+        }
         emit({
           type: "message.part.updated",
           id: "event-patch",

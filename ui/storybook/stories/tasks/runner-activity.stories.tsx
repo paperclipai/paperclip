@@ -1,0 +1,105 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MINIMAL_VIEWPORTS } from "storybook/viewport";
+import { RunnerActivityPreview } from "../../prototypes/runner-activity/RunnerActivityPreview";
+
+const meta = {
+  id: "tasks-runner-activity-preview",
+  title: "Tasks and conversations/Task creation and lifecycle/Tasks/Runner activity preview",
+  component: RunnerActivityPreview,
+  globals: { viewport: { value: "desktop", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    viewport: {
+      options: {
+        ...MINIMAL_VIEWPORTS,
+        desktop: {
+          name: "Desktop",
+          styles: { width: "100%", height: "100%" },
+          type: "desktop",
+        },
+      },
+    },
+    docs: {
+      description: {
+        component:
+          "Production runner turn with deterministic event playback. Each commentary boundary starts a separate activity group. Compact groups roll through one tool or thinking item at a time. Expand a group to keep its history growing inline, and click any expanded row to inspect its detail. Pause, Next, and Replay control simulated events; no runner or task API is called.",
+      },
+    },
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion",
+        "runs-adapters/runs"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
+} satisfies Meta<typeof RunnerActivityPreview>;
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const DesktopLive: Story = {
+  name: "01 · Desktop live · animated",
+  args: { initialStep: 1, autoPlay: true, narrow: false },
+};
+export const LiveCompact: Story = {
+  name: "Compact · paused",
+  args: { autoPlay: false },
+};
+export const LiveExpanded: Story = {
+  name: "02 · Desktop expanded · animated",
+  args: { expanded: true, autoPlay: true, narrow: false },
+};
+export const BetweenCommentary: Story = {
+  name: "03 · Between commentary",
+  args: { initialStep: 12, autoPlay: false },
+};
+export const IconAlignment: Story = {
+  name: "04 · Icon alignment",
+  args: { initialStep: 12, autoPlay: false, expanded: true },
+};
+export const LegacyRunnerParity: Story = {
+  name: "05 · Legacy live · animated",
+  args: { initialStep: 1, autoPlay: true, expanded: false, legacy: true },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Raw CLI transcript events pass through transcriptToTaskChatItems and TaskChatLiveTail, the actual live legacy path. Thinking and tools roll through the same single-line activity group as the native runner. Use Next to inspect each transition or expand a group to retain its history.",
+      },
+    },
+  },
+};
+export const LegacyLiveExpanded: Story = {
+  name: "Legacy · expanded history · animated",
+  args: { initialStep: 3, autoPlay: true, expanded: true, legacy: true },
+};
+export const LegacyLongLabels: Story = {
+  name: "Legacy · narrow · long labels",
+  args: { initialStep: 8, autoPlay: false, narrow: true, longLabels: true, legacy: true },
+};
+export const LegacyLight: Story = {
+  name: "Legacy · light · animated",
+  args: { initialStep: 1, autoPlay: true, legacy: true },
+  globals: { theme: "light" },
+};
+export const LegacyCompleted: Story = {
+  name: "Legacy · completed",
+  args: { initialStep: 12, autoPlay: false, legacy: true },
+};
+export const LongLabels: Story = {
+  name: "06 · Long labels & narrow layout",
+  args: { initialStep: 8, autoPlay: false, narrow: true, longLabels: true },
+};
+export const Failure: Story = {
+  name: "06 · Retry details",
+  args: { initialStep: 12, autoPlay: false, failed: true },
+};
+export const Light: Story = { name: "07 · Light", globals: { theme: "light" } };
+export const Mobile: Story = {
+  name: "08 · Mobile live · animated",
+  args: { narrow: true },
+  globals: { viewport: { value: "mobile1", isRotated: false } },
+};

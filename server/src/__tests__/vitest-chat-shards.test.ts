@@ -37,7 +37,7 @@ it("runs every active nested/parameterized fixture case exactly once through the
     const run = (index: number, count: number) => spawnSync(process.execPath, [
       path.join(repoRoot, "scripts/run-vitest-stable.mjs"), "--mode", "general", "--group", "general-chat",
       "--shard-index", String(index), "--shard-count", String(count),
-    ], { cwd: root, env: { ...process.env, CI: "true" }, encoding: "utf8", timeout: 45_000, maxBuffer: 4 * 1024 * 1024 });
+    ], { cwd: root, env: { ...process.env, CI: "true", PAPERCLIP_CI_PROFILE: "false" }, encoding: "utf8", timeout: 45_000, maxBuffer: 4 * 1024 * 1024 });
     for (const index of [0, 1]) {
       const result = run(index, 2);
       expect(result.error, result.stderr).toBeUndefined();

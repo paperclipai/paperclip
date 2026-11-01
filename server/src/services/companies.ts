@@ -1,5 +1,16 @@
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyGitHubCompanyChange } from "./github-connection-notifications.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
+import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { isRunnerApiResponseAsset } from "./asset-content-access.js";
+import { deleteCompany } from "./company-deletion.js";
+import { fenceActiveCompanyAgentStopsInTransaction } from "./agent-lifecycle.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
-import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -7,36 +18,10 @@ import {
   companyLogos,
   assets,
   agents,
-  agentApiKeys,
-  agentRuntimeState,
-  agentTaskSessions,
   agentWakeupRequests,
   issues,
-  issueComments,
-  projects,
-  goals,
   heartbeatRuns,
-  runIdentityContexts,
-  heartbeatRunEvents,
   costEvents,
-  financeEvents,
-  budgetPolicies,
-  budgetIncidents,
-  issueReadStates,
-  approvalComments,
-  approvals,
-  activityLog,
-  companySecrets,
-  joinRequests,
-  invites,
-  principalPermissionGrants,
-  companyMemberships,
-  companySkills,
-  documents,
-  routineRuns,
-  routineTriggers,
-  routineRevisions,
-  routines,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
@@ -50,7 +35,6 @@ import {
   rekeyCompanyIssueIdentifiers,
 } from "./issue-prefix.js";
 import { environmentService } from "./environments.js";
-import { heartbeatService } from "./heartbeat.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 
@@ -70,37 +54,24 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
-export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
+export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
   const environmentsSvc = environmentService(db);
-  const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
   async function applyArchiveCascadeInTx(tx: CompanyTx, id: string) {
-    const pausedAgentRows = await tx
-      .update(agents)
-      .set({
-        status: "paused",
-        pauseReason: "company_archived",
-        pausedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(agents.companyId, id),
-        notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
-      ))
-      .returning({ id: agents.id });
+    const [agentCount] = await tx.select({ value: count() }).from(agents).where(and(eq(agents.companyId, id), notInArray(agents.status, ["paused", "terminated", "pending_approval"])));
 
-    const activeRunIds = await tx
-      .select({ id: heartbeatRuns.id })
+    const [runCount] = await tx
+      .select({ value: count() })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, id),
-        inArray(heartbeatRuns.status, ["queued", "running"]),
-      ))
-      .then((rows) => rows.map((row) => row.id));
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      ));
 
+    await notifyChatInboundWakeNotices(tx, { companyId: id });
     await tx
       .update(agentWakeupRequests)
       .set({
@@ -115,18 +86,16 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         isNull(agentWakeupRequests.runId),
       ));
 
-    return { agentsPaused: pausedAgentRows.length, activeRunIds };
+    return { agentsPauseRequested: agentCount.value, runsCancellationRequested: runCount.value };
   }
 
   async function finalizeArchive(
     id: string,
     actor: CompanyActivityActor,
-    cascade: { agentsPaused: number; activeRunIds: string[] },
+    cascade: { agentsPauseRequested: number; runsCancellationRequested: number },
   ) {
-    for (const runId of cascade.activeRunIds) {
-      await heartbeat.cancelRun(runId, "Cancelled because the company was archived");
-    }
-
+    // The committed company status blocks dispatch immediately. Lifecycle
+    // projection owns provider termination, including paused agents with work.
     await logActivity(db, {
       companyId: id,
       actorType: actor.actorType,
@@ -137,8 +106,8 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       entityType: "company",
       entityId: id,
       details: {
-        agentsPaused: cascade.agentsPaused,
-        runsCancelled: cascade.activeRunIds.length,
+        agentsPauseRequested: cascade.agentsPauseRequested,
+        runsCancellationRequested: cascade.runsCancellationRequested,
       },
     });
   }
@@ -338,25 +307,28 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
+        if (data.status !== undefined || data.budgetMonthlyCents !== undefined) {
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
+        }
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
-        if (data.budgetMonthlyCents !== undefined) {
-          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
-        }
         const { logoAssetId, ...companyPatch } = data;
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
 
         if (logoAssetId !== undefined && logoAssetId !== null) {
           const nextLogoAsset = await tx
-            .select({ id: assets.id, companyId: assets.companyId })
+            .select()
             .from(assets)
             .where(eq(assets.id, logoAssetId))
             .then((rows) => rows[0] ?? null);
           if (!nextLogoAsset) throw notFound("Logo asset not found");
+          if (await isRunnerApiResponseAsset(tx, nextLogoAsset)) {
+            throw unprocessable("API response snapshots cannot be company logos; upload a logo asset");
+          }
           if (nextLogoAsset.companyId !== existing.id) {
             throw unprocessable("Logo asset must belong to the same company");
           }
@@ -364,6 +336,20 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
+        if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
+          await notifyRunDispatch(tx, { companyId: id });
+          await notifyGitHubCompanyChange(tx, id);
+          await notifyDeferredExecutionEligibility(tx, { companyId: id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardIssueChange(tx, id);
+          await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
+        }
         const updated = await tx
           .update(companies)
           .set({
@@ -398,24 +384,14 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
         let agentsRestored = 0;
         if (willReactivate) {
-          const restoredRows = await tx
-            .update(agents)
-            .set({
-              status: "idle",
-              pauseReason: null,
-              pausedAt: null,
-              updatedAt: new Date(),
-            })
-            .where(and(
-              eq(agents.companyId, id),
-              eq(agents.status, "paused"),
-              eq(agents.pauseReason, "company_archived"),
-            ))
-            .returning({ id: agents.id });
+          const restoredRows = await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, id), eq(agents.pauseReason, "company_archived")));
           agentsRestored = restoredRows.length;
         }
 
         const archiveCascade = willArchive ? await applyArchiveCascadeInTx(tx, id) : null;
+        if (companyPatch.status !== existing.status && (companyPatch.status === "paused" || companyPatch.status === "archived")) {
+          await fenceActiveCompanyAgentStopsInTransaction(tx as unknown as Db, id, companyPatch.status);
+        }
 
         if (logoAssetId === null) {
           await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
@@ -464,7 +440,6 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       });
       if (!result) return null;
       publishAccountingActivities(id, budgetPublications);
-      if (data.budgetMonthlyCents !== undefined) await deliverBudgetEnforcement(db, budgetHooks, id);
       // Post-commit, fire-and-forget, and BEFORE any finalization that
       // could throw: a Cloud-pinned primary company that crossed the
       // archived boundary (either direction) rings the harness so the
@@ -516,12 +491,25 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           .select({ status: companies.status })
           .from(companies)
           .where(eq(companies.id, id))
+          .for("no key update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
         const wasAlreadyArchived = existing.status === "archived";
 
         if (!wasAlreadyArchived) {
+          await notifyRunDispatch(tx, { companyId: id });
+          await notifyGitHubCompanyChange(tx, id);
+          await notifyDeferredExecutionEligibility(tx, { companyId: id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardIssueChange(tx, id);
+          await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
           await tx
             .update(companies)
             .set({ status: "archived", updatedAt: new Date() })
@@ -529,6 +517,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         }
 
         const cascade = wasAlreadyArchived ? null : await applyArchiveCascadeInTx(tx, id);
+        if (!wasAlreadyArchived) await fenceActiveCompanyAgentStopsInTransaction(tx as unknown as Db, id, "archived");
 
         const row = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
@@ -552,66 +541,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return result.company;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
-        // Exclude accounting writers before taking child locks. KEY SHARE must
-        // remain compatible: native writers can already hold a child row while
-        // saving a company-scoped result. FOR UPDATE would deadlock that save.
-        const [existing] = await tx.select({ id: companies.id }).from(companies)
-          .where(eq(companies.id, id)).for("no key update");
-        if (!existing) return null;
-        // Finance can reference costs and both can reference runs. Incidents
-        // reference policies and approvals; delete these dependents first.
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
-        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
-        // Delete from child tables in dependency order
-        const companyRunIds = await tx
-          .select({ id: heartbeatRuns.id })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.companyId, id));
-
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
-        if (companyRunIds.length > 0) {
-          await tx
-            .delete(heartbeatRunEvents)
-            .where(inArray(heartbeatRunEvents.runId, companyRunIds.map((run) => run.id)));
-        }
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
-        await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
-        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
-        await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
-        await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
-        await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
-        await tx.delete(approvals).where(eq(approvals.companyId, id));
-        await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
-        await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
-        await tx.delete(invites).where(eq(invites.companyId, id));
-        await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
-        await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
-        await tx.delete(companySkills).where(eq(companySkills.companyId, id));
-        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
-        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
-        await tx.delete(routineRevisions).where(eq(routineRevisions.companyId, id));
-        await tx.delete(routines).where(eq(routines.companyId, id));
-        await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
-        await tx.delete(documents).where(eq(documents.companyId, id));
-        await tx.delete(issues).where(eq(issues.companyId, id));
-        await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
-        await tx.delete(assets).where(eq(assets.companyId, id));
-        await tx.delete(goals).where(eq(goals.companyId, id));
-        await tx.delete(projects).where(eq(projects.companyId, id));
-        await tx.delete(agents).where(eq(agents.companyId, id));
-        const rows = await tx
-          .delete(companies)
-          .where(eq(companies.id, id))
-          .returning();
-        return rows[0] ?? null;
-      }),
+    remove: (id: string) => deleteCompany(db, id),
 
     stats: () =>
       Promise.all([

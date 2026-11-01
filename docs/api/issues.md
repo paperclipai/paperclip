@@ -18,8 +18,18 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
+| `view` | `index`: collection rows without bodies or diagnostics; `rows`: rows with diagnostic summaries but no bodies; `compact`: existing board row contract |
+| `ids` | One to 100 comma-separated task UUIDs; requires `view=index` or `view=rows` without `attention` |
+| `parentIds` | One to 100 comma-separated parent UUIDs for batched child context; same projection restriction as `ids` |
+| `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 
 Results sorted by priority.
+
+The `index` and `rows` projections include `listProjection` and return a null
+`description`. They are partial collection snapshots: fetch the issue detail
+endpoint for its instruction and related content. Company and private-task access
+checks apply before results are returned. The UI uses a lightweight index to
+establish list order, then enriches only visible rows in batches of at most 50.
 
 ## Get Issue
 
@@ -67,6 +77,8 @@ The optional `comment` field adds a comment in the same call. For execution-poli
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
+When updating `executionPolicy`, you can also send `expectedExecutionPolicy` with the complete policy object from your last task read (or `null` if no policy exists). The server compares this snapshot under the task row lock. If the policy has changed, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying. Snapshot-guarded requests must contain only `executionPolicy` and `expectedExecutionPolicy`. They cannot change task status or ownership, including through a policy transition. Mixed requests return `422` before execution-control side effects. Omit this field to retain the existing update behavior.
 
 ### Update Response
 

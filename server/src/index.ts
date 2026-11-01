@@ -1,6 +1,69 @@
+import { registerNativeCancellationDelivery } from "./services/native-runtime/native-cancellation-delivery.js";
+import { registerNativeRuntimeResponseDelivery } from "./services/native-runtime/native-runtime-response-delivery.js";
+import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
+import { registerRoutineExecutionStatusWork } from "./services/routine-execution-status-work.js";
+import { routineExecutionStatusService } from "./services/routine-run-status.js";
+import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation-work.js";
+import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
+import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
+import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
+import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
+import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
+import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
+import { registerToolConnectionHealthWork } from "./services/tool-connection-health-work.js";
+import { approvalQueueSeedingService, registerApprovalQueueSeedingWork } from "./services/approval-queue-seeding-work.js";
+import { joinRequestRetentionService, registerJoinRequestRetentionWork } from "./services/join-request-retention.js";
+import { approvalRetentionService, registerApprovalRetentionWork } from "./services/approval-retention.js";
+import { registerDecisionTargetWork } from "./services/decision-target-work.js";
+import { registerDecisionEffectRecoveryWork } from "./services/decision-effect-recovery-work.js";
+import { registerDecisionExpiryWork } from "./services/decision-expiry-work.js";
+import { registerDecisionContinuationWork } from "./services/decision-continuation-work.js";
+
+import { registerDecisionArchiveDeliveryWork } from "./services/decision-archive-delivery-work.js";
+
+import { registerToolReviewProjectionWork } from "./services/tool-review-projection-work.js";
+import { registerToolReviewInterruptionWork } from "./services/tool-review-interruption-work.js";
+import { registerToolReviewRecoveryWork } from "./services/tool-review-recovery-work.js";
+import { registerToolReviewExpiryWork } from "./services/tool-review-expiry-work.js";
+import { registerGatewayCredentialExpiryWork } from "./services/gateway-credential-expiry-work.js";
+import { registerSecretProposalExpiryWork } from "./services/secret-proposal-expiry-work.js";
+import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
+import { registerWorkspaceRecoveryWork } from "./services/workspace-recovery-work.js";
+import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-work.js";
+import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
+import { registerLoginCleanupWork } from "./services/login-cleanup-work.js";
+import { timeStartupRecovery } from "./startup-recovery-timing.js";
+import { runtimeAssetRetention } from "./services/native-runtime/runtime-asset-retention.js";
+import { skillPackageWork } from "./services/skill-package-work.js";
+import { skillSourceSyncService } from "./services/skill-source-sync.js";
+import {
+  skillVersionRetentionService,
+} from "./services/skill-version-retention.js";
+import {
+  nativeHarnessBackupExpirationService,
+} from "./services/native-runtime/native-harness-backup-expiration.js";
+import { registerNativeRunnerEvidenceRetentionWork } from "./services/native-runtime/native-runner-evidence-retention-work.js";
+import { gitRestorePointRetentionService, registerGitRestorePointWork } from "./services/git-restore-point-ledger.js";
+import { remoteWorkspaceSnapshotRetentionService, registerRemoteWorkspaceSnapshotRetentionWork } from "./services/remote-workspace-snapshot-retention.js";
+import {
+  nativeWorkspaceSyncRetentionService,
+  registerNativeWorkspaceSyncRetentionWork,
+} from "./services/native-runtime/native-workspace-sync-retention.js";
+import { markGitRestorePointExpired } from "./services/git-restore-point-storage.js";
+import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
+import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
+import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./services/budget-enforcement-worker.js";
+import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js";
+import { registerScheduledWork } from "./services/scheduled-work.js";
+import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
+import { assertEphemeralServerConfig, assertEphemeralServerData } from "./services/ephemeral-server-contract.js";
+import { deploymentNotifications } from "./services/deployment-notifications.js";
+import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
+import { isIdleTaskDrainActive, readTaskDrain, beginIdleTrackedWork, trackIdleWork, registerTaskDrainExpiryWork } from "./services/task-admission.js";
+import { markIdleStartupComplete, registerIdleLocalWorkProbe } from "./services/idle-local-work.js";
+import { clearIdleBackupWakeRequired, idleBackupWakeMarker, markIdleBackupWakeRequired, verifyIdleDatabaseBackup } from "./services/idle-database-backup.js";
 import { cloudWarmStandbyServerOptions } from "./middleware/cloud-warm-standby.js";
 import { createCloudWarmStandby } from "./services/cloud-warm-standby.js";
-import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { chatCompletionDeliveryService } from "./services/chat-completion-delivery.js";
 /// <reference path="./types/express.d.ts" />
 // Kicks off the OTel bootstrap as early as possible (no-op unless
@@ -9,6 +72,8 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { setSentryRunLinkResolver } from "./sentry-links.js";
+import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
@@ -16,10 +81,11 @@ import { deliverExecutionStatuses } from "./services/execution-status-delivery.j
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
-import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
+import { executionControlSchedule, registerExecutionControlWork } from "./services/execution-control-work.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { createServer, type RequestListener } from "node:http";
+import type { Server, RequestListener } from "node:http";
+import { createPaperclipHttpServer } from "./http/server.js";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -43,10 +109,15 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  closeLivenessDb,
+  closeCheckpointDb,
+  closeFileStorageDb,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { drainHttpRequestWork } from "./middleware/idle-admission.js";
+import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
+import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -61,12 +132,10 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
   applyManagedEnvironments,
-  attentionService,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -84,15 +153,16 @@ import {
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
-  statusCardService,
   toolAccessService,
   workspaceOperationService,
 } from "./services/index.js";
-import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
+import { questionResponseDeliveryService, registerQuestionResponseDeliveryWork } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
-import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
+import { registerStatusCardEvaluationWork, statusCardEvaluationService } from "./services/status-card-evaluation.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
+import { historicalCleanupVerificationService } from "./services/historical-cleanup-verification.js";
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
 import { createDbAdapterAuthSessionStore } from "./services/device-login-service.js";
 import {
   createDeviceLoginReaper,
@@ -100,6 +170,7 @@ import {
 } from "./services/device-login-reaper.js";
 import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { localAiLoginService } from "./services/local-ai-login.js";
+import { registerGitHubBotCloudSetupPoller } from "./services/chat-github-cloud-ingress.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -125,6 +196,9 @@ import {
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
+import { initializeAdapterSettings } from "./services/adapter-settings.js";
+import { migrateCloudConfiguration } from "./services/cloud-configuration-migration.js";
+import { qualifyCloudConfigurationForCurrentImage } from "./services/cloud-configuration-qualification.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
@@ -165,7 +239,7 @@ type EmbeddedPostgresCtor = new (opts: {
 
 
 export interface StartedServer {
-  server: ReturnType<typeof createServer>;
+  server: Server;
   host: string;
   listenPort: number;
   apiUrl: string;
@@ -188,6 +262,19 @@ async function endDatabaseClient(client: unknown, timeoutSeconds: number): Promi
     ?.$client;
   if (typeof sql?.end !== "function") return;
   await sql.end({ timeout: timeoutSeconds });
+}
+
+function initializeRuntimeConfigConsumers(config: ReturnType<typeof loadConfig>): void {
+  initTelemetry({ enabled: config.telemetryEnabled });
+  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+  }
+  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
+    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+  }
+  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  }
 }
 
 export async function startServer(): Promise<StartedServer> {
@@ -216,17 +303,11 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
-  ensureDecisionSigningSecret();
-  let config = loadConfig();
-  initTelemetry({ enabled: config.telemetryEnabled });
-  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
-  }
-  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
-  }
-  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  const startupConfig = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
+  if ("deploymentMode" in startupConfig) {
+    assertEphemeralServerConfig(startupConfig);
+    ensureDecisionSigningSecret();
+    initializeRuntimeConfigConsumers(startupConfig);
   }
   
   type MigrationSummary =
@@ -329,7 +410,7 @@ async function startServerWithDatabaseTeardown(
     }
   }
 
-  function assertCloudDatabaseContract(): void {
+  function assertCloudDatabaseContract(config: Config): void {
     if (config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public") {
       return;
     }
@@ -422,17 +503,19 @@ async function startServerWithDatabaseTeardown(
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
-  assertCloudDatabaseContract();
-  if (config.databaseUrl) {
-    const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
+  if ("deploymentMode" in startupConfig) assertCloudDatabaseContract(startupConfig);
+  if (startupConfig.databaseUrl) {
+    const migrationUrl = startupConfig.databaseMigrationUrl ?? startupConfig.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
-  
-    db = createDb(config.databaseUrl);
-    pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
+
+    db = createDb(startupConfig.databaseUrl);
+    pluginMigrationDb = startupConfig.databaseMigrationUrl ? createDb(startupConfig.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
-    activeDatabaseConnectionString = config.databaseUrl;
-    startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
+    activeDatabaseConnectionString = startupConfig.databaseUrl;
+    startupDbInfo = { mode: "external-postgres", connectionString: startupConfig.databaseUrl };
   } else {
+    if (!("deploymentMode" in startupConfig)) throw new Error("Cloud bootstrap requires an external PostgreSQL connection");
+    const config = startupConfig;
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
@@ -644,16 +727,29 @@ async function startServerWithDatabaseTeardown(
   // (after the application services, before the embedded provider stops) and
   // by the fail-loud startup path, so no exit leaves pooled backends behind.
   const closeDatabaseClients = async () => {
+    setSentryRunLinkResolver(null);
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
-    await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
+    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5)]);
   };
   startupDatabase.close = closeDatabaseClients;
+  setSentryRunLinkResolver(createSentryRunLinkResolver(db));
+  await migrateCloudConfiguration(db as any);
+  await initializeAdapterSettings(db as any);
   
+  await initializeCloudRuntimeConfig(db as any);
+  let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
+  const deploymentListenUrl = assertEphemeralServerConfig(config);
+  // Cloud storage depends on the canonical DB snapshot. Validate it before
+  // signing keys or other configuration consumers can mutate local state.
+  if (isCloudManagedInstance()) ensureDecisionSigningSecret();
+
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
   // Auth, routes, or child-runtime configuration capture any public URL.
   const restoredCloudRuntimeIdentity = await initializeCloudRuntimeIdentity(db as any);
   if (restoredCloudRuntimeIdentity) config = loadConfig();
+  if (isCloudManagedInstance()) initializeRuntimeConfigConsumers(config);
+
   const isWarmStandby = await createCloudWarmStandby(db as any);
 
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
@@ -817,6 +913,8 @@ async function startServerWithDatabaseTeardown(
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
   let databaseBackupInFlight = false;
+  const idleDatabaseBackupEnabled = config.databaseBackupEnabled
+    && process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED === "1";
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
   ): Promise<InstanceDatabaseBackupRunResult | null> => {
@@ -830,21 +928,28 @@ async function startServerWithDatabaseTeardown(
     }
 
     databaseBackupInFlight = true;
+    const finishIdleBackup = beginIdleTrackedWork();
     const startedAt = new Date();
     const startedAtMs = Date.now();
-    const label = trigger === "scheduled" ? "Automatic" : "Manual";
+    const label = trigger === "manual" ? "Manual" : trigger === "idle" ? "Pre-sleep" : "Automatic";
     try {
+      if (trigger === "idle") await markIdleBackupWakeRequired(config.databaseBackupDir);
       logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
       // Read retention from Instance Settings (DB) so changes take effect without restart.
       const generalSettings = await backupSettingsSvc.getGeneral();
       const retention = generalSettings.backupRetention;
+      const verifyCheckpoint = trigger === "idle" || existsSync(idleBackupWakeMarker(config.databaseBackupDir));
 
       const result = await runDatabaseBackup({
         connectionString: activeDatabaseConnectionString,
         backupDir: config.databaseBackupDir,
         retention,
         filenamePrefix: "paperclip",
+        verifyBeforePrune: verifyCheckpoint ? verifyIdleDatabaseBackup : undefined,
       });
+      if (verifyCheckpoint) {
+        if (trigger !== "idle") await clearIdleBackupWakeRequired(config.databaseBackupDir);
+      }
       const finishedAt = new Date();
       const response: InstanceDatabaseBackupRunResult = {
         ...result,
@@ -873,6 +978,7 @@ async function startServerWithDatabaseTeardown(
       throw err;
     } finally {
       databaseBackupInFlight = false;
+      finishIdleBackup();
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
@@ -887,7 +993,14 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  const cloudQualification = await qualifyCloudConfigurationForCurrentImage(db as any);
+  if (cloudQualification && !cloudQualification.configurationPackagesEligible) {
+    logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
+  }
   const app = await createApp(db as any, {
+    prepareIdleDatabaseBackup: idleDatabaseBackupEnabled
+      ? async () => (await runServerDatabaseBackup("idle")) !== null
+      : undefined,
     cloudWarmStandby: isWarmStandby,
     uiMode,
     serverPort: listenPort,
@@ -927,14 +1040,6 @@ async function startServerWithDatabaseTeardown(
     decisionServiceOptions,
     managedPluginAutoInstall,
   });
-  // Upgrade admission runs before every WebSocket listener, outside Express.
-  const server = createServer(cloudWarmStandbyServerOptions(isWarmStandby), app as unknown as RequestListener);
-
-  // Increase keep-alive timeouts to safely outlive default idle timeouts
-  // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
-  // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
-  server.keepAliveTimeout = 185000;
-  server.headersTimeout = 186000;
   
   if (listenPort !== requestedListenPort) {
     logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
@@ -948,6 +1053,14 @@ async function startServerWithDatabaseTeardown(
     port: listenPort,
   });
   const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
+  // Upgrade admission runs before every WebSocket listener, outside Express.
+  const server = createPaperclipHttpServer(app as unknown as RequestListener, {
+    apiUrl: configuredApiUrl,
+    httpOptions: cloudWarmStandbyServerOptions(() => isWarmStandby() || isIdleTaskDrainActive()),
+  });
+  // Outlive reverse-proxy idle timeouts to avoid intermittent resets.
+  server.keepAliveTimeout = 185000;
+  server.headersTimeout = 186000;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
     preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
@@ -961,14 +1074,25 @@ async function startServerWithDatabaseTeardown(
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
 
+  const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
+  const deploymentHints = deploymentListenUrl !== null
+    ? deploymentNotifications(db as any, deliveryWork, {
+      directDatabaseUrl: deploymentListenUrl, isWarmStandby,
+    }) : null;
+  const cancellationDelivery = deploymentListenUrl !== null ? registerNativeCancellationDelivery(db as any, deliveryWork) : null;
+  const runtimeResponseDelivery = deploymentListenUrl !== null ? registerNativeRuntimeResponseDelivery(db as any, deliveryWork) : null;
+  await deploymentHints?.ready();
+  await cancellationDelivery?.ready;
+  await runtimeResponseDelivery?.ready;
+
   let startupListenerBound = false;
   try {
-  setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
-  setupLiveEventsWebSocketServer(server, db as any, {
+  const liveEventsWebSocketServer = setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
+    subscribeInvalidation: deploymentHints?.subscribeCompany,
     resolveSessionFromHeaders,
     // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
     // of a local Better Auth session; without this lane every live-events
@@ -1021,7 +1145,9 @@ async function startServerWithDatabaseTeardown(
     logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
   }
 
-  void reconcilePersistedRuntimeServicesOnStartup(db as any)
+  // These jobs need not delay readiness, but their writes must finish before
+  // an idle report can authorize sleep. Count the whole detached promise.
+  void trackIdleWork(reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
       if (
         result.reconciled > 0
@@ -1046,12 +1172,12 @@ async function startServerWithDatabaseTeardown(
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
-    });
+    }));
 
   // Backfill auth.json into any already-isolated codex_local managed home that
   // was created by the #8272 isolation guard before the Phase 1 seeding fix.
   // Idempotent; the Phase 1 execute-time seeding covers new strandings.
-  void reconcileCodexLocalManagedHomesOnStartup(db)
+  void trackIdleWork(reconcileCodexLocalManagedHomesOnStartup(db)
     .then((result) => {
       if (result.seeded > 0 || result.failed > 0) {
         logger.warn(
@@ -1068,9 +1194,9 @@ async function startServerWithDatabaseTeardown(
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
-    });
+    }));
 
-  void reconcileBuiltInAgentsOnStartup(db as any)
+  void trackIdleWork(reconcileBuiltInAgentsOnStartup(db as any)
     .then((result) => {
       if (
         result.reconciled > 0
@@ -1087,7 +1213,7 @@ async function startServerWithDatabaseTeardown(
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of built-in agents failed");
-    });
+    }));
 
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
@@ -1145,14 +1271,15 @@ async function startServerWithDatabaseTeardown(
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
-  let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
+    const finishIdleWork = beginIdleTrackedWork();
     let tracked: Promise<void>;
     tracked = Promise.resolve(work)
       .then(() => undefined, () => undefined)
       .finally(() => {
         heartbeatSchedulerInFlight.delete(tracked);
+        finishIdleWork();
       });
     heartbeatSchedulerInFlight.add(tracked);
   };
@@ -1161,60 +1288,25 @@ async function startServerWithDatabaseTeardown(
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
-  const executionControlSweepsInFlight = new Set<string>();
-  const executionControlSweeps = [
-    ["finalization", () => reconcileAbandonedExecutionControl(db)],
-    ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
-    ["reconciliation_delivery", () => heartbeat ? deliverReconciledExecutions(db, heartbeat.wakeup) : undefined],
-    ["status_delivery", () => deliverExecutionStatuses(db)],
-    ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
-    ["local_ai_login_cleanup", () => localAiLoginService(db).reapExpired()],
-  ] as const;
-  const sweepExecutionControl = () => {
-    if (heartbeatSchedulerStopped || isWarmStandby()) return;
-    // Independent durable queues must not block one another. Each queue remains
-    // single-flight; a later sweep observes committed transitions from its peers.
-    for (const [queue, work] of executionControlSweeps) {
-      if (executionControlSweepsInFlight.has(queue)) continue;
-      executionControlSweepsInFlight.add(queue);
-      trackHeartbeatSchedulerWork(Promise.resolve().then(async () => { await work(); })
-        .catch(err => logger.error({ err, queue }, "execution control reconciliation failed"))
-        .finally(() => { executionControlSweepsInFlight.delete(queue); }));
-    }
-  };
-  const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
-  executionControlInterval.unref?.();
-  sweepExecutionControl();
-  const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = setInterval(() => {
-      if (!isWarmStandby()) callback();
-    }, config.heartbeatSchedulerIntervalMs);
-    heartbeatSchedulerInterval?.unref?.();
-  };
+  const skillSourceSync = skillSourceSyncService(db as any);
+  const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
+    duty: "backups",
+    dryRun: config.nativeHarnessBackupExpirationDryRun,
+    closedForDays: config.nativeHarnessBackupExpirationDays,
+    evidenceRetentionDays: config.nativeRunnerEvidenceRetentionDays,
+    shouldContinue: () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(),
+  });
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
   });
-  const scheduleExternalObjectRefreshSweep = (now = new Date()) => {
-    if (heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(externalObjects
-      .refreshDueObjectsForActiveCompanies(50, now)
-      .then((result) => {
-        if (result.checked > 0 || result.refreshed > 0) {
-          logger.info({ ...result }, "external-object scheduler tick refreshed due objects");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "external-object scheduler tick failed");
-      }));
-  };
 
   // The retry backstop for orphan sandboxes. An acquire that rejects a
   // foreign-company insert tears the provisioned sandbox down. If that teardown
   // also fails, the acquire records a lease-less `pending_cleanup` lease row. No
   // other path releases that sandbox, so the master pending-cleanup sweep retries
-  // the provider teardown and releases the orphan. The sweep runs on startup and
-  // on the scheduler interval.
+  // the provider teardown and releases the orphan. The sweep runs on startup,
+  // committed writes, and deadlines derived from unresolved cleanup.
   //
   // This backstop is independent of the heartbeat scheduler toggle. A leaked
   // provider sandbox costs money whether or not the instance schedules
@@ -1224,43 +1316,141 @@ async function startServerWithDatabaseTeardown(
   // The master pending-cleanup sweep is the single owner of these rows. Its
   // atomic per-attempt claim makes two overlapping sweeps safe, so the enabled
   // path can also run the sweep from the orphaned-run reaper without a second
-  // teardown. The heartbeat scheduler owns the sweep when it is enabled; the
-  // disabled path creates its own runtime to own the same sweep.
-  // The interval sweep waits this long after a lease's last write before it
-  // retries the teardown. The window matches the orphaned-run reaper staleness,
-  // so a just-failed lease does not draw a retry on every tick. The startup
-  // sweep passes zero, so a restart retries a stranded orphan at once.
-  const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
+  // teardown. The delivery coordinator owns pending-work scheduling whether
+  // or not the heartbeat scheduler is enabled.
   const environmentLeaseCleanupHeartbeat = accountingHeartbeat;
   const chatCompletionDeliveries = chatCompletionDeliveryService(db as any, environmentLeaseCleanupHeartbeat);
-  // Activity publication happens after the status transaction commits. This is
-  // a best-effort fast path; the durable outbox and sweeps remain authoritative.
-  const unsubscribeChatCompletions = subscribeAllCompanyLiveEvents(event => {
-    if (heartbeatSchedulerStopped || event.type !== "activity.logged" ||
-      event.payload.action !== "issue.updated" || typeof event.payload.entityId !== "string") return;
-    trackHeartbeatSchedulerWork(chatCompletionDeliveries.sweepPending({ companyId: event.companyId, taskId: event.payload.entityId })
-      .catch(err => logger.error({ err }, "post-commit chat completion delivery failed")));
-  });
-  server.on("close", unsubscribeChatCompletions);
   const connectionDeliveries = connectionIntentDeliveryService(db as any, environmentLeaseCleanupHeartbeat);
   const questionResponseDeliveries = questionResponseDeliveryService(db as any, {
     heartbeat: environmentLeaseCleanupHeartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
   });
-  const runEnvironmentLeaseCleanupSweep = (backoffMs: number) =>
-    environmentLeaseCleanupHeartbeat
-      .sweepPendingCleanupLeases({ backoffMs })
-      .then((result) => {
-        if (result.destroyed > 0 || result.capped > 0) {
-          logger.info(result, "environment lease cleanup sweep retried orphan sandbox teardowns");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "environment lease cleanup sweep failed");
-      });
-  const scheduleEnvironmentLeaseCleanupSweep = () => {
-    if (heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
+  externalObjects.registerRefreshWork(deliveryWork,
+    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+  if (config.nativeHarnessBackupExpirationEnabled) {
+    nativeHarnessBackupExpiration.registerCheckpointExpiration(deliveryWork);
+    const backupExpirationWork = registerNativeHarnessBackupExpirationWork(deliveryWork, db as any, {
+      dryRun: config.nativeHarnessBackupExpirationDryRun,
+      closedForDays: config.nativeHarnessBackupExpirationDays,
+    }, () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+    trackHeartbeatSchedulerWork(backupExpirationWork.ready);
+    server.on("close", backupExpirationWork.stop);
+  }
+  const taskDrainExpiryWork = registerTaskDrainExpiryWork(deliveryWork, () => {
+    if (heartbeatSchedulerStopped || isWarmStandby()) return;
+    trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+      logger.error({ err }, "failed to resume queued work after task drain expiry");
+    }));
+  });
+  server.on("close", () => { void taskDrainExpiryWork.stop(); });
+  const runEvidenceMigrationWork = registerRunEvidenceMigrationWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(), { storageProvider: config.storageProvider });
+  if (runEvidenceMigrationWork) trackHeartbeatSchedulerWork(runEvidenceMigrationWork.ready);
+  const providerTraceRetentionWork = registerProviderTraceRetentionWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+  trackHeartbeatSchedulerWork(providerTraceRetentionWork.ready);
+  server.on("close", providerTraceRetentionWork.stop);
+  const executionSchedule = executionControlSchedule(db);
+  const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
+  const nativeRunnerEvidenceRetentionWorker = config.nativeHarnessBackupExpirationEnabled
+    ? registerNativeRunnerEvidenceRetentionWork(deliveryWork, db as any, {
+      dryRun: config.nativeHarnessBackupExpirationDryRun,
+      evidenceRetentionDays: config.nativeRunnerEvidenceRetentionDays,
+    }, () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby())
+    : null;
+  if (nativeRunnerEvidenceRetentionWorker) trackHeartbeatSchedulerWork(nativeRunnerEvidenceRetentionWorker.ready);
+  const skillVersionRetentionWorker = config.skillVersionRetentionEnabled
+    ? registerSkillVersionRetentionWork(deliveryWork, skillVersionRetentionService(db as any, {
+      dryRun: config.skillVersionRetentionDryRun,
+      keepNewest: config.skillVersionRetentionKeepNewest,
+      graceMs: config.skillVersionRetentionGraceMinutes * 60 * 1000,
+    }), () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby())
+    : null;
+  if (skillVersionRetentionWorker) trackHeartbeatSchedulerWork(skillVersionRetentionWorker.ready);
+  const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
+    accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped);
+  const localLoginCleanup = localAiLoginService(db);
+  const localLoginCleanupWork = registerExecutionControlWork(deliveryWork, [
+    { queue: DELIVERY_QUEUES.localLoginCleanup, run: localLoginCleanup.reapExpired, next: localLoginCleanup.nextCleanupAt },
+  ], () => !heartbeatSchedulerStopped);
+  const unsubscribeLocalLoginCleanup = localLoginCleanup.subscribeCleanupReady(localLoginCleanupWork.wake);
+  server.on("close", unsubscribeLocalLoginCleanup);
+  registerExecutionControlWork(deliveryWork, [
+    { queue: DELIVERY_QUEUES.executionFinalization, run: () => reconcileAbandonedExecutionControl(db), next: executionSchedule.finalization },
+    { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
+    { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
+    ...(heartbeat ? [
+      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement },
+      { queue: DELIVERY_QUEUES.executionContinuation, run: () => deliverReconciledExecutions(db, heartbeat.wakeup), next: executionSchedule.continuation },
+    ] : []),
+  ], () => !heartbeatSchedulerStopped);
+
+  const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
+    cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,
+  });
+  const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
+  server.on("close", accountingWorker.stop);
+  skillSourceSync.start(deliveryWork);
+  skillPackageWork(db).start(deliveryWork);
+  const runtimeAssetCleanup = runtimeAssetRetention(db).start(deliveryWork);
+  server.on("close", () => { void runtimeAssetCleanup.stop(); });
+  const caseHandoffDeliveries = caseHandoffDeliveryService(db as any, { heartbeat: environmentLeaseCleanupHeartbeat });
+  deliveryWork.register(DELIVERY_QUEUES.caseHandoffs, {
+    retryMs: 5_000,
+    run: signal => caseHandoffDeliveries.sweepPending(signal),
+    hasPending: () => caseHandoffDeliveries.hasPending(),
+  });
+  let unregisterTerminalWorkspaceProbe: (() => void) | undefined;
+  let unsubscribeNativeResponsePresentation: (() => void) | undefined;
+  let unsubscribeNativeWorkspaceFinalization: (() => void) | undefined;
+  let unsubscribeRetainedNativeSessionCleanup: (() => void) | undefined;
+  let unsubscribeNativeWorkspaceSyncRetention: (() => void) | undefined;
+  const fastResponses = app.locals.fastResponses as ReturnType<typeof import("./services/fast-responses.js").fastResponseService>;
+  const fastResponseWorker = deliveryWork.register(DELIVERY_QUEUES.fastResponse, {
+    retryMs: 100, run: (signal) => fastResponses.sweepPending(signal), hasPending: () => fastResponses.hasPending(),
+  });
+  const deliveryWorkers = ([
+    [DELIVERY_QUEUES.chatCompletion, chatCompletionDeliveries],
+    [DELIVERY_QUEUES.connection, connectionDeliveries],
+    [DELIVERY_QUEUES.toolAction, app.locals.toolActionDeliveries as ReturnType<typeof import("./services/tool-action-delivery.js").toolActionDeliveryService>],
+  ] as const).map(([queue, service]) => deliveryWork.register(queue, {
+    retryMs: config.heartbeatSchedulerIntervalMs,
+    run: () => service.sweepPending(),
+    hasPending: () => service.hasPending(),
+    ...(queue === DELIVERY_QUEUES.connection ? { nextRunAt: connectionDeliveries.nextRunAt, pausePassiveMaintenance: true } : {}),
+  }));
+  deliveryWorkers.push(registerQuestionResponseDeliveryWork(deliveryWork, questionResponseDeliveries,
+    deploymentListenUrl ? undefined : config.heartbeatSchedulerIntervalMs));
+  // Preserve the existing task-scoped activity fast path. Claims in the
+  // delivery service arbitrate with the coordinator's startup/recovery sweep.
+  const unsubscribeChatCompletions = subscribeAllCompanyLiveEvents(event => {
+    if (isIdleTaskDrainActive() || isWarmStandby() || heartbeatSchedulerStopped || event.type !== "activity.logged" ||
+      event.payload.action !== "issue.updated" || typeof event.payload.entityId !== "string") return;
+    trackHeartbeatSchedulerWork(chatCompletionDeliveries.sweepPending({ companyId: event.companyId, taskId: event.payload.entityId })
+      .catch(err => logger.error({ err }, "post-commit chat completion delivery failed")));
+  });
+  server.on("close", unsubscribeChatCompletions);
+  const cleanupInspectionRuntime = environmentRuntimeService(db as any, { pluginWorkerManager });
+  const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
+  const historicalCleanup = historicalCleanupVerificationService(db as any, {
+    inspectLease: lease => cleanupInspectionRuntime.inspectLeaseResource(lease.id),
+    inspectSetup: setup => environmentCustomImages.inspectSetupResource(setup),
+  });
+  const runEnvironmentLeaseCleanupSweep = async (backoffMs: number) => {
+    const result = await environmentLeaseCleanupHeartbeat.sweepPendingCleanupLeases({ backoffMs });
+    if (result.destroyed > 0 || result.capped > 0) {
+      logger.info(result, "environment lease cleanup retried sandbox teardowns");
+    }
+  };
+  const startEnvironmentCleanup = async () => {
+    const worker = registerEnvironmentCleanupWork(db, deliveryWork, {
+      sweepPending: runEnvironmentLeaseCleanupSweep,
+      historical: isCloudManagedInstance() ? historicalCleanup : undefined,
+      canRun: () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+      minimumSpacingMs: config.heartbeatSchedulerIntervalMs,
+    });
+    server.on("close", worker.stop);
+    await worker.ready;
   };
   const githubConnectionEvents = githubConnectionEventService(db as any, {
     wakeup: environmentLeaseCleanupHeartbeat.wakeup,
@@ -1272,45 +1462,44 @@ async function startServerWithDatabaseTeardown(
       ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
       ?? null,
   });
-  const scheduleGitHubConnectionEventPoll = () => {
-    if (heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(githubConnectionEvents.pollOnce()
-      .then((result) => {
-        if (result.leased > 0 || result.failed > 0) {
-          logger.info(result, "GitHub connection event poll completed");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "GitHub connection event poll failed");
-      }));
-  };
-  const scheduleGitHubConnectionContinuitySweep = () => {
-    if (heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(tools.sweepGitHubConnectionContinuity()
-      .then((result) => {
-        if (result.due > 0 || result.failed > 0) {
-          logger.info(result, "GitHub connection continuity sweep completed");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "GitHub connection continuity sweep failed");
-      }));
-  };
+  const githubCanRun = () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped;
+  const githubEventWorker = registerGitHubConnectionEventWork(db, deliveryWork, githubConnectionEvents, githubCanRun);
+  const githubContinuityWorker = registerGitHubConnectionContinuityWork(db, deliveryWork, tools, githubCanRun);
+  server.on("close", () => { void githubEventWorker.stop(); void githubContinuityWorker.stop(); });
+  server.on("close", registerGitHubBotCloudSetupPoller(db, async () => {
+    if (githubCanRun()) await githubConnectionEvents.pollOnce({ forSetup: true });
+  }));
 
-  await chatCompletionDeliveries.sweepPending().catch((err) => logger.error({ err }, "startup chat completion delivery recovery failed"));
-  await connectionDeliveries.sweepPending();
-  await app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
-  await app.locals.toolGateway.cleanupExpiredSessions().catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"));
-  await app.locals.toolActionDeliveries.sweepPending().catch((err: unknown) => logger.error({ err }, "startup tool review delivery sweep failed"));
-  await questionResponseDeliveries.sweepPending().then((result) => {
-    if (result.scanned > 0) {
-      logger.info(result, "startup question-response delivery sweep completed");
+  await timeStartupRecovery("tool_reviews", async () => {
+    if (config.heartbeatSchedulerEnabled) {
+      await registerToolReviewExpiryWork(deliveryWork, app.locals.toolGateway,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    } else {
+      await app.locals.toolGateway.sweepExpiredActionReviews();
     }
-  }).catch((err) => {
-    logger.error({ err }, "startup question-response delivery sweep failed");
-  });
-  scheduleGitHubConnectionEventPoll();
-  scheduleGitHubConnectionContinuitySweep();
+    if (config.heartbeatSchedulerEnabled) {
+      await registerToolReviewRecoveryWork(deliveryWork, app.locals.toolGateway,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    } else {
+      await app.locals.toolGateway.recoverApprovedActionReviews();
+    }
+    if (config.heartbeatSchedulerEnabled) {
+      await registerToolReviewInterruptionWork(deliveryWork, app.locals.toolGateway,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    } else {
+      await app.locals.toolGateway.settleInterruptedActionReviews();
+    }
+    return config.heartbeatSchedulerEnabled
+      ? registerToolReviewProjectionWork(deliveryWork, { sweep: app.locals.toolGateway.repairActionReviewProjections, companies: app.locals.toolGateway.actionReviewProjectionCompanies },
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
+      : app.locals.toolGateway.repairActionReviewProjections();
+  }).catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
+  await timeStartupRecovery("gateway_sessions", () => config.heartbeatSchedulerEnabled
+    ? registerGatewayCredentialExpiryWork(deliveryWork, app.locals.toolGateway,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
+    : app.locals.toolGateway.cleanupExpiredSessions()).catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"));
+  await timeStartupRecovery("delivery_workers", () => Promise.all([budgetEnforcementWorker, accountingWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)));
+  await Promise.all([githubEventWorker.ready, githubContinuityWorker.ready]);
 
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
@@ -1324,66 +1513,88 @@ async function startServerWithDatabaseTeardown(
     drainHeartbeatExecutionFinalizers = () =>
       heartbeat.drainActiveRunExecutions();
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
-    const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
-    const statusCards = statusCardService(db as any);
+    const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
     const issues = issueService(db as any);
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
       wakeup: heartbeat.wakeup,
     });
     const terminalWorkspaces = executionWorkspaceService(db as any, {
+      destroyRemoteWorkspaceLease: input => cleanupInspectionRuntime.destroyRemoteWorkspaceLease(input),
+      pluginWorkerManager,
+      gitCacheExpirationEnabled: config.gitCacheExpirationEnabled,
+      gitBaseExpirationEnabled: config.gitBaseExpirationEnabled,
+      gitCacheExpirationDryRun: config.gitCacheExpirationDryRun,
+      isolatedSourceRehomeEnabled: config.isolatedSourceRehomeEnabled,
+      isolatedSourceRehomeDryRun: config.isolatedSourceRehomeDryRun,
+      nestedCloneMigrationEnabled: config.nestedCloneMigrationEnabled,
+      nestedCloneMigrationDryRun: config.nestedCloneMigrationDryRun,
+      gitRestorePoints: config.gitRestorePointsEnabled ? {
+        storage: storageService,
+        terminalDelayMs: config.gitRestorePointTerminalDelayDays * 24 * 60 * 60 * 1000,
+        idleMs: config.gitRestorePointIdleDays > 0 ? config.gitRestorePointIdleDays * 24 * 60 * 60 * 1000 : null,
+        keyDurable: config.storageProvider !== "s3" || Boolean(process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()),
+      } : undefined,
+      taskDirectoryRetention: config.taskDirectoryRetentionEnabled ? {
+        dryRun: config.taskDirectoryRetentionDryRun,
+        terminalDelayMs: config.gitRestorePointTerminalDelayDays * 24 * 60 * 60 * 1000,
+        orphanGraceMs: config.taskDirectoryOrphanGraceDays * 24 * 60 * 60 * 1000,
+      } : undefined,
       workspaceReaperCooldownDays: config.workspaceReaperCooldownDays,
+      workspaceCompactionDelayMs: config.workspaceCompactionDelayHours === null
+        ? null
+        : config.workspaceCompactionDelayHours * 60 * 60 * 1000,
+      terminalWorkspaceInspectionBackoffMs: TERMINAL_WORKSPACE_RETRY_MS,
     });
-    const scheduleMergedPullRequestConfirmationSweep = () => {
-      if (heartbeatSchedulerStopped) return;
-      trackHeartbeatSchedulerWork(mergedPullRequestConfirmations
-        .sweepMergedPullRequestConfirmations()
-        .then((result) => {
-          if (result.accepted > 0) {
-            logger.info(result, "accepted merge confirmations for merged pull requests");
+    registerMergeConfirmationWork(deliveryWork, mergedPullRequestConfirmations,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+    const gitRestorePointWorker = registerGitRestorePointWork(deliveryWork, gitRestorePointRetentionService(db as any, {
+      storage: storageService,
+      retentionDays: config.gitRestorePointRetentionDays,
+      beforeExpire: (restorePoint) => markGitRestorePointExpired(db as any, restorePoint),
+    }), (result) => {
+      if (result.abandoned > 0 || result.expired > 0 || result.orphaned > 0 || result.deleted > 0 || result.failed > 0) {
+        logger.info(result, "git restore point retention");
+      }
+    });
+    registerRemoteWorkspaceSnapshotRetentionWork(deliveryWork,
+      remoteWorkspaceSnapshotRetentionService(db as any, { storage: storageService }), result => {
+        if (result.deleted || result.failed) logger.info(result, "remote workspace snapshot retention");
+      });
+    if (config.nativeWorkspaceSyncRetentionEnabled) {
+      unsubscribeNativeWorkspaceSyncRetention = registerNativeWorkspaceSyncRetentionWork(deliveryWork, nativeWorkspaceSyncRetentionService(db as any, {
+        retentionDays: config.nativeWorkspaceSyncRetentionDays,
+        dryRun: config.nativeWorkspaceSyncRetentionDryRun,
+      }), {
+        shouldContinue: () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(),
+        onResult: (result) => {
+          if (result.candidates > 0 || result.leftoversRemoved > 0 || result.failed > 0) {
+            logger.info({ ...result, dryRun: config.nativeWorkspaceSyncRetentionDryRun }, "native workspace sync retention");
           }
-        })
-        .catch((err) => {
-          logger.error({ err }, "merged pull-request confirmation sweep failed");
-        }));
-    };
-    // Emit a periodic signal when the reaper inspects candidates but archives
-    // none, so an inert reaper that skips every candidate is never fully silent.
-    // The throttle keeps the 30s cadence from flooding the log.
+        },
+      }).unsubscribe;
+    }
     let lastTerminalWorkspaceSkipLogAt = 0;
-    const terminalWorkspaceSkipLogIntervalMs = 10 * 60 * 1000;
-    const scheduleTerminalWorkspaceSweep = () => {
-      if (heartbeatSchedulerStopped) return;
-      trackHeartbeatSchedulerWork(terminalWorkspaces
-        .sweepTerminalWorkspaces()
-        .then((result) => {
-          if (result.archived > 0 || result.cleanupFailed > 0) {
-            logger.info(result, "terminal issue workspace reaper changed workspace state");
-            return;
-          }
-          const skipped =
-            result.skippedActiveRun
-            + result.skippedNonTerminalTree
-            + result.skippedUndelivered
-            + result.skippedRace
-            + result.skippedCooldown;
-          const nowMs = Date.now();
-          if (skipped > 0 && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs) {
-            lastTerminalWorkspaceSkipLogAt = nowMs;
-            logger.info(result, "terminal issue workspace reaper skipped all candidates");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "terminal issue workspace reaper failed");
-        }));
-    };
+    const terminalWorkspaceWorker = registerTerminalWorkspaceWork(deliveryWork, {
+      ...terminalWorkspaces,
+      terminalWorkspaceWorkSettled: (hints) => {
+        terminalWorkspaces.terminalWorkspaceWorkSettled?.(hints);
+        gitRestorePointWorker.issuesChanged();
+      },
+      sweepTerminalWorkspaces: async (limit, signal, options) => {
+        const result = await terminalWorkspaces.sweepTerminalWorkspaces(limit, signal, options);
+        if (result.archived > 0 || result.cleanupFailed > 0 || result.compacted > 0 || result.compactionFailed > 0) {
+          logger.info(result, "terminal issue workspace reaper changed workspace state");
+        } else if (result.checked > 0 && Date.now() - lastTerminalWorkspaceSkipLogAt >= 10 * 60 * 1000) {
+          lastTerminalWorkspaceSkipLogAt = Date.now();
+          logger.info(result, "terminal issue workspace reaper skipped all candidates");
+        }
+        return result;
+      },
+    }, () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+    unregisterTerminalWorkspaceProbe = registerIdleLocalWorkProbe(() => terminalWorkspaceWorker.hasUnrecoveredWork() ? "present" : "none");
+    await terminalWorkspaceWorker.ready;
 
-    // The restart-safe cleanup backstop for adapter login sessions. The
-    // in-process five-minute timer stays the primary control. This reaper runs
-    // on startup and on the scheduler interval. It deletes the login sandbox for
-    // any expired non-terminal session, retries the delete for any terminal
-    // session left in `cleanup_pending`, and deletes a tagged lease that no live
-    // session references.
     const adapterLoginReaper = createDeviceLoginReaper({
       store: createDbAdapterAuthSessionStore(db as any),
       runtime: createProductionLoginSessionReaperRuntime({
@@ -1403,20 +1614,7 @@ async function startServerWithDatabaseTeardown(
         logger.info(result, "adapter login reaper swept login sessions");
       }
     };
-    const scheduleAdapterLoginReaperSweep = () => {
-      if (heartbeatSchedulerStopped) return;
-      trackHeartbeatSchedulerWork(adapterLoginReaper
-        .sweep()
-        .then(logAdapterLoginReaperResult)
-        .catch((err) => {
-          logger.error({ err }, "adapter login reaper sweep failed");
-        }));
-    };
 
-    // The restart-safe cleanup backstop for the Claude setup-token login flow. It
-    // runs on startup and on the scheduler interval, so a sandbox lease survives a
-    // server restart and a release failure. It releases any lease whose login
-    // session is terminal, past its deadline, or already consumed.
     const setupTokenReaper = createProductionSetupTokenReaper({
       db: db as any,
       environmentRuntime: environmentRuntimeService(db as any, { pluginWorkerManager }),
@@ -1429,15 +1627,6 @@ async function startServerWithDatabaseTeardown(
         logger.info(result, "setup-token login reaper released leases");
       }
     };
-    const scheduleSetupTokenReaperSweep = () => {
-      if (heartbeatSchedulerStopped) return;
-      trackHeartbeatSchedulerWork(setupTokenReaper
-        .sweep()
-        .then(logSetupTokenReaperResult)
-        .catch((err) => {
-          logger.error({ err }, "setup-token login reaper sweep failed");
-        }));
-    };
 
     const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
@@ -1449,7 +1638,6 @@ async function startServerWithDatabaseTeardown(
       },
       "worktree run-execution cutoff state",
     );
-    await accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed; pending receipts will retry"));
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -1463,9 +1651,9 @@ async function startServerWithDatabaseTeardown(
       const startupHeartbeatRecovery = (async () => {
         // Legacy remote recovery releases sandbox leases. Wait for provider
         // workers before cleanup or retry admission, including unmanaged installs.
-        await app.locals.bundledPluginsStartup;
+        await timeStartupRecovery("plugin_workers", () => app.locals.bundledPluginsStartup);
         try {
-          const nativeRecovery = await heartbeat.recoverNativeRunsAfterRestart();
+          const nativeRecovery = await timeStartupRecovery("native_recovery", () => heartbeat.recoverNativeRunsAfterRestart(new Date(), undefined, { skipDelegatedWork: true }));
           if (nativeRecovery.dispositions.length > 0) {
             logger.info(
               {
@@ -1490,7 +1678,7 @@ async function startServerWithDatabaseTeardown(
           throw err;
         }
         try {
-          const hotRestart = await heartbeat.reconcileHotRestartAdoption();
+          const hotRestart = await timeStartupRecovery("hot_restart", () => heartbeat.reconcileHotRestartAdoption());
           if (hotRestart.mode === "reported") {
             logger.info(
               hotRestart,
@@ -1500,33 +1688,14 @@ async function startServerWithDatabaseTeardown(
         } catch (err) {
           logger.error(
             { err },
-            "startup hot-restart adoption reconciliation failed - orphan reaper will serve as degraded backstop",
+            "startup hot-restart adoption reconciliation failed - recovery deadlines remain registered",
           );
         }
 
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            const result = await heartbeat.reapOrphanedRuns();
-            logger.info(
-              { reaped: result.reaped, runIds: result.runIds },
-              "startup reap of orphaned heartbeat runs complete",
-            );
-            break;
-          } catch (err) {
-            if (attempt < 2) {
-              logger.warn({ err, attempt }, "startup reap failed, retrying");
-            } else {
-              logger.error(
-                { err },
-                "startup reap of orphaned heartbeat runs failed after retry - periodic reaper will serve as degraded backstop",
-              );
-            }
-          }
-        }
-
-        const promotion = await heartbeat.promoteDueScheduledRetries();
-        await heartbeat.resumeQueuedRuns();
-        const recoveredGoalActions = await heartbeat.recoverPendingSessionGoalActions();
+        const recoveredGoalActions = await timeStartupRecovery("goal_actions", () => heartbeat.recoverPendingSessionGoalActions()).catch(err => {
+          logger.error({ err }, "startup session-goal action recovery failed");
+          return { enqueued: 0, invalid: 0 };
+        });
         if (
           recoveredGoalActions.enqueued > 0 ||
           recoveredGoalActions.invalid > 0
@@ -1536,53 +1705,15 @@ async function startServerWithDatabaseTeardown(
             "startup session-goal action outbox recovery reconciled pending controls",
           );
         }
-        const recoveredGoals = await heartbeat.recoverActiveSessionGoals();
+        const recoveredGoals = await timeStartupRecovery("active_goals", () => heartbeat.recoverActiveSessionGoals()).catch(err => {
+          logger.error({ err }, "startup active session-goal recovery failed");
+          return { enqueued: 0 };
+        });
         if (recoveredGoals.enqueued > 0) {
           logger.warn(
             recoveredGoals,
             "startup session-goal recovery resumed durable agent goals",
           );
-        }
-        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-        if (
-          promotion.promoted > 0 ||
-          reconciled.assignmentDispatched > 0 ||
-          reconciled.dispatchRequeued > 0 ||
-          reconciled.continuationRequeued > 0 ||
-          reconciled.successfulRunHandoffEscalated > 0 ||
-          reconciled.successfulRunHandoffRetried > 0 ||
-          reconciled.escalated > 0
-        ) {
-          logger.warn(
-            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-            "startup heartbeat recovery changed assigned issue state",
-          );
-        }
-
-        const dependencyWakesReconciled = await heartbeat.reconcileResolvedDependencyWakes();
-        if (dependencyWakesReconciled.healed > 0) {
-          logger.warn(
-            { ...dependencyWakesReconciled },
-            "startup dependency-wake reconciliation restored task execution paths",
-          );
-        }
-
-        const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
-        if (taskWatchdogsReconciled.triggered > 0) {
-          logger.warn(
-            { ...taskWatchdogsReconciled },
-            "startup task-watchdog reconciliation triggered watchdog work",
-          );
-        }
-
-        const scanned = await heartbeat.scanSilentActiveRuns();
-        if (scanned.created > 0 || scanned.escalated > 0) {
-          logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
-        }
-
-        const swept = await heartbeat.sweepStaleIssueLocks();
-        if (swept.cleared > 0) {
-          logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -1592,265 +1723,172 @@ async function startServerWithDatabaseTeardown(
       await startupHeartbeatRecovery;
     }
 
-    const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
-    if (setupCleanup.timedOut > 0 || setupCleanup.failed > 0) {
-      logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerResidualRecoveryWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerActiveRunSilenceWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerIssueStateRecoveryWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerDeferredReceiptWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerRunDispatchWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerCapturedInstructionCommitWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerInstructionDirectoryCleanupWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeWorkspaceFinalizationWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      unsubscribeNativeWorkspaceFinalization = worker.stop;
+      server.on("close", worker.stop);
+
+      trackHeartbeatSchedulerWork(worker.ready);
     }
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerRetainedNativeSessionCleanupWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      unsubscribeRetainedNativeSessionCleanup = worker.stop;
+      server.on("close", worker.stop);
 
-    const toolHealthSweep = await tools.sweepConnectionHealth();
-    if (toolHealthSweep.failed > 0) {
-      logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
+
+      trackHeartbeatSchedulerWork(worker.ready);
     }
-    await decisionExecutor.sweepExpired();
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerExternalConversationSettlementWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
 
-    // Run the adapter login reaper once at startup, so a login sandbox that
-    // outlived a server restart is deleted before timer ticks start.
-    await adapterLoginReaper
-      .sweep()
-      .then(logAdapterLoginReaperResult)
-      .catch((err) => {
-        logger.error({ err }, "startup adapter login reaper sweep failed");
-      });
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeRecoveryNoticeWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
 
-    // Run the setup-token login reaper once at startup, so a login sandbox lease
-    // that outlived a server restart releases before timer ticks start.
-    await setupTokenReaper
-      .sweep()
-      .then(logSetupTokenReaperResult)
-      .catch((err) => {
-        logger.error({ err }, "startup setup-token login reaper sweep failed");
-      });
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeEnvironmentSettlementWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
 
-    // Retry any orphan sandbox teardown left by a failed acquire before a server
-    // restart, so a leaked sandbox does not stay allocated across the restart.
-    await runEnvironmentLeaseCleanupSweep(0);
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeRunProjectionWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
 
-    const runRetentionSweep = async () => {
-      const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
-      let archived = 0;
-      for (const company of activeCompanies) {
-        // Cursor pagination rebuilds the whole feed for every page; one
-        // unscoped all-items build keeps this sweep at a single feed build
-        // per company per tick.
-        const page = await attentionService(db as any).list(company.id, {
-          includeDismissed: true,
-          all: true,
-          allowUnscopedAll: true,
+
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeResultCommitWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeStatusReassessmentWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativeReviewResponseWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeResponsePresentationWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      unsubscribeNativeResponsePresentation = worker.stop;
+      server.on("close", worker.stop);
+      await worker.ready;
+    }
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativePendingEffectWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerUnsafeWorkspaceExportWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerAutomaticCompletionReviewWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerObsoletePolicyReviewWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerCancelledWorkspacePreservationWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerStoppedInstructionCollectionWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+
+    const runStartupHousekeeping = async () => {
+      const step = (name: string, work: () => Promise<unknown>) =>
+        work().catch((err: unknown) => {
+          logger.error({ err, startupStep: name }, "startup housekeeping step failed");
         });
-        archived += await retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
-      }
-      const notifications = await retentionExecutor.deliverNotifications();
-      return { archived, ...notifications };
+      await step("secret_proposal_expiry", () => registerSecretProposalExpiryWork(deliveryWork, secretProposals,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready);
+      await step("custom_image_setup_cleanup", () => registerCustomImageCleanupWork(deliveryWork, environmentCustomImages,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+        config.heartbeatSchedulerIntervalMs).ready);
+      await step("tool_connection_health", () => registerToolConnectionHealthWork(deliveryWork, tools.scheduledHealth,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("decision_continuation_worker", () => registerDecisionContinuationWork(deliveryWork, decisionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("decision_expiry_worker", () => registerDecisionExpiryWork(deliveryWork, decisionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("decision_effect_recovery_worker", () => registerDecisionEffectRecoveryWork(deliveryWork, decisionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("decision_target_worker", () => registerDecisionTargetWork(deliveryWork, decisionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      const loginSchedule = loginCleanupSchedule(db, config.heartbeatSchedulerIntervalMs);
+      await step("login_cleanup_workers", () => registerLoginCleanupWork(deliveryWork, [
+        { queue: DELIVERY_QUEUES.adapterLoginCleanup, run: () => adapterLoginReaper.sweep().then(logAdapterLoginReaperResult), next: loginSchedule.adapter },
+        { queue: DELIVERY_QUEUES.setupTokenCleanup, run: () => setupTokenReaper.sweep().then(logSetupTokenReaperResult), next: loginSchedule.setupToken },
+      ], () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped, config.heartbeatSchedulerIntervalMs).ready);
+      // Retry any orphan sandbox teardown left by a failed acquire before a
+      // server restart, so a leaked sandbox does not stay allocated.
+      await step("environment_lease_cleanup", startEnvironmentCleanup);
+      await step("archive_notification_worker", () => registerDecisionArchiveDeliveryWork(deliveryWork, retentionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("approval_queue_seeding", () => registerApprovalQueueSeedingWork(deliveryWork, approvalQueueSeedingService(db as any),
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("approval_retention", () => registerApprovalRetentionWork(deliveryWork, approvalRetentionService(db as any),
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("status_card_evaluation", () => registerStatusCardEvaluationWork(deliveryWork, statusCardEvaluation,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("attention_retention", () => registerAttentionRetentionWork(deliveryWork, attentionRetentionService(db as any),
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
     };
-    await runRetentionSweep();
 
-    startHeartbeatSchedulerInterval(() => {
-      // Track the outer async callback as well as the work it starts. Shutdown
-      // can then wait through an already-running suppression check before it
-      // captures the authoritative set of running heartbeat rows.
-      trackHeartbeatSchedulerWork((async () => {
-        if (heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
-          logger.error({ err }, "decision expiry sweep failed");
-        }));
-        trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
-          logger.error({ err }, "decision retention sweep failed");
-        }));
-        const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
-        if (sweptRuntimeStatuses > 0) {
-          logger.info(
-            { swept: sweptRuntimeStatuses },
-            "heartbeat runtime-status sweeper cleared expired entries",
-          );
-        }
-
-        if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          trackHeartbeatSchedulerWork(heartbeat
-            .tickTimers(new Date())
-            .then((result) => {
-              if (result.enqueued > 0) {
-                logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-              }
-            })
-            .catch((err) => {
-              logger.error({ err }, "heartbeat timer tick failed");
-            }));
-        }
-
-        if (heartbeatSchedulerStopped) return;
-        scheduleExternalObjectRefreshSweep(new Date());
-
-        if (heartbeatSchedulerStopped) return;
-        scheduleMergedPullRequestConfirmationSweep();
-        scheduleGitHubConnectionEventPoll();
-        scheduleGitHubConnectionContinuitySweep();
-        scheduleTerminalWorkspaceSweep();
-        scheduleAdapterLoginReaperSweep();
-        scheduleSetupTokenReaperSweep();
-        scheduleEnvironmentLeaseCleanupSweep();
-
-        if (heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork(routines
-          .tickScheduledTriggers(new Date())
-          .then((result) => {
-            if (result.triggered > 0) {
-              logger.info({ ...result }, "routine scheduler tick enqueued runs");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "routine scheduler tick failed");
-          }));
-
-        if (heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork((async () => {
-          const experimental = await instanceSettingsService(db).getExperimental();
-          if (experimental.enableStatusCards !== true) return;
-          const result = await statusCards.tickDueStatusCards(new Date());
-          await Promise.all(result.enqueued.map(async ({ cardId, generatingIssue }) => {
-            try {
-              await queueIssueAssignmentWakeup({
-                heartbeat,
-                issue: generatingIssue,
-                reason: "status_card_update_assigned",
-                mutation: "status_card.scheduler_update_requested",
-                contextSource: "status_card_scheduler",
-                requestedByActorType: "system",
-                taskKey: `status-card:${cardId}`,
-                rethrowOnError: true,
-              });
-            } catch (err) {
-              await issues.update(generatingIssue.id, { status: "cancelled" });
-              throw err;
-            }
-          }));
-          if (result.evaluated > 0 || result.enqueued.length > 0) {
-            logger.info({ evaluated: result.evaluated, enqueued: result.enqueued.length }, "status-card scheduler tick complete");
-          }
-        })().catch((err) => {
-          logger.error({ err }, "status-card scheduler tick failed");
-        }));
-
-        if (heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork(environmentCustomImages
-          .cleanupExpiredSetupSessions()
-          .then((result) => {
-            if (result.timedOut > 0 || result.failed > 0) {
-              logger.warn({ ...result }, "environment customImage setup cleanup changed sessions");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "environment customImage setup cleanup failed");
-          }));
-
-        if (heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork(tools
-          .sweepConnectionHealth()
-          .then((swept) => {
-            if (swept.failed > 0) {
-              logger.warn({ ...swept }, "periodic tool connection health sweep found failing connections");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "periodic tool connection health sweep failed");
-          }));
-
-        trackHeartbeatSchedulerWork(secretProposals.sweepExpired()
-          .then((expired) => {
-            if (expired > 0) logger.warn({ expired }, "periodic secret proposal expiry scrubbed proposals");
-          })
-          .catch((err) => {
-            logger.error({ err }, "periodic secret proposal expiry sweep failed");
-          }));
-
-        trackHeartbeatSchedulerWork(chatCompletionDeliveries.sweepPending().catch((err) => logger.error({ err }, "chat completion delivery failed")));
-
-        trackHeartbeatSchedulerWork(accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed")));
-
-        trackHeartbeatSchedulerWork(connectionDeliveries.sweepPending().catch((err) => logger.error({ err }, "connection continuation delivery failed")));
-        trackHeartbeatSchedulerWork(app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "tool review recovery failed")));
-        trackHeartbeatSchedulerWork(app.locals.toolGateway.cleanupExpiredSessions().catch((err: unknown) => logger.error({ err }, "gateway token cleanup failed")));
-        trackHeartbeatSchedulerWork(app.locals.toolActionDeliveries.sweepPending().catch((err: unknown) => logger.error({ err }, "tool review delivery sweep failed")));
-        trackHeartbeatSchedulerWork(questionResponseDeliveries.sweepPending()
-          .then((result) => {
-            if (result.scanned > 0) {
-              logger.info(result, "periodic question-response delivery sweep completed");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "periodic question-response delivery sweep failed");
-          }));
-
-        if (heartbeatSchedulerStopped) return;
-        if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-          // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-            .then(() => heartbeat.promoteDueScheduledRetries())
-            .then(async (promotion) => {
-              await heartbeat.resumeQueuedRuns();
-              const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-              if (
-                promotion.promoted > 0 ||
-                reconciled.assignmentDispatched > 0 ||
-                reconciled.dispatchRequeued > 0 ||
-                reconciled.continuationRequeued > 0 ||
-                reconciled.successfulRunHandoffEscalated > 0 ||
-                reconciled.successfulRunHandoffRetried > 0 ||
-                reconciled.escalated > 0
-              ) {
-                logger.warn(
-                  { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-                  "periodic heartbeat recovery changed assigned issue state",
-                );
-              }
-            })
-            .then(async () => {
-              const reconciled = await heartbeat.reconcileResolvedDependencyWakes();
-              if (reconciled.healed > 0) {
-                logger.warn({ ...reconciled }, "periodic dependency-wake reconciliation restored task execution paths");
-              }
-            })
-            .then(async () => {
-              const reconciled = await heartbeat.reconcileTaskWatchdogs();
-              if (reconciled.triggered > 0) {
-                logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
-              }
-            })
-            .then(async () => {
-              const scanned = await heartbeat.scanSilentActiveRuns();
-              if (scanned.created > 0 || scanned.escalated > 0) {
-                logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-              }
-            })
-            .then(async () => {
-              const swept = await heartbeat.sweepStaleIssueLocks();
-              if (swept.cleared > 0) {
-                logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
-              }
-            })
-            .catch((err) => {
-              logger.error({ err }, "periodic heartbeat recovery failed");
-            }));
-        }
-      })().catch((err) => {
-        logger.error({ err }, "heartbeat scheduler tick failed");
-      }));
-    });
+    const startHeartbeatScheduler = () => {
+      if (isCloudManagedInstance()) {
+        const status = registerRoutineExecutionStatusWork(deliveryWork, routineExecutionStatusService(db as any),
+          () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+        trackHeartbeatSchedulerWork(status.ready);
+      }
+      const scheduled = registerScheduledWork(deliveryWork, {
+        retryMs: config.heartbeatSchedulerIntervalMs,
+        tickAgentTimers: async signal => {
+          const result = await heartbeat.tickAgentTimers(new Date(),
+            () => !signal.aborted && readTaskDrain(new Date()) === null && !isWarmStandby() && !heartbeatSchedulerStopped);
+          if (result.enqueued > 0) logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+        },
+        canRun: () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+        nextAgentTimerAt: () => heartbeat.nextAgentTimerAt(),
+        nextIssueMonitorAt: () => heartbeat.nextIssueMonitorAt(),
+        tickIssueMonitors: signal => heartbeat.tickIssueMonitors(new Date(),
+          () => !signal.aborted && !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped),
+        nextRoutineRunAt: () => routines.nextScheduledTriggerAt(),
+        tickRoutines: signal => routines.tickScheduledTriggers(new Date(),
+          () => !signal.aborted && !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).then(result => {
+          if (result.triggered > 0) logger.info({ ...result }, "routine scheduler tick enqueued runs");
+        }),
+      });
+      trackHeartbeatSchedulerWork(Promise.all([scheduled.timers.ready, scheduled.monitors.ready, scheduled.routines.ready]));
+    };
+    trackHeartbeatSchedulerWork(runStartupHousekeeping().then(() => {
+      if (!heartbeatSchedulerStopped) startHeartbeatScheduler();
+    }));
   } else {
     // The heartbeat scheduler is disabled, but the orphan-sandbox cleanup sweep
     // is still required. A failed acquire can leak a paid provider sandbox, so
-    // this path retries the teardown at startup and on the interval, exactly as
-    // the enabled path does.
-    await accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed; pending receipts will retry"));
-    await runEnvironmentLeaseCleanupSweep(0);
-    startHeartbeatSchedulerInterval(() => {
-      trackHeartbeatSchedulerWork(accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed")));
-      scheduleExternalObjectRefreshSweep(new Date());
-      scheduleEnvironmentLeaseCleanupSweep();
-      scheduleGitHubConnectionEventPoll();
-      scheduleGitHubConnectionContinuitySweep();
-    });
+    // this path registers the same startup recovery and pending-work deadlines
+    // as the enabled path.
+    await startEnvironmentCleanup();
   }
   
   if (config.databaseBackupEnabled) {
@@ -1864,12 +1902,16 @@ async function startServerWithDatabaseTeardown(
       },
       "Automatic database backups enabled",
     );
-    setInterval(() => {
-      if (isWarmStandby()) return;
-      void runServerDatabaseBackup("scheduled").catch(() => {
-        // runServerDatabaseBackup already logs the failure with context.
-      });
-    }, backupIntervalMs);
+    // The final pre-sleep dump remains on the volume throughout sleep. Take
+    // a fresh backup on restart before idle eligibility is enabled, including
+    // after rollback of the opt-in flag. Failure retains the marker for retry.
+    if (!isWarmStandby() && existsSync(idleBackupWakeMarker(config.databaseBackupDir))) {
+      await runServerDatabaseBackup("scheduled").catch(() => {});
+    }
+    await registerDatabaseBackupWork(deliveryWork, {
+      intervalMs: backupIntervalMs,
+      run: () => runServerDatabaseBackup("scheduled"),
+    }).ready;
   }
   
   // Wait for external adapters to finish loading before accepting requests.
@@ -1890,7 +1932,16 @@ async function startServerWithDatabaseTeardown(
     throw err;
   }
 
+  if (deploymentListenUrl !== null) {
+    await assertEphemeralServerData(db as any);
+    const qualification = await qualifyCloudConfigurationForCurrentImage(db as any);
+    if (qualification && !qualification.configurationPackagesEligible) {
+      throw new Error(`Volume-free server packages are not eligible: ${qualification.blockers.map(blocker => blocker.code).join(", ")}`);
+    }
+  }
+  markIdleStartupComplete({ scheduledBackups: config.databaseBackupEnabled });
   setStartupRecoveryPhase("ready");
+  deploymentHints?.markReady();
   logger.info(`Server startup recovery complete on ${config.host}:${listenPort}`);
   void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
     if (notified) logger.info("Notified systemd that Paperclip is ready");
@@ -1941,18 +1992,39 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
-  const shutdown = async (
+  const performShutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    setStartupRecoveryPhase("draining");
+    for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
+    liveEventsWebSocketServer.close();
+    // Finish admitted HTTP requests while their services, workers and database
+    // are still available. Railway must switch routing before signaling A.
+    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,
+      drainRequests: abort => drainHttpRequestWork(app, abort) });
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    skillVersionRetentionWorker?.unsubscribe();
+    await taskDrainExpiryWork.stop();
+    nativeRunnerEvidenceRetentionWorker?.unsubscribe();
+    await skillSourceSync.stop();
     unsubscribeChatCompletions();
-    clearInterval(executionControlInterval);
-    if (heartbeatSchedulerInterval) {
-      clearInterval(heartbeatSchedulerInterval);
-      heartbeatSchedulerInterval = null;
-    }
+    unsubscribeNativeResponsePresentation?.();
+    unsubscribeNativeWorkspaceFinalization?.();
+    unsubscribeRetainedNativeSessionCleanup?.();
+    // B can accept Stop/answers while A still owns an execution. Preserve the
+    // owner command workers and their transport until the handoff below ends.
+    await deliveryWork.stop(deploymentHints ? new Set([
+      DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
+      DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,
+    ]) : undefined);
+    await runEvidenceMigrationWork?.stop();
+    await providerTraceRetentionWork.stop();
+    await skillVersionRetentionWorker?.dispose();
+    await workspaceRecoveryWork.stop();
+    unregisterTerminalWorkspaceProbe?.();
+    unsubscribeNativeWorkspaceSyncRetention?.();
 
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
@@ -1992,9 +2064,15 @@ async function startServerWithDatabaseTeardown(
       await drainRunExecutionFinalizersForShutdown({
         signal,
         drain: drainHeartbeatExecutionFinalizers,
+        timeoutMs: 30_000,
         log: logger,
       });
     }
+
+    await cancellationDelivery?.stop();
+    await runtimeResponseDelivery?.stop();
+    await deploymentHints?.stop();
+    await deliveryWork.stop();
 
     // Whatever the drain did not finalize (timed-out runs, the hot-restart
     // skip path) still has a local-only tail when the in-flight run-log
@@ -2016,17 +2094,20 @@ async function startServerWithDatabaseTeardown(
     // setup-token login session must stop and release its sandbox lease before
     // the database and the provider stop, so an orderly shutdown never leaves a
     // sandbox lease or confidential login state alive past the process exit.
-    // The HTTP listener closes first, while every service is still up, so a
-    // request in flight is drained against a working server and none reaches
-    // a route once the pool is gone; the programmatic close below then finds
-    // the listener already closed and skips.
+    // HTTP admission and request work were drained above before stopping workers.
+    // Keep the finalizer's defensive listener close for partial teardown paths.
     await finalizeServerShutdown({
       signal,
       shutdownAppServices: appShutdown,
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
       drainPendingRunFailureReports: waitForPendingRunFailureReports,
-      closeDatabase: closeDatabaseClients,
+      // Mark the pool as ending before `sql.end()` rejects the first query,
+      // so the error handler recognizes a request that outlived the drain.
+      closeDatabase: () => {
+        (app.locals as { paperclipDatabaseClosing?: boolean }).paperclipDatabaseClosing = true;
+        return closeDatabaseClients();
+      },
       stopEmbeddedPostgres,
       shutdownInstrumentation,
       shutdownSentry,
@@ -2044,6 +2125,10 @@ async function startServerWithDatabaseTeardown(
 
     if (exitProcess) process.exit(0);
   };
+
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (signal: "SIGINT" | "SIGTERM", exitProcess: boolean) =>
+    shutdownPromise ??= performShutdown(signal, exitProcess);
 
   process.once("SIGINT", () => {
     void shutdown("SIGINT", true);

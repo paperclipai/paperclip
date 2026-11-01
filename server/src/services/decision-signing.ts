@@ -120,7 +120,7 @@ function loadOrCreateGeneratedSecret(): string {
   }
 }
 
-export function resolveDecisionSigningSecret(): string {
+export function resolveDecisionSigningSecret(options: { allowCreate?: boolean } = {}): string {
   const fromEnv = process.env.PAPERCLIP_DECISION_SIGNING_SECRET?.trim();
   if (fromEnv) {
     if (fromEnv.length < MIN_SECRET_LENGTH) {
@@ -130,7 +130,9 @@ export function resolveDecisionSigningSecret(): string {
     }
     return fromEnv;
   }
-  return loadOrCreateGeneratedSecret();
+  return options.allowCreate === false
+    ? readGeneratedSecret(resolveGeneratedSecretFilePath())
+    : loadOrCreateGeneratedSecret();
 }
 
 /**

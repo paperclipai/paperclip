@@ -174,7 +174,9 @@ For stable event work:
    should have a stable helper API.
 7. Update tests for helper behavior, including raw pass-through for enum-like
    values when that is the intended boundary.
-8. Update this README only when the contributor workflow, source-of-truth
+8. Keep the telemetry transport contract assertions in `client.test.ts`, which
+   owns the emitted-envelope, retry, and payload-size boundaries.
+9. Update this README only when the contributor workflow, source-of-truth
    pointers, or durable invariants change. Do not add an event catalog here.
 
 Before opening a pull request, verify that the emitted code, typed helpers, and

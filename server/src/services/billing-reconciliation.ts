@@ -1,13 +1,14 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createFinanceEventInTransaction } from "./finance.js";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { fastResponseRequests, decisionInvocations, promptInjectionInvocations, budgetReservations, agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { adjustCostSchema, importBillingInvoiceSchema, normalizeCents, subtractCents, type AdjustCost, type ImportBillingInvoice } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { withAccountingReadSnapshot, withAccountingTransaction } from "./accounting-transaction.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { logActivity } from "./activity-log.js";
 import { updateMonthlySpendProjections } from "./costs.js";
-import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 
 async function invoiceCostCandidates(tx: Db, companyId: string, biller: string, line: {
   costEventId?: string | null; runId?: string | null; providerRequestId?: string | null; model?: string | null;
@@ -143,15 +144,36 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           reason: input.reason, actorId, pricing: input.pricing }).returning();
         // Original provider value and fingerprint remain immutable. cost_cents
         // is the effective valuation, backed by this append-only correction.
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         const [updated] = await tx.update(costEvents).set({ costCents: sql`${input.correctedCents}::numeric`,
           reportedCostCents: event.event.reportedCostCents ?? normalizeCents(event.exact), costStatus: input.pricing.source === "rate_card" ? "estimated" : "reported", pricingProvenance: input.pricing,
         }).where(eq(costEvents.id, eventId)).returning();
         await updateMonthlySpendProjections(tx, companyId, updated.agentId, subtractCents(input.correctedCents, input.expectedCents), updated.occurredAt);
-        if (updated.heartbeatRunId) {
+        if (updated.heartbeatRunId && updated.agentId) {
           const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, updated.heartbeatRunId), eq(heartbeatRuns.companyId, companyId)));
           if (run?.costAccountedAt && run.accountingProjectionVersion === "v2") await tx.update(agentRuntimeState)
             .set({ totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${subtractCents(input.correctedCents, input.expectedCents)}::numeric`, updatedAt: new Date() })
             .where(and(eq(agentRuntimeState.agentId, updated.agentId), eq(agentRuntimeState.companyId, companyId)));
+        }
+        if (updated.usageKind === "decision") {
+          const [invocation] = await tx.select({ id: decisionInvocations.id }).from(decisionInvocations).where(and(
+            eq(decisionInvocations.companyId, companyId), eq(decisionInvocations.costEventId, eventId),
+          ));
+          if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(
+            eq(budgetReservations.companyId, companyId), eq(budgetReservations.decisionInvocationId, invocation.id), eq(budgetReservations.state, "held"),
+          ));
+        }
+        if (updated.usageKind === "prompt_injection") {
+          const [invocation] = await tx.select({ id: promptInjectionInvocations.id }).from(promptInjectionInvocations).where(and(
+            eq(promptInjectionInvocations.companyId, companyId), eq(promptInjectionInvocations.costEventId, eventId),
+          ));
+          if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(
+            eq(budgetReservations.companyId, companyId), eq(budgetReservations.promptInjectionInvocationId, invocation.id), eq(budgetReservations.state, "held"),
+          ));
+        }
+        if (updated.usageKind === "fast_response") {
+          const [invocation] = await tx.select({ id: fastResponseRequests.id }).from(fastResponseRequests).where(and(eq(fastResponseRequests.companyId, companyId), eq(fastResponseRequests.costEventId, eventId)));
+          if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.fastResponseRequestId, invocation.id), eq(budgetReservations.state, "held")));
         }
         const budgets = budgetServiceInTransaction(tx, publications);
         await budgets.evaluateCostEvent(updated);
@@ -160,7 +182,6 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           details: { adjustmentId: adjustment.id, previousCents: input.expectedCents, correctedCents: input.correctedCents, reason: input.reason, pricing: input.pricing } }, publications);
         return adjustment;
       });
-      await deliverBudgetEnforcement(db, hooks, companyId);
       return result;
     },
   };

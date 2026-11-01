@@ -14,7 +14,7 @@ export interface NativeHarnessBackupStamp {
   completedAt: string;
 }
 
-function stateBase(): string {
+export function nativeHarnessStateBase(): string {
   return resolve(
     process.env.PAPERCLIP_RUNNER_STATE_DIR ??
       resolve(
@@ -28,7 +28,7 @@ function stateBase(): string {
 
 function stateRootFromDigest(digest: string): string | null {
   if (!/^[0-9a-f]{64}$/.test(digest)) return null;
-  const base = stateBase();
+  const base = nativeHarnessStateBase();
   const root = resolve(base, digest);
   return dirname(root) === base ? root : null;
 }

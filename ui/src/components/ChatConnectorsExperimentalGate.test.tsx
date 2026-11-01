@@ -104,6 +104,31 @@ describe("Chat connectors visibility gate", () => {
     await vi.waitFor(() => expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(provider === "agentmail"));
     if (provider !== "agentmail") expect(container.querySelector("[data-redirect]")).not.toBeNull();
   });
+  it.each([true, false])("gates GitHub setup by its own flag, not chat (%s)", async (githubEnabled) => {
+    api.provider = "github";
+    api.settings.mockResolvedValue({ enableChatConnectors: !githubEnabled, enableGitHubReviewBots: githubEnabled });
+    await render();
+    expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(githubEnabled);
+  });
+  it.each(["github", "slack"])("gates each existing endpoint by provider with only GitHub enabled (%s)", async (provider) => {
+    api.endpointId = "endpoint-1";
+    api.get.mockResolvedValue({ provider });
+    api.settings.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+    await render();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("endpoint-1"));
+    await vi.waitFor(() => expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(provider === "github"));
+  });
+  it("keeps GitHub agent channels visible while hiding Slack under the independent flag", async () => {
+    api.settings.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+    api.list.mockResolvedValue([
+      { provider: "github", id: "github", assignedAgentId: "agent-1", status: "active" },
+      { provider: "slack", id: "slack", assignedAgentId: "agent-1", status: "active" },
+    ]);
+    flushSync(() => root.render(<QueryClientProvider client={client}><AgentChannelsPanel companyId="company-1" agentId="agent-1" /></QueryClientProvider>));
+    await flushReact();
+    expect(container.querySelector('a[href="/apps/chat/github/settings"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/apps/chat/slack/settings"]')).toBeNull();
+  });
   it("waits without exposing setup, then enables the route after explicit opt-in", async () => {
     let resolve!: (value: unknown) => void;
     api.settings.mockReturnValue(

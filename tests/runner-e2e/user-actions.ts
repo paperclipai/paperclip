@@ -1,7 +1,26 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
+
+/** Rich editors interpret pasted Markdown; fill inserts literal paragraph text. */
+export async function fillTaskPrompt(editor: Locator, prompt: string): Promise<void> {
+  if (!/^ {0,3}(?:`{3,}|~{3,})/m.test(prompt)
+    || await editor.evaluate(element => element.tagName === "TEXTAREA")) {
+    await editor.fill(prompt);
+    return;
+  }
+  await editor.fill("");
+  await editor.focus();
+  await editor.evaluate((element, text) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", text);
+    const event = new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true });
+    element.dispatchEvent(event);
+    if (!event.defaultPrevented) throw new Error("Task editor did not accept the Markdown paste");
+  }, prompt);
+}
 
 export async function createTaskThroughUi(input: {
   page: Page;
+  origin?: string;
   issuePrefix: string;
   agentName: string;
   title: string;
@@ -10,6 +29,7 @@ export async function createTaskThroughUi(input: {
   projectName?: string;
   requireExplicitTitle?: boolean;
   attachments?: readonly string[];
+  beforeDispatch?: () => void | Promise<void>;
 }) {
   // Search's public creation action exposes the explicit title field. Strict
   // native-operation fixtures use it so automatic task naming is not an extra
@@ -23,7 +43,7 @@ export async function createTaskThroughUi(input: {
   let bootstrapError: unknown;
   for (let bootstrapAttempt = 1; bootstrapAttempt <= 3; bootstrapAttempt += 1) {
     try {
-      await input.page.goto(issuesUrl, {
+      await input.page.goto(input.origin ? new URL(issuesUrl, input.origin).href : issuesUrl, {
         waitUntil: "domcontentloaded",
         timeout: 30_000,
       });
@@ -43,12 +63,13 @@ export async function createTaskThroughUi(input: {
   }
   await newTask.click();
   const dialog = input.page.getByRole("dialog", { name: "New task", exact: true });
+  await expect(dialog).toBeVisible();
   const titleInput = dialog.getByRole("textbox", { name: "Task title", exact: true });
-  if (await titleInput.isVisible()) await titleInput.fill(input.title);
-  else if (input.requireExplicitTitle) throw new Error("This title-preservation case requires a visible explicit title input");
-  await dialog
-    .getByRole("textbox", { name: "editable markdown", exact: true })
-    .fill(input.prompt);
+  if (input.requireExplicitTitle) {
+    await expect(titleInput).toBeVisible();
+    await titleInput.fill(input.title);
+  } else if (await titleInput.isVisible()) await titleInput.fill(input.title);
+  await fillTaskPrompt(dialog.getByRole("textbox", { name: "editable markdown", exact: true }), input.prompt);
   if (input.workMode !== "standard") {
     await dialog.getByRole("button", { name: "Add to composer", exact: true }).click();
     await input.page.getByTestId(input.workMode === "planning" ? "composer-add-plan" : "composer-add-ask").click();
@@ -73,7 +94,6 @@ export async function createTaskThroughUi(input: {
     await projectSearch.fill(input.projectName);
     await input.page.getByText(input.projectName, { exact: true }).last().click();
   }
-  const submittedAtMs = Date.now();
   if (input.attachments?.length) {
     const chooser = input.page.waitForEvent("filechooser");
     const upload = dialog.getByRole("button", { name: "Upload", exact: true });
@@ -87,6 +107,8 @@ export async function createTaskThroughUi(input: {
   }
   // The prompt-only composer generates a provisional title which the provider
   // can rename immediately. Bind the fixture to the actual creation response.
+  await input.beforeDispatch?.();
+  const submittedAtMs = Date.now();
   const [response] = await Promise.all([
     input.page.waitForResponse(response => response.request().method() === "POST"
       && /^\/api\/companies\/[^/]+\/issues$/.test(new URL(response.url()).pathname)),

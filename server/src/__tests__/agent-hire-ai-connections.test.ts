@@ -1,3 +1,4 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, environments, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -21,8 +22,18 @@ import { secretService } from "../services/secrets.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
+import { accessService } from "../services/access.js";
+import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
+
+const captureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../sentry.js")>(),
+  captureRunFailure,
+}));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 let db: ReturnType<typeof createDb>;
 let home: string;
 
@@ -31,11 +42,17 @@ beforeAll(async () => {
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
   vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
-  database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
-  db = createDb(database.connectionString);
+  if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+  else {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
+    db = createDb(database.connectionString);
+  }
 }, 90_000);
 
 afterAll(async () => {
+  await waitForPendingRunFailureReports();
+  if (externalTestDatabaseUrl) await closeRegisteredClients(externalTestDatabaseUrl);
+  await db?.$client.end();
   await database?.cleanup();
   vi.unstubAllEnvs();
   if (home) await rm(home, { recursive: true, force: true });
@@ -47,10 +64,14 @@ async function fixture(provider: "anthropic" | "openai", method: "api_key" | "su
   const userId = `owner-${companyId}`;
   const binding = { provider, method, mode: "responsible_user" } as const;
   const adapterType = provider === "anthropic" ? "claude_local" : "codex_local";
+  await db.insert(authUsers).values({ id: userId, name: "Connection owner", email: `${userId}@example.test`,
+    createdAt: new Date(), updatedAt: new Date() });
   await db.insert(companies).values({ id: companyId, name: "Hiring connection test", issuePrefix: `H${companyId.slice(0, 7)}`, defaultResponsibleUserId: userId });
   await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
   await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:create" });
   await db.insert(agents).values({ id: agentId, companyId, name: "Manager", role: "ceo", adapterType, runtimeConfig: { aiConnection: binding } });
+  await accessService(db).ensureMembership(companyId, "agent", agentId, "member", "active");
+  await db.insert(principalPermissionGrants).values(["tools:manage_profiles", "agents:configure"].map(permissionKey => ({ companyId, principalType: "agent" as const, principalId: agentId, permissionKey })));
   const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", responsibleUserId: userId }).returning();
   const app = express();
   app.use(express.json());
@@ -118,7 +139,7 @@ describe("agent-created hires use managed AI connections", () => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
-    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local" });
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local", runner: "legacy" });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
     // Fixed bindings contain identity only; compatibility is decided from
     // authoritative connection metadata when selecting each pool member.
@@ -136,10 +157,10 @@ describe("agent-created hires use managed AI connections", () => {
   });
 
   it.each([
-    ["opencode_local", {}, "PAPERCLIP_OPENCODE_PROVIDERS"],
+    ["opencode_local", { model: "anthropic/claude-sonnet-5" }, "PAPERCLIP_OPENCODE_PROVIDERS"],
     ["opencode_local", { model: "anthropic/claude-sonnet-5" }, "OPENCODE_AUTH_JSON"],
     ["paperclip_runner", { provider: "opencode", model: "anthropic/claude-sonnet-5" }, "OPENCODE_CONFIG_CONTENT"],
-  ] as const)("%s hires with %j keep explicit %s auth outside the managed OpenRouter model catalog", async (adapterType, config, key) => {
+  ] as const)("%s hires with %j apply the host boundary to explicit %s auth", async (adapterType, config, key) => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
@@ -147,9 +168,17 @@ describe("agent-created hires use managed AI connections", () => {
     const value = JSON.stringify(key === "PAPERCLIP_OPENCODE_PROVIDERS" ? { anthropic: provider }
       : key === "OPENCODE_CONFIG_CONTENT" ? { provider: { anthropic: provider } }
       : { anthropic: { type: "api", key: "fixture-explicit-key" } });
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
       name: "Independent OpenCode teammate", role: "engineer", adapterType, adapterConfig: { ...config, env: { [key]: value } },
-    }));
+    });
+    if (adapterType === "paperclip_runner") {
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      const savedAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, f.companyId));
+      expect(savedAgents.map(agent => agent.id)).toEqual([f.agentId]);
+      return;
+    }
+    const agent = hired(response);
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
     expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value });
     expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, agent.id))).toEqual([]);
@@ -178,6 +207,78 @@ describe("agent-created hires use managed AI connections", () => {
     expect(response.body.details).toMatchObject({ code: "ai_connection_pool_no_eligible_member" });
     const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(saved.runtimeConfig.aiConnection).toEqual(f.binding);
+  });
+
+  it.each(["shared", "delegated", "responsible_user", "router"] as const)("saves unrelated edits without probing an unchanged %s connection read from PostgreSQL", async (mode) => {
+    const f = await fixture("openai");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    const account = mode === "shared"
+      ? await aiConnectionService(db).save(f.companyId, f.userId, {
+        provider: "openai", method: "api_key", ownership: "shared", name: "Shared save fixture",
+        apiKey: "fixture", agentIds: [f.agentId], allAgents: false,
+      }, "fixture")
+      : f.account;
+    const binding = mode === "router" ? (await poolFixture(f)).binding
+      : mode === "responsible_user" ? f.binding
+        : { provider: "openai", method: "api_key", mode, ...account };
+    const adapterType = mode === "shared" ? "paperclip_runner" : f.adapterType;
+    await db.update(agents).set({ adapterType,
+      ...(adapterType === "paperclip_runner" ? { adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } } : {}),
+      runtimeConfig: { aiConnection: binding },
+    }).where(eq(agents.id, f.agentId));
+    const [before] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: f.userId, companyIds: [f.companyId], source: "session" };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use(errorHandler);
+    const original = getServerAdapter(adapterType);
+    const probe = vi.fn(async () => { throw new Error("The runtime is unavailable; unrelated edits must still save"); });
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    try {
+      for (const patch of [
+        { title: "Updated title" },
+        { adapterConfig: { reasoningEffort: "high" } },
+        { defaultEnvironmentId: null },
+        { runtimeConfig: { ...before.runtimeConfig, heartbeat: { enabled: false } } },
+      ]) {
+        const response = await request(app).patch(`/api/agents/${f.agentId}`).send(patch);
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body.runtimeConfig.aiConnection).toEqual(binding);
+      }
+      expect(probe).not.toHaveBeenCalled();
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(saved).toMatchObject({ title: "Updated title", adapterConfig: { reasoningEffort: "high" },
+        runtimeConfig: { aiConnection: binding, heartbeat: { enabled: false } } });
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.agentId), eq(activityLog.action, "agent.updated")))).toHaveLength(4);
+    } finally { unregisterServerAdapter(adapterType); }
+  });
+
+  it.each(["model", "engine", "environment", "harness", "connection"] as const)("probes a changed %s selection and preserves the saved configuration on failure", async (selection) => {
+    const f = await fixture("openai");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local"));
+    const adapterType = selection === "harness" ? "paperclip_runner" : f.adapterType;
+    const original = getServerAdapter(adapterType);
+    const probe = vi.fn(async () => ({ adapterType, status: "fail" as const, testedAt: new Date().toISOString(),
+      checks: [{ code: "fixture_runtime_unavailable", level: "error" as const, message: "The selected runtime is unavailable" }],
+    }));
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    const patch = selection === "environment" ? { defaultEnvironmentId: environment.id }
+      : selection === "harness" ? { adapterType, adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } }
+        : selection === "connection" ? { runtimeConfig: { aiConnection: { ...f.binding, mode: "delegated", ...f.account } } }
+        : { adapterConfig: { [selection]: selection === "model" ? "changed-model" : "cli" } };
+    try {
+      const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send(patch);
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(probe).toHaveBeenCalledOnce();
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(saved).toMatchObject({ adapterType: f.adapterType, adapterConfig: {}, defaultEnvironmentId: null,
+        runtimeConfig: { aiConnection: f.binding } });
+    } finally { unregisterServerAdapter(adapterType); }
   });
 
   it("does not install a restricted shared connection through pool membership", async () => {
@@ -360,7 +461,7 @@ describe("agent-created hires use managed AI connections", () => {
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Other provider", role: "engineer", adapterType }));
     expect(agent.runtimeConfig.aiConnection).toMatchObject({ provider: otherProvider, mode: "responsible_user" });
     await expect(prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: agent.id, responsibleUserId: f.userId, adapterType, binding: agent.runtimeConfig.aiConnection, config: agent.adapterConfig })).rejects.toMatchObject({ details: { code: "ai_connection_default_missing" } });
-    expect(agent.status).toBe("idle");
+    expect(agent).toMatchObject({ status: "paused", lifecycleState: "preparing" });
   });
 
   for (const endpoint of ["agent-hires", "agents"]) {
@@ -369,19 +470,16 @@ describe("agent-created hires use managed AI connections", () => {
       ["openai", "claude_local", {}, "OPENAI_API_KEY"],
       ["anthropic", "paperclip_runner", { provider: "codex" }, "ANTHROPIC_API_KEY"],
       ["openai", "paperclip_runner", { provider: "acpx", acpxAgent: "claude" }, "OPENAI_API_KEY"],
-    ] as const)(`${endpoint}: ignores the %s auth key for a different provider in %s`, async (provider, adapterType, config, key) => {
+    ] as const)(`${endpoint}: rejects host env settings for a %s caller hiring %s`, async (provider, adapterType, config, key) => {
       const f = await fixture(provider);
       const response = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Cross-provider config", role: "engineer", adapterType,
         adapterConfig: { ...config, env: { [key]: "leftover-parent-setting" } },
       });
-      if (adapterType.endsWith("_local")) {
-        expect(response.status).toBe(403);
-        expect(response.body.error).toContain("host-executed local adapter settings");
-        return;
-      }
-      const agent = hired(response);
-      expect(agent.runtimeConfig.aiConnection).toMatchObject({ provider: provider === "anthropic" ? "openai" : "anthropic", mode: "responsible_user" });
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      const savedAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, f.companyId));
+      expect(savedAgents.map(agent => agent.id)).toEqual([f.agentId]);
     });
   }
 
@@ -472,11 +570,17 @@ describe("agent-created hires use managed AI connections", () => {
 });
 
 describe("hired agents sharing a subscription", () => {
+  async function finishSetup(agentId: string) {
+    // These tests cover task credentials after setup; lifecycle tests cover verification.
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    try { await worker.process(agentId); } finally { await worker.stop(); }
+  }
   it("keeps a credential-lock timeout on automatic retry without blocking the task or starting a provider", async () => {
     const f = await fixture("openai", "subscription");
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, runner: "legacy", reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     // Only an operator may set host execution paths after the agent is hired.
     await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Wait for credential rotation", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, resultJson: {} }));
     registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
@@ -488,10 +592,21 @@ describe("hired agents sharing a subscription", () => {
       expect(run).not.toBeNull();
       await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
       await heartbeat.drainActiveRunExecutions();
-      expect(await heartbeat.getRun(run!.id)).toMatchObject({ errorCode: "ai_connection_busy", resultJson: { executionRecovery: { providerWorkStarted: false } } });
+      const cancelled = await heartbeat.getRun(run!.id);
+      expect(cancelled).toMatchObject({ errorCode: "ai_connection_busy", resultJson: {
+        executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false },
+        cancellation: {
+          source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Waiting for shared AI credentials",
+          recordedAt: cancelled!.finishedAt!.toISOString(),
+        },
+      } });
+      await waitForPendingRunFailureReports();
+      expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
       const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
       expect(retries).toHaveLength(1);
       expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy" });
+      expect(retries[0].resultJson?.cancellation).toBeUndefined();
       const [savedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
       expect(savedIssue.status).not.toBe("blocked");
       expect(savedIssue.executionRunId).toBe(retries[0].id);
@@ -506,9 +621,10 @@ describe("hired agents sharing a subscription", () => {
 
   it.each(["openai", "anthropic"] as const)("runs the %s child alongside a live parent and inherits its connection", async (provider) => {
     const f = await fixture(provider, "subscription");
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, runner: "legacy", reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     // Host working directories are configured by an operator, not an agent key.
     await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const parentRuntime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { cwd: home } });
     const execute = vi.fn(async () => {
@@ -534,3 +650,6 @@ describe("hired agents sharing a subscription", () => {
     }
   });
 });
+
+
+enableRunFailureReporting();

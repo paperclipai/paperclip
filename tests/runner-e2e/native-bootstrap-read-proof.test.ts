@@ -81,10 +81,13 @@ it("accepts omitted terminal path/kind only with the retained single-path origin
   }
 });
 
-it.each(["cursor"] as const)("correlates actual %s passive notices through the public reader and canonical omitted-field updates", async provider => {
+it.each(["cursor", "copilot"] as const)("correlates actual %s passive notices through the public reader and canonical omitted-field updates", async provider => {
   const { createCursorToolEvidence } = await import("../../packages/paperclip-runner/src/drivers/acpx/cursor-tool-evidence.js");
+  const { createCopilotToolEvidence } = await import("../../packages/paperclip-runner/src/drivers/acpx/copilot-tool-evidence.js");
   const { readCursorToolEvidence } = await import("./cursor-native-evidence.js");
-  const create = createCursorToolEvidence;
+  const { readCopilotToolEvidence } = await import("./copilot-evidence.js");
+  const create = provider === "cursor" ? createCursorToolEvidence : createCopilotToolEvidence;
+  const readEvidence = provider === "cursor" ? readCursorToolEvidence : readCopilotToolEvidence;
   for (const variant of ["exact", "wrong-path", "multi-path", "ambiguous-update"]) {
     const rows: any[] = [];
     const projector = create({ sessionId: "session", turnId: "turn", workingDirectory: "/workspace", active: () => true,
@@ -96,7 +99,7 @@ it.each(["cursor"] as const)("correlates actual %s passive notices through the p
     projector.tool({ type: "tool_call", tag: "tool_call", toolCallId: "bootstrap", kind: "read", status: "pending", rawInput: variant === "multi-path" ? { paths: [path, "private.txt"] } : { path }, locations: [{ path }] });
     projector.tool({ type: "tool_call", tag: "tool_call_update", toolCallId: "bootstrap", status: "failed", ...(variant === "ambiguous-update" ? { rawInput: { path, paths: [path, "private.txt"] } } : {}) });
     const evaluate = () => {
-      const readNotices = readCursorToolEvidence(rows, "run");
+      const readNotices = readEvidence(rows, "run");
       const started = receipt("started", "running", 2), end = receipt("completed", "failed", 4);
       Object.assign(end.payload.prpEvent.payload, { target: null, operation: "unknown" });
       return withoutProvenBootstrapReads([...readNotices, origin], origin, { actionFile, events: [...rows, started, end] });
@@ -112,4 +115,13 @@ it("accepts bounded correlated progress for status-omitting native content updat
   expect(withoutProvenBootstrapReads(notices, origin, { actionFile, events })).toEqual([origin]);
   progressed.payload.prpEvent.payload.target = "other.txt";
   expect(() => withoutProvenBootstrapReads(notices, origin, { actionFile, events })).toThrow();
+});
+
+it("requires the exact short Copilot setup path and rejects a miscopied path", () => {
+  const shortPath = ".paperclip-eval-action-4c0217d3b2bb.txt";
+  const notice = { ...read(), readTargetSha256: `sha256:${createHash("sha256").update(shortPath).digest("hex")}` };
+  const row = receipt(); row.payload.prpEvent.payload.target = shortPath;
+  expect(withoutProvenBootstrapReads([notice, origin], origin, { actionFile: shortPath, events: [row] })).toEqual([origin]);
+  row.payload.prpEvent.payload.target = shortPath.replace("d3", "");
+  expect(() => withoutProvenBootstrapReads([notice, origin], origin, { actionFile: shortPath, events: [row] })).toThrow(/proof/);
 });

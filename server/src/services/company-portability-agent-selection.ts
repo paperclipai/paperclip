@@ -1,5 +1,5 @@
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 
 interface ExportAgentCandidate {
   id: string;

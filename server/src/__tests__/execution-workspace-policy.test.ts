@@ -11,6 +11,7 @@ import {
   isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
+  parseIssueAssigneeAdapterOverrides,
   parseProjectExecutionWorkspacePolicy,
   ManagedSandboxUnavailableError,
   resolveEffectiveWorkspaceStrategyType,
@@ -22,6 +23,10 @@ import {
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
+  it("ignores operator-owned homeMode in stored task overrides while retaining task settings", () => {
+    expect(parseIssueAssigneeAdapterOverrides({ adapterConfig: { homeMode: "preconfigured", model: "task-model" } }))
+      .toEqual({ adapterConfig: { model: "task-model" }, useProjectWorkspace: null });
+  });
   it("defaults new issue settings from enabled project policy", () => {
     expect(
       defaultIssueExecutionWorkspaceSettingsForProject({
@@ -36,6 +41,23 @@ describe("execution workspace policy helpers", () => {
       }),
     ).toEqual({ mode: "shared_workspace" });
     expect(defaultIssueExecutionWorkspaceSettingsForProject(null)).toBeNull();
+    expect(defaultIssueExecutionWorkspaceSettingsForProject({ enabled: true })).toBeNull();
+  });
+
+  it.each(["shared_workspace", "operator_branch"] as const)("keeps declared provider strategy for %s", mode => {
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, issueSettings: null, mode, legacyUseProjectWorkspace: null,
+      projectPolicy: { enabled: true, storageProviderPluginId: "10000000-0000-4000-8000-000000000001", defaultMode: mode,
+        workspaceStrategy: { type: "git_worktree", baseRef: "release" } } });
+    expect(config.workspaceStrategy).toEqual({ type: "git_worktree", baseRef: "release" });
+    expect(resolveEffectiveWorkspaceStrategyType(mode, config)).toBe("git_worktree");
+  });
+
+  it.each(["shared_workspace", "operator_branch"] as const)("keeps the primary-source fallback for %s providers without a project strategy", mode => {
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: { workspaceStrategy: { type: "git_worktree", baseRef: "agent-branch" } },
+      issueSettings: null, mode, legacyUseProjectWorkspace: null,
+      projectPolicy: { enabled: true, storageProviderPluginId: "10000000-0000-4000-8000-000000000001" } });
+    expect(config.workspaceStrategy).toEqual({ type: "project_primary" });
+    expect(resolveEffectiveWorkspaceStrategyType(mode, config)).toBe("project_primary");
   });
 
   it("prefers explicit issue mode over project policy and legacy overrides", () => {
@@ -755,5 +777,13 @@ describe("operator default isolated execution workspaces", () => {
         resolvedStrategy: resolveEffectiveWorkspaceStrategyType(mode, config),
       }),
     ).toBe(false);
+  });
+});
+
+ describe("task-scoped low-trust environment", () => {
+  it("uses the explicit phone-task sandbox while preserving ordinary agent defaults", () => {
+    const defaults = {agentDefaultEnvironmentId: "agent-env", instanceDefaultEnvironmentId: "instance-env", localDefaultEnvironmentId: "local-env"};
+    expect(resolveExecutionWorkspaceEnvironmentId({...defaults, lowTrustIssueEnvironmentId: "phone-sandbox"})).toEqual({environmentId: "phone-sandbox", source: "issue"});
+    expect(resolveExecutionWorkspaceEnvironmentId(defaults)).toEqual({environmentId: "agent-env", source: "agent"});
   });
 });

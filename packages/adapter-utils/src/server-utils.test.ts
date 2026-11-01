@@ -20,6 +20,7 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
+  normalizePaperclipRunnerAdapterConfig,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   PAPERCLIP_FEEDBACK_SKILL_KEYS,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -42,6 +43,27 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "pi", model: "" })).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
+  const saved = { provider: "acpx", acpxAgent: "pi", model: "openrouter/provider/model", piThinkingLevel: "max", acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toMatchObject(saved);
+});
+
+it.each([undefined, "", "kimi-for-coding"])("keeps Kimi draft model selection explicit: %s", model => {
+  const config = { provider: "acpx", acpxAgent: "kimi", ...(model === undefined ? {} : { model }),
+    acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  const normalized = normalizePaperclipRunnerAdapterConfig("paperclip_runner", config);
+  expect(normalized).toMatchObject(config);
+  expect(normalized.model).toBe(model);
+});
+
+it("keeps Claude draft defaults and explicit model selection", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude" }))
+    .toMatchObject({ model: "claude-opus-5-5" });
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }))
+    .toMatchObject({ model: "claude-sonnet-5" });
+});
 
 it("reserves identity credentials even for mixed-case inherited or configured keys", () => {
   const keys = ["PAPERCLIP_AGENT_KEY_ID", "Paperclip_Agent_Public_Key", "paperclip_agent_private_key"];
@@ -340,6 +362,37 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(
         fs.readFile(path.join(target, "local-marker.txt"), "utf8"),
       ).resolves.toBe("keep\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not lock an already-current materialized skill", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const skillsHome = path.join(root, "skills");
+      const target = path.join(skillsHome, "skill");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await materializePaperclipSkillCopy(source, target);
+
+      await fs.mkdir(lock);
+      const owner = path.join(lock, "owner.json");
+      await fs.writeFile(
+        owner,
+        JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+        "utf8",
+      );
+
+      await expect(
+        materializePaperclipSkillCopy(source, target),
+      ).resolves.toMatchObject({ copiedFiles: 0 });
+      expect((await fs.readdir(skillsHome)).sort()).toEqual(["skill", "skill.lock"]);
+      await expect(fs.readFile(owner, "utf8")).resolves.toContain(`"pid":${process.pid}`);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -935,6 +988,20 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it.each([false, true])("renders the runtime checkout flag for ordinary task wakes (resume=%s)", resumedSession => {
+    const payload = { reason: "issue_assigned", issue: { id: "issue-1", status: "in_progress" },
+      comments: [], commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false };
+    const claimed = renderPaperclipWakePrompt({ ...payload, checkedOutByHarness: true }, { resumedSession });
+    expect(claimed).toContain(resumedSession ? "checkout: already claimed by the harness for this run" :
+      "The harness already checked out this issue for the current run.");
+    for (const checkedOutByHarness of [false, undefined]) {
+      const unclaimed = renderPaperclipWakePrompt({ ...payload, checkedOutByHarness }, { resumedSession });
+      expect(unclaimed).not.toContain("checkout: already claimed");
+      expect(unclaimed).not.toContain("The harness already checked out this issue for the current run.");
+    }
+  });
+
   it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
     const payload = {
       reason: "issue_commented",
@@ -1131,10 +1198,14 @@ describe("renderPaperclipWakePrompt", () => {
       );
       expect(prompt).toContain("server-authenticated github chat turn");
       expect(prompt).toContain("Make zero Paperclip API calls");
+      expect(prompt).toContain("text answer that does not require structured human input");
       expect(prompt).toContain("answer directly");
       expect(prompt).toContain("exactly one semantic completion");
       expect(prompt).toContain("summary is the user-visible final answer");
       expect(prompt).toContain("Private progress commentary is not delivered");
+      expect(prompt).toContain("periodically edit that same comment with update_comment");
+      expect(prompt).toContain("semantic completion remains internal to Paperclip");
+      expect(prompt).toContain("do not post progress or completion comments");
       expect(prompt).toContain("any actionable file-access or delivery limitation");
       expect(prompt).toContain(
         "Keep wait and review dispositions in the semantic control fields",

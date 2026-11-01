@@ -4,8 +4,8 @@ import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { collectRunEvents } from "./run-observations.js";
 import { createTaskThroughUi } from "./user-actions.js";
-import { createDeniedTargetFixture, exists, observeRunProcesses } from "./native-local-fixtures.js";
-import { assertNativeRemoteRetirement, nativeRemoteDeniedSample, prepareNativeRemoteAction, type NativeRemoteBootstrap, type NativeRemoteFixture, type NativeRemoteSnapshot } from "./native-remote-evidence.js";
+import { createDeniedTargetFixture, exists, observeRunProcesses } from "./copilot-local-fixtures.js";
+import { assertCopilotRemoteRetirement, copilotRemoteDeniedSample, prepareCopilotRemoteAction, type CopilotRemoteBootstrap, type CopilotRemoteFixture, type CopilotRemoteSnapshot } from "./copilot-protection-evidence.js";
 import { cursorDeniedCommand } from "./cursor-native-evidence.js";
 import { assertActiveStopRetirement, readActiveStopCaller, observeActiveStopPending, readActiveStopSettlement, type ActiveStopRemoteObservation, type ActiveStopCaller, type ActiveStopPending, type ActiveStopScope } from "./native-active-stop-evidence.js";
 import type { BootstrapReadProof } from "./native-bootstrap-read-proof.js";
@@ -43,7 +43,7 @@ export async function stopAtPendingPermission(input: {
 }
 export async function runNativeActiveStopFlow(input: {
   page: Page; api: RunnerApi; fixtures: LiveFixtureValues; execution: MatrixExecution; nonce: string; workspacePath: string; deadlineAt: number;
-  remoteBootstrap?: NativeRemoteBootstrap;
+  remoteBootstrap?: CopilotRemoteBootstrap;
   registerCleanupAssertion(callback: () => Promise<Check[]>): void;
   registerBeforeEnvironmentTeardownAssertion(callback: () => Promise<Check[]>): void;
   observe(issue: Row, runs: Row[]): void;
@@ -51,7 +51,7 @@ export async function runNativeActiveStopFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { api, page, fixtures, execution, nonce } = input, provider = execution.profile.qualificationCandidate;
-  if (provider !== "cursor" || execution.task.id !== "pending-permission-stop") throw new Error("Unknown native active Stop case");
+  if ((provider !== "cursor" && provider !== "copilot") || execution.task.id !== "pending-permission-stop") throw new Error("Unknown native active Stop case");
   const remote = execution.environment.id === "daytona";
   if ((!remote && execution.environment.id !== "local") || (remote && !input.remoteBootstrap)) throw new Error("Active Stop requires an isolated admitted environment");
   const checks: Check[] = []; let issue: Row = {}, runs: Row[] = [], events: Row[] = [];
@@ -65,15 +65,12 @@ export async function runNativeActiveStopFlow(input: {
   const remoteObservations: ActiveStopRemoteObservation[] = [];
   let retirement: ReturnType<typeof assertActiveStopRetirement> | undefined;
   const samples: Array<{ phase: string; absent: boolean }> = [];
-  let fixture: NativeRemoteFixture | undefined, baseline: NativeRemoteSnapshot | undefined, sealed: NativeRemoteSnapshot | undefined;
+  let fixture: CopilotRemoteFixture | undefined, baseline: CopilotRemoteSnapshot | undefined, sealed: CopilotRemoteSnapshot | undefined;
   let completed: Awaited<ReturnType<typeof stopAtPendingPermission>> | undefined;
   const observeProcesses = () => {
-    // Remote ownership comes from the sandbox boot/start-tick journal. The
-    // API PID transitions from the controller command to the remote runner.
-    if (!observer) return;
     const run = runs[0], authority = run?.processPid ? { pid: run.processPid, groupId: run.processGroupId, startedAt: run.processStartedAt, runId: run.id } : undefined;
     if (authority) { const key = JSON.stringify(authority); if (processIdentity && processIdentity !== key) processError = true; processIdentity ??= key; }
-    processes = observer.sample(authority);
+    if (observer) processes = observer.sample(authority);
   };
   const load = async (): Promise<ActiveStopState> => {
     if (issue.id) issue = await api.get<Row>(`/api/issues/${issue.id}`);
@@ -90,7 +87,7 @@ export async function runNativeActiveStopFlow(input: {
       if (phase !== "pending") throw new Error("Remote filesystem phase requires a fresh live snapshot");
       const snap = await fixture.snapshot(phase);
       remoteObservations.push({ phase, source: "live-snapshot", snapshot: snap });
-      value = !nativeRemoteDeniedSample(snap, baseline, target, "pending").exists;
+      value = !copilotRemoteDeniedSample(snap, baseline, target, "pending").exists;
       await input.evidence(`active-stop-${phase}-remote.json`, snap);
     } else value = !await exists(local!.targetPath);
     samples.push({ phase, absent: value }); check(`no-effect-${phase}`, value, "Exact target remains absent at the causal observation boundary");
@@ -103,7 +100,7 @@ export async function runNativeActiveStopFlow(input: {
       await load();
       if (remote) {
         if (!fixture || !baseline) throw new Error("Remote observer was never armed");
-        sealed ??= await fixture.finish(); assertNativeRemoteRetirement(sealed, baseline); processes = sealed.processes;
+        sealed ??= await fixture.finish(); assertCopilotRemoteRetirement(sealed, baseline); processes = sealed.processes;
       } else if (processes.captured && processes.live.length) {
         await pollUntil({ label: "active Stop provider retirement", deadlineAt: Date.now() + 5000, intervalMs: 100, load: async () => { observeProcesses(); return processes; }, accept: p => p.live.length === 0 });
       }
@@ -136,13 +133,13 @@ export async function runNativeActiveStopFlow(input: {
     check("explicit-per-turn-policy", configured.adapterConfig?.acpxPermissionMode === "approve-reads" && configured.adapterConfig?.lifecycleMode === "per_turn" && (provider !== "cursor" || configured.adapterConfig?.acpxSessionMode === "agent"), "Agent mode and per-turn restrictive permission policy selected before startup");
     const project = await api.post<Row>(`/api/companies/${fixtures.company.id}/projects`, { name: `Native active Stop ${nonce}`, executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace", sharedWorkspaceConcurrency: "serialize", allowIssueOverride: false, environmentId: fixtures.environment.id, workspaceStrategy: { type: "project_primary" } }, workspace: { name: "Primary", sourceType: "local_path", cwd: input.workspacePath, isPrimary: true } });
     if (!remote) await sample("before-request");
-    const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: remote ? input.remoteBootstrap!.prompt(nonce) : prompt(), workMode: "standard", projectName: project.name, requireExplicitTitle: true });
-    issue = (await pollUntil({ label: "browser-created active Stop task", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)).find(i => i.id === createdTask.issueId), accept: Boolean }))!;
+    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: remote ? input.remoteBootstrap!.prompt(nonce) : prompt(), workMode: "standard", projectName: project.name });
+    issue = (await pollUntil({ label: "browser-created active Stop task", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)).find(i => i.title === execution.task.buildTitle(nonce)), accept: Boolean }))!;
     if (remote) {
       await pollUntil({ label: "active Stop remote bootstrap", deadlineAt: input.deadlineAt, load, accept: state => state.run.status === "running" });
       const bound = await input.remoteBootstrap!.bindAndRelease({ issueId: issue.id, runId: runs[0]!.id, targets: [target], actionPrompt: async value => {
         fixture = value; if (provider === "cursor") command = cursorDeniedCommand(join(value.remoteCwd, target));
-        const prepared = await prepareNativeRemoteAction({ fixture: value, companyId: fixtures.company.id, environmentId: fixtures.environment.id, runId: runs[0]!.id, target, prompt: prompt() });
+        const prepared = await prepareCopilotRemoteAction({ fixture: value, companyId: fixtures.company.id, environmentId: fixtures.environment.id, runId: runs[0]!.id, target, prompt: prompt() });
         baseline = prepared.baseline;
         remoteObservations.push({ phase: "before-request", source: "live-snapshot", snapshot: baseline });
         await input.evidence("active-stop-before-request-remote.json", baseline); return prepared.prompt;
@@ -168,7 +165,7 @@ export async function runNativeActiveStopFlow(input: {
     if (remote) {
       // finish drains the observer's automatic retirement seal. It does not
       // extend the remote watch through subsequent host UI/cleanup assertions.
-      sealed = await fixture!.finish(); assertNativeRemoteRetirement(sealed, baseline!); processes = sealed.processes;
+      sealed = await fixture!.finish(); assertCopilotRemoteRetirement(sealed, baseline!); processes = sealed.processes;
       remoteObservations.push({ phase: "owned-process-retirement", source: "retirement-seal", snapshot: sealed });
       await input.evidence("active-stop-owned-process-retirement-remote.json", sealed);
     } else await sample("after-stop");

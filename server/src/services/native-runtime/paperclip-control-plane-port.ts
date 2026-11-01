@@ -1,5 +1,7 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
-import { and, asc, eq, gt, or } from "drizzle-orm";
+import { and, asc, eq, gt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
@@ -7,6 +9,7 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  nativeRunnerCheckpoints,
 } from "@paperclipai/db";
 import type {
   CompleteControlPlaneRunInput,
@@ -25,8 +28,13 @@ import {
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
+import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
+import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, type NativeControllerCompatibility } from "./native-controller-recovery.js";
+import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
+  type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
+import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -47,6 +55,7 @@ function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
   return "schema" in value && [
     "paperclip.prp.event.v1",
     "paperclip.prp.event.v2",
+    "paperclip.prp.event.v3",
   ].includes(value.schema);
 }
 
@@ -80,8 +89,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #redactedDeltaBytes = 0;
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
-  readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
-  readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+  readonly #assertControllerActive?: () => void;
+  readonly #assertRunAdmissionActive?: () => void;
+  readonly #onResultCommitted?: () => Promise<void>;
+  readonly #onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
+  readonly #onCommittedEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+  readonly #onDuplicateEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+  readonly #nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
+  readonly #taskSessionPublication?: NativeTaskSessionPublicationContext;
+  readonly #taskSessionPublicationOwner?: NativeRunnerCheckpointOwner;
 
   constructor(
     db: Db,
@@ -89,18 +105,41 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options: {
       /** Runtime-only secret; never part of the persisted binding. */
       privateKeyPem?: string;
-      onCommittedEvent?: (event: PrpEvent) => Promise<void>;
-      onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+      /** Synchronous revocation fence for a controller handing off on restart. */
+      assertControllerActive?: () => void;
+      /** Read-only admission may finish an existing startup solely for restart detachment. */
+      assertRunAdmissionActive?: () => void;
+      onResultCommitted?: () => Promise<void>;
+      onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
+      onCommittedEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+      onDuplicateEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+      nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
+      taskSessionPublication?: NativeTaskSessionPublicationContext;
+      taskSessionPublicationOwner?: NativeRunnerCheckpointOwner;
     } = {},
   ) {
     this.#db = db;
+    this.#assertControllerActive = options.assertControllerActive;
+    this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
     this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
+    this.#onEventPersistence = options.onEventPersistence;
+    this.#onResultCommitted = options.onResultCommitted;
     this.#onDuplicateEvent = options.onDuplicateEvent;
+    this.#nativeRecovery = options.nativeRecovery;
+    this.#taskSessionPublication = options.taskSessionPublication ? structuredClone(options.taskSessionPublication) : undefined;
+    this.#taskSessionPublicationOwner = options.taskSessionPublicationOwner;
   }
 
-  #matchesPersistedBinding(run: typeof heartbeatRuns.$inferSelect): boolean {
+  #assertActive(options?: { signal: AbortSignal }): void {
+    this.#assertControllerActive?.();
+    options?.signal.throwIfAborted();
+  }
+
+  #matchesPersistedBinding(run: Pick<typeof heartbeatRuns.$inferSelect,
+    "companyId" | "agentId" | "runtimeMode" | "nativeIssueId" | "nativeSessionId" |
+    "runnerInstanceId" | "completionContractId" | "completionContractSha256">): boolean {
     return run.companyId === this.#binding.companyId
       && run.agentId === this.#binding.agentId
       && run.runtimeMode === "native"
@@ -112,6 +151,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async openRun(input: OpenControlPlaneRunInput): Promise<void> {
+    this.#assertRunAdmissionActive?.();
     const identity = input.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -134,6 +174,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (!run || !this.#matchesPersistedBinding(run)) {
       throw new Error("native_open_run_not_authorized");
     }
+    this.#assertRunAdmissionActive?.();
     this.#sessionId = identity.sessionId;
   }
 
@@ -160,8 +201,13 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return structuredClone(snapshot as PersistedNativeSession);
   }
 
-  async checkpointSession(snapshot: PersistedNativeSession): Promise<void> {
-    snapshot = this.#identityRedactor.redact(snapshot);
+  normalizeReplayPayload(payload: PrpEvent["payload"]): PrpEvent["payload"] {
+    return redactRunnerApiPayloads(this.#identityRedactor.redact(payload));
+  }
+
+  async checkpointSession(snapshot: PersistedNativeSession, options?: { signal: AbortSignal }): Promise<void> {
+    this.#assertActive(options);
+    snapshot = redactRunnerApiPayloads(this.#identityRedactor.redact(snapshot));
     const identity = snapshot.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -170,27 +216,117 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       || identity.agentId !== this.#binding.agentId
       || this.#sessionId !== identity.sessionId
     ) throw new Error("native_session_checkpoint_binding_mismatch");
+    const publication = this.#taskSessionPublication && eligibleNativeTaskSessionPublication(snapshot)
+      ? this.#taskSessionPublication : null;
+    if (publication && !this.#taskSessionPublicationOwner) throw new Error("native_task_session_publication_owner_required");
     await this.#db.transaction(async (tx) => {
-      const run = await tx.select().from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
+      const recovery = this.#nativeRecovery;
+      const owner = recovery?.owner ?? (publication ? this.#taskSessionPublicationOwner : undefined);
+      if (publication && recovery && nativeSha256(recovery.owner) !== nativeSha256(this.#taskSessionPublicationOwner)) {
+        throw new Error("native_task_session_publication_owner_mismatch");
+      }
+      const ownerLock = owner ? nativeRunnerCheckpointOwnerLock(tx, owner) : null;
+      // NO KEY UPDATE serializes reset/admission fields while remaining compatible
+      // with completeRun's parent KEY SHARE. Keep coordinator → issue → run order.
+      const publicationIssue = publication ? tx.$with("publication_issue").as(tx.select({
+        id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
+        conversationAgentId: issues.conversationAgentId, conversationSessionGeneration: issues.conversationSessionGeneration,
+      }).from(issues).where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId),
+        ownerLock ? sql`exists (select 1 from ${ownerLock})` : undefined)).for("no key update")) : null;
+      const lockedRun = tx.$with("snapshot_run").as(tx.select({
+        id: heartbeatRuns.id, status: heartbeatRuns.status,
+        contextSnapshot: (publication ? sql<Record<string, unknown>>`jsonb_build_object('conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration')` : sql<null>`null`).as("publication_context"),
+        resultJson: (publication ? sql<Record<string, unknown>>`jsonb_build_object('nativeCancellation', ${heartbeatRuns.resultJson}->'nativeCancellation',
+          'cancellation', ${heartbeatRuns.resultJson}->'cancellation', 'startupCancellation', ${heartbeatRuns.resultJson}->'startupCancellation')` : sql<null>`null`).as("publication_cancellation"),
+        startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+        companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        runtimeMode: heartbeatRuns.runtimeMode, nativeIssueId: heartbeatRuns.nativeIssueId,
+        nativeSessionId: heartbeatRuns.nativeSessionId, runnerInstanceId: heartbeatRuns.runnerInstanceId,
+        completionContractId: heartbeatRuns.completionContractId,
+        completionContractSha256: heartbeatRuns.completionContractSha256,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, this.#binding.runId), ownerLock
+          ? sql`exists (select 1 from ${ownerLock})` : undefined,
+          publicationIssue ? sql`exists (select 1 from ${publicationIssue})` : undefined)).for("update"));
+      // Project the locking CTE's tuples, including any update committed while
+      // the lock waited. A second scan of heartbeat_runs could see an old MVCC tuple.
+      // The run CTE depends on the coordinator CTE: both locks precede the
+      // outer clock sample, including when either lock waits.
+      const selected = await tx.with(...(ownerLock ? [ownerLock] : []), ...(publicationIssue ? [publicationIssue] : []), lockedRun).select({ run: {
+        id: lockedRun.id, status: lockedRun.status, contextSnapshot: lockedRun.contextSnapshot, resultJson: lockedRun.resultJson,
+        startedAt: lockedRun.startedAt, createdAt: lockedRun.createdAt,
+        companyId: lockedRun.companyId, agentId: lockedRun.agentId,
+        runtimeMode: lockedRun.runtimeMode, nativeIssueId: lockedRun.nativeIssueId,
+        nativeSessionId: lockedRun.nativeSessionId, runnerInstanceId: lockedRun.runnerInstanceId,
+        completionContractId: lockedRun.completionContractId,
+        completionContractSha256: lockedRun.completionContractSha256,
+        runnerProfileJson: lockedRun.runnerProfileJson,
+      }, now: sql<Date>`clock_timestamp()`, ...(ownerLock ? {
+        leaseOwner: sql<string | null>`(select ${ownerLock.leaseOwner} from ${ownerLock})`,
+        leaseExpiresAt: sql<Date | null>`(select ${ownerLock.leaseExpiresAt} from ${ownerLock})`.mapWith(nativeRunFinalizations.leaseExpiresAt),
+        resultId: sql<string | null>`(select ${ownerLock.resultId} from ${ownerLock})`,
+      } : {}), ...(recovery ? {
+        checkpointHeader: sql<Record<string, unknown> | null>`(select material from ${nativeRunnerCheckpoints}
+          where ${nativeRunnerCheckpoints.runId} = ${this.#binding.runId}
+            and ${nativeRunnerCheckpoints.companyId} = ${this.#binding.companyId}
+            and ${nativeRunnerCheckpoints.issueId} = ${this.#binding.issueId}
+            and ${nativeRunnerCheckpoints.part} = 'header')`,
+        } : {}), ...(publicationIssue ? { publicationIssue: sql<NativeTaskSessionPublicationIssue>`(select jsonb_build_object(
+          'id', ${publicationIssue.id}, 'companyId', ${publicationIssue.companyId}, 'executionRunId', ${publicationIssue.executionRunId},
+          'conversationAgentId', ${publicationIssue.conversationAgentId}, 'conversationSessionGeneration', ${publicationIssue.conversationSessionGeneration}) from ${publicationIssue})` } : {}),
+      }).from(lockedRun).limit(1)
         .then((rows) => rows[0] ?? null);
+      const run = selected?.run;
+      this.#assertActive(options);
+      if (owner && !selected) throw new Error("native_runner_checkpoint_owner_lost");
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_session_checkpoint_binding_mismatch");
       }
-      await tx.update(heartbeatRuns).set({
-        runnerProfileJson: {
+      // The run row lock may have waited beyond our lease. Generation cannot
+      // change while we hold the coordinator, but wall-clock expiry still can.
+      if (owner && selected) await validateNativeRunnerCheckpointOwner(tx, owner,
+        { leaseOwner: selected.leaseOwner ?? null, leaseExpiresAt: selected.leaseExpiresAt ?? null,
+          resultId: selected.resultId ?? null, now: selected.now }, !snapshot.semanticResult);
+      const header = recovery && selected?.checkpointHeader
+        ? inspectNativeRunnerUpgradeHeader(this.#binding, selected.checkpointHeader) : null;
+      if (header && (header.normalizedSessionId !== identity.sessionId || header.runnerInstanceId !== this.#binding.sourceInstanceId)) {
+        throw new Error("native_session_checkpoint_prp_binding_mismatch");
+      }
+      const profile: Record<string, unknown> = {
           ...record(run.runnerProfileJson),
           sessionCheckpoint: structuredClone(snapshot) as unknown as Record<string, unknown>,
-        },
+          ...(recovery ? { nativeControllerRecovery: createNativeControllerRecovery(snapshot, recovery.compatibility,
+            header ? { runId: this.#binding.runId, runnerInstanceId: header.runnerInstanceId,
+              normalizedSessionId: header.normalizedSessionId } : null) } : {}),
+        };
+      // Driver/live snapshots may already describe a terminal result before
+      // completeRun accepts it. Persist that observation without a handled
+      // receipt; the existing post-acceptance checkpoint publishes the pointer.
+      if (publication && selected?.resultId) {
+        const receipt = await publishNativeTaskSessionInTransaction(tx, { binding: this.#binding, context: publication,
+          snapshot, run, issue: selected.publicationIssue ?? null, resultId: selected.resultId ?? null,
+          recoveryReady: !recovery || header !== null });
+        profile[NATIVE_TASK_SESSION_PUBLICATION_KEY] = receipt;
+        if (Buffer.byteLength(JSON.stringify({ nativeControllerRecovery: profile.nativeControllerRecovery,
+          [NATIVE_TASK_SESSION_PUBLICATION_KEY]: receipt })) > NATIVE_CONTROLLER_RECOVERY_MAX_BYTES) {
+          throw new Error("native_task_session_publication_metadata_too_large");
+        }
+      }
+      await tx.update(heartbeatRuns).set({
+        runnerProfileJson: profile,
         sessionIdAfter: snapshot.providerSessionId ?? snapshot.sessionId,
         nativePhase: snapshot.semanticResult ? "workspace_finalizing" : "observed",
         nativePhaseUpdatedAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
+      this.#assertActive(options);
     });
   }
 
-  async appendEvent(value: NativeRunEvent | PrpEvent) {
+  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+    const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
+    this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
     const validated = validatePrpEvent(value);
     if (!validated.ok) throw new Error(`native_event_schema_invalid:${validated.issues[0]?.message ?? "unknown"}`);
@@ -235,38 +371,57 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
     }
-    const persisted = await appendHeartbeatRunEvent(this.#db, {
-      companyId: this.#binding.companyId,
-      runId: this.#binding.runId,
-      agentId: this.#binding.agentId,
-      eventType: event.eventType,
-      stream: "system",
-      level: event.eventType.includes("failed") ? "error" : "info",
-      payload: { prpEvent: event as unknown as Record<string, unknown> },
-      nativeSource: {
-        sourceInstanceId: event.sourceInstanceId,
-        sourceEventId: event.sourceEventId,
-        sourceSeq: event.sourceSeq,
-        protocolSchemaVersion: event.schemaVersion,
-        canonicalPayload: event as unknown as Record<string, unknown>,
-      },
-    });
-    if (persisted.disposition === "committed") {
-      publishChatPublicationCommitSignal({
+    event = redactRunnerApiEvent(event);
+    const persisted = await this.#db.transaction(async tx => {
+      this.#assertActive(options);
+      const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
         companyId: this.#binding.companyId,
-        issueId: this.#binding.issueId,
         runId: this.#binding.runId,
         agentId: this.#binding.agentId,
-        seq: persisted.row.seq,
         eventType: event.eventType,
+        stream: "system",
+        level: event.eventType.includes("failed") ? "error" : "info",
+        payload: { prpEvent: event as unknown as Record<string, unknown> },
+        nativeSource: {
+          sourceInstanceId: event.sourceInstanceId,
+          sourceEventId: event.sourceEventId,
+          sourceSeq: event.sourceSeq,
+          protocolSchemaVersion: event.schemaVersion,
+          canonicalPayload: event as unknown as Record<string, unknown>,
+        },
       });
-      await this.#onCommittedEvent?.(event);
+      // The nested append has no publication side effects. Revocation rolls
+      // back its event and sequence allocation before the outer commit.
+      this.#assertActive(options);
+      return receipt;
+    });
+    this.#assertActive(options);
+    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceStartedAt + performance.now() - persistenceClock); } catch {}
+    if (persisted.disposition === "committed") {
+      try {
+        publishLiveEvent({
+          companyId: this.#binding.companyId,
+          type: "heartbeat.run.event",
+          payload: {
+            runId: this.#binding.runId,
+            agentId: this.#binding.agentId,
+            issueId: this.#binding.issueId,
+            seq: persisted.row.seq,
+            eventType: persisted.row.eventType,
+            stream: persisted.row.stream,
+            level: persisted.row.level,
+            payload: persisted.row.payload,
+          },
+        });
+      } catch {
+      }
+      await this.#onCommittedEvent?.(event, persisted.row.seq);
     } else {
       // A recovered runner may replay the event whose durable side effects
       // parked the prior attempt. Do not repeat those effects, but let the
       // embedding runtime refresh observational state before appendEvent
       // returns to its synchronous governed-wait boundary.
-      await this.#onDuplicateEvent?.(event);
+      await this.#onDuplicateEvent?.(event, persisted.row.seq);
     }
     return {
       cursor: persisted.row.seq,
@@ -305,8 +460,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return { events, highestContiguousSourceSeq: cursor };
   }
 
-  async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput): Promise<void> {
-    value = this.#identityRedactor.redact(value);
+  async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {
+    this.#assertActive(options);
+    value = redactRunnerApiPayloads(this.#identityRedactor.redact(value));
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
     // Capture compatibility diagnostics before canonical validation removes
     // legacy/non-actionable attention payloads. They are operator evidence,
@@ -331,18 +487,26 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       canonicalSha256,
     });
 
-    await this.#db.transaction(async (tx) => {
-      // Result insertion checks the task foreign key. Acquire that parent lock
-      // before the run, matching task mutations that subsequently update a run.
-      // Otherwise concurrent chat/status writes can deadlock after generation.
+    const insertedResult = await this.#db.transaction(async (tx) => {
+      // Status commit and snapshot publication lock coordinator → issue → run.
+      // A replay must follow that order too: holding the issue while waiting
+      // for the coordinator deadlocks a status commit's issue UPDATE lock.
+      const recovery = this.#nativeRecovery;
+      const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
+      // Result insertion checks the task FK. Keep its parent lock before run.
       await tx.select({ id: issues.id }).from(issues)
         .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
         .for("key share");
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);
+      this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_result_binding_mismatch");
+      }
+      if (recovery && owner) {
+        const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+        await validateNativeRunnerCheckpointOwner(tx, recovery.owner, { ...owner, now: clock.now }, false);
       }
 
       const callerConditions = [eq(nativeRunResults.serverFingerprint, serverFingerprint)];
@@ -352,9 +516,11 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         .where(and(eq(nativeRunResults.runId, this.#binding.runId), or(...callerConditions)))
         .limit(1).then((rows) => rows[0] ?? null);
       if (existing) {
+        this.#assertActive(options);
         if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
-        return;
+        return false;
       }
+      if (owner?.resultId) throw new Error("structured_result_replay_conflict");
       const resultJson = {
         result: validated.result,
         terminal: value.terminal,
@@ -362,6 +528,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
           ignoredAttentionRequests: normalizationDiagnostics.ignoredAttentionRequests,
         },
       } as unknown as Record<string, unknown>;
+      await notifyNativeResultCommit(tx, this.#binding);
+      await notifyNativeWorkspaceFinalization(tx, this.#binding);
       const inserted = await tx.insert(nativeRunResults).values({
         companyId: this.#binding.companyId,
         issueId: this.#binding.issueId,
@@ -387,6 +555,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         set: {
           phase: "workspace_finalizing",
           resultId: inserted.id,
+          recoveryState: null,
+          recoveryRequestId: null,
           failureCode: null,
           failureDetail: null,
           nextAttemptAt: null,
@@ -404,6 +574,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         },
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
+      this.#assertActive(options);
+      return true;
     });
+    if (insertedResult) { try { await this.#onResultCommitted?.(); } catch {} }
   }
 }
