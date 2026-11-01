@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { createArtifactInstaller } from "./artifact-transfer.js";
 
 type Runner = Pick<CommandManagedRuntimeRunner, "execute">;
@@ -57,7 +58,7 @@ describe.skipIf(process.platform !== "linux")("artifact filesystem installation"
 
   it("never overwrites a conflicting destination", async () => {
     await writeFile(join(root, "result.bin"), "keep");
-    await expect(createArtifactInstaller(root)(request())).rejects.toThrow();
+    await expect(createArtifactInstaller(root)(request())).rejects.toThrow("artifact_install_conflict");
     expect(await readFile(join(root, "result.bin"), "utf8")).toBe("keep");
     expect(await readdir(root)).toEqual(["result.bin"]);
   });
@@ -89,8 +90,25 @@ describe.skipIf(process.platform !== "linux")("artifact filesystem installation"
     const install = createArtifactInstaller(root, runner);
     await expect(install(request())).rejects.toThrow("not confirmed");
     expect((await readFile(join(root, "result.bin"))).equals(bytes)).toBe(true);
-    await install(request());
+    await install({ ...request(), verifyOnly: true });
     expect(await readdir(root)).toEqual(["result.bin"]);
+  });
+
+
+  it("returns a known conflict instead of an unknown outcome", async () => {
+    await writeFile(join(root, "result.bin"), "keep");
+    try { await createArtifactInstaller(root)(request()); throw new Error("expected conflict"); }
+    catch (error) {
+      expect(error).not.toBeInstanceOf(SemanticToolOutcomeUnknownError);
+      expect((error as Error).message).toBe("artifact_install_conflict");
+    }
+  });
+
+  it("recovery verifies only and never installs a missing destination", async () => {
+    const runner = { execute: vi.fn(execute) };
+    await expect(createArtifactInstaller(root, runner)({ ...request(), verifyOnly: true })).rejects.toThrow();
+    expect(await readdir(root)).toEqual([]);
+    expect(runner.execute.mock.calls.every(([input]) => !input.stdin)).toBe(true);
   });
 
   it("does not publish when the provider fails during staging, and permits a clean retry", async () => {

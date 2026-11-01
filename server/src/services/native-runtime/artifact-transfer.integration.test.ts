@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { agents, assets, companies, createDb, heartbeatRuns, issues, runnerApiResponseReservations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { createArtifactInstaller } from "./artifact-transfer.js";
 import type { StorageService } from "../../storage/types.js";
 
@@ -48,11 +49,22 @@ describe.skipIf(process.platform !== "linux")("native authenticated artifact ins
       expect(createHash("sha256").update(restored).digest("hex")).toBe(sha256);
       expect(restored.equals(bytes)).toBe(true);
       expect(await authority.execute({ ...call, callId: "retry-install" })).toMatchObject({ outcome: "completed", sha256 });
-      const remoteInstaller = vi.fn(createArtifactInstaller(root));
+      expect(await authority.recover(call)).toMatchObject({ result: { outcome: "completed", sha256 } });
+      expect(await authority.recover({ ...call, arguments: { ...call.arguments, destination: "missing.bin" } })).toMatchObject({ isError: true, result: { error: "artifact_install_missing" } });
+      expect(await readdir(root)).toEqual(["synthetic.bin"]);
+      let loseReceipt = true;
+      const realInstaller = createArtifactInstaller(root);
+      const remoteInstaller = vi.fn<ReturnType<typeof createArtifactInstaller>>(async input => {
+        await realInstaller(input);
+        if (loseReceipt && !input.verifyOnly) { loseReceipt = false; throw new SemanticToolOutcomeUnknownError("lost commit receipt"); }
+      });
       const remoteAuthority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workspaceRoot: root, storage,
         executionTargetKind: "remote", installRemoteArtifact: remoteInstaller });
-      expect(await remoteAuthority.execute({ ...call, arguments: { ...call.arguments, destination: "remote-synthetic.bin" } })).toMatchObject({ outcome: "completed", sha256 });
-      expect(remoteInstaller).toHaveBeenCalledOnce();
+      const remoteCall = { ...call, arguments: { ...call.arguments, destination: "remote-synthetic.bin" } };
+      await expect(remoteAuthority.execute(remoteCall)).rejects.toThrow("lost commit receipt");
+      expect(await remoteAuthority.recover(remoteCall)).toMatchObject({ result: { outcome: "completed", sha256 } });
+      expect(remoteInstaller).toHaveBeenCalledTimes(2);
+      expect(remoteInstaller.mock.calls[1][0].verifyOnly).toBe(true);
       expect((await readFile(join(root, "remote-synthetic.bin"))).equals(bytes)).toBe(true);
       await rm(join(root, "remote-synthetic.bin"));
       // Inputs with a different identity or without an available asset fail before storage.

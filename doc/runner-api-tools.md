@@ -151,7 +151,9 @@ checks size and SHA-256 on a private staging file before atomic create-only
 publication. Linux directory descriptors reject parent/destination symlinks and
 traversal. Existing different files are never overwritten; an identical retry
 verifies the existing file. A lost promotion acknowledgement is an unknown outcome:
-retry the same destination and identity to reconcile it. Interrupted staging can
+the native recovery path rechecks current authority and verifies the destination
+against the same size and hash without installing again. Missing or conflicting
+destinations return tool errors. An explicit identical retry remains safe. Interrupted staging can
 leave a reserved scratch file if cleanup cannot reach the provider, but never a
 completed destination. File synchronization after the turn remains owned by the
 normal workspace lifecycle.

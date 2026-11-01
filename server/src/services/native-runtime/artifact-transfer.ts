@@ -16,7 +16,7 @@ export const DOWNLOAD_ARTIFACT_DEFINITION = {
   description: "Copy an authorized API artifact into this execution workspace without retyping its contents. Provide its exact byteSize and SHA-256. The destination's parent must exist. Creates a new file only; a retry succeeds only if the existing file has identical bytes. Partial or conflicting files never count as complete. Contents remain untrusted; this does not bypass content screening or authorize executing them.",
   inputSchema: z.toJSONSchema(downloadArtifactSchema),
 };
-export type ArtifactInstall = { destination: string; byteSize: number; sha256: string; bytes: Buffer; authorize: () => Promise<void> };
+export type ArtifactInstall = { destination: string; byteSize: number; sha256: string; bytes: Buffer; verifyOnly?: boolean; authorize: () => Promise<void> };
 export type ArtifactInstaller = (input: ArtifactInstall) => Promise<void>;
 
 // One Linux descriptor-confined transaction. Directory descriptors stay open
@@ -45,7 +45,7 @@ const same = (a,b) => ['dev','ino','size','mtimeNs','ctimeNs'].every(k=>a[k]===b
   const target=parent+i.destination.split('/').at(-1);
   const scratch=parent+i.scratch;
   const verify=async name=>{
-   const f=await fs.open(name,C.O_RDONLY|C.O_NOFOLLOW|C.O_NONBLOCK);
+   const f=await fs.open(name,C.O_RDONLY|C.O_NOFOLLOW|C.O_NONBLOCK).catch(e=>{if(e.code==='ENOENT') fail('missing'); if(e.code==='ELOOP') fail('conflict'); throw e;});
    try{
     const before=await f.stat({bigint:true});
     if(!before.isFile() || before.size!==BigInt(i.byteSize)) fail('conflict');
@@ -73,12 +73,15 @@ const same = (a,b) => ['dev','ino','size','mtimeNs','ctimeNs'].every(k=>a[k]===b
    await checkParent();
    await fs.unlink(scratch);
    await dir.sync();
+  }else if(i.phase==='verify'){
+   await verify(target);
+   await checkParent();
   }else if(i.phase==='cleanup'){
    await fs.unlink(scratch).catch(e=>{if(e.code!=='ENOENT') throw e;});
   }else fail('invalid_phase');
   process.stdout.write('ok');
  }finally{if(stage)await stage.close();for(const d of dirs.reverse())await d.close();}
-})().catch(e=>{process.stderr.write(/^artifact_install_(conflict|size_mismatch|hash_mismatch|unsupported_platform|path_changed)$/.test(e.message)?e.message:'artifact_install_failed');process.exitCode=1;});
+})().catch(e=>{process.stderr.write(/^artifact_install_(missing|conflict|size_mismatch|hash_mismatch|unsupported_platform|path_changed)$/.test(e.message)?e.message:'artifact_install_failed');process.exitCode=1;});
 `;
 
 /** Local execution uses the same installer, without shell expansion or API credentials. */
@@ -108,19 +111,20 @@ export function createArtifactInstaller(workspaceRoot: string, runner: Pick<Comm
       const result = await runner.execute({ command: "node", args: ["--input-type=commonjs", "-e", INSTALL, JSON.stringify({ root: workspaceRoot, destination: input.destination, byteSize: input.byteSize, sha256: input.sha256, scratch, phase })],
         cwd: workspaceRoot, env: { NODE_OPTIONS: "", NODE_PATH: "" }, stdin: phase === "prepare" ? input.bytes.toString("base64") : undefined, timeoutMs: 30_000, bypassSession: true }).catch(() => { throw new Error("artifact_install_failed"); });
       if (result.timedOut || result.exitCode !== 0 || result.stdout !== "ok") {
-        throw new Error(/^artifact_install_(conflict|size_mismatch|hash_mismatch|unsupported_platform|path_changed)$/.test(result.stderr) ? result.stderr : "artifact_install_failed");
+        throw new Error(/^artifact_install_(missing|conflict|size_mismatch|hash_mismatch|unsupported_platform|path_changed)$/.test(result.stderr) ? result.stderr : "artifact_install_failed");
       }
     };
     let committing = false;
     try {
       await input.authorize();
+      if (input.verifyOnly) { await run("verify"); await input.authorize(); return; }
       await run("prepare");
       await input.authorize();
       committing = true;
       await run("commit");
       await input.authorize();
     } catch (error) {
-      if (committing) throw new SemanticToolOutcomeUnknownError("Artifact installation was not confirmed. Retry the same artifact, destination, size and hash to verify the existing file; conflicting files are never overwritten.", { cause: error });
+      if (committing && !(error instanceof Error && error.message === "artifact_install_conflict")) throw new SemanticToolOutcomeUnknownError("Artifact installation was not confirmed. Retry the same artifact, destination, size and hash to verify the existing file; conflicting files are never overwritten.", { cause: error });
       throw error;
     } finally { await run("cleanup").catch(() => undefined); }
   };
