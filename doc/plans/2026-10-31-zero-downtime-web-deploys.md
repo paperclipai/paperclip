@@ -1,6 +1,6 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 13:54 UTC): existing-volume staging enrollment
+Date: 2026-10-31. Status (2026-11-01 14:05 UTC): existing-volume staging enrollment
 is complete and its read/save/file-integrity checks pass. Active-agent recovery,
 natural database idling and the ten-deploy staging campaign remain unqualified.
 No production canary yet.
@@ -21,7 +21,16 @@ validated target template. Fresh runs and ordinary later continuations still
 compose current instructions. The deleted-bundle reproduction failed before the
 fix, then passed with real backend session recovery and no new thread/turn start.
 All 59 backend factory tests and the focused checkpoint validation tests pass.
-The next step is a clean rebuilt live retry and exact-head PR review.
+At `cd690de4d3`, the real Codex/Daytona run survives removal of A's entire home,
+reattaches the same runner/session under generation two, and succeeds. Its next
+revision also succeeds. The handoff records 372 reads, 38 saves and 38 verified
+saves with zero failures. Full qualification still fails: the supervisor created
+an unrelated open probe task in the business company, so the unchanged all-tasks-
+done oracle could never advance to the second replacement. The attempt was
+interrupted and retained as incomplete. A regression reproduces this harness
+scope defect; probes now use their own disposable company. The oracle is unchanged.
+Exact-head review of the recovery fix is 5/5 with no unresolved threads; new
+fixture checks and another bounded live attempt are next.
 
 Review also identified save quotas incorrectly applied during cache recovery.
 Recovery uses the existing inbound remote projection and preserves path/link
@@ -46,7 +55,12 @@ not idle proof, and does not establish the source of provider activity. Automati
 idle sleep was correctly refused because this development fixture is not eligible
 for the free/demo policy. Manual sleep with force disabled passed: the registry
 reports sleeping, Railway has no active web deployment or attached volume, and
-Neon is idle. Browser wake is being verified through the normal organization entry.
+Neon is idle. The normal organization entry started wake, and Railway became healthy on the
+same volume-free service. Post-wake proof passed 21 reads, three saves, a connected
+WebSocket and all 34 file hashes. The browser displayed the retained task and saved
+a new title, independently read back through the API. Automatic return from the
+refreshing entry page was not verified; the browser navigated to the tenant after
+readiness. Wake took several minutes while existing shared UI assets were checked.
 Private receipts remain under the task's live-test, staging enrollment and hosted
 probe directories; no credential or live target identity belongs here.
 

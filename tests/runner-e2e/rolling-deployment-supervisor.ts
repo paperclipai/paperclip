@@ -77,7 +77,9 @@ export async function superviseRollingDeployment(input: {
       const writes: Array<{ id: string; body: string }> = [];
       try {
         if (!probeIssueId) {
-          const companyId = request.recoveryBinding?.companyId ?? (await api<{ id: string }>("/companies", "POST", { name: "Synthetic deployment probes" })).id;
+          // The business oracle observes every task in its company. Keep the
+          // unassigned read/save probe outside that workload and its agent budget.
+          const companyId = (await api<{ id: string }>("/companies", "POST", { name: "Synthetic deployment probes" })).id;
           const issue = await api<{ id: string }>(`/companies/${companyId}/issues`, "POST", {
             title: "Synthetic deployment read/save probe", description: "Unassigned fixture for ordinary user saves during deployment.", status: "todo",
           });
