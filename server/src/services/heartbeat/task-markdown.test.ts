@@ -103,6 +103,23 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain(`Issue description:\n\`\`\`\`\`text\n${description}\n\`\`\`\`\``);
   });
 
+  it("tells a Slack agent to post updates itself when the final response stays in Paperclip", () => {
+    const render = (externalThreadId: string | null) => buildPaperclipTaskMarkdown({
+      issue,
+      slackFinalResponseUndelivered: { externalThreadId },
+    });
+
+    expect(render("slack:C-ORIGIN:1700000000.000100")).toContain(
+      "Slack updates in this run:\nA Slack message did not start this run",
+    );
+    expect(render("slack:C-ORIGIN:1700000000.000100")).toContain(
+      "slack_post_message to the originating Slack conversation (channel C-ORIGIN, thread_ts 1700000000.000100).",
+    );
+    expect(render("slack:D-ORIGIN:")).toContain("originating Slack conversation (channel D-ORIGIN).");
+    expect(render(null)).toContain("originating Slack conversation. Send each update once.");
+    expect(buildPaperclipTaskMarkdown({ issue })).not.toContain("Slack updates in this run:");
+  });
+
   it("keeps the nearest six ancestors and reports omitted ancestor context", () => {
     const markdown = buildPaperclipTaskMarkdown({
       issue,
