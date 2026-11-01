@@ -123,6 +123,41 @@ it.each([
   expect(transcript.some((entry) => entry.kind === "assistant")).toBe(false);
 });
 
+it.each([
+  ["0.12.0", "oneshot"],
+  ["0.12.0", "persistent"],
+  ["0.13.1", "oneshot"],
+  ["0.13.1", "persistent"],
+])("waits for an untyped Claude quota error reset with ACPX %s in %s mode", async (version, mode) => {
+  const message = "Internal error: You've hit your session limit · resets 4:30pm (America/Chicago)";
+  const { result } = await executeFailure(
+    undefined as unknown as string, "limit", mode, version === "0.13.1" ? runnerAcpx.createAcpRuntime : undefined,
+    { PAPERCLIP_ACPX_PROMPT_ERROR: message },
+  );
+  expect(result).toMatchObject({
+    exitCode: 1,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore: "2026-07-15T21:30:00.000Z",
+    resultJson: {
+      errorFamily: "provider_quota",
+      retryNotBefore: "2026-07-15T21:30:00.000Z",
+      providerQuotaRetryNotBefore: "2026-07-15T21:30:00.000Z",
+    },
+  });
+  expect(result.errorMessage).toContain("You've hit your session limit");
+});
+
+it("keeps an untyped non-quota turn error out of quota recovery", async () => {
+  const { result } = await executeFailure(
+    undefined as unknown as string, "limit", "oneshot", undefined,
+    { PAPERCLIP_ACPX_PROMPT_ERROR: "Internal error: something broke" },
+  );
+  expect(result).toMatchObject({ exitCode: 1, errorCode: "acpx_turn_failed" });
+  expect(result.errorFamily).toBeUndefined();
+  expect(result.retryNotBefore).toBeUndefined();
+});
+
 it("classifies quota without a reset time for the existing recovery backoff", async () => {
   const { result } = await executeFailure("You've hit your weekly limit");
   expect(result).toMatchObject({ errorCode: "provider_quota", errorFamily: "provider_quota" });

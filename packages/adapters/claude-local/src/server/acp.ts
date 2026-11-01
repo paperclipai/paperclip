@@ -340,11 +340,28 @@ export function classifyClaudeTerminalSessionFailure(
   };
 }
 
+export function classifyClaudeTurnErrorText(
+  message: string,
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  // claude-agent-acp sends "Internal error: <provider text>" when the client
+  // has no typed session-failure channel. Only the quota wording qualifies.
+  const surface = { errorMessage: message };
+  if (!isClaudeProviderQuotaError(surface)) return null;
+  const retryNotBefore = extractClaudeRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
+}
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
     classifyTerminalSessionFailure: classifyClaudeTerminalSessionFailure,
+    classifyTurnErrorText: classifyClaudeTurnErrorText,
     ...options,
     adapterType: "claude_local",
     moduleDir,
