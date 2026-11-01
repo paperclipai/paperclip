@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   approvals,
   budgetIncidents,
   budgetPolicies,
@@ -19,20 +20,25 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   nativeRunFinalizations,
   projects,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { createPostgresRunDispatchAdapter } from "./postgres.js";
+import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
+import { createPostgresRunDispatchAdapter, requeueAdoptedCommentsForAssignee } from "./postgres.js";
+import type { Db } from "@paperclipai/db";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { reserveRunBudget } from "../../../services/budget-reservations.js";
@@ -79,9 +85,12 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(documents);
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -1206,6 +1215,163 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
       });
+    });
+
+    async function seedAddressedInteraction(input: {
+      companyId: string;
+      issueId: string;
+      createdByAgentId: string;
+      addresseeAgentId: string;
+      status?: string;
+    }) {
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId: input.companyId,
+        issueId: input.issueId,
+        kind: "request_confirmation",
+        status: input.status ?? "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "not_creator",
+        effectiveResolverPolicy: "not_creator",
+        title: "Approve the plan",
+        createdByAgentId: input.createdByAgentId,
+        addresseeAgentId: input.addresseeAgentId,
+        payload: { version: 1, prompt: "Approve the plan?" },
+      });
+      return interactionId;
+    }
+
+    it("keeps a verified interaction_pending wake for the named addressee when the issue is assigned to another agent", async () => {
+      const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent();
+      const addresseeAgentId = randomUUID();
+      await seedAgent({ id: addresseeAgentId, companyId, name: "Reviewer" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId });
+      const interactionId = await seedAddressedInteraction({
+        companyId,
+        issueId,
+        createdByAgentId: assigneeAgentId,
+        addresseeAgentId,
+      });
+
+      const runId = await seedRun({
+        companyId,
+        agentId: addresseeAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(result).toMatchObject({ outcome: "not_stale" });
+      const persisted = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0]);
+      expect(persisted?.status).toBe("queued");
+    });
+
+    it.each([
+      { label: "the interaction is already resolved", status: "accepted", addressee: "named" },
+      { label: "the interaction names a different addressee", status: "pending", addressee: "other" },
+      { label: "the interaction belongs to another issue", status: "pending", addressee: "named", otherIssue: true },
+    ])("still cancels an interaction_pending wake when $label", async ({ status, addressee, otherIssue }) => {
+      const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent();
+      const addresseeAgentId = randomUUID();
+      await seedAgent({ id: addresseeAgentId, companyId, name: "Reviewer" });
+      const otherAgentId = randomUUID();
+      await seedAgent({ id: otherAgentId, companyId, name: "Bystander" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId });
+      const interactionIssueId = otherIssue ? randomUUID() : issueId;
+      if (otherIssue) {
+        await seedIssue({ companyId, issueId: interactionIssueId, status: "in_progress", assigneeAgentId });
+      }
+      const interactionId = await seedAddressedInteraction({
+        companyId,
+        issueId: interactionIssueId,
+        createdByAgentId: assigneeAgentId,
+        addresseeAgentId: addressee === "named" ? addresseeAgentId : otherAgentId,
+        status,
+      });
+
+      const runId = await seedRun({
+        companyId,
+        agentId: addresseeAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "cancelled",
+        errorCode: "issue_assignee_changed",
+      });
+    });
+
+    it("registers deferred-receipt work when requeueing adopted comments", async () => {
+      // The shared helper serves the staleness gate and both claim-time
+      // cancellation branches. Only the gate transaction also signals through
+      // notifyExecutionRunWork, so invoking the helper directly proves its own
+      // registration: without it no deferred-receipt hint would settle.
+      const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId });
+      const commentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorUserId: "local-board",
+        authorType: "user",
+        body: "Please also confirm the rollout plan.",
+      });
+      const runId = randomUUID();
+      const hints: Array<Record<string, unknown>> = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, (event, values) => {
+        if (event === "settled") for (const value of values ?? []) hints.push(JSON.parse(value));
+      });
+      try {
+        await db.transaction(async (tx) => {
+          await requeueAdoptedCommentsForAssignee(tx as unknown as Db, {
+            companyId,
+            issueId,
+            runId,
+            source: "heartbeat",
+            triggerDetail: null,
+            adoptedCommentIds: [commentId],
+          });
+        });
+      } finally {
+        unsubscribe();
+      }
+      const [receipt] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, `stale-addressee-requeue:${runId}`));
+      expect(receipt).toMatchObject({ status: "deferred_issue_execution", agentId: assigneeAgentId });
+      expect(hints).toEqual([{ companyId }]);
     });
 
     it(
