@@ -1,7 +1,68 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status: runtime and Cloud overlap policy merged; qualification
-and existing-volume enrollment remain in progress. No hosted acceptance claim.
+Date: 2026-10-31. Status (2026-11-01 14:05 UTC): existing-volume staging enrollment
+is complete and its read/save/file-integrity checks pass. Active-agent recovery,
+natural database idling and the ten-deploy staging campaign remain unqualified.
+No production canary yet.
+
+Latest critical path: Core #18543 includes runtime admission, immutable-cache
+retirement, remote agent-file projection, and adoption without rematerializing
+launch assets. The live test at `67714af9ff` transferred the same runner/session to
+controller generation two after deleting A's entire home, then failed in the full
+backend constructor: composing system instructions still read A's retired bundle.
+All three owned Daytona sandboxes were independently confirmed absent; the child
+credential was revoked and the test object bucket deleted. This remains failed
+evidence, not a successful deployment qualification.
+
+The backend now accepts admitted instructions from a validated same-run Runner
+checkpoint. Runner owns checkpoint/template inspection; Core binds it to the
+current run, normalized session and context digest. Staged attachments select the
+validated target template. Fresh runs and ordinary later continuations still
+compose current instructions. The deleted-bundle reproduction failed before the
+fix, then passed with real backend session recovery and no new thread/turn start.
+All 59 backend factory tests and the focused checkpoint validation tests pass.
+At `cd690de4d3`, the real Codex/Daytona run survives removal of A's entire home,
+reattaches the same runner/session under generation two, and succeeds. Its next
+revision also succeeds. The handoff records 372 reads, 38 saves and 38 verified
+saves with zero failures. Full qualification still fails: the supervisor created
+an unrelated open probe task in the business company, so the unchanged all-tasks-
+done oracle could never advance to the second replacement. The attempt was
+interrupted and retained as incomplete. A regression reproduces this harness
+scope defect; probes now use their own disposable company. The oracle is unchanged.
+Exact-head review of the recovery fix is 5/5 with no unresolved threads; new
+fixture checks and another bounded live attempt are next.
+
+Review also identified save quotas incorrectly applied during cache recovery.
+Recovery uses the existing inbound remote projection and preserves path/link
+validation without enforcing save quotas on admission. Ordinary saves still reject
+oversized changes. Related transport recovery tests passed 71 cases; directory
+cleanup/cache-loss tests passed 20 cases after three timing failures in a broad
+run. A separate CI attention-retention timeout reproduced on clean master: its
+fixed clock fell behind database-assigned updatedAt. Advancing across the saved
+deadline fixes it; all 53 tests in that file pass with original timeouts.
+
+Cloud #1102 merged as `461c4aea28` and is serving on the staging controller.
+The original enrollment completed using its original qualified image, a retained
+detached volume, and the migrated decision key. The post-enrollment probe passed
+20 reads and three saves with no HTTP/WebSocket failures and verified all 34 files.
+The original browser tab reconnected and persisted a task title. Server logs later
+showed old Agents chunks returned 404 and navigation recovered via a page reload:
+this is migration continuity evidence, not uninterrupted old-tab asset loading.
+
+Two eight-minute natural database-idle observations failed. A separate bounded SQL
+attribution window saw no other app-database sessions; it is diagnostic stimulus,
+not idle proof, and does not establish the source of provider activity. Automatic
+idle sleep was correctly refused because this development fixture is not eligible
+for the free/demo policy. Manual sleep with force disabled passed: the registry
+reports sleeping, Railway has no active web deployment or attached volume, and
+Neon is idle. The normal organization entry started wake, and Railway became healthy on the
+same volume-free service. Post-wake proof passed 21 reads, three saves, a connected
+WebSocket and all 34 file hashes. The browser displayed the retained task and saved
+a new title, independently read back through the API. Automatic return from the
+refreshing entry page was not verified; the browser navigated to the tenant after
+readiness. Wake took several minutes while existing shared UI assets were checked.
+Private receipts remain under the task's live-test, staging enrollment and hosted
+probe directories; no credential or live target identity belongs here.
 
 ## Outcome and endpoint
 
@@ -63,10 +124,11 @@ Measure one-time setup separately from repeated attempts. Keep failed evidence.
 
 | Item | State | Next action |
 | --- | --- | --- |
-| Prior prerequisites | #18403 now merged; current source fetched | Characterize remaining local authority paths |
-| Core implementation | `/private/tmp/paperclip-zero-downtime-20261031`, durable files, readiness/drain and migration/cleanup implemented in draft PR #18518 | Cross-process commands, browser/assets, active Runner qualification |
-| Cloud implementation | `/private/tmp/paperclip-cloud-zero-downtime-20261031`, persisted ephemeral shape and image/variable gates implemented in draft PR #1096 | Complete lifecycle guards, test and deploy qualification |
-| Staging / production | Not selected or deployed | Record exact target, owner, artifact and campaign before action |
+| Prior prerequisites | #18403 and all five storage workstreams merged | Retain the ephemeral filesystem contract |
+| Core implementation | #18518, #18526, #18529, #18530, #18531 and #18533 merged; local packaged migration, browser overlap, cold restoration and durable command proofs recorded below | Complete live remote execution, accounting and later continuation qualification |
+| Cloud implementation | #1096, #1098, #1099, #1100, #1101 and #1102 merged; #1102 serving on staging | Verify repeated Railway overlap behavior after Core recovery qualification |
+| Staging | Original enrollment complete; migrated data and signing key preserved; volume detached and retained | Diagnose idle behavior, verify sleep/wake and repair, then qualify ten app-only replacements |
+| Production | No canary mutation performed | Proceed only after the staging and active-agent acceptance gates pass |
 
 Keep PRs, tested revisions, artifact identities, evidence paths, deployment targets
 and unresolved gates here. A green CI/build/deploy status alone is not acceptance.
@@ -528,3 +590,196 @@ and after logs are `/private/tmp/paperclip-zdt-buffer-test-{before,after}-pg.log
 A first local attempt failed before tests because embedded PostgreSQL could not
 start; the existing external test database enabled the comparison. The failed
 post-merge shard was retried once while the assertion fix proceeds through review.
+
+### 2026-11-01 11:07 UTC package compatibility prerequisite
+
+The post-merge source retry passed. The final Cloud composition for Core
+`1d348bbef0` is `cloud-41298718800-1`, digest
+`sha256:800cb8578368c63e33bdd048786ec66b3e7a9902f0f221d7fe41ea3c35134020`.
+It passed the real-volume migration and empty-home rehearsal with 121 reads,
+25 saves and zero failures; receipt:
+`/private/tmp/paperclip-zdt-container-drdrQS/evidence.json`.
+
+The forward/rollback manifest comparison exposed a real packaging blocker.
+The Agent Computer bundle differed only in its embedded Runner source revision
+and source map, despite unchanged Runner inputs, SDKs and dependency lock.
+The exact-package gate correctly requires maintenance for those two images.
+Do not use them as proof of an app-only overlap pair.
+
+The Cloud source-selection owner now selects the last first-parent Runner input
+change when the older reviewed ROM pin differs, then proves complete input
+equality. The plugin and ROM builder share that selection and keep temporary
+history alive through archive verification. Actual clean checkouts of both
+released Core commits select `66e8fab9447aa21350f87ddec79fcd027f3e23ad`.
+A real shallow-checkout probe selected the same source in 25.6 seconds without
+modifying the caller. The focused suite passed 32 cases; full Cloud tests passed
+4,830 cases with 129 gated skips and no failures. Rebuilt package equality and
+hosted overlap remain unverified. Private receipts are
+`/private/tmp/paperclip-zdt-canonical-source-{proof,shallow-proof}.json`.
+
+Core's assertion fix is in #18533, reviewed at 5/5. One CI shard received a
+runner shutdown signal, so that cancelled shard and its downstream aggregate
+gate were retried. The original cancellation log remains at
+`/private/tmp/paperclip-zdt-buffer-pr-cancelled-job.log`.
+No hosted enrollment has occurred. After the controller became quiet, the
+qualified maintenance image was added to the staging allowlist without an
+automatic deployment. An explicit controller configuration restart was then
+submitted with a mutation-confirmed deployment identity. The prior busy-campaign
+and pending-default checks produced no mutations. Private receipt:
+`/private/tmp/paperclip-zdt-controller-allowlist-RzRa7k/receipt.json`.
+The paid-agent credential blocker and all remaining acceptance criteria remain.
+
+
+### 2026-11-01 11:15 UTC hosted enrollment response correction
+
+Core #18533 merged as `247552fe0719dcc92f7b42c50b658be6f624986d`; Cloud
+#1099 merged as `1c5c5133c2d3740fdb716b26c31f038add273b55`. Both latest
+heads passed all checks and review at 5/5 with no unresolved findings. Real
+ROM-input generation also verified the complete source archive and Linux
+dependency lock in 53.1 seconds from a clean checkout.
+
+The staging controller configuration restart succeeded with unchanged source
+`316163b28`. The first real enrollment request at 11:08 UTC failed before
+provider mutation with `Enrollment requires the owned Railway service domain`.
+The registry correctly retains maintenance routing. The original web deployment
+and attached volume were not stopped or changed. Railway's scoped domain query
+returns the matching service/environment but a null `projectId`. Reproducing
+that response in the existing lifecycle test fails identically. The correction
+accepts the nullable project field from the project-scoped query while rejecting
+explicit project, service or environment mismatches before provider mutation.
+The original attempt identity is retained for retry after reviewed deployment.
+Private failure receipt: `/private/tmp/paperclip-zdt-enrollment-controller-logs.json`.
+No hosted overlap deployment or production canary has passed yet.
+
+
+### 2026-11-01 11:25 UTC exact release pair qualified
+
+Cloud #1100 merged as `abcb017123013f2baa215fd665b4092495de00a1` after
+4,831 local tests, 129 explicit skips, typecheck, golden-path smoke and all
+latest-head CI checks passed, with 5/5 review and no unresolved findings. Its
+automatic staging controller deployment is starting; enrollment retry waits for
+that serving revision. The original held deployment and attached volume were
+independently confirmed unchanged after the first failure.
+
+The rebuilt pair now has byte-identical Cloud bundles, SDKs and dependency lock:
+`cloud-41300941768-1` (Core `1d348bbef0`) and `cloud-41301234904-1` (Core
+`d941ed3879`). Both select the same canonical Runner source. The production
+`ephemeralPackageOverlap` function accepts this pair. There is no database diff
+between the two Core commits. Exact manifest receipt:
+`/private/tmp/paperclip-zdt-canonical-pair-proof.json`.
+
+Each exact image passed its own packaged migration, complete predecessor-volume
+deletion and two empty-home replacements against real PostgreSQL and S3: 118
+reads/24 saves and 116 reads/24 saves respectively, no failures, all owned
+resources cleaned. Receipts: `/private/tmp/paperclip-zdt-container-woB7ci/evidence.json`
+and `/private/tmp/paperclip-zdt-container-tMUSnD/evidence.json`. Both images were
+added to the staging allowlist with deployment skipped, under the normal quiet
+guards, before the reviewed controller rollout. The repeated hosted experiment
+will invoke the existing fleet workflow driver with exact release references and
+a single pinned fixture; it retains campaign/release/serving verification while
+avoiding repeated GitHub scheduler waits. No hosted success is inferred from
+these local receipts. Active-agent credentials remain blocked as previously noted.
+
+
+### 2026-11-01 11:34 UTC maintenance entrypoint qualification
+
+The corrected controller is serving `abcb017123013f2baa215fd665b4092495de00a1`.
+The first prepare reached the durable `preparing` phase and stopped the old
+deployment, but Railway's remove call timed out. A read-only provider check
+confirmed removal and retention of the attached volume, then the same attempt
+resumed successfully to `migrating`. Its healthy maintenance process reported
+`blocked` during configuration; no detach was attempted.
+
+Railway's start-command override replaces ENTRYPOINT, whereas the original local
+Docker rehearsal replaced only CMD. The maintenance process therefore ran as root
+and refused the original UID-1000-owned signing key. An explicit local entrypoint
+override reproduced the same blocked status and captured root process identity
+and key ownership, without reading key contents into evidence. Failed receipt:
+`/private/tmp/paperclip-zdt-container-5nGSUs/evidence.json`.
+
+Cloud #1101 preserves Core's init and entrypoint wrapper in the maintenance
+command. With actual entrypoint replacement, the corrected packaged rehearsal
+passed original-key preservation, volume deletion and later empty-home recovery:
+116 reads, 24 saves, no failures, cleanup confirmed in
+`/private/tmp/paperclip-zdt-container-POFr0C/evidence.json`. Twelve lifecycle tests,
+root typecheck, the full 4,831-pass suite and ordinary golden-path smoke passed.
+The PR is awaiting CI/review; hosted preparation will resume with the same
+attempt after deployment. The original live volume remains attached and retained.
+No hosted overlap or active-agent acceptance has passed.
+
+### 2026-11-01 11:48 UTC reviewed entrypoint fix
+
+Cloud #1101 merged as `76f2dedf076ed139af3a7136e988c6748589d50b` with
+all latest-head checks passing and no unresolved review findings. The exact image
+currently held in staging also passed the corrected Railway-entrypoint rehearsal:
+118 reads, 24 saves, zero failures, original signing authority retained, predecessor
+volume deleted and all owned test resources cleaned. Private receipt:
+`/private/tmp/paperclip-zdt-container-vyIrsD/evidence.json`.
+
+Automatic staging controller workflow `41302710585` passed preflight and is
+waiting for the ordinary controller coordination gate. The concurrent app campaign
+has completed 16 of 17 targets with one still running; the pinned qualification
+fixture is excluded. No cancellation or coordination bypass is permitted. The
+serving controller remains `abcb017123013f2baa215fd665b4092495de00a1`.
+Enrollment must resume with its original attempt identity after the new controller
+is serving. The active-model credential remains unavailable; no paid-agent result
+or hosted overlap acceptance is inferred from the local container proofs.
+
+
+### 2026-11-01 12:34 UTC live enrollment and runtime admission findings
+
+Cloud #1101 reached staging at 12:05 UTC. The owning enrollment attempt completed
+migration and authenticated eligibility: 34 agent objects, 12 skill versions,
+zero blockers. The original signing key was stored before the volume detached.
+The original volume remains retained. Final app boot failed because Railway left
+the maintenance start command unchanged when the provider sent null.
+
+The same attempt exposed delayed detach reads, automatic maintenance deployment
+after detach, and successful deployment stops whose API responses timed out.
+Cloud #1102 handles those provider transitions with bounded ownership-checked
+reconciliation, an empty-string start-command reset, and app reconfiguration on
+same-attempt boot retry. Root typecheck, 4,835 tests (129 gated skips), ordinary
+routing/sleep smoke and 352 focused provider tests passed. Review/deployment is
+pending. Tenant routing remains in maintenance; no ten-roll acceptance is claimed.
+
+The user supplied a working credential location; the OpenAI authentication gate
+is resolved without exposing the key. Two live attempts exposed premature runtime
+admission: fresh run rows still say legacy while workspace preparation runs,
+before the native runtime selector commits its decision. Workspace preparation
+must validate storage authority; runtime selection must validate the resolved
+native warm lifecycle. Two focused regressions failed before this source fix;
+all 156 workspace/runtime/ephemeral-contract tests passed after it. Full typecheck
+and build passed; the full test suite and rebuilt live cell are running.
+
+A third live attempt mistakenly used the old compiled server and reproduced the
+old guard. That retained failure is not evidence against the source fix. The
+launcher now records the compiled server hash and rejects that stale guard.
+All three completed attempts revoked their owned Daytona credentials and deleted
+their disposable object buckets. No paid-agent acceptance has passed yet.
+
+
+### 2026-11-01 12:43 UTC recovery fix merged and live cleanup boundary
+
+Cloud #1102 merged as `461c4aea28a1ffc31b1175db42158338dd9de1ae` after
+4,853 passing tests (129 gated skips), typecheck, routing/sleep smoke, latest-head
+required CI and 5/5 review with no unresolved threads. The optional security
+scanner was inconclusive because its sandbox could not start; a rerun request
+returned 404. Automatic staging deployment is workflow `41307729362`.
+
+The rebuilt live cell completed two native Codex/Daytona runs. Its first web
+replacement then failed while deleting an immutable skill-cache directory in the
+stopped predecessor home. The attempt remains failed, with partial estimated LLM
+cost $0.1072965 and incomplete usage coverage. The shared harness cleanup now
+makes stopped owned directories removable without following symlinks; seven
+focused regressions and the E2E typecheck pass. No receipt is accepted without
+whole-home deletion. Its leaked remote fixture is being reconciled through exact
+company/environment labels and recorded lease IDs; the first delete was refused
+while the sandbox was stopping. Original attempt evidence is retained.
+
+Required broad checks exposed separate failures: `pnpm test:run` stopped at a
+15-second chat integration timeout (338 passed); that exact test passed in
+isolation without changing its limit. Product E2E unit checks reported 5,898
+passes and 13 failures in untouched onboarding expectations, operating receipts,
+Pi catalog assertions, workflow security assertions and embedded PostgreSQL
+startup. These are not counted as passes; baseline attribution is pending.
+Workspace typecheck/build and all 156 affected Core tests remain passing.

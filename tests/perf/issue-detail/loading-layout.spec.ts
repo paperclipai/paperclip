@@ -34,7 +34,7 @@ for (const entry of ["direct", "list", "delayed fonts", "delayed preferences"] a
       const last = [...document.querySelectorAll('[id^="comment-"]')].at(-1);
       const identifier = [...document.querySelectorAll('[data-slot="task-title-identifier"]')].find(el => {
         const rect = el.getBoundingClientRect();
-        return rect.top >= 0 && rect.bottom <= 76 && getComputedStyle(el).visibility === "visible";
+        return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= 76 && getComputedStyle(el).visibility === "visible";
       });
       const visibleHeader = [...document.querySelectorAll('[data-testid="issue-detail-header"]')].some(el => {
         const rect = el.getBoundingClientRect();
@@ -43,6 +43,7 @@ for (const entry of ["direct", "list", "delayed fonts", "delayed preferences"] a
       const box = (el: Element | null | undefined) => {
         if (!el || getComputedStyle(el).visibility !== "visible") return null;
         const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return null;
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       };
       const font = (el: Element | null) => {
