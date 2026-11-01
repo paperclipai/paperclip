@@ -1645,6 +1645,16 @@ and obtains a fresh stop receipt. An interrupted legacy run does not need an
 accepted native result. A successful `workspace_recovery` operation and matching
 recovery record prove persistence; adapter output or a user repair note cannot.
 The failed run and unknown external effects remain historical facts.
+Cancelled native work can owe files after an audited run-only Stop from the
+agent lifecycle, without a board actor. The preservation worker admits that
+exact acknowledged receipt only when the coordinator is terminal, has no
+accepted result or owner, and the run's controller lease is not live. It records
+the bound prepared workspace and allocation as file recovery work. An existing
+resolved execution watchdog does not discharge that file obligation. This does
+not grant board Stop or continuation authority, change the cancelled result,
+or prove physical termination. Normal recovery stops and retains the same
+allocation, saves its files, and obtains a fresh stop receipt before cleanup
+can apply the original destroy disposition. It starts no provider turn.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
