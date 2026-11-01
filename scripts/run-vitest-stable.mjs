@@ -40,6 +40,7 @@ const nonServerProjects = [
   "@paperclipai/adapter-pi-local",
   "@paperclipai/plugin-daytona",
   "@paperclipai/plugin-sdk",
+  "@paperclipai/plugin-slack-control",
   "@paperclipai/create-paperclip-plugin",
   "@paperclipai/ui",
   "paperclipai",
