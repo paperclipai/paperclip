@@ -43,6 +43,7 @@ export type StatusGlyphStatus =
   | "todo"
   | "in_progress"
   | "in_review"
+  | "ready_for_qa"
   | "done"
   | "blocked"
   | "cancelled"
@@ -61,6 +62,7 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   todo: Circle,
   in_progress: TaskProgressSpinner,
   in_review: CircleDot,
+  ready_for_qa: CircleDot,
   done: CircleCheck,
   blocked: CircleMinus,
   cancelled: Ban,
