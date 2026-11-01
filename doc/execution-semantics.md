@@ -1648,8 +1648,10 @@ The failed run and unknown external effects remain historical facts.
 Cancelled native work can owe files after an audited run-only Stop from the
 agent lifecycle, without a board actor. The preservation worker admits that
 exact acknowledged receipt only when the coordinator is terminal, has no
-accepted result or owner, and the run's controller lease is not live. It records
-the bound prepared workspace and allocation as file recovery work. An existing
+accepted result or owner, and the run's controller lease is not live. While a
+controller is live, the worker waits for its actual lease expiry, including a
+renewal observed when preservation rechecks the locked run. Once eligible, it
+records the bound prepared workspace and allocation as file recovery work. An existing
 resolved execution watchdog does not discharge that file obligation. This does
 not grant board Stop or continuation authority, change the cancelled result,
 or prove physical termination. Normal recovery stops and retains the same
