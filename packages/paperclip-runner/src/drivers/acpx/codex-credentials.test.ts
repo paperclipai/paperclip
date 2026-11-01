@@ -1,5 +1,4 @@
 import { fork, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmod,
@@ -22,6 +21,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { credentialLeasePorts, credentialLeasePortsForScope } from "../../../test/credential-lease-fixture.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 
 const temporaryDirectories: string[] = [];
@@ -1747,30 +1747,6 @@ async function silentPrimaryQuorumFixture(
     return { fixture, occupied };
   }
   throw new Error("Silent-primary credential fixture reservation exhausted.");
-}
-
-function credentialLeasePorts(home: string): readonly number[] {
-  const userScope =
-    typeof process.getuid === "function" ? String(process.getuid()) : "win32";
-  return credentialLeasePortsForScope(userScope, home);
-}
-
-function credentialLeasePortsForScope(
-  userScope: string,
-  home: string,
-): readonly number[] {
-  const digest = createHash("sha256")
-    .update("paperclip-managed-codex-lease-v2:")
-    .update(userScope)
-    .update("\0")
-    .update(home)
-    .digest();
-  const start = digest.readUInt16BE(0) % 16_384;
-  const step = (digest.readUInt16BE(2) | 1) % 16_384;
-  return Array.from(
-    { length: 3 },
-    (_, index) => 49_152 + ((start + index * step) % 16_384),
-  );
 }
 
 async function listenSilently(
