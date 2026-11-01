@@ -2639,7 +2639,9 @@ must fail admission rather than fall back to a controller checkout.
 A reference to an authorized project with no configured workspace source does
 not attach a folder. It adds a resolution warning and preserves the task's
 workspace. A configured cross-project source remains subject to the read-only
-folder restriction.
+folder restriction. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
+sources; a source-less project reference needs no folder and stays metadata-only
+when that switch is off.
 
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new

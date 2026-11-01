@@ -4,6 +4,7 @@ import { buildProjectMentionHref } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { toExecutionWorkspace } from "../execution-workspaces.js";
 import { resolveRemoteWorkspaceSource } from "./remote-workspace-source.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -37,15 +38,20 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     return { companyId, agentId, issueId, runId, projectId };
   }
 
-  it("keeps a metadata-only project mention without inventing a read-only filesystem root", async () => {
+  it.each(["true", "false"])("keeps a metadata-only project mention without a folder when the remote-source flag is %s", async (remoteEnabled) => {
     const f = await fixture(false);
-    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
-      projectId: null, projectWorkspaceId: null, taskDirectory: true });
-    expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" }, projectId: null,
-      projectWorkspaceId: null, referencedProjectFailures: [{ projectId: f.projectId, reason: "resolution" }] });
-    expect(result.authority === "remote" && result.source.repositories).toBeUndefined();
-    expect(result.authority === "remote" && result.warnings?.length).toBe(1);
-    expect(await db.select().from(executionWorkspaces)).toEqual([]);
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE", remoteEnabled);
+    try {
+      const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+        projectId: null, projectWorkspaceId: null, taskDirectory: true });
+      expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" }, projectId: null,
+        projectWorkspaceId: null, referencedProjectFailures: [{ projectId: f.projectId, reason: "resolution" }] });
+      expect(result.authority === "remote" && result.source.repositories).toBeUndefined();
+      expect(result.authority === "remote" && result.warnings?.length).toBe(1);
+      expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
+    } finally {
+      vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE", "true");
+    }
   });
 
   it("still rejects an actual repository reference before any workspace is created", async () => {
@@ -54,7 +60,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
       code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
     });
-    expect(await db.select().from(executionWorkspaces)).toEqual([]);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
 
   it("does not treat a configured source without a repository URL as metadata-only", async () => {
@@ -64,7 +70,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
       resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
     });
-    expect(await db.select().from(executionWorkspaces)).toEqual([]);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
 
   it("preserves the disabled remote-source gate for a configured repository", async () => {
@@ -75,7 +81,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
         projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
         resultJson: { reason: "remote_referenced_workspace_disabled" },
       });
-      expect(await db.select().from(executionWorkspaces)).toEqual([]);
+      expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
     } finally {
       vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE", "true");
     }
@@ -90,7 +96,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
       resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
     });
-    expect(await db.select().from(executionWorkspaces)).toEqual([]);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
 
   it("does not expose a source-less project from a different company", async () => {
@@ -101,6 +107,26 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       projectId: null, projectWorkspaceId: null, taskDirectory: true });
     expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" },
       referencedProjectFailures: [], warnings: [] });
-    expect(await db.select().from(executionWorkspaces)).toEqual([]);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
+  });
+
+  it("preserves an enrolled workspace's saved source for a metadata-only project mention", async () => {
+    const f = await fixture(false), snapshotId = randomUUID();
+    const source = { kind: "git" as const, repoUrl: "https://example.test/team/saved.git", ref: "saved-branch" };
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId,
+      sourceIssueId: f.issueId, mode: "shared_workspace", strategyType: "project_primary",
+      name: "Saved task workspace", providerType: "cloud_sandbox", cwd: "/workspaces/saved",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 3, snapshotId,
+        source, location: null, writerRunId: null, dirty: false } },
+    }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, f.issueId));
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, existingWorkspace: toExecutionWorkspace(workspace) });
+    expect(result).toMatchObject({ authority: "remote", source, projectId: null, projectWorkspaceId: null,
+      referencedProjectFailures: [{ projectId: f.projectId, reason: "resolution" }] });
+    expect(result.authority === "remote" && result.source.repositories).toBeUndefined();
+    expect(result.authority === "remote" && result.warnings?.length).toBe(1);
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId)))
+      .toEqual([workspace]);
   });
 });
