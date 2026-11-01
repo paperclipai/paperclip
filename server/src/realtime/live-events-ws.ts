@@ -321,9 +321,26 @@ export function setupLiveEventsWebSocketServer(
         return event;
       }
       if (context!.apiKeyId) {
-        const active = await db.select({ id: agentApiKeys.id }).from(agentApiKeys)
+        const active = await db.select({ id: agentApiKeys.id, responsibleUserId: agentApiKeys.responsibleUserId })
+          .from(agentApiKeys)
           .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
         if (!active.length) return null;
+        // An agent key is an agent principal, so this branch has never read a
+        // human membership role — `viewer` is not checked here either. That is
+        // fine for the staff roles, which all carry company access, but it
+        // leaves one way around the client deny: a staff member can mint an
+        // unscoped key, be changed to `client`, and keep the key as a bearer
+        // token on this socket. So when the key names a responsible user, that
+        // user's current role is read per event, exactly as the board branch
+        // below does. A key with no responsible user is unchanged.
+        const responsibleUserId = active[0]?.responsibleUserId?.trim() || null;
+        if (responsibleUserId) {
+          const responsible = await db.select({ membershipRole: companyMemberships.membershipRole })
+            .from(companyMemberships)
+            .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, responsibleUserId), eq(companyMemberships.status, "active"))).limit(1);
+          if (isClientMembershipRole(responsible[0]?.membershipRole)) return null;
+        }
       } else {
         const membership = await db.select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
           .from(companyMemberships)
