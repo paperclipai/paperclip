@@ -230,6 +230,7 @@ import {
   type SetupTokenSessionDescriptor,
   SETUP_TOKEN_ADAPTER_TYPE,
 } from "../services/setup-token-session.js";
+import { DEFAULT_CLAUDE_LOCAL_ENV } from "@paperclipai/adapter-claude-local";
 import type {
   DeploymentMode,
   AdapterAuthSessionStatus,
@@ -2360,6 +2361,12 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "claude_local") {
+      // Spread the caller's env last so an explicit value always wins, and only
+      // fill keys the caller left unset.
+      next.env = { ...DEFAULT_CLAUDE_LOCAL_ENV, ...(asRecord(next.env) ?? {}) };
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "paperclip_runner") {
       return normalizePaperclipRunnerAdapterConfig(adapterType, next);
     }
