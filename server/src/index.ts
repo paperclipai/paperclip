@@ -156,7 +156,7 @@ import {
   toolAccessService,
   workspaceOperationService,
 } from "./services/index.js";
-import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
+import { questionResponseDeliveryService, registerQuestionResponseDeliveryWork } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { registerStatusCardEvaluationWork, statusCardEvaluationService } from "./services/status-card-evaluation.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
@@ -1412,7 +1412,6 @@ async function startServerWithDatabaseTeardown(
   const deliveryWorkers = ([
     [DELIVERY_QUEUES.chatCompletion, chatCompletionDeliveries],
     [DELIVERY_QUEUES.connection, connectionDeliveries],
-    [DELIVERY_QUEUES.question, questionResponseDeliveries],
     [DELIVERY_QUEUES.toolAction, app.locals.toolActionDeliveries as ReturnType<typeof import("./services/tool-action-delivery.js").toolActionDeliveryService>],
   ] as const).map(([queue, service]) => deliveryWork.register(queue, {
     retryMs: config.heartbeatSchedulerIntervalMs,
@@ -1420,6 +1419,8 @@ async function startServerWithDatabaseTeardown(
     hasPending: () => service.hasPending(),
     ...(queue === DELIVERY_QUEUES.connection ? { nextRunAt: connectionDeliveries.nextRunAt, pausePassiveMaintenance: true } : {}),
   }));
+  deliveryWorkers.push(registerQuestionResponseDeliveryWork(deliveryWork, questionResponseDeliveries,
+    deploymentListenUrl ? undefined : config.heartbeatSchedulerIntervalMs));
   // Preserve the existing task-scoped activity fast path. Claims in the
   // delivery service arbitrate with the coordinator's startup/recovery sweep.
   const unsubscribeChatCompletions = subscribeAllCompanyLiveEvents(event => {

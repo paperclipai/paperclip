@@ -357,3 +357,38 @@ then detach only after a matching receipt and confirmed process exit.
 Remaining acceptance is unchanged: live Stop/answer/follow-up and continuation,
 packaged fresh/migrated overlap, ten staging deployments including rollback,
 repair/sleep/wake and idle suspension, then one internal production canary.
+
+
+### Current delivery state, 2026-11-01 09:15 UTC
+
+Qualification #18526 merged as `16787e4167fa94bd968419cf6e6e9e8ebb2748c4`
+with all checks green and a 5/5 review. Cloud enrollment #1098 merged as
+`316163b28d4f9e811e810a3226ea46b33a273ce7` after 5/5 review and green CI.
+Its review fixes explicitly reopen registry routing on completion and allow
+same-attempt final-boot retry without reattaching the retained volume. No hosted
+stack has yet been enrolled by this chat.
+
+Core enrollment #18529 is at `6d31d1265d`. Twenty focused checks passed,
+including a rebuilt plain-Node executable and real PostgreSQL/S3. Owner checks
+now block unresolved local working copies even for terminal runs, drain all
+expired trace pages, and expire successful key-export authority at the original
+deadline. An integration fixture initially failed cleanup because trace expiry
+writes activity rows; cleanup now deletes those before their runs. The corrected
+run passed. Initial CI failures were a workspace-runtime health probe and an
+extra select in a run-dispatch idle assertion; latest-head CI/review is pending.
+
+An independent two-process question-answer probe exposed a real retry delay:
+B releases its claim after A inspects it, leaving the owner waiting 30.157s.
+The production pending-answer worker now uses a one-second retry in ephemeral
+mode; the same probe delivered one command in 1.197s. Ordinary server cadence
+is retained. A committed regression is in preparation: real PostgreSQL and two
+processes, with only the provider command sink simulated. It checks no repeated
+sweeps/inspections after settlement and reactivation by the next committed answer.
+The regression and assembled startup suite passed 122 tests. This does not
+prove live provider response or active remote execution survival.
+
+The refreshed E2E OpenAI credential remains outstanding. No subsequent paid
+attempt has been made. Remaining acceptance still includes live Stop/answer/
+follow-up/continuation, packaged overlap with migrated data and large cold
+restoration, ten staging deployments including rollback, repair/sleep/wake and
+idle suspension, and one internal production canary forward/rollback.
