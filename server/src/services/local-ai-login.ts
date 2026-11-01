@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray, isNotNull, lte, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, notInArray, sql } from "drizzle-orm";
 import { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES, databaseWorkScopeKey, environments, type Db } from "@paperclipai/db";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -17,6 +17,14 @@ import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
 
 const LOCAL_LOGIN_METHOD = "local_subscription";
 const ATTEMPT_DURATION_MS = 30 * 60 * 1000;
+// The terminal states a local attempt can reach. `reapExpired` writes
+// `authenticated`/`timed_out`, and cancel writes `cancelled`. Exported so the
+// cleanup worker's scheduler can wake up to reclaim a terminal row.
+export const TERMINAL_LOCAL_STATES = ["authenticated", "timed_out", "cancelled"] as const;
+// A terminal attempt stays readable for one more attempt horizon, so a client
+// that is still polling reads `expired` rather than a missing attempt. After
+// that the row is reclaimed; its on-disk home is already gone.
+export const TERMINAL_RETENTION_MS = ATTEMPT_DURATION_MS;
 const BROWSER_STOP_WAIT_MS = 5_000;
 const RETIREMENT_PENDING = "local_login_retirement_pending";
 const CLEANUP_BATCH_SIZE = 16;
@@ -162,7 +170,9 @@ export function localAiLoginService(db: Db) {
     // was lost. Only a durable read may release that uncertain obligation.
     const ready = [...deferredRetirements].filter(([, owner]) => owner.scope === scope && owner.ready).map(([id]) => id);
     const ids = [...new Set([...ready.slice(0, CLEANUP_BATCH_SIZE), ...rows.map(row => row.id)])];
-    if (!ids.length) return;
+    // The stale-row reclaim below must still run when nothing is expiring, which
+    // is the steady state after the last attempt's home was already removed.
+    if (!ids.length) return reclaimStale();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), BROWSER_STOP_WAIT_MS); });
     async function cleanup(id: string) {
@@ -194,6 +204,28 @@ export function localAiLoginService(db: Db) {
       }
       if (failures.length) throw new AggregateError(failures, "Local sign-in expiry cleanup failed");
     } finally { clearTimeout(timeout); }
+
+    // Reclaim terminal attempts whose home is already gone. The expiry pass
+    // above removes the on-disk home in the same transaction that nulls
+    // `expires_at`, so a terminal row with no deadline, no provider lease, and an
+    // old finish time has nothing left to clean up. Nothing else deletes these
+    // rows: the setup-token reaper excludes local sign-ins, and cancel/complete
+    // leave the row terminal after removing the home. Bounded like the expiry
+    // pass. Declared as a nested function so it also runs when the expiry pass
+    // has nothing to do, which is the steady state.
+    async function reclaimStale() {
+      const stale = await db.select({ id: adapterAuthSessions.id }).from(adapterAuthSessions)
+        .where(and(eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+          isNull(adapterAuthSessions.expiresAt),
+          isNull(adapterAuthSessions.providerLeaseId),
+          inArray(adapterAuthSessions.status, [...TERMINAL_LOCAL_STATES]),
+          lte(adapterAuthSessions.finishedAt, new Date(Date.now() - TERMINAL_RETENTION_MS))))
+        .orderBy(adapterAuthSessions.finishedAt).limit(100);
+      if (stale.length > 0) {
+        await db.delete(adapterAuthSessions).where(inArray(adapterAuthSessions.id, stale.map((row) => row.id)));
+      }
+    }
+    await reclaimStale();
   }
 
   async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false, managementContext?: ConnectionManagementContext): Promise<LocalAiLoginAttempt> {

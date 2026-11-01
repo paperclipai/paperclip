@@ -198,6 +198,26 @@ it("enforces local attempt ownership, company, target, cancellation, and expiry"
   expect(row.status).toBe("timed_out");
 });
 
+it("reclaims terminal local attempts only after the retention horizon", async () => {
+  const login = localAiLoginService(db);
+  const attempt = await login.start(companyId, owner, loginIntent());
+  const readAttempt = () => db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, attempt.sessionId));
+  await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.id, attempt.sessionId));
+  await login.reapExpired();
+  const [terminal] = await readAttempt();
+  expect(terminal.status).toBe("timed_out");
+  expect(terminal.expiresAt).toBeNull();
+  expect(terminal.finishedAt).not.toBeNull();
+  await expect(readFile(path.join(directoryFor(attempt.sessionId), "config.toml"))).rejects.toHaveProperty("code", "ENOENT");
+  // The terminal row stays readable while a client may still be polling it.
+  await login.reapExpired();
+  expect(await readAttempt()).toHaveLength(1);
+  // Past the retention horizon the row is reclaimed; its home is already gone.
+  await db.update(adapterAuthSessions).set({ finishedAt: new Date(Date.now() - 24 * 60 * 60 * 1000) }).where(eq(adapterAuthSessions.id, attempt.sessionId));
+  await login.reapExpired();
+  expect(await readAttempt()).toHaveLength(0);
+});
+
 it("explicit retry replaces another owned local attempt while ordinary navigation preserves it", async () => {
   const login = localAiLoginService(db);
   const first = await login.start(companyId, owner, loginIntent());

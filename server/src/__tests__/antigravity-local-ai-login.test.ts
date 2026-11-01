@@ -42,17 +42,31 @@ function database() {
     select(fields?: unknown) {
       let values: unknown[];
       let tableRows = false;
+      let unmatched = false;
       if ((fields && db.expiredSessions) || db.expiryTable) {
         tableRows = true;
         values = [...db.expiredSessions];
       } else if (db.expiredReads.length) values = [db.expiredReads.shift()];
+      else if (selections.length) values = selections.shift()!;
       else {
-        if (!selections.length) throw new Error("Unexpected test database selection");
-        values = selections.shift()!;
+        // Defer the guard to `where` so a known internal scan can be recognised
+        // by its predicate instead of consuming a queued selection.
+        unmatched = true;
+        values = [];
       }
       const result: any = { from: () => result, where: (condition: any) => {
+        const query = new PgDialect().sqlToQuery(condition);
+        // The terminal-row reclaim scan runs after the expiry pass. It is the
+        // only query that filters on a null provider lease together with a
+        // finished time. This fixture carries no reclaimable rows, so it answers
+        // empty instead of consuming a queued selection.
+        if (query.sql.includes("provider_lease_id") && query.sql.includes("finished_at")) {
+          unmatched = false;
+          values = [];
+          return result;
+        }
+        if (unmatched) throw new Error("Unexpected test database selection");
         if (tableRows) {
-          const query = new PgDialect().sqlToQuery(condition);
           const excluded = query.sql.includes("not in") ? query.params.filter(value => typeof value === "string" && value !== "local_subscription") : [];
           if (fields) values = values.filter((row: any) => row.expiresAt && !excluded.includes(row.id));
           else values = values.filter((row: any) => query.params.includes(row.id));
@@ -65,6 +79,9 @@ function database() {
       return result;
     },
     insert() { return { async values(value: Record<string, unknown>) { session = { ...value, createdAt: new Date() }; } }; },
+    // The terminal-row reclaim deletes expired rows. This fixture has none, but
+    // the method must exist so the reclaim path can run.
+    delete() { return { async where() {} }; },
     update() { return { set(value: Record<string, unknown>) { return { async where(condition: any) {
       const params = new PgDialect().sqlToQuery(condition).params;
       const target = db.expiredSessions?.find((row: any) => params.includes(row.id)) ?? session;
