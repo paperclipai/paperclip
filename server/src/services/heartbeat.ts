@@ -357,6 +357,8 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 
 import { logger } from "../middleware/logger.js";
+import { isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
+import { redirectClaudeAutoMemory } from "./managed-claude-memory.js";
 import { publishLiveEvent } from "./live-events.js";
 
 import {
@@ -3282,6 +3284,10 @@ export function heartbeatService(
           ? adapter.supportsInstructionsBundle === true
           : nativeRuntimeHasInstructionFilesystem(nativeRuntimeResolution.profile.backend);
         runtimeConfig = await timePreparation("instructions", () => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem }));
+        const agentDirectoryCopy = preparedInstructions.instructionCopy;
+        if (managedAiRuntime?.home && agent.adapterType === "claude_local" && agentDirectoryCopy && isAgentDirectoryCopy(agentDirectoryCopy)) {
+          await redirectClaudeAutoMemory(managedAiRuntime.home, agentDirectoryCopy.executionRoot);
+        }
         const runtimeSelection = await timePreparation("runtime_selection", () => selectHeartbeatRuntime(db, {
           run,
           agent,
