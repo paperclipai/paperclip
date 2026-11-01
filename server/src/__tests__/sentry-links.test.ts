@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { addSentryRunLinks, setSentryRunLinkResolver } from "../sentry-links.js";
+import { addDynamicImportDiagnostics, addSentryRunLinks, setSentryRunLinkResolver } from "../sentry-links.js";
 
 const runId = "22222222-2222-4222-8222-222222222222";
 const companyId = "55555555-5555-4555-8555-555555555555";
@@ -94,6 +94,21 @@ describe("Sentry navigation links", () => {
     finish(identity);
     await Promise.resolve();
     expect(event.tags).not.toHaveProperty("task_url");
+  });
+
+  it("tags missing dynamic import callback crashes with origin diagnostics and keeps other events unchanged", async () => {
+    const error = Object.assign(new TypeError("A dynamic import callback was not specified."), {
+      code: "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING",
+      stack: "TypeError: A dynamic import callback was not specified.\n    at importModuleDynamicallyCallback (node:internal/modules/esm/utils:280:9)\n    at Timeout._onTimeout (<anonymous>:1:41)",
+    });
+    const event: { tags?: Record<string, unknown>; contexts?: Record<string, Record<string, unknown>> } = { tags: { existing: "kept" } };
+    const enriched = await addSentryRunLinks(event as never, { originalException: error });
+    expect(enriched).toMatchObject({
+      tags: { existing: "kept", error_code: "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING", inspector_active: false },
+      contexts: { dynamic_import: { inspectorActive: false, anonymousFrames: ["at Timeout._onTimeout (<anonymous>:1:41)"] } },
+    });
+    expect(addDynamicImportDiagnostics({ tags: { a: "b" } }, { originalException: new Error("other") })).toEqual({ tags: { a: "b" } });
+    expect(addDynamicImportDiagnostics({ tags: { a: "b" } })).toEqual({ tags: { a: "b" } });
   });
 
   it("limits abandoned database lookups while continuing to send subsequent errors", async () => {

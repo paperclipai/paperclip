@@ -81,10 +81,15 @@ export async function loadPluginModuleInSandbox(
   const entrypointPath = path.resolve(options.entrypointPath);
   const pluginRoot = path.dirname(entrypointPath);
 
-  const context = vm.createContext({
-    ...DEFAULT_GLOBALS,
-    ...options.allowedGlobals,
-  });
+  const context = vm.createContext(
+    {
+      ...DEFAULT_GLOBALS,
+      ...options.allowedGlobals,
+    },
+    // Block eval/new Function so code cannot be generated at runtime to
+    // bypass the load-time dynamic import() check below.
+    { codeGeneration: { strings: false, wasm: false } },
+  );
 
   const moduleCache = new Map<string, Record<string, unknown>>();
   const allowedModules = options.allowedModules ?? {};
@@ -109,6 +114,16 @@ export async function loadPluginModuleInSandbox(
     if (looksLikeEsm(code)) {
       throw new PluginSandboxError(
         "Sandbox loader only supports CommonJS modules. Build plugin worker entrypoints as CJS for sandboxed loading.",
+      );
+    }
+
+    // A VM script has no dynamic import handler (a custom one needs
+    // --experimental-vm-modules), so a plugin `import()` — e.g. from a timer —
+    // would reject with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING outside any plugin
+    // call and crash the host. Reject it at load time instead.
+    if (usesDynamicImport(code)) {
+      throw new PluginSandboxError(
+        `Plugin module '${realPath}' uses dynamic import(), which the sandbox does not support. Use require() with an allow-listed module.`,
       );
     }
 
@@ -211,6 +226,14 @@ function normalizeModuleExports(exportsValue: unknown): Record<string, unknown> 
   }
 
   return { default: exportsValue };
+}
+
+/**
+ * Conservative guard for dynamic `import(` calls. It may also match the text
+ * inside strings or comments; a plugin can avoid that by not writing `import(`.
+ */
+function usesDynamicImport(code: string): boolean {
+  return /(^|[^\w$.])import\s*\(/.test(code);
 }
 
 /**

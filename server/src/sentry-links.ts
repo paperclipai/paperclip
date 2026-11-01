@@ -1,3 +1,5 @@
+import inspector from "node:inspector";
+
 export interface SentryRunReference {
   runId: string;
   companyId?: string;
@@ -28,8 +30,46 @@ export function setSentryRunLinkResolver(resolver: SentryRunLinkResolver | null)
   resolveRunLinks = resolver;
 }
 
+export interface SentryEventHint {
+  originalException?: unknown;
+}
+
+const DYNAMIC_IMPORT_CALLBACK_MISSING = "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING";
+
+/**
+ * Node raises ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING when code compiled without
+ * an import handler (a vm script, or an inspector `Runtime.evaluate`) calls
+ * `import()`. Its stack has only `<anonymous>` frames, so attach process-level
+ * evidence of where that code came from. The event is always kept.
+ */
+export function addDynamicImportDiagnostics<T extends LinkableEvent>(event: T, hint?: SentryEventHint): T {
+  const error = hint?.originalException;
+  if (!error || typeof error !== "object" || (error as { code?: unknown }).code !== DYNAMIC_IMPORT_CALLBACK_MISSING) {
+    return event;
+  }
+  try {
+    let inspectorActive = false;
+    try {
+      // `inspector.url()` is set while a debugger can attach to this process.
+      inspectorActive = Boolean(inspector.url());
+    } catch { /* inspector unavailable in this runtime */ }
+    const stack = typeof (error as { stack?: unknown }).stack === "string" ? (error as { stack: string }).stack : "";
+    const anonymousFrames = stack.split("\n").filter((line) => line.includes("<anonymous>")).map((line) => line.trim()).slice(0, 5);
+    const nodeOptionFlags = (process.env.NODE_OPTIONS ?? "").split(/\s+/).filter((flag) => flag.startsWith("--")).map((flag) => flag.split("=")[0]);
+    event.tags = { ...event.tags, error_code: DYNAMIC_IMPORT_CALLBACK_MISSING, inspector_active: inspectorActive };
+    event.contexts = { ...event.contexts, dynamic_import: {
+      inspectorActive,
+      execArgv: process.execArgv.map((flag) => flag.split("=")[0]),
+      nodeOptionFlags,
+      anonymousFrames,
+    } };
+  } catch { /* Diagnostics must not discard the original error. */ }
+  return event;
+}
+
 /** Enrich only events already associated with a run. Never read a request URL or body. */
-export async function addSentryRunLinks<T extends LinkableEvent>(event: T): Promise<T> {
+export async function addSentryRunLinks<T extends LinkableEvent>(event: T, hint?: SentryEventHint): Promise<T> {
+  addDynamicImportDiagnostics(event, hint);
   const runId = event.tags?.run_id ?? event.contexts?.adapter_stop?.runId;
   const resolver = resolveRunLinks;
   if (!resolver || typeof runId !== "string" || !UUID.test(runId)) return event;
