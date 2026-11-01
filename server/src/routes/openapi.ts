@@ -1374,6 +1374,8 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/liveness",
   "HEAD /api/liveness",
+  "GET /api/ready",
+  "HEAD /api/ready",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -1821,6 +1823,25 @@ registry.registerPath({
   tags: ["health"],
   summary: "Process startup status without a response body",
   responses: { 200: { description: "Process startup recovery is complete" }, 503: { description: "Startup recovery is not complete" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/ready",
+  tags: ["health"],
+  summary: "Deployment readiness without database access",
+  description: "Public in-memory admission status after startup dependencies and recovery have been verified. Returns 503 immediately during shutdown. Responses are not cached; an unavailable server supplies Retry-After: 1.",
+  responses: {
+    200: r.ok(z.object({ status: z.literal("ready") }).strict()),
+    503: { description: "Starting, recovering, or draining", content: {
+      "application/json": { schema: z.object({ status: z.enum(["starting", "recovering", "draining"]) }).strict() },
+    } },
+  },
+});
+registry.registerPath({
+  method: "head", path: "/api/ready", tags: ["health"],
+  summary: "Deployment readiness without a response body",
+  responses: { 200: { description: "Ready to receive traffic" }, 503: { description: "Starting, recovering, or draining" } },
 });
 
 // Shared by the healthy and database-unreachable responses: full details

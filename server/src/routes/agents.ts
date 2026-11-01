@@ -1,4 +1,5 @@
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
+import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
@@ -7319,7 +7320,10 @@ export function agentRoutes(
           throw conflict("This runtime request is stale or is no longer pending.");
         }
         let queued: { commandId: string };
-        try {
+        if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true") {
+          queued = await enqueueNativeRuntimeResponse(db, { request: currentPendingRequest,
+            actor: resolutionActor, localImplicit: req.actor.source === "local_implicit", resolution });
+        } else try {
           queued = await resolveNativeRuntimeRequest({
             runId,
             requestId,

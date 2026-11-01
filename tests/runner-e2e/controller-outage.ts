@@ -40,6 +40,7 @@ export function configuredControllerOutage(env: NodeJS.ProcessEnv, defaultHoldMs
 }
 
 export function controllerOutageForExecution(execution: MatrixExecution, env: NodeJS.ProcessEnv): ControllerOutage | undefined {
+  if (execution.suite.id === "rolling-web-deployment") return undefined;
   if (execution.task.flow !== "everyday_workflow" || execution.task.id !== "recover-controller"
     || execution.environment.id !== "daytona" || execution.profile.generation !== "native"
     || (execution.profile.provider !== "codex" && execution.profile.provider !== "acpx")) return undefined;

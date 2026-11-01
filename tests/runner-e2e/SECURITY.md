@@ -7,7 +7,8 @@ reference. Provider credentials and agent homes remain outside that folder.
 The ordinary settings read must report remote storage enabled by default; the
 workflow does not opt itself in. Its five-minute active outage and later completed-session
 replacement retain the existing native identity and no-replay checks.
-The server's S3 override is admitted only for this suite and only from explicit
+The server's S3 override is admitted only for this suite and the explicit
+`rolling-web-deployment` suite, and only from explicit
 `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_*` configuration, with a unique instance
 prefix. Ambient storage settings remain stripped and rejected for other suites.
 Snapshot objects, databases, raw provider IDs, and execution workspaces remain
@@ -618,3 +619,9 @@ Slack qualification, and they do not publish trusted archives or credentials.
 Report identities preserve legacy chat tasks and exact `area.case` chat catalog
 tasks. Additional task segments, path separators and dotted nonchat tasks remain
 invalid. This parsing does not qualify a result or grant a new execution.
+
+The explicit rolling web deployment cell shares only its disposable PostgreSQL,
+S3 prefix, and generated secrets between controllers. It removes the entire old
+home after graceful handoff. Its read-only observer does not create recovery
+authority. Provider credentials still enter through encrypted fixture secrets.
+Local rolling smoke receipts explicitly exclude active-agent and hosted proof.

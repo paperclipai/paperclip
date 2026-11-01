@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { agents, environmentLeases, environments, agentInstructionWorkingCopies as copies, type Db } from "@paperclipai/db";
+import { agents, environmentLeases, environments, agentInstructionWorkingCopies as copies, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { syncDirectoryToSsh, restoreWorkspaceFromSshExecution } from "@paperclipai/adapter-utils/ssh";
 import { prepareAdapterExecutionTargetRuntime, runAdapterExecutionTargetShellCommand, type AdapterExecutionTarget, type PreparedAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
 import { withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -18,6 +18,7 @@ import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { agentDirectoryBaselineDigest, agentDirectoryProbeProgram, observeLocalAgentDirectory } from "./agent-directory-probe.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { cachedAgentFileManifest, captureAgentFileCheckpoint, checkpointBaseline, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
+import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 import { logger } from "../middleware/logger.js";
 
 type Copy = typeof copies.$inferSelect;
@@ -54,7 +55,16 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     });
   }
   const ownerFile = (row: Copy) => path.join(path.dirname(row.localRoot), "owner.json");
+  const disposableRemoteCopy = (row: Copy) => process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && row.location.startsWith("remote:");
+  function projectionRoot(row: Copy): string {
+    const origin = String(row.receipt?.materializationRunId ?? row.receipt?.directoryRunId ?? row.runId);
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(origin)) throw conflict("Invalid agent directory owner");
+    return path.join(path.dirname(resolveManagedInstructionsRoot({ id: row.agentId, companyId: row.companyId, name: "", adapterConfig: {} })), "file-sync", "runs", origin, "live");
+  }
   async function owns(row: Copy) {
+    // Remote ownership is durable. A marker on a discarded controller cannot
+    // establish ownership of the retained sandbox on its replacement.
+    if (disposableRemoteCopy(row)) return row.state !== "superseded" && !row.receipt?.retainedByRunId;
     if (row.receipt?.warm !== true) return true;
     return await fs.readFile(ownerFile(row), "utf8").then(s => JSON.parse(s).runId === row.runId).catch(error => error.code === "ENOENT" && row.processStoppedAt !== null);
   }
@@ -159,7 +169,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       ? path.posix.join(input.target.remoteCwd, ".paperclip-runtime", "agent-files", input.agentId, origin)
       : localRoot;
     const location = input.target?.kind === "remote" ? `remote:${input.target.environmentId ?? ""}` : "local";
-    if (row && (row.localRoot !== localRoot || row.executionRoot !== executionRoot || row.agentId !== input.agentId || row.location !== location)) throw conflict("Agent directory belongs to a different execution environment");
+    if (row && ((!disposableRemoteCopy(row) && row.localRoot !== localRoot) || row.executionRoot !== executionRoot || row.agentId !== input.agentId || row.location !== location)) throw conflict("Agent directory belongs to a different execution environment");
     if (row && !serialHeld) {
       // Restart preparation can replace a completed copy under the same run ID.
       // Join cleanup's lock before resetting its receipt or creating new bytes.
@@ -168,7 +178,10 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       return serial(row, () => prepareCopy(input, true), "agent_directory_prepare");
     }
     if (row && !completed.has(row.state) && row.state !== "preparing") {
-      if (input.target?.kind === "remote" && !transports.has(key(row))) transports.set(key(row), await transport(row, input.target, true));
+      if (input.target?.kind === "remote") {
+        if (disposableRemoteCopy(row)) await restoreProjection(row, input.target);
+        if (!transports.has(key(row))) transports.set(key(row), await transport(row, input.target, true));
+      }
       return row;
     }
     // Register ownership before creating any bytes, so a crash during the copy
@@ -241,6 +254,39 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     }
   }
 
+  async function restoreProjection(row: Copy, target: AdapterExecutionTarget) {
+    const exists = await fs.lstat(row.localRoot).then(stat => {
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw conflict("Agent directory projection is not a directory");
+      return true;
+    }, error => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    });
+    if (exists) return;
+    const lease = await ownedRemoteLease(row);
+    const cleanup = row.receipt?.cleanup as { leaseId?: string; remoteCwd?: string } | undefined;
+    if (target.kind !== "remote" || !lease || target.leaseId !== lease.id || lease.status !== "active"
+      || lease.releasedAt || hasRemoteTerminationReceipt(lease) || cleanup?.remoteCwd !== target.remoteCwd
+      || row.location !== `remote:${target.environmentId}`) throw conflict("Agent directory recovery lease changed");
+    // Reconstruct a private mirror without applying save quotas to admission.
+    // An empty merge baseline downloads all remote bytes without uploading any;
+    // the original save baseline remains unchanged in Postgres.
+    await fs.mkdir(row.localRoot, { recursive: true, mode: 0o700 });
+    let projection: PreparedAdapterExecutionTargetRuntime | undefined;
+    try {
+      projection = await prepareAdapterExecutionTargetRuntime({ target, runId: row.runId, adapterKey: "agent-files-recovery",
+        workspaceLocalDir: row.localRoot, workspaceRemoteDir: row.executionRoot,
+        runtimeRootDir: sandboxTransferRoot(row, target.remoteCwd), syncWorkspace: true,
+        workspaceInboundMode: "adopt_remote", workspaceBaseline: { exclude: [".paperclip-runtime"], entries: new Map() },
+        workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all", workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
+      await projection.restoreWorkspace();
+      await inspectAgentDirectory(row.localRoot, false);
+      if (row.receipt?.warm === true) await fs.writeFile(ownerFile(row), JSON.stringify({ runId: row.runId }));
+    } catch (error) {
+      await fs.rm(row.localRoot, { recursive: true, force: true });
+      throw error;
+    } finally { await projection?.cleanupWorkspaceSnapshot?.(); }
+  }
   async function retrieve(row: Copy, target?: AdapterExecutionTarget | null) {
     if (row.location !== "local") {
       let runtime = transports.get(key(row));
@@ -356,6 +402,14 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
   }
   async function checkpoint(row: Copy, target?: AdapterExecutionTarget | null, stopped = false): Promise<Copy> {
     if (!await owns(row) || row.state === "superseded") return row;
+    target ??= transports.get(key(row))?.target;
+    if (row.location !== "local" && target?.kind !== "remote") {
+      // A missing controller cache is not the remote directory. Retain the
+      // pending save until its exact remote collector or destruction proof exists.
+      return patch(row, { ...(stopped ? { state: "pending_collection", processStoppedAt: row.processStoppedAt ?? new Date() } : {}),
+        errorCode: "INSTRUCTION_REMOTE_COLLECTOR_UNAVAILABLE", errorMessage: "The remote agent directory is retained; its collector is unavailable. No save or discard is claimed.",
+        nextAttemptAt: stopped ? new Date(Date.now() + 30_000) : null });
+    }
     let failure: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       let captured: Awaited<ReturnType<typeof captureAgentFileCheckpoint>> | undefined;
@@ -575,13 +629,29 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     return result.exitCode === 0 && !result.timedOut;
   }
   async function serial<T>(row: Copy, fn: (current: Copy) => Promise<T>, operation: DirectoryMergeLockOperation): Promise<T> {
-    // Duplicate stop callbacks and restart recovery must not race while moving
-    // the stopped working copy. This lock is outside the writable tree.
-    return withDirectoryMergeLock(path.resolve(row.localRoot, "../../.."), async () => {
-      const current = await get(row.companyId, row.runId);
-      if (!current) throw notFound("Agent directory copy not found");
-      return fn(current);
-    }, process.env, operation);
+    const run = async () => {
+      const lockRoot = path.resolve(disposableRemoteCopy(row) ? projectionRoot(row) : row.localRoot, "../../..");
+      if (disposableRemoteCopy(row)) await fs.mkdir(lockRoot, { recursive: true, mode: 0o700 });
+      return withDirectoryMergeLock(lockRoot, async () => {
+        let current = await get(row.companyId, row.runId);
+        if (!current) throw notFound("Agent directory copy not found");
+        if (disposableRemoteCopy(current) && current.localRoot !== projectionRoot(current)) {
+          current = await patch(current, { localRoot: projectionRoot(current) });
+          if (current.localRoot !== projectionRoot(current)) throw conflict("Agent directory projection changed");
+          transports.delete(key(current));
+        }
+        return fn(current);
+      }, process.env, operation);
+    };
+    if (!disposableRemoteCopy(row)) return run();
+    // Different controllers have different cache roots. Serialize their active
+    // collection/cleanup operations in Postgres, without holding row locks over I/O.
+    return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
+      const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
+        (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
+      if (lock?.acquired !== true) throw conflict("Agent directory operation is already active");
+      return withWorkspaceLockKeepalive(tx as unknown as Db, Number(lock.idle_timeout_ms), run);
+    }));
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,
     recoverStoppedRemote: (row: Copy) => serial(row, current => current.receipt?.retainedByRunId ? Promise.resolve(current) : recoverStoppedRemote(current), "agent_directory_collect"),

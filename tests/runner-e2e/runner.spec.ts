@@ -1,3 +1,5 @@
+import { isRollingWebDeployment, validControllerRollingDeploymentReceipt } from "./controller-rolling-deployment.js";
+import type { ControllerReplacementReceipt } from "./controller-replacement.js";
 import { kimiCandidateAdmissionForExecution } from "./server-restart-request.js";
 import { runPlanRevisionAcceptance, isPendingPlanConfirmation, normalizePlanMarkdown, expectPlanStageVisible } from "./plan-revision-flow.js";
 import { createWorkerTiming } from "./worker-timing.js";
@@ -273,8 +275,9 @@ async function restartIsolatedPaperclipServer(input: {
   crashAfterResult?: FinalizationCrashBinding;
   controllerDowntimeMs?: number;
   controllerOutage?: ControllerOutage;
+  rollingDeployment?: true;
   recoveryBinding?: import("./controller-recovery-observer.js").RecoveryBinding;
-  onControllerOutage?: (receipt: ControllerOutageReceipt) => Promise<void>;
+  onControllerOutage?: (receipt: ControllerReplacementReceipt) => Promise<void>;
 }): Promise<void> {
   const {
     controlDirectory,
@@ -287,6 +290,7 @@ async function restartIsolatedPaperclipServer(input: {
     temporaryRequestPath,
     JSON.stringify({ requestId: input.requestId, ...(input.kimiCandidateAdmission ? { kimiCandidateAdmission: input.kimiCandidateAdmission } : {}), ...(input.controllerDowntimeMs !== undefined && !input.controllerOutage ? { controllerDowntimeMs: input.controllerDowntimeMs } : {}), discardControllerCache: input.discardControllerCache === true,
       ...(input.controllerOutage ? { controllerOutage: input.controllerOutage } : {}),
+      ...(input.rollingDeployment ? { rollingDeployment: true } : {}),
       ...(input.recoveryBinding ? { recoveryBinding: input.recoveryBinding } : {}),
       ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}),
       ...(input.crashAfterResult ? { crashAfterResult: input.crashAfterResult } : {}) }),
@@ -312,6 +316,7 @@ async function restartIsolatedPaperclipServer(input: {
       acknowledgement.requestId === input.requestId &&
       acknowledgement.status === "ready" &&
       (!input.discardControllerCache || acknowledgement.controllerCacheDiscarded === true) &&
+      (!input.rollingDeployment || validControllerRollingDeploymentReceipt(acknowledgement.rollingDeployment, input.requestId)) &&
       (!input.controllerOutage || validControllerOutageReceipt(acknowledgement.controllerOutage, input.controllerOutage, input.requestId)),
     reject: (acknowledgement) =>
       acknowledgement.requestId === input.requestId &&
@@ -327,7 +332,7 @@ async function restartIsolatedPaperclipServer(input: {
     load: () => input.api.get<Record<string, unknown>>("/api/health"),
     accept: (health) => Boolean(health),
   });
-  if (input.controllerOutage) await input.onControllerOutage?.(acknowledgement.controllerOutage as ControllerOutageReceipt);
+  if (input.controllerOutage || input.rollingDeployment) await input.onControllerOutage?.((input.rollingDeployment ? acknowledgement.rollingDeployment : acknowledgement.controllerOutage) as ControllerReplacementReceipt);
 }
 
 const executionIds = (() => {
@@ -1256,13 +1261,14 @@ for (const execution of executions) {
           restartCount: upgradeManifest ? upgradeManifest.sequence.length -
             (execution.suite.definitionMetadata?.retainedControllerContinuation === true ? 2 : 1) : 1,
           restart: async (recoveryBinding, controllerDowntimeMs) => {
-            let receipt: ControllerOutageReceipt | undefined;
+            let receipt: ControllerReplacementReceipt | undefined;
             restartIndex += 1;
             await restartIsolatedPaperclipServer({ api, requestId: `story-${nonce}-${restartIndex}`, deadlineAt: startedAtMs + deadlineMs,
-              discardControllerCache: controllerOutage !== undefined,
+              discardControllerCache: controllerOutage !== undefined || isRollingWebDeployment(execution),
+              ...(isRollingWebDeployment(execution) ? { rollingDeployment: true as const } : {}),
               controllerOutage: controllerOutage && !recoveryBinding ? { ...controllerOutage, holdMs: 1000 } : controllerOutage,
-              controllerDowntimeMs,
-              ...(controllerOutage ? { recoveryBinding } : {}),
+              ...(!isRollingWebDeployment(execution) ? { controllerDowntimeMs } : {}),
+              ...((controllerOutage || isRollingWebDeployment(execution)) ? { recoveryBinding } : {}),
               onControllerOutage: async value => {
                 receipt = value;
                 await writeSanitizedJson(snapshotsDir, `controller-outage-${restartIndex}.json`, value, secrets);

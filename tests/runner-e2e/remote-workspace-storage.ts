@@ -1,3 +1,4 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { createHash } from "node:crypto";
 import { remoteWorkspaceAuthoritySchema, remoteWorkspaceRunReferenceSchema } from "../../packages/shared/src/remote-workspace.js";
 import type { ExecutionWorkspace, WorkspaceFileContent } from "../../packages/shared/src/index.js";
@@ -32,7 +33,7 @@ export interface RemoteWorkspaceStorageEvidence {
 }
 
 export function isRemoteWorkspaceStorageExecution(execution: MatrixExecution): boolean {
-  return execution.suite.id === REMOTE_WORKSPACE_STORAGE_SUITE;
+  return execution.suite.id === REMOTE_WORKSPACE_STORAGE_SUITE || isRollingWebDeployment(execution);
 }
 
 export function remoteWorkspaceStoragePrompt(base: string): string {

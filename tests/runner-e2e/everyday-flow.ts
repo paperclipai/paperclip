@@ -25,7 +25,9 @@ import { waitForTaskChatRendered, waitForTaskIdentity } from "./continuation-scr
 import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
-import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { controllerOutageForExecution } from "./controller-outage.js";
+import type { ControllerReplacementReceipt } from "./controller-replacement.js";
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { gradeRemoteWorkspaceStorage, isRemoteWorkspaceStorageExecution, readRemoteWorkspaceStorageCheckpoint,
   REMOTE_WORKSPACE_PROOF_FILE, type RemoteWorkspaceStorageEvidence } from "./remote-workspace-storage.js";
 import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
@@ -102,7 +104,7 @@ interface Input {
   privateDir: string;
   deadlineAt: number;
   restartCount?: number;
-  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerOutageReceipt | void>;
+  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerReplacementReceipt | void>;
   observe(issue: StoryIssue, runs: StoryRun[]): void;
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, value: unknown): Promise<void>;
@@ -182,7 +184,7 @@ export async function runEverydayFlow(input: Input) {
   let project = fixtures.project;
   const caseId = execution.task.id;
   const controllerOutage = controllerOutageForExecution(execution, process.env);
-  const requireRemoteRestart = controllerOutage !== undefined;
+  const requireRemoteRestart = controllerOutage !== undefined || isRollingWebDeployment(execution);
   const remoteWorkspaceStorage = isRemoteWorkspaceStorageExecution(execution);
   if (remoteWorkspaceStorage) ev.remoteWorkspaceStorage = { browserReadPhases: [] };
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
@@ -610,6 +612,9 @@ export async function runEverydayFlow(input: Input) {
       "everyday-remote-restart.ts",
       "retained-controller-continuation.ts",
       "controller-outage.ts",
+      "controller-rolling-deployment.ts",
+      "controller-replacement.ts",
+      "rolling-deployment-supervisor.ts",
       "controller-recovery-observer.ts",
       "upgrade-artifacts.ts",
       "server.ts",

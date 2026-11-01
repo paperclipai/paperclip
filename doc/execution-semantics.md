@@ -1641,8 +1641,15 @@ Retained-file recovery has a separate, source-bound maintenance path. It uses
 the existing physical copyback lock and durable controller receipt. It verifies
 the exact stopped allocation and immutable workspace descriptor, resumes only
 that allocation for export, preserves newer host edits through the normal merge,
-and obtains a fresh stop receipt. An interrupted legacy run does not need an
-accepted native result. A successful `workspace_recovery` operation and matching
+and obtains a fresh stop receipt. The owned file-recovery path can request the
+exact recorded directory through the driver-only `requestedCwd` resume field.
+Daytona requires that field to equal the recorded lease directory and verifies
+the allocation sentinel at its recorded path. It returns the requested directory
+without creating a folder. Ordinary resume omits the field and returns the
+allocation root for normal workspace preparation. Recovery still requires the
+reopened allocation and directory to match the recorded source exactly.
+An interrupted legacy run does not need an accepted native result. A successful
+`workspace_recovery` operation and matching
 recovery record prove persistence; adapter output or a user repair note cannot.
 The failed run and unknown external effects remain historical facts.
 Cancelled native work can owe files after an audited run-only Stop from the

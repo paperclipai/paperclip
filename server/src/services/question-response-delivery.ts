@@ -23,10 +23,25 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import type { heartbeatService } from "./heartbeat.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 
 const DELIVERY_CLAIM_STALE_MS = 30_000;
 const DELIVERY_CLAIM_REFRESH_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
+
+/** A non-owning controller can release a claim just after the owner observes
+ * it. Retry that durable obligation promptly during handoff. hasPending keeps
+ * the worker quiet once all answers settle; retained history is not work. */
+export function registerQuestionResponseDeliveryWork(
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  service: Pick<ReturnType<typeof questionResponseDeliveryService>, "sweepPending" | "hasPending">,
+  retryMs = 1_000,
+) {
+  return coordinator.register(DELIVERY_QUEUES.question, {
+    retryMs, run: () => service.sweepPending(), hasPending: () => service.hasPending(),
+  });
+}
 const DELIVERY_CORRELATION_PREFIX = "question-response:";
 const QUESTION_RESPONSE_WAKE_IDEMPOTENCY_CONSTRAINT =
   "agent_wakeup_requests_question_response_delivery_idempotency_uq";
