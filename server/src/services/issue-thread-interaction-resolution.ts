@@ -24,7 +24,7 @@ export type IssueThreadInteractionResolutionDenialCode =
   (typeof ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES)[number];
 
 export type IssueThreadInteractionResolverActor =
-  | { type: "user"; userId: string }
+  | { type: "user"; userId: string; verifiedEmail?: string | null }
   | { type: "agent"; agentId: string | null | undefined; runId: string | null | undefined }
   | { type: "system"; systemId: string };
 
@@ -184,6 +184,12 @@ export function evaluateIssueThreadInteractionResolverAudience(
     if (
       input.interaction.addresseeUserId
       && input.interaction.addresseeUserId !== input.actor.userId
+      && !(
+        input.actor.verifiedEmail
+        && input.interaction.addresseeUserId.includes("@")
+        && input.interaction.addresseeUserId.trim().toLowerCase()
+          === input.actor.verifiedEmail.trim().toLowerCase()
+      )
     ) {
       return {
         allowed: false,
