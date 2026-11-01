@@ -362,3 +362,44 @@ protects interrupted one-time imports. Deleted-agent objects become eligible
 after the same grace. Deletion checks the current head under the agent lock and
 removes all versions. There is no automatic idle scan; operators own scheduling
 this maintenance during the bounded rollout.
+
+
+### Existing-volume Cloud enrollment
+
+The runtime bundle also contains `node server/dist-runtime/ephemeral-migration.mjs`.
+Cloud starts this dedicated process on the original volume after confirming that
+all application deployments have stopped. It never starts app routes, queues or
+agent execution. Set `PAPERCLIP_EPHEMERAL_MIGRATION=true`, a UUID attempt ID in
+`PAPERCLIP_EPHEMERAL_MIGRATION_ID`, and a fresh 32-byte base64url token in
+`PAPERCLIP_EPHEMERAL_MIGRATION_TOKEN`. Use the original home and instance ID,
+external database, shared S3 configuration and existing stable secrets. Durable
+agent files and shared UI assets must be enabled; ephemeral-server mode stays
+false until adoption completes.
+
+The process uses the existing agent-file, run-evidence and skill maintenance
+owners, follows all pages, verifies stored agent bytes and skill versions, and
+checks whole-database eligibility. Active execution, missing local bytes, local
+workspaces and external instructions block enrollment. Those conditions must be
+resolved by their owning migration paths before detaching the volume.
+
+`GET /health` is a public maintenance liveness check. `GET /status` and
+`POST /export` require the attempt token as Bearer authorization. Status includes
+only the attempt, stamped Core commit, phase, counts and safe error code. Export
+is available only after all checks succeed; it also returns the original decision
+signing key for transfer into the stack vault. The process never generates a
+replacement key. Every response disables caching. Never log or retain the export
+body outside the vault. A 25-minute deadline blocks export; SIGTERM stops the
+process, with a ten-second exit deadline.
+
+Cloud must verify the attempt and image commit, preserve the exact key, and
+confirm this process is stopped before detaching the volume and starting the
+normal ephemeral server. Keep tenant routing closed throughout this one-time
+maintenance. Retain the old volume for recovery evidence; it must not become
+writable authority again after shared state advances.
+
+The opt-in `ephemeral-migration.test.ts` uses disposable PostgreSQL and an
+S3-compatible endpoint. Set `PAPERCLIP_TEST_POSTGRES_ADMIN_URL`,
+`PAPERCLIP_TEST_S3_ENDPOINT` and normal AWS credentials to run it. It verifies
+multi-page adoption, filesystem destruction, fresh reads, corrupt object rejection,
+and missing-byte/active-execution refusals. The default suite does not contact
+external storage.

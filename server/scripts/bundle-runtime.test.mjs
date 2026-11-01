@@ -80,6 +80,15 @@ describe("bundleRuntime", () => {
     expect(JSON.parse(stdout)).toEqual({ asset: "asset beside its source", phase: "--phase=eligibility" });
   });
 
+  it("packages standalone enrollment without starting the app", async () => {
+    const ephemeralMigrationEntry = path.join(root, "server", "dist", "migration.js");
+    write(ephemeralMigrationEntry, 'import { values } from "@paperclipai/fixture"; console.log(JSON.stringify({ migrated: values.doubled }));');
+    const outdir = path.join(root, "server", "dist-runtime");
+    await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir, ephemeralMigrationEntry });
+    const { stdout } = await execFileAsync(process.execPath, [path.join(outdir, "ephemeral-migration.mjs")], { timeout: 30_000 });
+    expect(JSON.parse(stdout)).toEqual({ migrated: 42 });
+  });
+
   it("bundles workspace TypeScript and runs with plain node", async () => {
     const outdir = path.join(root, "server", "dist-runtime");
     const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });
