@@ -58,7 +58,7 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     // Warm module-level state so that both measurements take the same path.
     await createToolGatewayService(db).listToolsForNamedGateway(listing);
     const recorder = recordingDb(db);
-    const tools = await createToolGatewayService(recorder.db).listToolsForNamedGateway(listing);
+    const { tools } = await createToolGatewayService(recorder.db).listToolsForNamedGateway(listing);
     return { tools, statements: recorder.statements, statementParams: recorder.statementParams };
   }
 
@@ -133,7 +133,7 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
       return transaction(work, config);
     });
     const listing = service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
-    const outcome = listing.then((tools) => ({ tools }), (error: unknown) => ({ error }));
+    const outcome = listing.then(({ tools }) => ({ tools }), (error: unknown) => ({ error }));
     try {
       await admitted;
       await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1) })

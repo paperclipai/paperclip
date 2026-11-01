@@ -66,12 +66,12 @@ suite("tool grant restrictions", () => {
     const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(service));
     const post = (method: string, params?: unknown) => request(app).post(`/mcp/gateways/${fixture.namedGateway.gatewayPublicId}`)
       .set("Authorization", `Bearer ${fixture.token.token}`).send({ jsonrpc: "2.0", id: 1, method, params });
-    const allTools = await service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
+    const { tools: allTools } = await service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
     const ungrantedTool = allTools.find((entry) => entry.catalogEntryId === fixture.entries[5]!.id)!;
     expect(ungrantedTool).toBeDefined();
     await db.update(principalPermissionGrants).set({ scope: { allow: ["tool:tool_0004"] } })
       .where(eq(principalPermissionGrants.principalId, fixture.agent.id));
-    const names = await service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
+    const { tools: names } = await service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
     const granted = names.filter((entry) => entry.connectionId === fixture.connection.id);
     expect(granted.map((entry) => entry.catalogEntryId)).toEqual([fixture.entries[4]!.id]);
     const listing = await post("tools/list").expect(200);

@@ -36,9 +36,10 @@ describe("saved assigned results through actual PRP", () => {
     const assignedMcpTools = await createAssignedMcpTools({
       gatewayPublicId: "fixture", bearerToken: "fixture",
       gateway: {
-        listToolsForNamedGateway: async () => [{ name: "app:read", displayName: "Read", description: "Fixture read",
+        listToolsForNamedGateway: async () => ({ tools: [{ name: "app:read", displayName: "Read", description: "Fixture read",
           parametersSchema: { type: "object", properties: { variant: { type: "string", enum: ["large", "inline"] } } },
           pluginId: "fixture", providerType: "mcp_remote_http", risk: "read" }],
+          allowedActions: ["tools/list", "tools/call"] }),
         executeTool,
       } as unknown as ToolGatewayService,
     });
