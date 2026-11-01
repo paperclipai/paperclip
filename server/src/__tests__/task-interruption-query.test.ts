@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { captureInterruptionQuery, seedInterruptionFixture } from "./helpers/task-interruption-fixture.js";
+
+const captureTaskInterruptionFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", () => ({ captureTaskInterruptionFailure }));
 
 describe("task interruption latest run query", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -26,6 +30,10 @@ describe("task interruption latest run query", () => {
     expect(Math.max(...inspected)).toBeLessThan(30);
     const presentations = await taskInterruptionPresentations(db, f.companyId, f.input);
     for (const issue of f.input) expect(presentations.get(issue.id)).toMatchObject({ state: "failed", canRetry: true });
+    for (const issue of f.input) expect(captureTaskInterruptionFailure).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: f.companyId, taskId: issue.id, runId: presentations.get(issue.id)!.observedRunId,
+      runStatus: "failed", agentAdapter: "process",
+    }));
   });
 
   it("preserves native, first-class and text legacy precedence, ties, and tenant scope", async () => {
@@ -62,5 +70,57 @@ describe("task interruption latest run query", () => {
     const upper = { ...input[4]!, id: input[4]!.id.toUpperCase() };
     expect((await taskInterruptionPresentations(db, companyId, [upper])).get(upper.id)).toBeNull();
     expect(await taskInterruptionPresentations(db, companyId, [])).toEqual(new Map());
+  });
+
+  it("reports the saved-message failure state without reporting work, retries or user actions", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), pausedAgentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Failure states", issuePrefix: `F${companyId.slice(0, 7)}` });
+    await db.insert(agents).values([
+      { id: agentId, companyId, name: "Worker", adapterType: "process" },
+      { id: pausedAgentId, companyId, name: "Paused worker", adapterType: "process", status: "paused" },
+    ]);
+    const input = await db.insert(issues).values(Array.from({ length: 9 }, (_, n) => ({
+      companyId, title: `State ${n}`, status: n === 5 ? "done" : "in_progress",
+      assigneeAgentId: n === 8 ? pausedAgentId : agentId,
+    }))).returning();
+    const runs = await db.insert(heartbeatRuns).values(input.map((issue, n) => ({
+      companyId, agentId: issue.assigneeAgentId!, issueId: issue.id,
+      status: n === 1 || n === 4 ? "succeeded" : n === 2 ? "running" : n === 7 ? "cancelled" : "failed",
+      errorCode: n === 6 ? "native_provider_approval_required" : null,
+      scheduledRetryAt: n === 3 ? new Date(Date.now() + 60_000) : null,
+    }))).returning();
+    const [wait] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
+      requestedByActorType: "user", payload: { issueId: input[1]!.id }, requestedAt: new Date(Date.now() - 20_000),
+    }).returning();
+    captureTaskInterruptionFailure.mockClear();
+    const result = await taskInterruptionPresentations(db, companyId, [...input, { ...input[0]!, companyId: randomUUID() }]);
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledTimes(3);
+    for (const n of [0, 1, 7]) {
+      expect(result.get(input[n]!.id)).toMatchObject({ responsibility: "system", state: "failed" });
+      expect(captureTaskInterruptionFailure).toHaveBeenCalledWith({
+        companyId, agentId, taskId: input[n]!.id, runId: runs[n]!.id,
+        runStatus: runs[n]!.status, agentAdapter: "process", intentId: n === 1 ? wait!.id : null,
+      });
+    }
+    expect(result.get(input[2]!.id)?.state).toBe("working");
+    expect(result.get(input[3]!.id)?.state).toBe("retry_scheduled");
+    for (const n of [4, 5]) expect(result.get(input[n]!.id)?.state).toBe("resolved");
+    for (const n of [6, 8]) expect(result.get(input[n]!.id)?.responsibility).toBe("user");
+  });
+
+  it("keeps the failed run's adapter after the task is reassigned", async () => {
+    const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+    const [nextAgent] = await db.insert(agents).values({
+      companyId: f.companyId, name: "Next worker", adapterType: "codex_local",
+    }).returning();
+    const [reassigned] = await db.update(issues).set({ assigneeAgentId: nextAgent!.id })
+      .where(eq(issues.id, f.input[0]!.id)).returning();
+    captureTaskInterruptionFailure.mockClear();
+    const result = await taskInterruptionPresentations(db, f.companyId, [reassigned!]);
+    expect(result.get(reassigned!.id)?.state).toBe("failed");
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: reassigned!.id, agentAdapter: "process",
+    }));
   });
 });

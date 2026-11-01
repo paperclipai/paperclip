@@ -973,8 +973,8 @@ backend Sentry DSN and the audited SDK. Set `PAPERCLIP_SENTRY_RUN_FAILURES` to:
 | `all` | Every failed or timed-out run, including the known configuration, quota, and external connection failures. Unexpected started cancellations also report. |
 
 Missing, blank, or unrecognized values keep run reporting off. Expected operator
-stops, shutdown interruptions, successful runs, and queued work do not report in
-either enabled mode. A native run that is `failed` while it waits for a same-run
+stops, shutdown interruptions, successful runs, and queued work do not report
+terminal run failures in either enabled mode. A native run that is `failed` while it waits for a same-run
 retry (`nativePhase` `retryable_failure`) does not report either. It reports once
 if a later write ends the retry as a terminal failure. The mode does not change run status, retries, recovery,
 Telemetry, or OpenTelemetry export. It is process-wide, so an operator can enable
@@ -995,6 +995,19 @@ that event's capture call.
 They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
+
+When a task read produces the system-owned failed state displayed as
+“Couldn’t finish this attempt. Your message is saved.”, either enabled mode also
+reports a `task_attempt_failed` error with `event_kind=run_failure` and
+`failure_source=task_interruption`. This catches saved-message failures without
+a new terminal run transition. The event keeps the actual observed run status,
+the adapter and the company, agent, task and run references. It uses fixed error
+text and includes no message bodies, prompts or raw run diagnostics. Working,
+scheduled-retry, resolved and user-action states do not produce this event.
+Repeated reads of the same company/task/run/intent are suppressed by a bounded
+process-local cache of the latest 1,000 reports. A server restart or cache eviction
+can report an old failure again. This task-state event can accompany a separate
+terminal run-failure report; the `failure_source` tag distinguishes them.
 
 The versioned `paperclip` context supplies company and agent IDs and relative
 API paths for the saved run, events, log, and optional task. A valid HTTP(S)

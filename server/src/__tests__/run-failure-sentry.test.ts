@@ -91,6 +91,42 @@ afterEach(() => {
 });
 
 describe("captureRunFailure", () => {
+  it("reports a saved-message failure with the run-failure tag and the actual run status", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = { companyId: "company", agentId: "agent", taskId: "task", runId: "run",
+      agentAdapter: "process", runStatus: "succeeded" as const, intentId: "intent" };
+    sentryModule.captureTaskInterruptionFailure(event);
+    sentryModule.captureTaskInterruptionFailure(event);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException.mock.calls[0]![0]).toMatchObject({
+      message: "Couldn’t finish this attempt. Your message is saved.",
+    });
+    expect(captureException.mock.calls[0]![1]).toMatchObject({
+      tags: { event_kind: "run_failure", failure_source: "task_interruption", run_id: "run", task_id: "task",
+        company_id: "company", agent_id: "agent", run_status: "succeeded", error_code: "task_attempt_failed" },
+      contexts: { paperclip: { runPath: "/api/heartbeat-runs/run", taskPath: "/api/issues/task" } },
+      fingerprint: ["task_attempt_failed", "process"],
+    });
+    sentryModule.captureTaskInterruptionFailure({ ...event, intentId: "next-intent" });
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "next-run" });
+    expect(captureException).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not consume a saved-message report while reporting is off or capture fails", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = { companyId: "company", agentId: "agent", taskId: "task", runId: "run",
+      agentAdapter: "process", runStatus: "failed" as const, intentId: null };
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "off");
+    sentryModule.captureTaskInterruptionFailure(event);
+    expect(captureException).not.toHaveBeenCalled();
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
+    captureException.mockImplementationOnce(() => { throw new Error("Sentry unavailable"); });
+    expect(() => sentryModule.captureTaskInterruptionFailure(event)).not.toThrow();
+    sentryModule.captureTaskInterruptionFailure(event);
+    sentryModule.captureTaskInterruptionFailure(event);
+    expect(captureException).toHaveBeenCalledTimes(2);
+  });
+
   it.each([undefined, "off", "true", "invalid"])("keeps ordinary server errors enabled while run reporting is disabled: %s", async mode => {
     const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
     vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", mode);
