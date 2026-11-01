@@ -146,6 +146,21 @@ describe("opencode remote environment diagnostics", () => {
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledOnce();
   });
 
+  it("uses the hello probe for an explicitly allowed managed model instead of catalog discovery", async () => {
+    const successfulProbe = await runAdapterExecutionTargetProcess.getMockImplementation()!();
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(successfulProbe);
+    const result = await testEnvironment({ companyId: "company-1", adapterType: "opencode_local",
+      config: {
+        model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        env: { XDG_CONFIG_HOME: configHome, OPENCODE_ALLOW_ALL_MODELS: "true" },
+      } });
+    expect(discoverOpenCodeModels).not.toHaveBeenCalled();
+    expect(ensureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
+    expect(result.status).toBe("pass");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "opencode_model_validation_via_probe" }));
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "opencode_hello_probe_passed" }));
+  });
+
   it.each([false, true])("stages remote runtime config assets for sandbox hello probes (managed=%s)", async (managed) => {
     const configHome = await mkdtemp(path.join(os.tmpdir(), "opencode-remote-test-config-"));
     configHomes.push(configHome);
