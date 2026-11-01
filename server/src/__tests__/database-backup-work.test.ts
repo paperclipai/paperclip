@@ -137,6 +137,47 @@ describe("automatic database backup scheduling", () => {
     expect(s.run).toHaveBeenCalledOnce();
   });
 
+  it("anchors the first run to the resolved deadline, then keeps the interval", async () => {
+    const s = setup(), now = Date.now(), firstRunAt = now + intervalMs / 4;
+    await registerDatabaseBackupWork(s.coordinator, {
+      intervalMs, run: s.run, resolveFirstRunAt: async () => firstRunAt,
+    }).ready;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.coordinator.nextWakeAt()).toBe(firstRunAt);
+    await vi.advanceTimersByTimeAsync(intervalMs / 4 - 1);
+    expect(s.run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(s.run).toHaveBeenCalledOnce();
+    expect(s.coordinator.nextWakeAt()).toBe(firstRunAt + intervalMs);
+    expect(s.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null", async () => null],
+    ["a later deadline", async () => Date.now() + 2 * intervalMs],
+    ["a rejection", async () => { throw new Error("backup dir unreadable"); }],
+  ] as const)("keeps the startup-relative deadline on %s", async (_name, resolveFirstRunAt) => {
+    const s = setup(), now = Date.now();
+    await registerDatabaseBackupWork(s.coordinator, { intervalMs, run: s.run, resolveFirstRunAt }).ready;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.coordinator.nextWakeAt()).toBe(now + intervalMs);
+    expect(s.onError).not.toHaveBeenCalled();
+  });
+
+  it("ignores a first deadline that resolves after a run", async () => {
+    const s = setup(), now = Date.now();
+    let resolve!: (at: number) => void;
+    await registerDatabaseBackupWork(s.coordinator, {
+      intervalMs, run: s.run, resolveFirstRunAt: () => new Promise<number>(r => { resolve = r; }),
+    }).ready;
+    await vi.advanceTimersByTimeAsync(intervalMs);
+    expect(s.run).toHaveBeenCalledOnce();
+    resolve(now + intervalMs / 2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.coordinator.nextWakeAt()).toBe(now + 2 * intervalMs);
+    expect(s.run).toHaveBeenCalledOnce();
+  });
+
   it("restart establishes a fresh interval without replaying historical slots", async () => {
     const s = setup();
     await registerDatabaseBackupWork(s.coordinator, { intervalMs, run: s.run }).ready;
