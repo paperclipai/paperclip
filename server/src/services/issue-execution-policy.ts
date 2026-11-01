@@ -496,6 +496,29 @@ function selectStageParticipant(
   return first ? { type: first.type, agentId: first.agentId ?? null, userId: first.userId ?? null } : null;
 }
 
+function noEligibleStageParticipantError(policy: IssueExecutionPolicy, stage: IssueExecutionStage) {
+  const stageIndex = policy.stages.findIndex((candidate) => candidate.id === stage.id);
+  const action = stage.type === "approval" ? "approve" : "review";
+  return unprocessable(
+    `No eligible ${stage.type} participant is configured for this issue: the only participant on stage ${stageIndex + 1} (${stage.type}) is the return assignee, who cannot ${action} it. Add another participant to this stage.`,
+    { code: "no_eligible_stage_participant", stageId: stage.id, stageIndex, reason: "only_return_assignee" },
+  );
+}
+
+function firstLaterStageWithoutEligibleParticipant(input: {
+  policy: IssueExecutionPolicy;
+  stage: IssueExecutionStage;
+  completedStageIds: string[];
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}) {
+  const completed = new Set(input.completedStageIds);
+  const stageIndex = input.policy.stages.findIndex((candidate) => candidate.id === input.stage.id);
+  return input.policy.stages.find((candidate, candidateIndex) =>
+    candidateIndex > stageIndex &&
+    !completed.has(candidate.id) &&
+    !selectStageParticipant(candidate, { exclude: input.returnAssignee })) ?? null;
+}
+
 function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecutionStagePrincipal | null): boolean {
   if (!participant) return false;
   return stage.participants.some((candidate) => principalsEqual(candidate, participant));
@@ -728,7 +751,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         exclude: existingState?.returnAssignee ?? null,
       });
     if (!currentParticipant) {
-      throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
+      throw noEligibleStageParticipantError(input.policy, activeStage);
     }
 
     // An escalated review is deliberately held by a human who is not in the
@@ -830,7 +853,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           exclude: existingState?.returnAssignee ?? null,
         });
         if (!participant) {
-          throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
+          throw noEligibleStageParticipantError(input.policy, nextStage);
         }
 
         buildPendingStagePatch({
@@ -1035,7 +1058,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     });
   }
   if (!participant) {
-    throw unprocessable(`No eligible ${pendingStage.type} participant is configured for this issue`);
+    throw noEligibleStageParticipantError(input.policy, pendingStage);
+  }
+  const unreachableStage = firstLaterStageWithoutEligibleParticipant({
+    policy: input.policy,
+    stage: pendingStage,
+    completedStageIds: skippedStageIds,
+    returnAssignee,
+  });
+  if (unreachableStage) {
+    throw noEligibleStageParticipantError(input.policy, unreachableStage);
   }
 
   buildPendingStagePatch({
