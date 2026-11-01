@@ -6,7 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GitShallowMetadataError } from "./git-workspace-sync.js";
+import { shouldExcludePath } from "./exclude-patterns.js";
+import { GIT_ARCHIVE_EXCLUDES, GitShallowMetadataError } from "./git-workspace-sync.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import {
   captureDirectorySnapshot,
@@ -903,6 +904,25 @@ describe("conflict-preserving directory restore", () => {
       await writeFile(path.join(target, "folder", "new"), "concurrent");
       await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject" })).rejects.toMatchObject({ paths: ["folder/new"] });
       expect(await readFile(path.join(target, "folder", "new"), "utf8")).toBe("concurrent");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("excludes a nested clone's .git from the restore baseline", async () => {
+    const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-nested-git-")));
+    try {
+      await mkdir(path.join(root, "repo", ".git"), { recursive: true });
+      await writeFile(path.join(root, "repo", ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
+      await writeFile(path.join(root, "repo", "tracked.txt"), "host\n");
+      const baseline = await captureDirectorySnapshot(root, { exclude: [...GIT_ARCHIVE_EXCLUDES] });
+      try {
+        const entries: string[] = [];
+        for (const [entry] of baseline.entries as Iterable<[string, unknown]>) entries.push(entry);
+        expect(entries).toContain("repo/tracked.txt");
+        expect(entries.some((entry) => entry === "repo/.git" || entry.startsWith("repo/.git/"))).toBe(false);
+        expect(shouldExcludePath("repo/.git/config", GIT_ARCHIVE_EXCLUDES)).toBe(true);
+        expect(shouldExcludePath(".git/config", GIT_ARCHIVE_EXCLUDES)).toBe(true);
+        expect(shouldExcludePath(".github/workflows/ci.yml", GIT_ARCHIVE_EXCLUDES)).toBe(false);
+      } finally { await disposeDirectorySnapshot(baseline); }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

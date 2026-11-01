@@ -72,7 +72,7 @@ export function setExpensiveWorkspaceGitExecutor(executor: ExpensiveWorkspaceGit
   expensiveWorkspaceGitExecutor = executor;
 }
 
-export const GIT_ARCHIVE_EXCLUDES = [".git", ".git/*"] as const;
+export const GIT_ARCHIVE_EXCLUDES = [".git", ".git/*", "*/.git", "*/.git/*"] as const;
 
 /**
  * Identity flags for commits the sync machinery itself creates (the merge
