@@ -960,6 +960,11 @@ Minimum event set:
 - `issue.checked_out`
 - `issue.released`
 - `issue.assignment_wakeup_requested`
+- `issue.thread_interaction_created`
+- `issue.thread_interaction_answered`
+- `issue.thread_interaction_accepted`
+- `issue.thread_interaction_rejected`
+- `issue.thread_interaction_expired`
 - `agent.created`
 - `agent.updated`
 - `agent.status_changed`
@@ -982,6 +987,21 @@ Each event must include:
 - actor metadata when applicable
 - primary entity metadata
 - typed payload
+
+Thread interaction events use `entityType: "issue"`, with the issue ID in
+`entityId` and the owning company in `companyId`. Their payload contains the
+sanitized activity details, including `interactionId`, plus `agentId`, `runId`,
+and `responsibleUserId` when available (otherwise `null`). Other fields depend on
+the source action. For example, `interactionKind` and `interactionStatus` can be
+absent. Free-text fields such as `rejectionReason`, `purpose`, and text inside
+`result` can contain user or agent input. Plugins must treat this text as
+untrusted data, including when passing it to a model or rendering it.
+
+The five thread interaction events listed above do not cover every lifecycle
+action. Other activity actions, including cancellation and withdrawal, are not
+registered as plugin event types. To read current interaction state, use
+`ctx.issues.listInteractions(issueId, companyId)` with the
+`issue.interactions.read` capability.
 
 ### 16.1 Event Filtering
 

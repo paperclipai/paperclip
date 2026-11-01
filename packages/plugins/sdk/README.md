@@ -122,6 +122,7 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 | `issue.created`, `issue.updated`, `issue.comment.created` | issue |
 | `issue.document.created`, `issue.document.updated`, `issue.document.deleted` | issue |
 | `issue.relations.updated`, `issue.checked_out`, `issue.released`, `issue.assignment_wakeup_requested` | issue |
+| `issue.thread_interaction_created`, `issue.thread_interaction_answered`, `issue.thread_interaction_accepted`, `issue.thread_interaction_rejected`, `issue.thread_interaction_expired` | issue |
 | `agent.created`, `agent.updated`, `agent.status_changed` | agent |
 | `agent.run.started`, `agent.run.finished`, `agent.run.failed`, `agent.run.cancelled` | run |
 | `goal.created`, `goal.updated` | goal |
@@ -129,6 +130,16 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 | `budget.incident.opened`, `budget.incident.resolved` | budget_incident |
 | `cost_event.created` | cost |
 | `activity.logged` | activity |
+
+**Thread interactions:** `entityId` is the issue ID, and `companyId` identifies
+its company. The payload includes `interactionId` from sanitized activity details,
+plus `agentId`, `runId`, and `responsibleUserId` (nullable). Other fields vary by
+source; do not assume `interactionKind` or `interactionStatus` is present. Treat
+free text such as `rejectionReason`, `purpose`, and text inside `result` as
+untrusted user or agent input when rendering it or passing it to a model.
+Cancellation, withdrawal, and other unlisted lifecycle actions are not plugin
+event types. Read current state with
+`ctx.issues.listInteractions(issueId, companyId)` (`issue.interactions.read`).
 
 **Plugin-to-plugin:** Subscribe to `plugin.<pluginId>.<eventName>` (e.g. `plugin.acme.linear.sync-done`). Emit with `ctx.events.emit("sync-done", companyId, payload)`; the host namespaces it automatically.
 
