@@ -393,6 +393,26 @@ it.each([true, false])("coordinates compact cards before first reveal and retain
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
 });
 
+it.each([false, true])("waits for fonts but bounds a stalled request (stalled=%s)", async (stalled) => {
+  const original = Object.getOwnPropertyDescriptor(document, "fonts");
+  const fonts = { status: "loading" };
+  Object.defineProperty(document, "fonts", { configurable: true, value: fonts });
+  vi.useFakeTimers();
+  try {
+    render(<TaskChatThread issueId="font-readiness" comments={createLongThreadComments()} onAdd={async () => {}} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+    if (!stalled) fonts.status = "loaded";
+    await act(async () => { await vi.advanceTimersByTimeAsync(stalled ? 3100 : 100); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  } finally {
+    if (original) Object.defineProperty(document, "fonts", original);
+    else Reflect.deleteProperty(document, "fonts");
+    vi.useRealTimers();
+  }
+});
+
 it("keeps revealed history scrollable while metadata for another page is pending", async () => {
   function Readiness() { return <span data-testid="history-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
   const props = { issueId: "paged-chat", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };

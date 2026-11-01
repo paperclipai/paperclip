@@ -1562,7 +1562,8 @@ describe("IssueDetail", () => {
     await act(async () => renderIssueView());
     await flushReact();
     expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="task-chat-loading-frame"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-detail-presentation-loading"]')).not.toBeNull();
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
     expect(container.querySelector('[data-testid="issue-detail-header"]')).toBeNull();
     expect(mockOpenPanel).not.toHaveBeenCalled();
     coordinatorPreference.loaded = true;
@@ -1645,6 +1646,8 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
     expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
     expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-detail-presentation-loading"]')).not.toBeNull();
 
     Object.assign(coordinatorPreference, { enabled: true, loaded: true });
     await act(async () => renderIssueView());

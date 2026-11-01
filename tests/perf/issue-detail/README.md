@@ -52,6 +52,12 @@ include completed requests observed during the sample, even after content paint.
 
 ## Task layout stability
 
+The normal browser CI suite also runs `tests/e2e/task-loading-frame.spec.ts`.
+It seeds a smaller API-only task and checks desktop/mobile frame and composer
+geometry, title typography, the initial reading position, Classic preference
+loading, and a stalled font request. It does not require a separate database URL.
+The rich 200-message fixture below remains an additional local stress journey.
+
 `loading-layout.spec.ts` uses a retained synthetic task with a wrapping title,
 200 saved messages, document and PR cards, a monitor, and a pending confirmation.
 It records every animation frame during direct and list-based entry on desktop

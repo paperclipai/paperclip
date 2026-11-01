@@ -3,11 +3,10 @@ import { cn } from "@/lib/utils";
 import { TaskChatComposerDock } from "./TaskChatComposerDock";
 import { taskChatComposerSurfaceClasses } from "./composer-surface";
 
-export function TaskChatLoadingShell({ mobile, streamlined, coordinator, composerConcealed = false }: {
+export function TaskChatLoadingShell({ mobile, streamlined, coordinator }: {
   mobile: boolean;
   streamlined: boolean;
   coordinator: boolean;
-  composerConcealed?: boolean;
 }) {
   return <div
     data-testid="task-chat-loading-frame"
@@ -34,7 +33,7 @@ export function TaskChatLoadingShell({ mobile, streamlined, coordinator, compose
       <Skeleton className="h-24 w-4/5 shrink-0 self-end" />
       <Skeleton className="h-16 w-3/4 shrink-0" />
     </div>
-    <TaskChatComposerDock mobile={mobile} streamlined={streamlined} concealed={composerConcealed} placeholder>
+    <TaskChatComposerDock mobile={mobile} streamlined={streamlined} placeholder>
       <div aria-hidden="true" className={taskChatComposerSurfaceClasses(mobile, streamlined)}>
         <div className="flex min-h-(--sz-48px) items-start px-1 py-1">
           <Skeleton className="h-4 w-1/2" />

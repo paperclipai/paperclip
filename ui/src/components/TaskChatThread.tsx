@@ -260,6 +260,7 @@ function isRunnerResponseComment(params: {
 // well within this as soon as the settled turn/comment lands.
 const SETTLING_TAIL_MAX_MS = 15_000;
 const INITIAL_HISTORY_REVEAL_TIMEOUT_MS = 15_000;
+const INITIAL_FONT_REVEAL_TIMEOUT_MS = 3000;
 const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 const LONG_THREAD_BLOCKER_REPEAT_COUNT = 4;
 
@@ -3168,6 +3169,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // Readiness is latched per issue: refetches never hide existing conversation.
   useEffect(() => {
     if (historyRevealed || historyPending) return;
+    const fontWaitStarted = performance.now();
     let previousGeometry: string | undefined;
     let stableFrames = 0;
     let frame: number;
@@ -3178,7 +3180,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const composer = shell?.querySelector('[data-testid="task-chat-composer-dock"]');
       const geometry = JSON.stringify([bounds?.x, bounds?.y, bounds?.width, bounds?.height,
         scroller?.clientHeight, scroller?.scrollHeight, scroller?.scrollTop, composer?.getBoundingClientRect().height]);
-      stableFrames = geometry === previousGeometry && document.fonts?.status !== "loading" ? stableFrames + 1 : 0;
+      const fontsPending = document.fonts?.status === "loading" && performance.now() - fontWaitStarted < INITIAL_FONT_REVEAL_TIMEOUT_MS;
+      stableFrames = geometry === previousGeometry && !fontsPending ? stableFrames + 1 : 0;
       previousGeometry = geometry;
       if (stableFrames >= 2) setRevealedHistoryKey(historyKey);
       else frame = requestAnimationFrame(revealWhenSettled);

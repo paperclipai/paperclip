@@ -984,9 +984,14 @@ export function IssueDetailLoadingState({
     headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
   const { taskChatShellEnabled, streamlinedUiEnabled, coordinatorWorkspaceEnabled, loaded } = useTaskDetailInterfaceMode();
   const { isMobile } = useSidebar();
-  if (!loaded || taskChatShellEnabled) {
+  if (!loaded) {
+    return <div data-testid="task-detail-presentation-loading" role="status" aria-label="Loading conversation" className="flex h-full min-h-0 w-full flex-1 items-center justify-center">
+      <Skeleton aria-hidden="true" className="h-4 w-24" />
+    </div>;
+  }
+  if (taskChatShellEnabled) {
     return <div data-task-chat-shell="" className="flex h-full min-h-0 w-full flex-1 flex-col">
-      <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorWorkspaceEnabled || !loaded} composerConcealed={!loaded} />
+      <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorWorkspaceEnabled} />
     </div>;
   }
 
@@ -1050,7 +1055,7 @@ export function IssueDetailLoadingState({
 
         {headerSeed ? (
           <>
-            <h2 className="text-xl font-bold leading-tight">
+            <h2 className="text-xl font-semibold leading-normal">
               {headerSeed.title}
             </h2>
             <div className="space-y-2">
