@@ -28,7 +28,7 @@ import { buildNativeExecutionInput } from "../native-runtime/native-execution-in
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
+import { createAdapterRuntimeToolAccess, revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
 
 // Keep real accounting, workspace barriers, and task-session persistence. Providers
@@ -156,6 +156,23 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await db.select().from(runUsageReceipts)).toHaveLength(1);
     expect(await finalizations()).toMatchObject([{ status: "succeeded" }]);
     expectCleanup(input);
+  });
+
+  it.each([
+    [true, ["Paperclip connections"]],
+    [false, []],
+  ])("offers the connections MCP server only to task-bound runs (task bound: %s)", async (taskBound, expected) => {
+    const { input, adapter } = await fixture();
+    vi.mocked(createAdapterRuntimeToolAccess).mockReturnValueOnce({ mcpEndpoint: "http://localhost/mcp/runtime-tools", bearerToken: "token" } as ReturnType<typeof createAdapterRuntimeToolAccess>);
+    input.runtime.adapter.runtimeToolDelivery = "native_mcp";
+    if (!taskBound) input.task = { ...input.task, issueRef: null, issueId: null };
+    let names: string[] = [];
+    adapter.execute.mockImplementationOnce(async ctx => {
+      names = ctx.runtimeMcp?.getServers().map(server => server.name) ?? [];
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    await executeHeartbeatRuntime(db, input);
+    expect(names).toEqual(expected);
   });
 
   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {
