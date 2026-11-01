@@ -793,7 +793,9 @@ async function streamSshToLocalFile(input: {
   remoteScript: string;
   localFile: string;
   progress?: TransferProgress;
+  signal?: AbortSignal | null;
 }): Promise<void> {
+  throwIfWorkspaceRestoreAborted(input.signal);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -811,14 +813,23 @@ async function streamSshToLocalFile(input: {
 
     let sshStderr = "";
     let settled = false;
+    let onAbort = () => {};
+    const cleanupAbort = () => input.signal?.removeEventListener("abort", onAbort);
 
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
+      cleanupAbort();
       ssh.kill("SIGTERM");
       sink.destroy();
       reject(error);
     };
+    onAbort = () => fail(workspaceRestoreCancelledError());
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) {
+      onAbort();
+      return;
+    }
 
     if (input.progress) {
       input.progress.counter.on("error", fail);
@@ -835,6 +846,7 @@ async function streamSshToLocalFile(input: {
       sink.end(() => {
         if (settled) return;
         settled = true;
+        cleanupAbort();
         if ((code ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
           return;
@@ -973,6 +985,7 @@ async function exportGitWorkspaceFromSsh(input: {
         remoteScript: exportScript,
         localFile: bundlePath,
         progress: progress ?? undefined,
+        signal: input.signal,
       });
       await progress?.finish();
     } catch (error) {
@@ -1776,7 +1789,7 @@ export async function syncDirectoryFromSsh(input: {
     // Yield here when cancelled instead of clearing the shared checkout, so
     // the existing cancellation machinery can terminalize the run promptly.
     await throwIfWorkspaceRestoreAbortedWithProgress(input.signal, input.onProgress);
-    await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
+    await clearLocalDirectory(input.localDir, input.preserveLocalEntries, input.signal);
     await copyDirectoryContents(stagingDir, input.localDir, input.signal);
   } catch (error) {
     await progress?.fail();
@@ -1886,6 +1899,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
     throw new Error(`Workspace baseline must exclude ${PROJECT_REPOSITORIES_DIR} when project repositories are restored separately`);
   }
   for (const repository of repositories) {
+    throwIfWorkspaceRestoreAborted(input.signal);
     await restoreWorkspaceRootFromSsh({
       spec: input.spec,
       localDir: path.join(input.localDir, repository.path),

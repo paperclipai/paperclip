@@ -642,7 +642,8 @@ async function withCanonicalDirectoryMergeLock<T>(
   }
 }
 
-async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry): Promise<void> {
+async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry, signal?: AbortSignal | null): Promise<void> {
+  throwIfWorkspaceRestoreAborted(signal);
   const sourcePath = path.join(sourceDir, relative);
   const targetPath = path.join(targetDir, relative);
 
@@ -685,6 +686,7 @@ export async function captureDirectorySnapshot(
   rootDir: string,
   options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean; signal?: AbortSignal | null } = {},
 ): Promise<DirectorySnapshot> {
+  throwIfWorkspaceRestoreAborted(options.signal);
   const exclude = [...new Set(options.exclude ?? [])];
   const ignored = workspacePathMatcher(options.ignoredPaths);
   let writer: WorkspaceManifestWriter | null = null;
@@ -712,12 +714,10 @@ export async function captureDirectorySnapshot(
 
 export async function captureDirectorySnapshotOffThread(
   rootDir: string,
-  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean; signal?: AbortSignal | null } = {},
+  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean } = {},
 ): Promise<DirectorySnapshot> {
-  throwIfWorkspaceRestoreAborted(options.signal);
   if (!options.diskBacked) return captureDirectorySnapshot(rootDir, options);
   const result = await runSnapshotThread({ rootDir, exclude: options.exclude, ignoredPaths: options.ignoredPaths });
-  throwIfWorkspaceRestoreAborted(options.signal);
   try {
     const snapshot = openDirectorySnapshot(result.snapshot);
     ownedDirectorySnapshots.set(snapshot, result.directory);
@@ -820,7 +820,7 @@ export async function mergeDirectoryWithBaseline(input: {
   signal?: AbortSignal | null;
 }): Promise<void> {
   throwIfWorkspaceRestoreAborted(input.signal);
-  const capture = input.workspaceSnapshotIsolation === "worker" ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
+  const capture = input.workspaceSnapshotIsolation === "worker" && !input.signal ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
   const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true, signal: input.signal };
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   throwIfWorkspaceRestoreAborted(input.signal);
@@ -858,7 +858,7 @@ export async function mergeDirectoryWithBaseline(input: {
         for (const [relative, entry] of orderedEntries(source)) {
           throwIfWorkspaceRestoreAborted(input.signal);
           if (!entriesMatch(input.baseline.entries.get(relative), entry) &&
-              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry, input.signal);
         }
         throwIfWorkspaceRestoreAborted(input.signal);
         await input.afterApply?.();
