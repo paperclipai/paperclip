@@ -127,11 +127,17 @@ export function createDeliveryWorkCoordinator(input: {
       const ready = Promise.resolve().then(() => { start(); return running; });
       return { ready, ...worker };
     },
-    async stop() {
+    // Stop dispatch queues first, keeping only already-admitted controller
+    // commands alive until their execution owners finish the handoff. A later
+    // stop() closes the retained workers and the shared scheduler as well.
+    async stop(keepQueues?: ReadonlySet<DeliveryQueue>) {
       stopped = true;
-      scheduler.stop();
-      await Promise.all(Array.from(workers.values(), worker => worker.stop()));
-      workers.clear();
+      if (!keepQueues?.size) scheduler.stop();
+      await Promise.all(Array.from(workers, async ([queue, worker]) => {
+        if (keepQueues?.has(queue)) return;
+        await worker.stop();
+        workers.delete(queue);
+      }));
     },
   };
 }

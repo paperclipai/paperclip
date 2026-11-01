@@ -1,3 +1,5 @@
+import { registerNativeCancellationDelivery } from "./services/native-runtime/native-cancellation-delivery.js";
+import { registerNativeRuntimeResponseDelivery } from "./services/native-runtime/native-runtime-response-delivery.js";
 import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
 import { registerRoutineExecutionStatusWork } from "./services/routine-execution-status-work.js";
 import { routineExecutionStatusService } from "./services/routine-run-status.js";
@@ -54,6 +56,8 @@ import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./ser
 import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js";
 import { registerScheduledWork } from "./services/scheduled-work.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
+import { assertEphemeralServerConfig, assertEphemeralServerData } from "./services/ephemeral-server-contract.js";
+import { deploymentNotifications } from "./services/deployment-notifications.js";
 import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
 import { isIdleTaskDrainActive, readTaskDrain, beginIdleTrackedWork, trackIdleWork, registerTaskDrainExpiryWork } from "./services/task-admission.js";
 import { markIdleStartupComplete, registerIdleLocalWorkProbe } from "./services/idle-local-work.js";
@@ -107,9 +111,11 @@ import {
   instanceUserRoles,
   closeLivenessDb,
   closeCheckpointDb,
+  closeFileStorageDb,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
+import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
@@ -722,7 +728,7 @@ async function startServerWithDatabaseTeardown(
   const closeDatabaseClients = async () => {
     setSentryRunLinkResolver(null);
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
-    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5)]);
+    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5)]);
   };
   startupDatabase.close = closeDatabaseClients;
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
@@ -731,6 +737,7 @@ async function startServerWithDatabaseTeardown(
   
   await initializeCloudRuntimeConfig(db as any);
   let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
+  const deploymentListenUrl = assertEphemeralServerConfig(config);
   // Cloud storage depends on the canonical DB snapshot. Validate it before
   // signing keys or other configuration consumers can mutate local state.
   if (isCloudManagedInstance()) ensureDecisionSigningSecret();
@@ -1066,13 +1073,25 @@ async function startServerWithDatabaseTeardown(
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
 
+  const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
+  const deploymentHints = deploymentListenUrl !== null
+    ? deploymentNotifications(db as any, deliveryWork, {
+      directDatabaseUrl: deploymentListenUrl, isWarmStandby,
+    }) : null;
+  const cancellationDelivery = deploymentListenUrl !== null ? registerNativeCancellationDelivery(db as any, deliveryWork) : null;
+  const runtimeResponseDelivery = deploymentListenUrl !== null ? registerNativeRuntimeResponseDelivery(db as any, deliveryWork) : null;
+  await deploymentHints?.ready();
+  await cancellationDelivery?.ready;
+  await runtimeResponseDelivery?.ready;
+
   let startupListenerBound = false;
   try {
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
-  setupLiveEventsWebSocketServer(server, db as any, {
+  const liveEventsWebSocketServer = setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
+    subscribeInvalidation: deploymentHints?.subscribeCompany,
     resolveSessionFromHeaders,
     // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
     // of a local Better Auth session; without this lane every live-events
@@ -1305,7 +1324,6 @@ async function startServerWithDatabaseTeardown(
     heartbeat: environmentLeaseCleanupHeartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
   });
-  const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
   externalObjects.registerRefreshWork(deliveryWork,
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   if (config.nativeHarnessBackupExpirationEnabled) {
@@ -1912,8 +1930,16 @@ async function startServerWithDatabaseTeardown(
     throw err;
   }
 
+  if (deploymentListenUrl !== null) {
+    await assertEphemeralServerData(db as any);
+    const qualification = await qualifyCloudConfigurationForCurrentImage(db as any);
+    if (qualification && !qualification.configurationPackagesEligible) {
+      throw new Error(`Volume-free server packages are not eligible: ${qualification.blockers.map(blocker => blocker.code).join(", ")}`);
+    }
+  }
   markIdleStartupComplete({ scheduledBackups: config.databaseBackupEnabled });
   setStartupRecoveryPhase("ready");
+  deploymentHints?.markReady();
   logger.info(`Server startup recovery complete on ${config.host}:${listenPort}`);
   void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
     if (notified) logger.info("Notified systemd that Paperclip is ready");
@@ -1964,10 +1990,17 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
-  const shutdown = async (
+  const performShutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    setStartupRecoveryPhase("draining");
+    for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
+    liveEventsWebSocketServer.close();
+    // Finish admitted HTTP requests while their services, workers and database
+    // are still available. Railway must switch routing before signaling A.
+    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,
+      drainRequests: abort => drainHttpRequestWork(app, abort) });
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
     skillVersionRetentionWorker?.unsubscribe();
@@ -1978,7 +2011,12 @@ async function startServerWithDatabaseTeardown(
     unsubscribeNativeResponsePresentation?.();
     unsubscribeNativeWorkspaceFinalization?.();
     unsubscribeRetainedNativeSessionCleanup?.();
-    await deliveryWork.stop();
+    // B can accept Stop/answers while A still owns an execution. Preserve the
+    // owner command workers and their transport until the handoff below ends.
+    await deliveryWork.stop(deploymentHints ? new Set([
+      DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
+      DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,
+    ]) : undefined);
     await runEvidenceMigrationWork?.stop();
     await providerTraceRetentionWork.stop();
     await skillVersionRetentionWorker?.dispose();
@@ -2029,6 +2067,11 @@ async function startServerWithDatabaseTeardown(
       });
     }
 
+    await cancellationDelivery?.stop();
+    await runtimeResponseDelivery?.stop();
+    await deploymentHints?.stop();
+    await deliveryWork.stop();
+
     // Whatever the drain did not finalize (timed-out runs, the hot-restart
     // skip path) still has a local-only tail when the in-flight run-log
     // mirror is enabled; upload those tails now so an orderly restart
@@ -2049,10 +2092,8 @@ async function startServerWithDatabaseTeardown(
     // setup-token login session must stop and release its sandbox lease before
     // the database and the provider stop, so an orderly shutdown never leaves a
     // sandbox lease or confidential login state alive past the process exit.
-    // The HTTP listener closes first, while every service is still up, so a
-    // request in flight is drained against a working server and none reaches
-    // a route once the pool is gone; the programmatic close below then finds
-    // the listener already closed and skips.
+    // HTTP admission and request work were drained above before stopping workers.
+    // Keep the finalizer's defensive listener close for partial teardown paths.
     await finalizeServerShutdown({
       signal,
       shutdownAppServices: appShutdown,
@@ -2082,6 +2123,10 @@ async function startServerWithDatabaseTeardown(
 
     if (exitProcess) process.exit(0);
   };
+
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (signal: "SIGINT" | "SIGTERM", exitProcess: boolean) =>
+    shutdownPromise ??= performShutdown(signal, exitProcess);
 
   process.once("SIGINT", () => {
     void shutdown("SIGINT", true);

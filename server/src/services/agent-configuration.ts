@@ -1,3 +1,4 @@
+import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -97,6 +98,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   if (normalizedPatch.adapterConfig !== undefined) {
     await notifySkillVersionPinChange(db, existing.companyId, existing.adapterConfig ?? {}, normalizedPatch.adapterConfig);
   }
+  assertEphemeralAgentInstructions({ ...existing, ...normalizedPatch });
   return normalizedPatch;
 }
 

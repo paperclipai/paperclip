@@ -7847,6 +7847,24 @@ describe("native session cancellation", () => {
     ).resolves.toBe(false);
   });
 
+  it("keeps duplicate Stop callers waiting for the same provider cleanup", async () => {
+    let releaseCleanup!: () => void;
+    state.cancel.mockReturnValue({ cleanup: new Promise<void>(resolve => { releaseCleanup = resolve; }) });
+    const running = executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner" });
+    await vi.waitFor(() => expect(state.release).toBeTypeOf("function"));
+    const first = cancelNativeSession(execution.binding.runId, "operator Stop");
+    await vi.waitFor(() => expect(state.cancel).toHaveBeenCalledOnce());
+    let acknowledged = false;
+    const duplicate = cancelNativeSession(execution.binding.runId, "duplicate Stop").then(result => { acknowledged = true; return result; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(acknowledged).toBe(false);
+      releaseCleanup();
+      expect(await Promise.all([first, duplicate])).toEqual([true, true]);
+      expect(state.cancel).toHaveBeenCalledOnce();
+    } finally { releaseCleanup(); state.release?.(); await running; }
+  });
+
   it("allows cancellation to be retried when the session dispatch fails", async () => {
     state.cancel.mockImplementationOnce(() => {
       throw new Error("transport unavailable");
@@ -16381,7 +16399,7 @@ describe("HTTP Stop during remote runner staging", () => {
     const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
     const temporary = externalUrl
       ? { connectionString: externalUrl, cleanup: () => dbModule.closeRegisteredClients(externalUrl) }
-      : await dbModule.startEmbeddedPostgresTestDatabase("remote-staging-http-");
+      : await (await import("../../__tests__/helpers/embedded-postgres.js")).startEmbeddedPostgresTestDatabase("remote-staging-http-");
     const httpDb = dbModule.createDb(temporary.connectionString);
     const localExecution = { ...execution, binding: { ...execution.binding,
       companyId: randomUUID(), agentId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), executionWorkspaceId: randomUUID() },

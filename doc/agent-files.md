@@ -13,7 +13,29 @@ or a responsible user alone does not grant peer access.
 
 ## Layout
 
-The canonical host directory keeps its existing physical location:
+`PAPERCLIP_DURABLE_AGENT_FILES=true` opts managed files into shared storage. This
+requires the database migration that creates `agent_file_roots` and the existing
+S3 application-storage configuration. Postgres holds the current manifest; S3
+holds immutable file bytes. Saves publish their bytes before committing the
+manifest, and the local `instructions/` directory becomes a disposable projection.
+An existing durable head remains authoritative when the opt-in is disabled.
+Disabling S3 or rolling back to a binary unaware of durable heads is unsupported.
+
+For existing installations, import from the server that still owns the original
+files while writers are stopped, and verify every managed agent before removing
+its filesystem. A replacement that has no durable head and cannot access the
+original managed directory returns `AGENT_FILES_MIGRATION_REQUIRED`; it must not
+publish an empty replacement. The `file-sync/durable-adoption.json` receipt retains
+the pre-write import manifest across a failed first transaction. It is only a
+local import retry aid; after the head commits, a replacement requires neither
+that receipt nor any other file from the old server.
+
+The storage opt-in is not a zero-downtime deployment qualification. Readiness,
+HTTP draining, active execution, event delivery, Cloud rollout, and rollback have
+separate acceptance checks. Superseded and uncertain-upload objects currently
+remain retained until the explicit bounded object cleanup described below.
+
+The host directory keeps its existing physical location:
 
 ```
 <instance>/companies/<company>/agents/<agent>/
@@ -84,9 +106,11 @@ and, for an oversized file, its path. The previous saved folder is used on the
 next run. The temporary run copy is discarded, including on a limit failure;
 there is no retained recovery archive or partial-save option. Transient sync
 failures get up to three attempts at the stop boundary before cleanup and an
-explicit failure receipt. Individual file writes are atomic, but an I/O failure
+explicit failure receipt. With local storage, individual file writes are atomic, but an I/O failure
 partway through a sync can leave some files updated; a failed receipt does not
-claim whole-folder success.
+claim whole-folder success. With shared storage, the Postgres manifest commits
+the whole tree atomically; an upload or transaction failure leaves the previous
+head authoritative and invalidates the uncommitted local projection.
 
 Sync failures are diagnostics for the affected run, not errors on the current
 files in the Instructions Editor. Historical failures remain in the run log;
@@ -300,3 +324,41 @@ remove it and save a new small file. All tasks must succeed, with warnings
 visible in run details while full and cleared after cleanup.
 Run results, including unavailable credentials, must be reported separately from
 unit or matcher results; a passing matcher does not prove a live run.
+### Explicit migration and object cleanup
+
+Run `server/src/maintenance/agent-files.ts` with the instance's database,
+storage, secrets and original `PAPERCLIP_HOME`. The default migration phase is
+read-only. Before applying, stop ingress and execution writers on that instance
+and set `PAPERCLIP_DURABLE_AGENT_FILES=true`:
+
+```sh
+pnpm exec tsx server/src/maintenance/agent-files.ts --phase=migration
+pnpm exec tsx server/src/maintenance/agent-files.ts --phase=migration --apply --writers-stopped
+```
+
+The production runtime build includes the same command without a TypeScript
+loader: `node server/dist-runtime/agent-files.mjs`. Its read-only
+`--phase=eligibility` validates the ephemeral configuration and checks all durable
+data prerequisites. A failing eligibility or applied migration page exits nonzero.
+Eligibility is a point-in-time check; keep writers stopped through volume removal.
+
+Follow each returned `next` cursor with `--after=<cursor>`. All pages must report
+`pageReady: true` before removing the volume. A missing legacy directory, external
+instructions or active execution prevents migration; resolve that condition on
+the original host. Repeating apply verifies/restores the committed projection.
+This migrates agent files only; other storage families have their own eligibility
+checks. Keep the original volume until the deployment migration is qualified.
+
+Object cleanup is an explicit bounded command, with dry-run as the default:
+
+```sh
+pnpm exec tsx server/src/maintenance/agent-files.ts --phase=objects --company=<uuid> --agent=<uuid>
+```
+
+Add `--apply` to delete eligible objects, and follow `next` with `--after` until
+it is null. Objects younger than 30 days, current-head references, and every
+object belonging to an agent without a committed head are retained. The latter
+protects interrupted one-time imports. Deleted-agent objects become eligible
+after the same grace. Deletion checks the current head under the agent lock and
+removes all versions. There is no automatic idle scan; operators own scheduling
+this maintenance during the bounded rollout.

@@ -13,6 +13,9 @@ import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
 import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
+import { retainedUiAssets } from "./retained-ui-assets.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
+import { loadStorageConfig } from "./storage/config.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
 import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
@@ -80,6 +83,7 @@ import {
 import { registerImportSpoolCleanupWork } from "./services/import-spool-cleanup-work.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { readinessRoutes } from "./routes/ready.js";
 import { livenessRoutes } from "./routes/liveness.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
@@ -536,6 +540,7 @@ export async function createApp(
   // Routine probes stop before session/actor resolution, even after claim.
   // Keep hostname validation and the signed-bootstrap endpoint guard above.
   app.use("/api/liveness", livenessRoutes());
+  app.use("/api/ready", readinessRoutes());
   // A signed claim above commits identity before any normal request can seed
   // company data. Unclaimed probes bypass session resolution as well as SQL.
   app.use(cloudWarmStandbyMiddleware(isWarmStandby, health, staticUi));
@@ -1058,6 +1063,11 @@ export async function createApp(
           immutable: true,
         }),
       );
+      if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
+        const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
+        await retained.publish(path.join(uiDist, "assets"));
+        staticUi.use("/assets", retained.serve);
+      }
       // Serve root/index through the same runtime HTML transform as SPA routes.
       staticUi.get(["/", "/index.html"], (_req, res) => {
         res.type("html").set("Cache-Control", "no-cache").send(readBrandedStaticIndexHtml(uiDist));

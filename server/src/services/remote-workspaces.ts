@@ -72,6 +72,21 @@ export function shouldUseRemoteWorkspaces(input: {
   return configuredRemoteWorkspacePersistence() !== null;
 }
 
+/** Deployment profile admission belongs beside workspace authority. A warm
+ * remote controller may replace its local projection; host-owned execution
+ * cannot make that promise. External conversation providers own no task disk. */
+export function assertEphemeralWorkspaceExecution(input: {
+  externalConversation: boolean; native: boolean; adapterType: string;
+  lifecycleMode: unknown; pluginTaskWorkspace: boolean; remoteAuthority: boolean;
+}) {
+  if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" || input.externalConversation) return;
+  if (!input.native || input.adapterType !== "paperclip_runner" || input.lifecycleMode !== "warm"
+    || (!input.pluginTaskWorkspace && !input.remoteAuthority)) {
+    throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
+      { code: "ephemeral_execution_configuration_required" });
+  }
+}
+
 function configuredRemoteWorkspacePersistence(storage?: StorageService) {
   const config = loadConfig();
   const databaseUrl = config.databaseUrl?.trim();

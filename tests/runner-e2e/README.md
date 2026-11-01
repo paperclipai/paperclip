@@ -3274,3 +3274,28 @@ The shared report navigation links the dated, immutable catalog snapshot.
 Deploying this generator does not rewrite existing published history HTML.
 Activating the link on an existing page requires a separately reviewed,
 conditional navigation-only update. The metadata command publishes nothing.
+### Control-plane rolling deployment smoke
+
+`rolling-deployment-smoke.ts` runs actual source servers A/B/C behind a local
+HTTP/WebSocket proxy with no request retries. It requires disposable loopback
+PostgreSQL and S3-compatible storage, and creates/deletes an owned database and
+bucket per attempt. Each server has a separate home and temporary directory.
+Private JSON configuration files must be mode 600 and must not be committed:
+
+- Database configuration: `{ "url": "<local PostgreSQL admin URL>" }`.
+- Storage configuration: `{ "endpoint": "<local S3 endpoint>", "accessKeyId": "<key>", "secretAccessKey": "<secret>" }`.
+
+```sh
+PAPERCLIP_ROLLING_TEST_DATABASE_CONFIG=/private/tmp/rolling-database.json \
+PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG=/private/tmp/rolling-storage.json \
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/rolling-deployment-smoke.ts
+```
+
+The receipt records source/patch/lockfile identity, individual assertions, timing
+and cleanup. It exercises continuous task reads/writes, concurrent file edits,
+stale-write conflict, an admitted file save during SIGTERM, S3 failure with both
+transfer connections held, and complete deletion of both earlier server homes.
+It uses `local_trusted` authentication and no model provider. Its result does not
+qualify browser reconnects, active-agent continuity, distinct packaged releases
+or Railway. Keep failed receipts alongside successful attempts; the private
+server logs and config files may contain credentials and are not shareable evidence.

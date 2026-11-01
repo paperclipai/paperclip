@@ -91,13 +91,16 @@ describe("agent instructions service", () => {
     await fs.mkdir(path.join(externalRoot, "docs"), { recursive: true });
     await fs.writeFile(path.join(externalRoot, "docs", "TOOLS.md"), "## Tools\n", "utf8");
 
-    const svc = agentInstructionsService({ select: () => ({ from: () => ({ where: async () => [] }) }) } as never);
     const agent = makeAgent({
       instructionsBundleMode: "external",
       instructionsRootPath: externalRoot,
       instructionsEntryFile: "AGENTS.md",
       instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
     });
+    const select = () => ({ from: () => ({ where: () => Object.assign(Promise.resolve([]), { for: async () => [agent] }) }) });
+    const svc = agentInstructionsService({ select,
+      transaction: async (run: (tx: { select: typeof select }) => Promise<unknown>) => run({ select }),
+    } as never);
 
     const result = await svc.updateBundle(agent, { mode: "managed" });
 

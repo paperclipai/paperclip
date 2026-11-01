@@ -1,3 +1,4 @@
+import { nativeCancellationHasRemoteOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
@@ -78,7 +79,7 @@ import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
-import { activeNativeExecutionRunIds } from "./native-active-runs.js";
+import { setNativeExecutionActive } from "./native-active-runs.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import {
   boundedExecutionCleanup,
@@ -7360,6 +7361,8 @@ export async function steerNativeSession(input: {
   }
 }
 
+const nativeCancellationsInFlight = new Map<string, Promise<unknown>>();
+
 export function cancelNativeSession(
   runId: string,
   reason: string,
@@ -7397,6 +7400,23 @@ export async function cancelNativeSession(
       auditId: string | null;
     }
 > {
+  // HTTP and the overlap command worker can observe the same durable intent.
+  // Join the entire cleanup/ACK lifetime before re-reading that intent, rather
+  // than treating cancelRequested as proof that provider cleanup has finished.
+  while (nativeCancellationsInFlight.has(runId)) {
+    await nativeCancellationsInFlight.get(runId)!.catch(() => undefined);
+  }
+  const pending = performNativeCancellation(runId, reason, options);
+  nativeCancellationsInFlight.set(runId, pending);
+  try { return await pending; }
+  finally { nativeCancellationsInFlight.delete(runId); }
+}
+
+async function performNativeCancellation(
+  runId: string,
+  reason: string,
+  options?: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean; cancellationRequestId?: string },
+) {
   const runStop = (options?.scope ?? "run") === "run";
   let decision: NativeStatusDecision | null = null;
   let decisionContext: {
@@ -7486,6 +7506,7 @@ export async function cancelNativeSession(
     const effects = cancellationDecision.effects.map((effect) => effect.kind);
     let intentPublication: Parameters<typeof publishActivity>[0] | null = null;
     const intent = await options.db.transaction(async (tx) => {
+      await notifyNativeCancellation(tx);
       const lockedRun = await tx
         .select({
           agentId: heartbeatRuns.agentId,
@@ -7688,6 +7709,13 @@ export async function cancelNativeSession(
     decisionId = intent.decisionId;
     recoveringCancellationIntent = intent.existing;
     priorCoordinatorDecisionIdAtIntent = intent.priorCoordinatorDecisionId;
+    if (!activeNativeSessions.has(runId) && !nativeSessionStartups.has(runId)
+      && await nativeCancellationHasRemoteOwner(options.db, runId)) {
+      const acknowledged = await waitForNativeCancellation(options.db, {
+        companyId: cancellationContext.companyId, runId, intentId: intent.intentId,
+      });
+      return { ...acknowledged, decision };
+    }
     if (intent.acknowledged && (!runStop || intent.dispatched ||
         (!nativeSessionStartups.has(runId) && !activeNativeSessions.has(runId)))) {
       return {
@@ -7784,6 +7812,7 @@ export async function cancelNativeSession(
         decisionId = committed.decision.id;
       }
       const acknowledgement = await options.db.transaction(async (tx) => {
+        await notifyNativeCancellation(tx);
         const lockedRun = await tx
           .select({
             agentId: heartbeatRuns.agentId,
@@ -8088,7 +8117,7 @@ export async function executePaperclipNativeSession(input: {
     resolve: session => resolveStartup(session),
   };
   nativeSessionStartups.set(runId, startup);
-  activeNativeExecutionRunIds.add(runId);
+  setNativeExecutionActive(runId, true);
   let preparedInput: typeof input = input;
   let cleanupStagedAttachments: () => Promise<void> = async () => undefined;
   let sessionScopeId: string | null = null;
@@ -8215,7 +8244,7 @@ export async function executePaperclipNativeSession(input: {
     startup.settle();
     if (nativeSessionStartups.get(runId) === startup) {
       nativeSessionStartups.delete(runId);
-      activeNativeExecutionRunIds.delete(runId);
+      setNativeExecutionActive(runId, false);
     }
     if (
       ownsSessionScope &&

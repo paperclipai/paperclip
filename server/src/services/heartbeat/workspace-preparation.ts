@@ -1,4 +1,4 @@
-import { readRemoteWorkspaceAuthority, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
+import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
 import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
 import { resolveRemoteWorkspaceSource } from "./remote-workspace-source.js";
@@ -237,10 +237,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   let remoteAuthority = !isDotRun && shouldUseRemoteWorkspaces({
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
-    experimentalEnabled: resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled && Boolean(issueId && issueRef)
+    experimentalEnabled: (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" || resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled) && Boolean(issueId && issueRef)
       && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
+  assertEphemeralWorkspaceExecution({ externalConversation: isDotRun, native: run.runtimeMode === "native",
+    adapterType: agent.adapterType, lifecycleMode: parseObject(agent.adapterConfig).lifecycleMode,
+    pluginTaskWorkspace, remoteAuthority });
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({
     db, companyId: agent.companyId, runId: run.id,
     leaseOwner: runOptions.nativeLeaseOwner ?? runOptions.nativeRestartRecovery?.leaseOwner,

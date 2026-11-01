@@ -195,7 +195,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
         })
       : await revisions.readCurrent({ companyId: input.companyId, agentId: input.agentId }, bound);
     if (!baseline) return null;
-    const exported = await agentInstructionsService().exportFiles(agent, { rejectSymlinks: true });
+    const exported = await agentInstructionsService(db).exportFiles(agent, { rejectSymlinks: true });
     const entryFile = instructionPath(baseline?.revision.entryFile ?? exported.entryFile);
     const content = instructionBytes(baseline?.content ?? exported.files[entryFile] ?? "");
     const localRoot = existing?.localRoot ?? expectedLocalRoot;
