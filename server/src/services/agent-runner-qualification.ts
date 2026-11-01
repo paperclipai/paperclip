@@ -11,7 +11,7 @@ export async function qualifyAgentRunner(
   expectedEnvironmentId: string,
   pluginWorkerManager?: PluginWorkerManager,
 ): Promise<EnvironmentProbeResult> {
-  if (!["claude_local", "codex_local", "paperclip_runner"].includes(agent.adapterType)) {
+  if (!["claude_local", "codex_local", "grok_local", "paperclip_runner"].includes(agent.adapterType)) {
     throw unprocessable("This agent does not support computer qualification.");
   }
   const { environment } = await resolveAgentRunnerEnvironmentForCompany(db, agent.companyId, agent.defaultEnvironmentId);

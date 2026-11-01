@@ -30,5 +30,5 @@ export async function completeSetupTokenAiConnection(
       });
       if (!transitioned) throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
     },
-  });
+  }, undefined, scope.managementContext);
 }

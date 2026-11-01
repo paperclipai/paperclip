@@ -184,6 +184,7 @@ interface DaytonaDriverConfig {
   autoStopInterval: number | null;
   autoArchiveInterval: number | null;
   autoDeleteInterval: number | null;
+  ttlMinutes: number | null;
   reuseLease: boolean;
   archiveOnRelease: boolean;
 }
@@ -307,6 +308,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     autoStopInterval: parseOptionalInteger(raw.autoStopInterval) ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES,
     autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval) ?? DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES,
     autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
+    ttlMinutes: raw.ttlMinutes == null || raw.ttlMinutes === "" ? null : Number(raw.ttlMinutes),
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
   };
@@ -354,6 +356,7 @@ function buildCreateParams(
     autoStopInterval: config.autoStopInterval ?? undefined,
     autoArchiveInterval: config.autoArchiveInterval ?? undefined,
     autoDeleteInterval: config.autoDeleteInterval ?? undefined,
+    ...(config.ttlMinutes != null ? { ttlMinutes: config.ttlMinutes } : {}),
   };
   if (config.image) {
     return {
@@ -383,6 +386,12 @@ function validateRuntimeResourceRequest(config: DaytonaDriverConfig): string | n
   // image snapshot is layered over a base config that carries CPU/memory/disk/GPU.
   if (!hasResourceRequest(config) || config.image || config.snapshot) return null;
   return "Daytona resource settings require image-backed sandbox creation; default sandbox creation cannot override CPU, memory, disk, or GPU.";
+}
+
+function validateCreationTtl(config: DaytonaDriverConfig): string | null {
+  return config.ttlMinutes != null && (!Number.isSafeInteger(config.ttlMinutes) || config.ttlMinutes <= 0)
+    ? "ttlMinutes must be a positive integer when configured."
+    : null;
 }
 
 function buildSandboxLabels(input: {
@@ -689,6 +698,7 @@ function leaseMetadata(input: {
     ...(input.snapshotIdentity ? { snapshotIdentity: input.snapshotIdentity } : {}),
     target: input.sandbox.target,
     timeoutMs: input.config.timeoutMs,
+    ...(input.config.ttlMinutes != null ? { ttlMinutes: input.config.ttlMinutes } : {}),
     reuseLease: input.config.reuseLease,
     // Persisted so the release path (which rebuilds config from lease
     // metadata) still knows to archive instead of delete.
@@ -721,22 +731,17 @@ function expiresAtForMinutes(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
-// Configure a provider-side time-to-live so Daytona destroys the sandbox at or
-// before the caller-requested deadline, even after a Paperclip crash or outage.
-// `setTtl` counts wall-clock time regardless of the sandbox state, so the destroy
-// happens even when the sandbox is stopped, paused, or archived. The function
-// returns the real provider destroy time (`autoDestroyAt`) as evidence of the
-// provider-side bound. It returns null when the caller sets no deadline, when the
-// deadline is invalid, or when the deadline is less than one minute away (Daytona
-// TTL granularity is one minute, so a nearer deadline maps to no valid TTL). The
-// server then fails closed on a null expiry and releases the lease.
 async function configureSandboxExpiry(input: {
   sandbox: Sandbox;
   requestedExpiresAt: string | null | undefined;
   nowMs: number;
+  preserveCreationExpiry: boolean;
 }): Promise<string | null> {
+  const creationExpiry = input.preserveCreationExpiry ? input.sandbox.autoDestroyAt : undefined;
+  const creationExpiryMs = creationExpiry ? Date.parse(creationExpiry) : Number.NaN;
   const requestedMs = input.requestedExpiresAt ? Date.parse(input.requestedExpiresAt) : Number.NaN;
-  if (!Number.isFinite(requestedMs)) return null;
+  if (!Number.isFinite(requestedMs)) return Number.isFinite(creationExpiryMs) ? creationExpiry! : null;
+  if (Number.isFinite(creationExpiryMs) && creationExpiryMs <= requestedMs) return creationExpiry!;
   // Round DOWN so the provider destroy time never lands after the deadline.
   const ttlMinutes = Math.floor((requestedMs - input.nowMs) / 60_000);
   if (ttlMinutes < 1) return null;
@@ -965,7 +970,7 @@ async function createSandbox(
     onSnapshotIdentity?: (identity: SnapshotIdentity) => void;
   } = {},
 ): Promise<Sandbox> {
-  const resourceRequestError = validateRuntimeResourceRequest(config);
+  const resourceRequestError = validateCreationTtl(config) ?? validateRuntimeResourceRequest(config);
   if (resourceRequestError) {
     throw new Error(resourceRequestError);
   }
@@ -989,7 +994,8 @@ async function createSandbox(
   }
   // The SDK can create a sandbox and then throw while waiting for it to start.
   // Keep an attempt-specific provider name so that failure cannot lose ownership.
-  const attemptId = randomUUID();
+  const attemptId = "creationOperationId" in params && params.creationOperationId ? params.creationOperationId : randomUUID();
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(attemptId)) throw new Error("Invalid creation operation identity");
   const name = `paperclip-create-${attemptId}`;
   const labels = { ...buildSandboxLabels({
     companyId: params.companyId,
@@ -1014,6 +1020,15 @@ async function createSandbox(
       timeout: toTimeoutSeconds(config.timeoutMs),
     }));
     idleActivity.observe(allocation, providerActivityKey(params, config, sandbox.id));
+    if (config.ttlMinutes != null) {
+      cleanup.observedProviderLeaseId = sandbox.id;
+      await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
+      const expiry = Date.parse(sandbox.autoDestroyAt ?? "");
+      const nowMs = Date.now();
+      if (!Number.isFinite(expiry) || expiry <= nowMs || expiry > nowMs + config.ttlMinutes * 60_000) {
+        throw new Error("Daytona did not confirm the configured creation TTL.");
+      }
+    }
     return sandbox;
   } catch (createError) {
     // Observe the create failure before compensating deletion can stall or fail.
@@ -2534,6 +2549,8 @@ const plugin = definePlugin(trackDaytonaHooks({
     if (!config.apiKey && !(process.env.DAYTONA_API_KEY?.trim())) {
       errors.push("Daytona sandbox environments require an API key in config or DAYTONA_API_KEY.");
     }
+    const ttlError = validateCreationTtl(config);
+    if (ttlError) errors.push(ttlError);
     const resourceRequestError = validateResourceRequest(config);
     if (resourceRequestError) {
       errors.push(resourceRequestError);
@@ -2676,6 +2693,7 @@ const plugin = definePlugin(trackDaytonaHooks({
           sandbox,
           requestedExpiresAt: params.requestedExpiresAt,
           nowMs: Date.now(),
+          preserveCreationExpiry: config.ttlMinutes != null,
         });
         assertActive();
         phase = "sentinel";
@@ -2762,6 +2780,12 @@ const plugin = definePlugin(trackDaytonaHooks({
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
+    const requestedCwd = params.requestedCwd;
+    if (requestedCwd !== undefined && (typeof requestedCwd !== "string" || requestedCwd.includes("\0")
+      || !path.posix.isAbsolute(requestedCwd) || path.posix.normalize(requestedCwd) !== requestedCwd
+      || params.leaseMetadata?.remoteCwd !== requestedCwd)) {
+      throw new Error("The requested directory does not match the recorded Daytona workspace directory.");
+    }
     if (params.leaseMetadata?.reuseLease === false) {
       const sentinel = isRecord(params.leaseMetadata.workspaceSentinel) ? params.leaseMetadata.workspaceSentinel : null;
       const intent = isRecord(params.leaseMetadata.nativeWorkspaceExportResume) ? params.leaseMetadata.nativeWorkspaceExportResume : null;
@@ -2859,7 +2883,7 @@ const plugin = definePlugin(trackDaytonaHooks({
               config,
               sandbox,
               shellCommand,
-              remoteCwd,
+              remoteCwd: requestedCwd ?? remoteCwd,
               resumedLease: true,
               resumedFromState,
               sandboxState: "started",
@@ -2970,6 +2994,32 @@ const plugin = definePlugin(trackDaytonaHooks({
     const config = parseDriverConfig(params.config);
     if (!config.apiUrl && (process.env.DAYTONA_API_URL?.trim() || process.env.DAYTONA_SERVER_URL?.trim())) {
       return { providerLeaseId: params.providerLeaseId, state: "unknown" };
+    }
+    if (params.creationOperation !== undefined) {
+      const { id: attemptId, runId } = params.creationOperation;
+      if (![attemptId, runId].every(value => typeof value === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value))) {
+        throw new Error("Invalid creation operation identity");
+      }
+      const name = `paperclip-create-${attemptId}`;
+      try {
+        const sandbox = await withLivenessTimeout("sandbox.creationLookup", 10_000, () => createDaytonaClient(config).get(name));
+        const labels = {
+          "paperclip-provider": "daytona", "paperclip-create-attempt": attemptId,
+          "paperclip-company-id": params.companyId, "paperclip-environment-id": params.environmentId,
+          "paperclip-run-id": runId,
+        };
+        if (sandbox.name !== name || Object.entries(labels).some(([key, value]) => sandbox.labels?.[key] !== value)) {
+          throw new Error("Creation operation ownership does not match");
+        }
+        return { providerLeaseId: name, state: "active", creationCleanup: {
+          providerLeaseId: name, observedProviderLeaseId: sandbox.id, companyId: params.companyId,
+          environmentId: params.environmentId, runId: labels["paperclip-run-id"], attemptId,
+          accountFingerprint: sandboxAccountDiscriminator(config), labels,
+        } };
+      } catch (error) {
+        if (error instanceof DaytonaNotFoundError) return { providerLeaseId: name, state: "unknown" };
+        throw error;
+      }
     }
     const proof = idleActivity.proof(providerActivityKey(params, config, params.providerLeaseId));
     // Read directly from the provider. The setup-status path and cached lease

@@ -1,11 +1,27 @@
 import { and, eq, inArray, notInArray } from "drizzle-orm";
-import { approvals, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { approvals, issueApprovals, issueComments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
 import type { NativeGovernanceGate } from "./status-arbiter.js";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+}
+
+
+export async function lockNativeGovernanceSources(input: { db: Db; companyId: string; issueId: string }): Promise<void> {
+  const interactions = await input.db.select({ kind: issueThreadInteractions.kind }).from(issueThreadInteractions)
+    .where(and(eq(issueThreadInteractions.companyId, input.companyId), eq(issueThreadInteractions.issueId, input.issueId)))
+    .for("share", { noWait: true });
+  if (interactions.some(interaction => interaction.kind === "ask_user_questions")) {
+    await input.db.select({ id: issueComments.id }).from(issueComments)
+      .where(and(eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId)))
+      .for("share", { noWait: true });
+  }
+  await input.db.select({ id: approvals.id }).from(issueApprovals)
+    .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+    .where(and(eq(issueApprovals.companyId, input.companyId), eq(issueApprovals.issueId, input.issueId),
+      eq(approvals.companyId, input.companyId))).for("share", { noWait: true });
 }
 
 export async function pendingNativeGovernance(input: {

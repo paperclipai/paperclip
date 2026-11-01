@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express, { type Request } from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
@@ -29,10 +29,9 @@ function createFakeDb(options: {
   membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
-  beforeWrite?: () => Promise<void>;
+  beforeWrite?: (table: unknown) => Promise<void>;
+  unchangedMembership?: boolean;
 } = {}) {
-  const membershipRow =
-    options.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
   const settingsRow =
     options.settingsRow === undefined
       ? {
@@ -47,43 +46,62 @@ function createFakeDb(options: {
       : options.settingsRow;
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
-  const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
-  const chain: Record<string, unknown> = {};
-  chain.values = () => chain;
-  chain.onConflictDoUpdate = () => chain;
-  chain.onConflictDoNothing = () => chain;
-  chain.where = () => chain;
-  chain.returning = async () => { await options.beforeWrite?.(); return [membershipRow]; };
-  chain.then = (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) =>
-    Promise.resolve().then(options.beforeWrite).then(resolve, reject);
+  const selectWheres: Array<{ table: unknown; condition: unknown; locked?: boolean }> = [];
+  function writeChain(table: unknown) {
+    let values: unknown;
+    const chain: Record<string, unknown> = {};
+    chain.values = (value: unknown) => { values = value; return chain; };
+    chain.onConflictDoUpdate = () => chain;
+    chain.onConflictDoNothing = () => chain;
+    chain.where = () => chain;
+    chain.returning = async () => {
+      await options.beforeWrite?.(table);
+      return options.unchangedMembership && table === companyMemberships ? [] : [options.membershipRow ?? values];
+    };
+    chain.then = (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) =>
+      Promise.resolve().then(() => options.beforeWrite?.(table)).then(resolve, reject);
+    return chain;
+  }
   const db = {
+    transaction: async (work: (tx: Db) => Promise<unknown>) => work(db),
     insert: (table: unknown) => {
       insertedTables.push(table);
-      return chain;
+      return writeChain(table);
     },
     delete: (table: unknown) => {
       deletedTables.push(table);
-      return chain;
+      return writeChain(table);
     },
     select: () => {
       return {
         from: (table: unknown) => ({
           where: (condition: unknown) => {
-            // Role-default grant seeding reads existing grants first; keep that
-            // read working so selectThrows exercises only the degradable reads.
-            if (options.selectThrows && table !== principalPermissionGrants) {
+            // Only settings lookup is degradable. Membership locking and
+            // permission seeding must still work in the fail-closed flag test.
+            if (options.selectThrows && table === instanceSettings) {
               throw new Error("select unavailable");
             }
-            selectWheres.push({ table, condition });
+            const selected: (typeof selectWheres)[number] = { table, condition };
+            selectWheres.push(selected);
             const rows =
               table === instanceSettings && settingsRow
                 ? [settingsRow]
                 : table === companyMemberships
                   ? (options.membershipQueryRows ?? [])
                   : [];
-            return {
-              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+            let locked = false;
+            const result = {
+              for: () => { locked = true; selected.locked = true; return result; },
+              then: (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) => {
+                // The optional cross-company read can fail independently of
+                // the primary membership transaction, which must succeed.
+                const query = options.selectThrows && table === companyMemberships && !locked
+                  ? Promise.reject(new Error("select unavailable"))
+                  : Promise.resolve(rows);
+                return query.then(resolve, reject);
+              },
             };
+            return result;
           },
         }),
       };
@@ -236,6 +254,133 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables.filter((table) => table === companyMemberships)).toHaveLength(3);
   });
 
+  it("coalesces concurrent identical syncs while keeping authority reads and stale-admin purges per request", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const { db, insertedTables, deletedTables, selectWheres } = createFakeDb({
+      beforeWrite: async table => { if (table === authUsers) { entered(); await blocked; } },
+    });
+    const requests = Array.from({ length: 20 }, () => resolveCloudTenantActor(db, fakeReq(VALID_HEADERS)));
+    await started;
+    expect(insertedTables.filter(table => table === authUsers)).toHaveLength(1);
+    release();
+    const actors = await Promise.all(requests);
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
+    expect(deletedTables.filter(table => table === instanceUserRoles)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && !entry.locked)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && entry.locked)).toHaveLength(1);
+    expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
+  });
+
+  it("serializes concurrent A to B to A without sharing the wrong role", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let writes = 0;
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async table => {
+      if (table === authUsers && ++writes === 1) { entered(); await blocked; }
+    } });
+    const first = resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    await started;
+    const second = resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }));
+    const third = resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    release();
+    const actors = await Promise.all([first, second, third]);
+    expect(actors.map(actor => actor?.memberships?.[0]?.membershipRole)).toEqual(["owner", "member", "owner"]);
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(3);
+  });
+
+  it("does not block another user behind a slow user's synchronization", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let firstWrite = true;
+    const { db } = createFakeDb({ beforeWrite: async table => {
+      if (table === authUsers && firstWrite) { firstWrite = false; entered(); await blocked; }
+    } });
+    const slow = resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    await started;
+    try {
+      const other = await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-user-id": "other-user" }));
+      expect(other?.userId).toBe("other-user");
+    } finally {
+      release();
+      await slow;
+    }
+  });
+
+  it("does not debounce a failed partial context transition or its repair", async () => {
+    let fail = false;
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async table => {
+      if (fail && table === companyMemberships) throw new Error("partial sync failed");
+    } });
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    fail = true;
+    await expect(resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" })))
+      .rejects.toThrow("partial sync failed");
+    fail = false;
+    const repaired = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(repaired?.memberships?.[0]?.membershipRole).toBe("owner");
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(3);
+  });
+
+  it("retries a shared transient failure and completes default grants once", async () => {
+    let failed = false;
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async table => {
+      if (!failed && table === companyMemberships) {
+        failed = true;
+        throw Object.assign(new Error("synthetic connection loss"), { code: "CONNECTION_CLOSED" });
+      }
+    } });
+    const actors = await Promise.all(Array.from({ length: 10 }, () => resolveCloudTenantActor(db, fakeReq(VALID_HEADERS))));
+    expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+    expect(insertedTables.filter(table => table === principalPermissionGrants)).toHaveLength(1);
+  });
+
+  it("keeps default-grant repair and the input role when a guarded upsert returns no row", async () => {
+    const { db, insertedTables } = createFakeDb({ unchangedMembership: true });
+    const actor = await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }));
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
+    expect(insertedTables).toContain(principalPermissionGrants);
+  });
+
+  it("does not share completed syncs across databases or companies", async () => {
+    const first = createFakeDb();
+    const second = createFakeDb();
+    await Promise.all([resolveCloudTenantActor(first.db, fakeReq(VALID_HEADERS)), resolveCloudTenantActor(second.db, fakeReq(VALID_HEADERS))]);
+    await resolveCloudTenantActor(first.db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-id": "stack-other" }));
+    expect(first.insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+    expect(second.insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
+  });
+
+  it("resyncs when the requested company name changes", async () => {
+    const { db, insertedTables } = createFakeDb();
+    await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-paperclip-company-name": "First" }));
+    await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-paperclip-company-name": "Second" }));
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+  });
+
+  it("resumes membership and grant repair after the existing five-second debounce expires", async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const { db, insertedTables } = createFakeDb();
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
+      clock.mockReturnValue(now + 5_001);
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+      expect(insertedTables.filter(table => table === principalPermissionGrants)).toHaveLength(2);
+    } finally { clock.mockRestore(); }
+  });
+
   it("returns null when the server token is unset", async () => {
     delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
     const { db } = createFakeDb();
@@ -329,11 +474,13 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       const { db, selectWheres } = createFakeDb();
       await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
       const membershipSelects = selectWheres.filter((entry) => entry.table === companyMemberships);
-      expect(membershipSelects).toHaveLength(1);
+      expect(membershipSelects).toHaveLength(2);
+      // The first read locks the primary membership before its upsert; the
+      // second loads the user's active memberships for request authorization.
       // Rows for other users and rows in any non-active status are excluded
       // by the query itself: the filter binds exactly this user id and the
       // "active" status — the same condition the session path applies.
-      expect(membershipSelects[0]!.condition).toEqual(
+      expect(membershipSelects[1]!.condition).toEqual(
         and(
           eq(companyMemberships.principalType, "user"),
           eq(companyMemberships.principalId, "user-123"),

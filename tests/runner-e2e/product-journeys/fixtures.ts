@@ -11,7 +11,7 @@ export function journeyFixtures(session: TargetSession, campaignId?: string) {
     id: "ready-context",
     async setup() { return ready ??= await (preparation ??= session.prepare()); },
   });
-  for (const id of ["company", "board-user", "task-write"]) registry.register({
+  for (const id of ["company", "board-user", "task-write", "agent", "skill-write", "review-service"]) registry.register({
     id, dependencies: ["ready-context"],
     async setup(resolved) {
       const context = resolved.get("ready-context") as JourneyContext;

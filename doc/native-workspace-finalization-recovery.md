@@ -80,6 +80,32 @@ database statements. It does not disable the database timeout or reconnect a
 failed lock session. Publication still requires the physical connection and
 the exact durable owner token. A disabled timeout adds no periodic probe.
 
+## Remote startup cancellation and retained uncertainty
+
+Remote artifact staging can outlast the transport's shutdown preparation wait.
+The remote launcher keeps cancellation until staging settles and checks it
+before launch dispatch. A cancelled, undispatched launch starts no process. A
+stop during an in-flight launch waits for the exact process identity before the
+existing guarded signal path can run. An accepted signal request does not prove
+that the process stopped.
+
+Read-only health retries are bounded by three attempts and 30 seconds. An
+unavailable health RPC, missing identity, or changed process generation retains
+the allocation and its files. A healthy listener alone is not identity or stop
+proof. Confirmed predecessor exit can permit bounded transport recovery, but an
+unrelated listener must remain untouched. A close timeout does not certify
+cleanup settlement, file restoration, or provider continuation admission.
+
+A runner receipt that its reconnect grace expired ends that incident. The
+transport recognizes both the coded error and the runner's plain-text message.
+It must not open another recovery window after that receipt.
+
+Verify file restoration independently of runner connection and provider activity.
+A file hash receipt proves the restored bytes only. The normal continuation gates
+must still check current ownership, pause, approval and budget state. Retained
+unknown effects remain unknown; successful file recovery does not authorize
+replay of a historical turn.
+
 ## Automatic cloud recovery
 
 New Railway copyback receipts record the exact project, environment, service and

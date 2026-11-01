@@ -1,3 +1,11 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
+import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { logger } from "../middleware/logger.js";
 import { companies, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
@@ -33,6 +41,20 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       return true;
     },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
+    async beforeStatusChange(tx, companyId, agentId, before, after) {
+      await notifyAttentionRetentionWork(tx, { companyId });
+      if (before !== after) {
+        await notifyStrandedAgentStatus(tx, { companyId, agentId });
+        await notifyRunDispatch(tx, { companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId });
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+      }
+      if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
+        await notifyNativeResponsePresentation(tx, { companyId, agentId });
+        await notifyNativeReviewResponse(tx, { companyId, agentId });
+        await notifyChatInboundWakeNotices(tx, { companyId });
+      }
+    },
     reportFailure(context, error) {
       const code = lifecycle.lifecycleFailureCode(error);
       logger.warn({ ...context, failureCode: code ?? "unclassified" }, "Agent lifecycle operation failed");

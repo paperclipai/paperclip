@@ -1027,6 +1027,8 @@ describe("command managed runtime", () => {
     await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 })).rejects.toThrow(
       /stdout: tar: workspace-download\.tar: Cannot open: Permission denied/,
     );
+    await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 }))
+      .rejects.toMatchObject({ exitCode: 2, timedOut: false });
   });
 
   it("test_channel_round_trips_all_byte_values", () => {

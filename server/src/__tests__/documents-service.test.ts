@@ -102,6 +102,18 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     expect(payload.documentSummaries.map((doc) => doc.key)).toEqual(["plan"]);
   });
 
+  it("reads one pinned revision and never substitutes a newer or unrelated document", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const original = await svc.getIssueDocumentByKey(issueId, "plan");
+    await svc.upsertIssueDocument({ issueId, key: "plan", format: "markdown", body: "# Newer plan", baseRevisionId: original!.latestRevisionId });
+    const pinned = await svc.getIssueDocumentRevision(issueId, "plan", original!.latestRevisionId!);
+    expect(pinned?.body).toBe("# Plan");
+    expect(pinned?.id).toBe(original!.latestRevisionId);
+    expect(await svc.getIssueDocumentRevision(issueId, "other-document", original!.latestRevisionId!)).toBeNull();
+    expect(await svc.getIssueDocumentRevision(randomUUID(), "plan", original!.latestRevisionId!)).toBeNull();
+    expect(await svc.getIssueDocumentRevision(issueId, "plan", randomUUID())).toBeNull();
+  });
+
   it("keeps system documents available for includeSystem and direct fetch callers", async () => {
     const { issueId } = await createIssueWithDocuments();
 

@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { CoordinatorPresentation } from "../components/coordinator/CoordinatorPresentation";
+import { queryKeys } from "../lib/queryKeys";
 import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -926,13 +928,16 @@ describe("Inbox toolbar", () => {
     act(() => root.unmount());
   });
 
-  it("can select a company after a cold inbox mount", async () => {
+  it.each([true, false])("can select a company after a cold inbox mount (Streamlined UI=%s)", async streamlined => {
     companyState.selectedCompanyId = null;
+    const settings = { enableStreamlinedUi: streamlined, enableIsolatedWorkspaces: false };
+    apiMocks.experimentalSettings.mockResolvedValue(settings);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, settings);
     const root = createRoot(container);
     const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
     await act(render);
-    await vi.waitFor(() => expect(container.textContent).toContain("Select an organization"));
+    await vi.waitFor(() => expect(container.textContent).toContain(streamlined ? "Select an organization" : "Select a company"));
     companyState.selectedCompanyId = "company-1";
     apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Cold company task" })]);
     await act(render);
@@ -1750,5 +1755,29 @@ describe("InboxGroupHeader", () => {
     act(() => {
       root.unmount();
     });
+  });
+});
+
+
+describe("Coordinator Inbox collection reads", () => {
+  it.each([true, false])("keeps optimized reads with Coordinator and Streamlined=%s", async (streamlined) => {
+    resetInboxApiMocks(); localStorage.clear();
+    routerMock.location.pathname = "/inbox/mine";
+    const settings = { enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined };
+    apiMocks.experimentalSettings.mockResolvedValue(settings);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    client.setQueryData(queryKeys.instance.experimentalSettings, settings);
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorPresentation.Provider value={true}><Inbox /></CoordinatorPresentation.Provider></QueryClientProvider>));
+      await vi.waitFor(() => expect(apiMocks.heartbeatRunsList).toHaveBeenCalled());
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+      const sources = apiMocks.issuesList.mock.calls.filter(call => call[1]?.projection !== "rows").map(call => call[1]);
+      expect(sources).toHaveLength(1);
+      expect(sources.every(source => source.projection === "index")).toBe(true);
+      expect(apiMocks.dashboardSummary).toHaveBeenCalledTimes(0);
+      expect(apiMocks.heartbeatRunsList.mock.calls[0]?.[3]?.latestFailuresOnly === true).toBe(true);
+    } finally { await act(async () => root.unmount()); client.clear(); container.remove(); }
   });
 });

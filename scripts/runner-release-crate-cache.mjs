@@ -54,6 +54,7 @@ export const CACHED_PATHS = [
 export const HASHED_INPUTS = [
   `${RUNNER_PACKAGE}/rust-toolchain.toml`,
   `${RUNNER_PACKAGE}/acpx-profiles.json`,
+  `${RUNNER_PACKAGE}/antigravity-distributions.json`,
   `${RUNNER_PACKAGE}/runner/Cargo.toml`,
   `${RUNNER_PACKAGE}/runner/Cargo.lock`,
   `${RUNNER_PACKAGE}/runner/crates/**`,

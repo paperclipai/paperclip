@@ -40,7 +40,7 @@ describe("AgentOverview", () => {
     expect(markup).not.toContain("old-runtime-model");
   });
 
-  it("prioritizes identity, capability, runtime, skills, tasks, and scoped Audit entry points", () => {
+  it("prioritizes identity, capability, runtime, skills, and tasks without duplicating sidebar Audit links", () => {
     const agent = {
       id: "agent-1",
       companyId: "company-1",
@@ -90,7 +90,8 @@ describe("AgentOverview", () => {
     expect(markup).toContain("Design Guide");
     expect(markup).toContain("Simplify agent information architecture");
     expect(markup).toContain("PAP-42");
-    expect(markup).toContain('href="/activity/costs?agentId=agent-1"');
+    expect(markup).not.toContain("agent-audit-links-heading");
+    expect(markup).not.toContain("agentId=agent-1");
     expect(markup).not.toContain("Run Activity");
     expect(markup).not.toContain("Tasks by Status");
     expect(markup).not.toContain("Created by");

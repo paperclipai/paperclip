@@ -9,7 +9,7 @@ import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
-  it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
+  it.each(["standard", "planning", "ask", "skill_test"])("title and description cannot override %s mode", (workMode) => {
     for (const text of ["Inspect files", "Making a plan", "Create a report", "Research proposal", "Implement now; no plan needed"]) {
       const input = buildNativeExecutionInput({
         companyId: "10000000-0000-4000-8000-000000000001",
@@ -687,5 +687,25 @@ describe("Claude effort and master home-mode compatibility", () => {
     if (version !== "v5") expect(value).toHaveProperty("homeMode", homeMode);
     if (claudeEffort) expect(value.provider).toHaveProperty("claudeEffort", claudeEffort);
     expect(JSON.stringify(buildNativeModelEnvelope(value))).not.toContain("claudeEffort");
+  });
+  it.each([
+    ["isolated", undefined, undefined, "v5"], ["isolated", "high", true, "v10"], ["isolated", undefined, false, "v10"],
+  ] as const)("retains %s home mode with effort %s and search policy %s in %s", (homeMode, grokEffort, grokDisableWebSearch, version) => {
+    const value = buildNativeExecutionInput({
+      companyId: "company", runId: "run", agentId: "agent",
+      issue: { id: "issue", identifier: "CLA-1", title: "Useful output", description: null, workMode: "standard" },
+      taskPrompt: "Create the requested file.",
+      workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx", acpxAgent: "grok", model: "grok-4.7",
+      acpxPermissionMode: "approve-all", homeMode, grokEffort, grokDisableWebSearch,
+      completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Create a file", criteria: [{ id: "output", requirement: "Create the file" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(value.schema).toBe(`paperclip.native-execution-input.${version}`);
+    if (version !== "v5") expect(value).toHaveProperty("homeMode", homeMode);
+    if (grokEffort) expect(value.provider).toHaveProperty("grokEffort", grokEffort);
+    if (grokDisableWebSearch !== undefined) expect(value.provider).toHaveProperty("grokDisableWebSearch", grokDisableWebSearch);
+    expect(JSON.stringify(buildNativeModelEnvelope(value))).not.toContain("grokEffort");
   });
 });

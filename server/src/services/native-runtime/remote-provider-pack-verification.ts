@@ -15,6 +15,7 @@ export type ProviderPackIdentity = {
   digest: string;
   payload: {
     compatibility?: { opencode: number; acpx: number };
+    contractDigest?: string;
     acpxProfileDigests?: Record<string, string>;
     providers?: Record<string, unknown>;
     candidateProviders?: Record<string, unknown>;
@@ -30,11 +31,14 @@ export type PackProvider = { kind: "opencode" } | { kind: "acpx"; agent: string 
 
 /** Admission of a build-qualified, OS-protected installation. Source revisions,
  * dependency pins and unrelated provider changes are provenance, not an interface.
+ * The interface is the hand-maintained compatibility revision plus the pack's
+ * computed contract digest; a pack without a digest predates that check and
+ * is replaced rather than reused.
  * The metadata comes from the trusted runner, never from a provider tool result.
  */
 function compatibleInstallation<T extends ProviderPackIdentity>(
   installation: ProviderPackInstallation, expected: T, packRoot: string,
-  provider: PackProvider, requireExactIdentity: boolean,
+  provider: PackProvider, requireExactIdentity: boolean, requireCurrentOpenCodeProxy: boolean,
 ): T {
   const actual = installation.manifest as T | null;
   const payload = actual?.payload;
@@ -44,7 +48,9 @@ function compatibleInstallation<T extends ProviderPackIdentity>(
     || actual.digest !== `sha256:${createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex")}`
     || canonicalProviderPackJson(payload.target) !== canonicalProviderPackJson(expected.payload.target)
     || (requireExactIdentity ? actual.digest !== expected.digest
-      : !Number.isSafeInteger(contract) || contract! < 1 || payload.compatibility?.[provider.kind] !== contract)
+      : !Number.isSafeInteger(contract) || contract! < 1 || payload.compatibility?.[provider.kind] !== contract
+        || !/^sha256:[a-f0-9]{64}$/.test(expected.payload.contractDigest ?? "")
+        || payload.contractDigest !== expected.payload.contractDigest)
     || typeof payload.pins?.opencode !== "string") {
     throw new Error("runner_remote_provider_artifact_incompatible: installed provider pack interface or installation is incompatible");
   }
@@ -55,6 +61,10 @@ function compatibleInstallation<T extends ProviderPackIdentity>(
     if (artifact?.path !== expectedArtifact.path || !/^sha256:[a-f0-9]{64}$/.test(artifact.sha256)) {
       throw new Error("runner_remote_provider_artifact_incompatible: installed provider pack artifact identity is invalid");
     }
+  }
+  if (provider.kind === "opencode" && requireCurrentOpenCodeProxy
+    && payload.artifacts.opencodeProxy?.sha256 !== expected.payload.artifacts.opencodeProxy?.sha256) {
+    throw new Error("runner_remote_provider_artifact_incompatible: installed proxy does not match the requested OpenCode diagnostics");
   }
   if (provider.kind === "acpx") {
     const agent = provider.agent;
@@ -72,7 +82,7 @@ function compatibleInstallation<T extends ProviderPackIdentity>(
   return structuredClone(actual);
 }
 
-export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false }: {
+export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false }: {
   runner: CommandManagedRuntimeRunner;
   cwd: string;
   packRoot: string;
@@ -80,10 +90,11 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
   installation?: ProviderPackInstallation;
   provider?: PackProvider;
   requireExactIdentity?: boolean;
+  requireCurrentOpenCodeProxy?: boolean;
 }): Promise<T> {
   if (installation) {
     if (!provider) throw new Error("runner_remote_provider_artifact_incompatible: provider interface is required");
-    return compatibleInstallation(installation, manifest, packRoot, provider, requireExactIdentity);
+    return compatibleInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy);
   }
   const expected = Buffer.from(
     canonicalProviderPackJson(manifest),

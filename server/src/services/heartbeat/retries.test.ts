@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createRunDispatch, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -34,6 +35,7 @@ function callbacks() {
     getWorktreeExecutionCutoff: vi.fn(async (): Promise<Date | null> => null),
     applyRunDispatchPostCommitEffects: vi.fn<(effects: PostCommitEffect[]) => void>(),
     runDispatch: {
+      nextScheduledRetryAt: vi.fn(async () => null),
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
       promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [] })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),
@@ -182,7 +184,9 @@ describe("heartbeat retry module callbacks", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HEARTBEAT_RETRIES_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping retry PostgreSQL tests: ${support.reason ?? "unsupported host"}`);
 
@@ -192,11 +196,11 @@ describePostgres("heartbeat retry module database wiring", () => {
   const now = new Date("2026-10-08T12:00:00Z");
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("heartbeat-retries-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("heartbeat-retries-");
+    db = createDb(external ?? database.connectionString, { maxConnections: 6 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   afterEach(async () => {
     await db.delete(issues);
@@ -233,6 +237,21 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
     return { companyId, agent, issue, run };
   }
+
+  it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {
+    const {run,agent}=await fixture();
+    const snapshot={...run.contextSnapshot,skillVersions:{"company/review":"v1"},skillSelectionSnapshot:true,shadowedSkills:[{key:"old",shadowedBy:"company/review"}]};
+    await db.update(heartbeatRuns).set({contextSnapshot:snapshot}).where(eq(heartbeatRuns.id,run.id));
+    await db.update(agents).set({adapterConfig:writePaperclipSkillSyncPreference({},[{key:"company/review",versionId:"v2"}])}).where(eq(agents.id,agent.id));
+    const result=await boundRetries().retries.scheduleBoundedRetryForRun({...run,contextSnapshot:snapshot},agent,{now,random:()=>0});
+    expect(result.outcome).toBe("scheduled");
+    const [successor]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId,run.id));
+    expect(successor!.contextSnapshot).not.toHaveProperty("skillVersions");
+    expect(successor!.contextSnapshot).not.toHaveProperty("skillSelectionSnapshot");
+    expect(successor!.contextSnapshot).not.toHaveProperty("shadowedSkills");
+    const [history]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,run.id));
+    expect(history!.contextSnapshot).toEqual(snapshot);
+  });
 
   it("reuses one successor across concurrent factories and keeps writes committed before callbacks", async () => {
     const { run, agent, issue, companyId } = await fixture();

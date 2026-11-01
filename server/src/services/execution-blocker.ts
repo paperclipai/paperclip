@@ -105,6 +105,13 @@ export function executionBlockerPredicate() {
   );
 }
 
+export function nativeExecutionRecoveryActionPredicate() {
+  return sql`exists (select 1 from ${heartbeatRuns}
+    where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+      and ${heartbeatRuns.id}::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
+      and ${heartbeatRuns.runtimeMode} = 'native')`;
+}
+
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
@@ -145,7 +152,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
-    boundary ? gt(issueRecoveryActions.createdAt, boundary.createdAt) : undefined,
+    boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
@@ -180,11 +187,15 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   const saved = savedIds.length ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
     inArray(issueComments.id, savedIds), eq(issueComments.authorType, "user"), sql`${issueComments.deletedAt} is null`,
-    sql`not exists (select 1 from ${heartbeatRuns} consumed where consumed.company_id = ${companyId}
-      and consumed.context_snapshot->>'issueId' = ${issueId}
-      and not (consumed.status = 'cancelled' and consumed.started_at is null)
-      and (consumed.context_snapshot->>'wakeCommentId' = ${issueComments.id}::text
-        or consumed.context_snapshot->'wakeCommentIds' @> jsonb_build_array(${issueComments.id}::text)))`,
+    sql`not exists (select 1 from (
+      select consumed.context_snapshot->>'wakeCommentId' as comment_id,
+        consumed.context_snapshot->'wakeCommentIds' as comment_ids
+      from ${heartbeatRuns} consumed where consumed.company_id = ${companyId}
+        and consumed.context_snapshot->>'issueId' = ${issueId}
+        and not (consumed.status = 'cancelled' and consumed.started_at is null)
+      offset 0
+    ) consumed where consumed.comment_id = ${issueComments.id}::text
+      or consumed.comment_ids @> jsonb_build_array(${issueComments.id}::text))`,
   )) : [];
   const cancellation = run ? readRunCancellation(run.resultJson) : null;
   const eligibleContinuation = Boolean(!restoreHold && run && conversation?.assigneeAgentId === run.agentId &&

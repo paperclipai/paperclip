@@ -134,6 +134,13 @@ choose an active sponsor, and use the restricted guest profile. Guests receive n
 sponsor credentials. Authority is checked again before tool calls and
 publication, so revocation also affects queued or ongoing work.
 
+The username lookup uses the bot's own GitHub App installation with a short-lived,
+metadata-only token. It does not use a personal account or the shared unauthenticated
+IP quota. An active connection with a verified installation is required. GitHub
+supports installation tokens for [Get a user](https://docs.github.com/en/rest/users/users#get-a-user)
+without additional permissions. Lookup errors distinguish unavailable accounts,
+rate limits, and installation authentication or access failures.
+
 Choose automatic events and author filters in **Settings** to control which
 authored PRs and issues start work. Authorized mentions remain available with
 automatic events off and bypass automatic author filters. The shared external-
@@ -192,6 +199,26 @@ The agent reads through task-bound bot tools, explicitly begins an assessment,
 and submits the reviewed commit, findings, rationale, and coverage. Paperclip
 validates the result and computes the **Paperclip Review** check. The default
 threshold is 5/5; choose 1–5 or report-only as needed.
+
+Finding categories come from the repository's review policy. Both manual and
+automatic review instructions list the configured categories. `begin_review`
+returns `findingCategories` from the assessment's saved policy snapshot; use
+these exact values in `findings[].category`. Metadata also includes
+`reviewPolicy.findingCategories`. The discovery schema describes this dynamic
+constraint rather than imposing a global enum. Unknown categories remain invalid;
+the error lists the accepted values. If no category applies, put the finding in
+the summary. An empty category list permits no structured findings.
+
+`submit_review.summary` contains the review body: the change, findings, and
+verdict. `rationale` adds evidence for the score and remaining risk without
+repeating the summary. Paperclip renders the bot-name/score heading and the
+reviewed-commit, coverage, and task/run footer from the structured fields. Agents
+must not copy these generated sections from an earlier published comment into
+either text field. This contract is included in new bots' tool schemas and in
+the review instructions generated for existing bots. Publication also removes
+leading copied score headings for the current bot, with a plain or Markdown-escaped
+name, or the legacy **Paperclip Review** name. Other review sections and the saved
+assessment remain intact.
 
 | Score | Assessment rubric |
 | --- | --- |

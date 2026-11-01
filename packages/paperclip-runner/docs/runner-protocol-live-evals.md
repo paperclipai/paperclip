@@ -20,7 +20,9 @@ fail generation. Build with
 `pnpm --filter @paperclipai/paperclip-runner build:issue-thread` and provide
 `--viewer-root` or `PAPERCLIP_EVAL_VIEWER_ROOT` to the canonical Python renderer.
 
-The Actions artifact contains full evidence. S3 uses the same viewer with a
+Legacy manual runs place full evidence in Actions artifacts. These artifacts
+are readable by authenticated public GitHub users. Controlled runs keep full
+evidence in private S3 storage. The optional legacy public S3 report uses a
 closed public DTO: only isolated mock-run conversation text, scrubbed private
 references, named tool outcomes, and checks. Tool arguments/results, reasoning,
 provider identities, and company snapshots stay private. The public notice
@@ -147,6 +149,12 @@ startup hooks, or user homes into this route. Unsupported harnesses and
 mismatched descriptor identities fail before provider creation. The temporary
 home is removed on success and failure.
 
+The controlled wrapper forwards the bounded `--expected-acpx-profile` JSON
+argument to the same built CLI. Eval definitions pass it for qualified ACPX
+lanes as well as candidates, so stale SDK or command pins fail before a paid
+turn rather than only during scoring. A rejected profile never falls back to
+an invocation without the admission check.
+
 Success and failure artifacts retain `requestRouting`: controller gateway mode,
 provider, declared upstream route, campaign/execution/attempt IDs, and the
 SHA-256 of the descriptor bytes. The token and endpoint are excluded from this
@@ -231,12 +239,10 @@ not release historical holds or claim invoice
 settlement. Existing provider usage is retained separately; do not add the
 provider and controller cost observations as if they were separate charges.
 
-This local controller is not yet wired into the hosted matrix. Its durable
-attempt-directory guard applies to one shared filesystem, not independent
-GitHub workers. Hosted integration must bind unique cells to the prepared
-allocation, reject workflow/job reruns, and preserve the controller evidence
-before enabling paid work. Native OTLP routing, report integration, vendor
-metering bounds, and actual paid qualification remain separate gates.
+The hosted workflow now assembles one manifest and gives each independent
+worker a disjoint allocation. It checks the current GitHub run and first-attempt
+identity before provider access. Vendor metering bounds and actual paid route
+qualification remain separate gates. See the controlled workflow section below.
 ## Controller-assigned native observability
 
 The same CLI accepts `--observability-config /absolute/path/observability.json`
@@ -334,8 +340,8 @@ private `prepare_controlled_campaign.py` command prepares requests with the
 existing case compiler and rejects duplicate or missing matrix cells. Independent
 budgets, a second workflow run, or duplicate first-attempt jobs are not authorized
 by this guard. Pack and report commands remain usable offline after the run, so
-expired or failed attempts can still be retained and reconciled. The current
-live workflow has not yet been connected to this contract.
+expired or failed attempts can still be retained and reconciled. Controlled
+workflow mode now prepares and distributes this shared manifest.
 
 Use `requestBindingSha256` from `controlled-evals/manifest.mjs` to bind the
 complete compiled request. It excludes only the temporary working directory
@@ -428,12 +434,10 @@ not release historical holds or claim invoice
 settlement. Existing provider usage is retained separately; do not add the
 provider and controller cost observations as if they were separate charges.
 
-This local controller is not yet wired into the hosted matrix. Its durable
-attempt-directory guard applies to one shared filesystem, not independent
-GitHub workers. Hosted integration must bind unique cells to the prepared
-allocation, reject workflow/job reruns, and preserve the controller evidence
-before enabling paid work. Hosted tracing, destination readback, vendor
-metering bounds, and actual paid qualification remain separate gates.
+Controlled workflow mode now binds each independent worker to one allocation
+in the prepared shared manifest, rejects job reruns, and archives its evidence
+privately. Destination readback, vendor metering bounds and actual paid route
+qualification remain separate gates before paid recurrence.
 
 ### Portable controller runtime
 
@@ -477,8 +481,8 @@ Use the copied `controlled-evals/run.mjs` as `--runner-cli` and its sibling
 manifest is still required. Its executable paths and digests bind the actual
 Runner build, not this controller wrapper. The artifact does not authorize paid
 work, coordinate worker allocations, or prevent a workflow rerun by itself.
-The hosted matrix still needs the shared manifest and per-worker admission
-checks described above.
+Controlled workflow mode supplies the shared manifest and per-worker admission
+checks described above; the runtime artifact alone does not replace them.
 
 ## Controller tracing allocations and retained proof
 
@@ -534,7 +538,7 @@ Runner artifact.
 
 ## Hosted campaign
 
-Use the `Runner Direct Live Protocol Evals` workflow. Dispatch the workflow
+Use the `Runner Live Protocol Evals` workflow. Dispatch the workflow
 from the default branch and provide:
 
 - `target_branch`: the Paperclip branch to build and test;
@@ -545,8 +549,11 @@ from the default branch and provide:
   Disabled lanes remain available only through an explicit diagnostic
   selection; `all` never spends against a lane that the eval program has
   marked disabled;
-- `max_infrastructure_retries`: zero through three, applied only when an
-  attempt explicitly reports a retryable infrastructure failure.
+- `accounting_mode`: `controlled` by default; `legacy` is an explicit manual
+  qualification path. Controlled mode supports native Codex and ACPX Claude.
+- `max_infrastructure_retries`: zero by default and required for controlled
+  mode. Legacy mode allows up to three retries only when an attempt explicitly
+  reports a retryable infrastructure failure.
 
 Native suspension failures are non-retryable infrastructure failures. The CLI
 retains only allowlisted close diagnostics: suspension and provider-drain
@@ -695,8 +702,9 @@ and the pinned `RUNNER_PROTOCOL_EVALS_SHA` repository variable.
 
 ## Reports and history
 
-Each cell uploads its immutable run directory to an access-controlled Actions
-artifact. The trusted report job merges all expected cells, represents missing
+Each legacy cell uploads its immutable run directory to an Actions artifact.
+These artifacts are public to authenticated GitHub readers in this repository.
+Controlled cells use the private transport below. The trusted report job merges all expected cells, represents missing
 cell artifacts as infrastructure failures, and invokes the report program from
 the pinned eval commit. The full artifact contains the canonical Evalbook grid,
 read-only Runner issue-thread attempt pages, and raw immutable run records.
@@ -809,3 +817,150 @@ full allocation.
 On cancellation, the controller keeps the scheduled process-group SIGKILL until
 any remaining owned descendants receive it, even if the CLI exits first. A
 forced stop still leaves cleanup unverified and retains the full allocation.
+
+## Controlled hosted workflow
+
+`accounting_mode=controlled` is the default for manual dispatch and the only
+scheduled mode. It supports explicitly selected native Codex and ACPX Claude
+rosters. `all` still means the entire maintained suite; unsupported cells fail
+admission rather than being omitted. Use `accounting_mode=legacy` explicitly
+for a manual qualification of other providers. Legacy runs retain their
+existing public artifact and publication behavior and do not claim complete
+controller cost coverage.
+
+Controlled runs require the evaluated target SHA to equal the trusted workflow
+revision on the default branch. This keeps target-branch code out of jobs with
+private archive access. Use explicit legacy mode for other branch diagnostics.
+Controlled runs require `max_infrastructure_retries=0` and GitHub run attempt 1.
+Re-running even one job is rejected at that worker before provider access.
+The existing nightly enable gate and exact eval SHA pin remain required.
+This change does not set either variable or enable paid recurrence.
+
+Set `RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON` only after its operating
+bounds have been reviewed. An absent, stale or invalid policy stops before
+provider work. The policy schema is `paperclip.runner-eval.hosted-policy/v1`:
+
+- `controllerLockSha256`, the SHA-256 of the explicitly reviewed compatible
+  workspace lockfile. The existing unprivileged target-lock job resolves it;
+  inspect that immutable artifact before setting the policy. The controller
+  build requires its digest to match, installs with `--frozen-lockfile` and a
+  job-local store, and records the digest in the runtime receipt. Private
+  preparation checks that receipt binding again. A changed lockfile requires a
+  policy review. No lockfile is committed by this workflow integration.
+- `maxUsd`, `maxCells` (1–512), `durationMs` (at most four hours), current
+  `pricingVerifiedAt` and `pricingExpiresAt`.
+- `route`, optional gateway `projectId`, exact `models`, and the same
+  four-component `overhead` contract used by the controller.
+- `observability` with `projectId`, `capture` and `nativeLimits`. Tracing is
+  required for this mode. `BRAINTRUST_API_KEY` is delivered only to the
+  trusted controller step, even when model requests use the direct route.
+- `allocations`, one entry per provider/agent/model profile, each with
+  `maxUsd`, `maxRequests`, `maxConcurrent` and `timeoutMs`.
+- `capacityBound`, a reviewed full-lifecycle proof. Its `configurationSha256`
+  hashes `canonical(hostedPolicyConfiguration(policy))`, which excludes only
+  the proof itself. The proof must cover every selected cell up to `maxCells`,
+  trace and gateway processing, retained data, private archive transfers,
+  workflow setup/build/reporting and the full retention window. A policy
+  digest is a binding to evidence, not independent proof of vendor charges.
+
+The preparer compiles every selected private request once. It validates exact
+catalog membership, source and definition revisions, executable digests and
+profile allocations. It adds campaign identities to the reviewed capacity
+bound, retains the policy digest, and emits one manifest with no provider calls.
+A changed prompt, fixture or compiled request fails the worker's binding check.
+The sum of all selected allocations and once-only overhead must fit `maxUsd`.
+This campaign cap does not replace the separate daily/weekly allowance gates.
+
+The portable runtime contains only trusted code and dependencies. Dependency
+resolution and runtime construction run in a separate job with no provider
+secrets, private-history environment or OIDC permission. Private preparation
+consumes only that verified artifact and uses no dependency install. Archive
+jobs use no shared dependency cache. Legacy browser report verification uses
+the committed frozen lockfile, disabled install scripts and a job-local store;
+a stale lockfile fails closed. A same-run
+GitHub artifact distributes it; workers verify its separate receipt digest and
+workflow revision. Manifest and policy bytes use private S3 instead. Workers
+check the manifest's separate preparer digest before model credentials are used.
+Controlled aggregation and Python reporting both use the archive module from
+that verified runtime through `PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI`. They need no
+source checkout dependencies or `tsx`. Model children receive proxy/relay
+credentials, never the provider, Braintrust or AWS archive credentials.
+The catalog and preparer require `codex_app_server` for native Codex and
+`acpx_runtime` for ACPX Claude before model work. Admission errors report
+known safe reasons; malformed inputs and private paths are not echoed.
+
+Private retention reuses the existing `runner-e2e-private-paid` and
+`runner-e2e-private-history` environments and `RUNNER_E2E_PRIVATE_HISTORY_*`
+role, region and bucket variables. The role and bucket policy are unchanged.
+The transfer helper verifies bucket privacy and 30-day bounded retention,
+rejects unsafe archives, uses conditional immutable writes and does not retry.
+Each archive is at most 264 MiB (256 MiB source). The reviewed operating bound
+must cover up to `maxCells` cell archives, one controller archive, one report
+archive, their download/receipt traffic and the GitHub code/build artifacts.
+Each shared manifest downloader supplies its worker cell ID or `report` as
+a receipt identity. Receipts use distinct immutable keys while all workers
+read the same manifest object. AWS credentials are action outputs used only
+by transfer steps.
+
+Private keys share the existing bounded prefix:
+
+```text
+runner-e2e-private/bounded-v1/campaigns/gha-RUN_ID-1/
+  protocol-control.zip
+  protocol-cell-CELL_ID.zip
+  protocol-report.zip
+```
+
+Each immutable attempt includes replayable controller evidence. The report uses
+the retained full manifest even when no cell archive is available. Missing,
+failed, cancelled or unreadable evidence retains its allocation; known partial
+charges remain visible. Overhead is held once per campaign. A workflow-wide
+cancellation may prevent report generation, but the manifest was already
+retained before model work and remains the reconciliation starting point.
+Full reports and trace/ledger evidence are never uploaded as GitHub artifacts
+in controlled mode. Public report projection and automatic publication are
+skipped. Selective publication requires a separate reviewed projection.
+
+To restore a report with an authorized private-history session, use the
+portable runtime's `private-history.mjs download protocol-report RUN_ID NEW_DIR`
+or `node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/private-history.ts`
+with the same arguments. Supply the private bucket and AWS region through the
+existing environment variables. Read retained reports without rerunning models.
+The report command accepts `--controller-manifest` and
+`--controller-archive-cli` together; it rejects `--public-viewer` with those
+options. The pinned private eval revision must include these flags. The
+preparer checks that support before any paid cell.
+
+Synthetic tests prove request admission, proxy and OTLP receipt handling,
+portable runtime isolation, private archive replay, and complete/partial/empty
+campaign accounting. They do not establish current vendor prices, future
+retention charges, live Braintrust attribution or invoice settlement. Keep
+paid recurrence disabled until these independent gates are qualified.
+
+
+### Token-spend qualification with separate operating reconciliation
+
+A policy may explicitly set `overhead.accountingReadiness: "model_requests"`
+when model-token qualification is the operator's priority. In that mode an
+absent campaign capacity proof and absent observability cost proof do not block
+admission. Any supplied proofs must still validate. Current allowance/pricing
+windows, trace quotas, immutable source/request/runtime bindings, complete
+selection, per-cell allocations, request limits, no retries and the shared
+campaign admission cap remain required. Model reservation proofs remain required.
+
+The final report retains the once-only operating allowance and labels operating
+reconciliation pending. Missing, failed or canceled model evidence still holds
+the full cell allocation and fails completion. This policy does not certify a
+vendor operating-cost bound. Omit the field to retain full-lifecycle proof
+requirements. Existing manifests and held amounts are not rewritten.
+
+For this policy version, `operatingReconciliation` is always `pending`; the
+immutable controller summary has no operating invoice settlement step. Mixed
+histories retain that warning when any campaign uses the policy. A shared
+`accountingReadiness` label appears only when every campaign uses it.
+
+
+The trusted controller artifact preserves hidden dependency metadata as well as
+code. Its inventory verifier requires every recorded byte, including package
+`.npmignore` files. Only the fresh provider-credential-free controller build uses
+this upload setting; private attempts still use the protected archive path.

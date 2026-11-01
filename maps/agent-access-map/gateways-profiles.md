@@ -1,217 +1,339 @@
 # Tool gateways and access profiles — agent access
 
-Product map: [Tool gateways and access profiles](../feature-map/gateways-profiles.md).
+Product map: [gateways-profiles](../feature-map/gateways-profiles.md).
 
 Feature ID: `gateways-profiles`.
 
-Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
-Native REST transport reconciled in this change; see the
-[shared transport contract](README.md#native-rest-transport).
+Delegated native entries inherit the [native admission and work-mode limits](README.md#native-rest-transport).
 
-This is a source-reviewed baseline of representative operations and known gaps.
-Each capability needs operation-level review before its entire scope can be
-qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
-for format, permission checks, evidence and maintenance.
+Review date: 2026-10-26. Source base: `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; implementation: [#17737](https://github.com/paperclipai/paperclip/pull/17737).
+
+Connection operations reviewed in this working tree. The inventory was reconciled
+against production UI clients, REST registrations and service entry points; it is
+a review checklist, not a runtime registry. [Authorization and evidence contract](../../doc/plans/2026-10-13-connection-api-parity.md).
+Fixture evidence is separate from live provider qualification and from empirical
+LLM success. Source-only entries have a reviewed agent path or an explicit boundary,
+but do not claim an individually executed HTTP test.
 
 ## `gateway`
 
 Capability ID: `gateways-profiles/gateway`.
 
-Review: `baseline`.
+Review: `operation-reviewed`.
 
-API: `present` — representative operation IDs:
+### `get-companies-tools-gateways`
 
-- `POST /api/companies/{companyId}/tools/gateways`.
+API: `present` — `GET /api/companies/{companyId}/tools/gateways`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections (responsible user: tools:admin)`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/tool-gateway.ts); [authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) inspect the saved gateway after a denied binding change.
+Verification: `passed` — local assembled server and real database; gateway visibility and unchanged target assignment after profile-grant revocation. No live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 
-Agent access: `restricted` — Board tools:admin REST; CLI connections/configuration where
-supported.
+### `post-companies-tools-gateways`
 
-Policy: Named gateway/profile administration and credentials are board tools:admin;
-agent sessions/tool use use separate scoped authority.
+API: `present` — `POST /api/companies/{companyId}/tools/gateways`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections (responsible user: tools:admin)`; bindings also require `tools:manage_profiles`. [Shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
+Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/tool-gateway.ts#L353)
-at the reviewed commit above.
+### `patch-tool-gateway-gateways`
 
-Verification: `not-run` — assert the documented agent denial with an owned test fixture;
-verify any listed agent request/result path separately. A delegated operation needs its
-own policy and access review.
-
-Gaps: No agent named-gateway management path; assigned tool use exists separately.
-
+API: `present` — `PATCH /api/tool-gateway/gateways/{gatewayId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections (responsible user: tools:admin)`; setting or clearing bindings also requires `tools:manage_profiles`. [Shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/tool-gateway.ts); [authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) exercise persisted binding changes and revoked/scoped authority.
+Verification: `passed` — local assembled server and real database. Clearing a binding requires retained profile authority; replacement profile/project changes require access to both saved and replacement resources. Authorized changes persist. No live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 ## `profiles`
 
 Capability ID: `gateways-profiles/profiles`.
 
-Review: `baseline`.
+Review: `operation-reviewed`.
 
-API: `present` — representative operation IDs:
+### `get-companies-tools-profiles`
 
-- `POST /api/companies/{companyId}/tools/profiles`.
-- `PATCH /api/tool-profiles/{profileId}`.
+API: `present` — `GET /api/companies/{companyId}/tools/profiles`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) exercise saved application/catalog/tool-name/risk selectors, allow-all profiles, managed empty profiles, personal-account visibility, and scoped grants through actual keys and run JWTs.
+Verification: `passed` — local assembled server and real database; inaccessible profile resources are omitted from lists and denied before new-tool or effective-profile data is returned. Proposed broad entries and installed connections use the same authority checks.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 
-Agent access: `restricted` — Board management REST; agent receives effective tool
-assignment.
+### `post-companies-tools-profiles`
 
-Policy: Named gateway/profile administration and credentials are board tools:admin;
-agent sessions/tool use use separate scoped authority.
+API: `present` — `POST /api/companies/{companyId}/tools/profiles`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
+Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/tool-gateway.ts#L353)
-at the reviewed commit above.
+### `get-companies-tools-profiles-effective-agents`
 
-Verification: `not-run` — assert the documented agent denial with an owned test fixture;
-verify any listed agent request/result path separately. A delegated operation needs its
-own policy and access review.
+API: `present` — `GET /api/companies/{companyId}/tools/profiles/effective/agents/{agentId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) exercise saved application/catalog/tool-name/risk selectors, allow-all profiles, managed empty profiles, personal-account visibility, and scoped grants through actual keys and run JWTs.
+Verification: `passed` — local assembled server and real database; inaccessible profile resources are omitted from lists and denied before new-tool or effective-profile data is returned. Proposed broad entries and installed connections use the same authority checks.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 
-Gaps: Agent access to tools does not permit profile editing.
+### `patch-tool-profiles`
 
-Backend evidence: [profile entry validation](../../server/src/__tests__/tool-profile-entry-validation.test.ts)
-covers company-scoped selector references and bounded reads for a large immutable
-runtime assignment. Batched validation retains the checks before profile and
-entry writes. It grants no profile-management authority to agents.
+API: `present` — `PATCH /api/tool-profiles/{profileId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
+### `post-tool-profiles-duplicate`
+
+API: `present` — `POST /api/tool-profiles/{profileId}/duplicate`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `delete-tool-profiles`
+
+API: `present` — `DELETE /api/tool-profiles/{profileId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-tool-profiles-entries`
+
+API: `present` — `POST /api/tool-profiles/{profileId}/entries`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `patch-tool-profile-entries`
+
+API: `present` — `PATCH /api/tool-profile-entries/{entryId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `delete-tool-profile-entries`
+
+API: `present` — `DELETE /api/tool-profile-entries/{entryId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-tools-profiles-bind`
+
+API: `present` — `POST /api/companies/{companyId}/tools/profiles/{profileId}/bind`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Resolve issue/routine/gateway targets, private parent/project access, and affected agents. Existing bindings and saved gateway profile references retain the same checks.
+Evidence: `verified` — [production-authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts) with real database persistence and deterministic provider responses where required.
+Verification: `passed` — Actual authenticated requests bind/unbind an authorized task and reject issue/routine/gateway targets outside agent configuration scope. Existing bindings and gateway profile references are rechecked on profile edits.
+Gaps: Fixture evidence does not qualify live provider behavior or an empirical model success rate.
+
+### `post-companies-tools-profiles-unbind`
+
+API: `present` — `POST /api/companies/{companyId}/tools/profiles/{profileId}/unbind`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; mutations whose entry selectors resolve connections also require `tools:manage_connections`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Resolve issue/routine/gateway targets, private parent/project access, and affected agents. Existing bindings and saved gateway profile references retain the same checks.
+Evidence: `verified` — [production-authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts) with real database persistence and deterministic provider responses where required.
+Verification: `passed` — Actual authenticated requests bind/unbind an authorized task and reject issue/routine/gateway targets outside agent configuration scope. Existing bindings and gateway profile references are rechecked on profile edits.
+Gaps: Fixture evidence does not qualify live provider behavior or an empirical model success rate.
 ## `client-connect`
 
 Capability ID: `gateways-profiles/client-connect`.
 
-Review: `baseline`.
+Review: `operation-reviewed`.
 
-API: `present` — representative operation IDs:
+### `get-mcp-gateways`
 
-- `GET /api/tool-gateway/gateways/{gatewayId}/mcp`.
-- `POST /api/tool-gateway/sessions`.
+API: `present` — `GET /mcp/gateways/{gatewayPublicId}`; browser/provider/MCP protocol.
+Agent access: `restricted` — GET always returns HTTP 405 with `Allow: POST`. Use the corresponding POST MCP operation.
+Policy: GET streaming is unsupported; this is a transport boundary independent of principal permissions. POST still requires the documented MCP authentication and resource policy.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — source-reviewed fixed 405 handler. A protocol check should assert status 405 and `Allow: POST`; use POST to exercise authenticated MCP calls.
+Gaps: No GET event stream is implemented. This entry does not advertise a usable GET client connection.
 
-Agent access: `partial` — Agent REST / native `call_api` for scoped session creation
-and revocation; existing MCP client protocol and assigned native app tools.
+### `post-mcp-gateways`
 
-Policy: Named gateway/profile administration and credentials are board tools:admin;
-agent sessions/tool use use separate scoped authority.
+API: `present` — `POST /mcp/gateways/{gatewayPublicId}`; browser/provider/MCP protocol.
+Agent access: `available` — existing authenticated MCP/provider protocol; not callable as JSON REST.
+Policy: Provider state/signature or gateway-token verification, company and resource binding; browser returns require the configuring human. Agent-issued durable gateway tokens retain both issuer and responsible-user authority. Issuer and target Block/Ask first/rate decisions intersect using the existing evaluator; credentials must select the same identity. Human continuation rechecks current token actions, scope, grants and both policies. Approval attribution records the issuer independently of the target; deleted tokens fail closed. Board clients and run-bound heartbeat clients retain their separate behavior.
+Evidence: `verified` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
+Verification: `passed` — local assembled server and actual gateway-token authentication. Durable clients survive setup-run completion, honor purpose scopes, and reject revoked user/issuer authority and a cleared issuer foreign key. Thirteen actual-auth cases additionally verify issuer/target Block, governed approval, current policy/grant/token revocation and deletion, narrowed actions, independent/shared rates, credential identity and board-issued approval compatibility. No live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/tool-gateway.ts#L353)
-at the reviewed commit above.
+### `get-tool-gateway-gateways-mcp`
 
-Verification: `not-run` — exercise a listed permitted operation with actual agent
-credentials/run context; inspect its result and applicable persistence/attribution.
-Assert the relevant denied actor, owner, company or mode from Policy. Review the
-remaining operations before qualifying the whole capability.
+API: `present` — `GET /api/tool-gateway/gateways/{gatewayId}/mcp`; browser/provider/MCP protocol.
+Agent access: `restricted` — GET always returns HTTP 405 with `Allow: POST`. Use the corresponding POST MCP operation.
+Policy: GET streaming is unsupported; this is a transport boundary independent of principal permissions. POST still requires the documented MCP authentication and resource policy.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — source-reviewed fixed 405 handler. A protocol check should assert status 405 and `Allow: POST`; use POST to exercise authenticated MCP calls.
+Gaps: No GET event stream is implemented. This entry does not advertise a usable GET client connection.
 
-Gaps: Scoped sessions remain agent/run-bound. MCP requires its existing protocol
-client; named gateways and gateway-token management retain board permissions.
+### `post-tool-gateway-gateways-mcp`
 
-Native assigned-tool results above 500,000 encoded bytes are stored as scoped response assets.
-`read_tool_result` reads bounded JSON pages without repeating the upstream call,
-including when generic `call_api` is disabled.
-Each encoded page is at most 500,000 bytes and continues by byte offset until the
-entire result has been read. Current run authority, same task
-and agent, and asset/responsible-user access remain required. Provider content
-stays untrusted. The
-[response integration tests](../../server/src/services/native-runtime/runner-api.integration.test.ts)
-cover full Unicode reconstruction after controller recreation, low-trust access,
-foreign assets, paused agents, and one upstream execution. The
-[native PRP regression](../../server/src/services/native-runtime/runner-tool-results-prp.integration.test.ts)
-also verifies complete delivery of escape-heavy pages through native Runner,
-including a text wrapper larger than the PRP command limit that is decoded before
-command serialization. The
-[opt-in live probe](../../server/src/__tests__/helpers/verify-assigned-tool-results-live.ts)
-uses real Codex and Runner with a synthetic large upstream response; it does not
-publish to an external service.
+API: `present` — `POST /api/tool-gateway/gateways/{gatewayId}/mcp`; browser/provider/MCP protocol.
+Agent access: `available` — existing authenticated MCP/provider protocol; not callable as JSON REST.
+Policy: Provider state/signature or gateway-token verification, company and resource binding; browser returns require the configuring human. Agent-issued durable gateway tokens retain both issuer and responsible-user authority.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Discovery collapses identical descriptors with the same gateway name across
-providers, including native assigned-tool startup and fresh searches. Conflicting
-definitions remain an error. Distinct names and the normal invocation grants,
-approvals and revocation checks remain independent. Regression coverage lives in
-[gateway tests](../../server/src/__tests__/tool-gateway.test.ts) and
-[assigned-tool tests](../../server/src/services/native-runtime/assigned-mcp-tools.test.ts);
-these fixtures do not certify a live external-client journey.
+### `get-tool-gateway-tools`
 
-Native assigned tools return bounded input-schema repair guidance after argument
-validation fails. Rejection creates no execution receipt and discloses no submitted
-values or unknown keys. Corrected calls keep the same authorization checks.
-[Runner regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/tests/provider_assigned_tool_validation.rs)
-cover discovery repair and unauthorized calls; the
-[Codex transport fixture](../../packages/paperclip-runner/runner/crates/runner-core/tests/support/codex_assigned_tool_validation.rs)
-covers rejection, corrected dispatch, and completion with a simulated provider.
-This does not establish live model or GitHub access.
+API: `present` — `GET /api/tool-gateway/tools`; JSON REST.
+Agent access: `available` — existing REST/native runtime tool or scoped gateway client, as documented by the linked route.
+Policy: Existing run-bound tool, scoped credential lease, execution policy, or assigned-email-agent checks; connection-management grants do not bypass these controls.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Remote invocation regressions preserve access to authorized sibling tools after
-a fetch failure, timeout, non-authentication HTTP error, or JSON-RPC rejection.
-HTTP 401/403 and insufficient-scope errors keep their connection gates. The
-gateway records each failed invocation and never automatically replays it.
-This covers the gateway service with synthetic providers and a local HTTP
-server, not a live external provider or all client surfaces.
+### `post-tool-gateway-tools-call`
 
+API: `present` — `POST /api/tool-gateway/tools/call`; JSON REST.
+Agent access: `available` — existing REST/native runtime tool or scoped gateway client, as documented by the linked route.
+Policy: Existing run-bound tool, scoped credential lease, execution policy, or assigned-email-agent checks; connection-management grants do not bypass these controls.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 ## `tokens`
 
 Capability ID: `gateways-profiles/tokens`.
 
-Review: `baseline`.
+Review: `operation-reviewed`.
 
-API: `present` — representative operation IDs:
+### `post-tool-gateway-gateways-tokens`
 
-- `POST /api/tool-gateway/gateways/{gatewayId}/tokens`.
-- `POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke`.
+API: `present` — `POST /api/tool-gateway/gateways/{gatewayId}/tokens`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections (responsible user: tools:admin)`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
+Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
 
-Agent access: `restricted` — Board tools:admin token management.
+### `post-tool-gateway-gateway-tokens-revoke`
 
-Policy: Named gateway/profile administration and credentials are board tools:admin;
-agent sessions/tool use use separate scoped authority.
+API: `present` — `POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections (responsible user: tools:admin)`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/tool-gateway.ts#L353)
-at the reviewed commit above.
+### `post-tool-gateway-sessions`
 
-Verification: `not-run` — assert the documented agent denial with an owned test fixture;
-verify any listed agent request/result path separately. A delegated operation needs its
-own policy and access review.
+API: `present` — `POST /api/tool-gateway/sessions`; JSON REST.
+Agent access: `available` — existing REST/native runtime tool or scoped gateway client, as documented by the linked route.
+Policy: Existing run-bound tool, scoped credential lease, execution policy, or assigned-email-agent checks; connection-management grants do not bypass these controls.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Gaps: Gateway-token management requires board tools:admin at the HTTP route.
-A grant to use an app does not create this authority; native `call_api` preserves
-the denial.
+### `post-tool-gateway-sessions-revoke`
 
+API: `present` — `POST /api/tool-gateway/sessions/{sessionId}/revoke`; JSON REST.
+Agent access: `available` — existing REST/native runtime tool or scoped gateway client, as documented by the linked route.
+Policy: Existing run-bound tool, scoped credential lease, execution policy, or assigned-email-agent checks; connection-management grants do not bypass these controls.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 ## `activity`
 
 Capability ID: `gateways-profiles/activity`.
 
-Review: `baseline`.
+Review: `operation-reviewed`.
 
-API: `present` — representative operation IDs:
+### `get-companies-tools-runtime-slots`
 
-- `GET /api/tool-gateway/audit`.
+API: `present` — `GET /api/companies/{companyId}/tools/runtime-slots`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_runtime`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Agent access: `restricted` — Board tools:view_audit; agent receives its own tool
-receipts/errors.
+### `post-companies-tools-runtime-slots-stop`
 
-Policy: Named gateway/profile administration and credentials are board tools:admin;
-agent sessions/tool use use separate scoped authority.
+API: `present` — `POST /api/companies/{companyId}/tools/runtime-slots/{id}/stop`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_runtime`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/tool-gateway.ts#L353)
-at the reviewed commit above.
+### `post-companies-tools-runtime-slots-restart`
 
-Verification: `not-run` — assert the documented agent denial with an owned test fixture;
-verify any listed agent request/result path separately. A delegated operation needs its
-own policy and access review.
+API: `present` — `POST /api/companies/{companyId}/tools/runtime-slots/{id}/restart`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_runtime`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Gaps: Audit management API exists but broad audit visibility is not an agent use-path
-guarantee.
+### `get-companies-tools-runtime-health`
 
-### Execution-host stdio assignments
+API: `present` — `GET /api/companies/{companyId}/tools/runtime-health`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_runtime`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 
-Runner registers verified, session-local stdio servers from the execution host
-with native Codex and through the shared ACPX runtime. ACPX clients must support
-stdio MCP assignments. The transport uses each implementation's own schemas and
-responses. Each binding requires a private Unix socket to identify the shared
-resource whose calls are serialized. This is a separate binding alongside the
-HTTP gateway; it does not create gateway/profile administration
-authority. Tasks cannot supply these reserved environment inputs. Read-only
-sessions omit them.
-ACPX adapters use their applicable ACPX permission policy. Host-assigned native
-Codex tools run without a new per-call prompt, matching existing execution-host shell
-utilities. Explicit deny/prompt rules remain effective; requested approvals use
-PRP with active thread/turn checks and one-time decisions. Preconfigured Claude
-rejects interactive approval requests. See the [Runner contract](../../packages/paperclip-runner/README.md#assigned-local-mcp-servers).
+### `get-companies-tools-runs-decisions`
 
-Local fixture coverage: [binding validation](../../packages/paperclip-runner/src/drivers/stdio-mcp.test.ts),
-[relay processes and cancellation](../../packages/paperclip-runner/runner/crates/runner-core/tests/stdio_mcp.rs),
-and [approval projection](../../packages/paperclip-runner/src/drivers/codex/codex-question-adapter.test.ts).
-Provider-client image and approval smoke tests used native Codex and Claude SDK;
-that coverage is not an exhaustive adapter compatibility test.
-Vendor-client evidence belongs in the PR. These checks do not
-certify live external credentials, deployment isolation or gateway revocation.
+API: `present` — `GET /api/companies/{companyId}/tools/runs/{runId}/decisions`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:view_audit`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-tool-gateway-runtime-slots`
+
+API: `present` — `GET /api/tool-gateway/runtime-slots`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_runtime`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-tool-gateway-runtime-slots-stop`
+
+API: `present` — `POST /api/tool-gateway/runtime-slots/{slotId}/stop`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_runtime`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-tool-gateway-runtime-slots-restart`
+
+API: `present` — `POST /api/tool-gateway/runtime-slots/{slotId}/restart`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_runtime`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-tool-gateway-audit`
+
+API: `present` — `GET /api/tool-gateway/audit`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:view_audit`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.

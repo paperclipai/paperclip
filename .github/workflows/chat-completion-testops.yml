@@ -1,0 +1,504 @@
+name: Chat completion TestOps
+run-name: Chat completion TestOps / ${{ inputs.operation || 'evaluate' }} / ${{ inputs.ALLURE_JOB_RUN_ID || github.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [evaluate, bootstrap, launch-plan]
+        default: evaluate
+        description: Run the exact TestOps selection, register its plan, or launch it once
+      ALLURE_JOB_RUN_ID:
+        type: string
+        required: false
+        description: TestOps job-run identity; source, model and clocks are fixed
+      ALLURE_USERNAME:
+        type: string
+        required: false
+        description: Reserved service metadata; never grants authority
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: chat-completion-testops
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: ''
+  NODE_PATH: ''
+  AWS_EC2_METADATA_DISABLED: 'true'
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.guard.outputs.operation }}
+      target_sha: ${{ steps.guard.outputs.target_sha }}
+      runner: runs-on/fleet=paperclip-public-pr-x64/env=public-ci
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - &node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - &guard
+        name: Verify actual main-only dispatch and both actors
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: node tests/runner-e2e/chat-completion-testops-cli.mjs guard
+
+  select:
+    name: Register the dedicated plan or validate its real TestOps selection
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: runner-e2e-testops-reporting
+    outputs:
+      artifact_id: ${{ steps.selection_upload.outputs.artifact-id }}
+      selection_sha256: ${{ steps.selection.outputs.selection_sha256 }}
+      execution_ids: ${{ steps.selection.outputs.execution_ids }}
+      matrix: ${{ steps.selection.outputs.matrix }}
+      policy: ${{ steps.selection.outputs.policy }}
+    steps:
+      - *checkout
+      - *node
+      - *guard
+      - &allure
+        if: needs.authorize.outputs.operation != 'launch-plan'
+        uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1
+        with:
+          allurectl-version: 2.23.1
+          allure-endpoint: https://paperclip.testops.cloud
+          allure-project-id: '1'
+          allure-token: ${{ secrets.ALLURE_TOKEN }}
+      - name: Register three exact cases with no synthetic test result
+        if: needs.authorize.outputs.operation == 'bootstrap'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+          ALLURE_ENDPOINT: https://paperclip.testops.cloud
+          ALLURE_PROJECT_ID: '1'
+          ALLURE_RESULTS: ${{ runner.temp }}/chat-completion-bootstrap-results
+          CHAT_TESTOPS_INTEGRATION_ID: ${{ vars.CHAT_TESTOPS_INTEGRATION_ID }}
+        run: |
+          mkdir -m 700 "$ALLURE_RESULTS"
+          allurectl watch -- node tests/runner-e2e/chat-completion-testops-cli.mjs bootstrap
+          node tests/runner-e2e/chat-completion-testops-cli.mjs bootstrap-context
+      - name: Validate case, plan, job, launch and same-run source before provider access
+        id: selection
+        if: needs.authorize.outputs.operation == 'evaluate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+          ALLURE_ENDPOINT: https://paperclip.testops.cloud
+          ALLURE_PROJECT_ID: '1'
+          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+          ALLURE_RESULTS: ${{ runner.temp }}/chat-completion-selection-results
+          CHAT_COMPLETION_TESTOPS_BINDING: ${{ vars.CHAT_COMPLETION_TESTOPS_BINDING }}
+        run: |
+          mkdir -m 700 "$ALLURE_RESULTS"
+          allurectl watch -- node tests/runner-e2e/chat-completion-testops-cli.mjs selection
+      - name: Request the one reviewed plan launch and exit
+        if: needs.authorize.outputs.operation == 'launch-plan'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+          CHAT_COMPLETION_TESTOPS_BINDING: ${{ vars.CHAT_COMPLETION_TESTOPS_BINDING }}
+          CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER: ${{ vars.CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER }}
+          CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE: ${{ vars.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE }}
+        run: node tests/runner-e2e/chat-completion-testops-cli.mjs launch-plan
+      - name: Retain token-free registration and launch receipts
+        if: always() && needs.authorize.outputs.operation != 'evaluate'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: chat-completion-testops-setup-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/chat-completion-testops-bootstrap/
+            ${{ runner.temp }}/chat-completion-testops-launch-plan/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Retain the exact authenticated selection
+        id: selection_upload
+        if: steps.selection.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: chat-completion-testops-selection-${{ github.run_id }}-1
+          path: testops-pilot-selection.json
+          retention-days: 30
+          if-no-files-found: error
+
+  build:
+    name: Build the immutable catalog source without service or model credentials
+    needs: [authorize, select]
+    if: needs.authorize.outputs.operation == 'evaluate'
+    runs-on: ${{ needs.authorize.outputs.runner }}
+    timeout-minutes: 45
+    outputs:
+      artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+    steps:
+      - *checkout
+      - *node
+      - *guard
+      - &pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: 'false'
+          NPM_CONFIG_FUND: 'false'
+          NPM_CONFIG_UPDATE_NOTIFIER: 'false'
+        with:
+          version: 9.15.4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+      - name: Reject target-owned trusted helper paths
+        id: target_boundary
+        run: test -z "$(git ls-tree --name-only HEAD -- .testops-trusted)"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .testops-trusted
+          persist-credentials: false
+      - name: Resolve the fixed candidate graph with lifecycle scripts disabled
+        run: |
+          pnpm install --lockfile-only --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build existing TypeScript and native Runner outputs
+        run: |
+          pnpm --filter @paperclipai/paperclip-runner build:typescript
+      - name: Exercise the real workflow and pinned source host contract before model access
+        run: node --import ./cli/node_modules/tsx/dist/loader.mjs .testops-trusted/tests/runner-e2e/chat-completion-testops-host-control.mjs
+      - name: Build native Runner outputs
+        run: pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+      - name: Package the resolved lock and exact source outputs
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          tar -czf chat-completion-build.tar.gz pnpm-lock.yaml packages/paperclip-eval-kernel/dist packages/paperclip-runner/dist packages/paperclip-runner/runner/target/debug/paperclip-runnerd packages/paperclip-runner/runner/target/debug/conformance-tracer packages/paperclip-runner/runner/target/debug/fake-harness packages/paperclip-runner/runner/target/debug/fake-codex-app-server packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar
+          sha256sum chat-completion-build.tar.gz > chat-completion-build.tar.gz.sha256
+      - name: Retain credential-free immutable outputs
+        id: bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: chat-completion-build-${{ github.run_id }}-1
+          path: |
+            chat-completion-build.tar.gz
+            chat-completion-build.tar.gz.sha256
+          retention-days: 1
+          if-no-files-found: error
+
+  chat:
+    name: ${{ matrix.executionId }}
+    needs: [authorize, select, build]
+    if: needs.authorize.outputs.operation == 'evaluate'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ${{ needs.authorize.outputs.runner }}
+    timeout-minutes: 32
+    environment: runner-e2e-private-paid
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env: &retention
+      TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+      MANUAL_PRIVATE_IDS: ${{ needs.select.outputs.execution_ids }}
+      MANUAL_PRIVATE_APPROVALS_JSON: ${{ needs.select.outputs.policy }}
+      RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+    steps:
+      - *checkout
+      - *node
+      - *guard
+      - *pnpm
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+      - name: Reject target-owned trusted helper paths
+        id: target_boundary
+        run: test -z "$(git ls-tree --name-only HEAD -- .testops-trusted)"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .testops-trusted
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: chat-completion-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.select.outputs.artifact_id }}
+          path: chat-completion-testops-selection
+      - name: Verify source-bound build and authenticated selection before credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          EXPECTED_SELECTION_SHA256: ${{ needs.select.outputs.selection_sha256 }}
+          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+        run: |
+          set -euo pipefail
+          test "$(git -C .testops-trusted rev-parse HEAD)" = "$GITHUB_SHA"
+          node .testops-trusted/tests/runner-e2e/chat-completion-testops-cli.mjs verify-selection chat-completion-testops-selection/testops-pilot-selection.json
+          (cd chat-completion-build && sha256sum -c chat-completion-build.tar.gz.sha256)
+          tar -xzf chat-completion-build/chat-completion-build.tar.gz -C "$GITHUB_WORKSPACE"
+          pnpm install --frozen-lockfile --ignore-scripts
+          (cd .testops-trusted && node tests/runner-e2e/prepare-report-lock.mjs && pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/chat-completion-retention-store")
+      - name: Qualify the pinned provider runtime and preinstalled browser
+        run: |
+          node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
+          node -e 'const fs=require("node:fs");fs.chmodSync(process.execPath,fs.statSync(process.execPath).mode&~0o022);if(fs.statSync(process.execPath).mode&0o022)throw Error("Writable provider Node")'
+          google-chrome --version
+          pnpm exec playwright install ffmpeg
+      - name: Bind exact private evidence under the authenticated TestOps authority
+        id: private
+        env:
+          TARGET_ROOT: ${{ github.workspace }}
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+        run: node .testops-trusted/cli/node_modules/tsx/dist/cli.mjs .testops-trusted/tests/runner-e2e/manual-private-transfer.ts prepare
+      - name: Obtain only this cell's exact-key storage session
+        id: cell_credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.private.outputs.session_policy }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+      - name: Verify private custody before delivering the model key
+        env: &cell_session
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+          PRIVATE_EVIDENCE_ROOT: ${{ steps.private.outputs.root }}
+          AWS_ACCESS_KEY_ID: ${{ steps.cell_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.cell_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.cell_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node .testops-trusted/cli/node_modules/tsx/dist/cli.mjs .testops-trusted/tests/runner-e2e/manual-private-transfer.ts verify
+      - name: Execute only the selected original case with zero retries
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1
+          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+          PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ steps.private.outputs.root }}/preflight.json
+          PRIVATE_EVIDENCE_ROOT: ${{ steps.private.outputs.root }}
+          PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-1-${{ matrix.executionId }}
+          PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID: gha-${{ github.run_id }}-1
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_REF: refs/heads/codex/chat-catalog-master-integration
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: chrome
+        run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}" --max-parallel 1 --max-automatic-retries 0 > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
+      - name: Retain original evidence after success or failure
+        if: always() && steps.cell_credentials.outcome == 'success'
+        env: *cell_session
+        run: node .testops-trusted/cli/node_modules/tsx/dist/cli.mjs .testops-trusted/tests/runner-e2e/manual-private-transfer.ts upload-cell
+
+  report:
+    name: Retain private originals and build the exact safe TestOps projection
+    needs: [authorize, select, build, chat]
+    if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && needs.select.result == 'success' && needs.build.result == 'success' && (needs.chat.result == 'success' || needs.chat.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: runner-e2e-private-history
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env: *retention
+    steps:
+      - *checkout
+      - *node
+      - *guard
+      - *pnpm
+      - name: Install trusted reporting dependencies with lifecycle scripts disabled
+        run: |
+          node tests/runner-e2e/prepare-report-lock.mjs
+          pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/chat-completion-report-store"
+      - name: Prepare unchanged exact-key report and cell policies
+        id: session
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts report-session
+      - name: Obtain private report writer
+        id: report_credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.session.outputs.session_policy }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+      - name: Obtain exact first-cell reader
+        id: reader_0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.session.outputs.read_policy_0 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+      - name: Download the first exact original
+        env:
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '0'
+          AWS_ACCESS_KEY_ID: ${{ steps.reader_0.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.reader_0.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.reader_0.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts download-cell
+      - name: Obtain exact second-cell reader
+        id: reader_1
+        if: fromJSON(steps.session.outputs.cell_count) > 1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.session.outputs.read_policy_1 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+      - name: Download the second exact original
+        if: steps.reader_1.outcome == 'success'
+        env:
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '1'
+          AWS_ACCESS_KEY_ID: ${{ steps.reader_1.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.reader_1.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.reader_1.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts download-cell
+      - name: Obtain exact third-cell reader
+        id: reader_2
+        if: fromJSON(steps.session.outputs.cell_count) > 2
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.session.outputs.read_policy_2 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+      - name: Download the third exact original
+        if: steps.reader_2.outcome == 'success'
+        env:
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '2'
+          AWS_ACCESS_KEY_ID: ${{ steps.reader_2.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.reader_2.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.reader_2.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts download-cell
+      - name: Verify every selected original and its completeness receipt
+        env:
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts verify-downloads
+      - name: Build the existing report while preserving failed source grades
+        id: normalize
+        continue-on-error: true
+        env:
+          PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e
+          PAPERCLIP_RUNNER_E2E_REPORT_OUT: ${{ github.workspace }}/runner-e2e-merged-report/normalized
+          PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: ${{ needs.select.outputs.execution_ids }}
+          PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-1
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_REF: refs/heads/codex/chat-catalog-master-integration
+        run: |
+          mkdir -p runner-e2e-merged-report
+          pnpm test:e2e:runner:report > runner-e2e-merged-report/report.log 2>&1
+      - name: Retain the complete merged report privately
+        id: private_report
+        if: always() && steps.report_credentials.outcome == 'success'
+        env:
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          PRIVATE_REPORT_SOURCE: ${{ github.workspace }}/runner-e2e-merged-report
+          AWS_ACCESS_KEY_ID: ${{ steps.report_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.report_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.report_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts upload-report
+      - name: Export only exact reviewed synthetic fixture results
+        id: export
+        if: always() && steps.private_report.outcome == 'success'
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/chat-completion-testops-export.ts
+      - name: Require a complete safe projection even after a failed normalization
+        if: always()
+        env:
+          EXPORT_OUTCOME: ${{ steps.export.outcome }}
+        run: test "$EXPORT_OUTCOME" = success
+      - name: Retain the metadata-only TestOps projection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: chat-completion-testops-projection-${{ github.run_id }}-1
+          path: runner-e2e-testops/
+          retention-days: 30
+          if-no-files-found: error
+
+  upload:
+    name: Record and independently verify each TestOps result
+    needs: [authorize, select, chat, report]
+    if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && needs.report.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: runner-e2e-testops-reporting
+    steps:
+      - *checkout
+      - *node
+      - *guard
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: chat-completion-testops-projection-${{ github.run_id }}-1
+          path: runner-e2e-testops
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.select.outputs.artifact_id }}
+          path: chat-completion-testops-selection
+      - *allure
+      - name: Upload original outcomes, checks and private-evidence receipts
+        id: allure_upload
+        env: &upload_env
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+          ALLURE_ENDPOINT: https://paperclip.testops.cloud
+          ALLURE_PROJECT_ID: '1'
+          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+          EXPECTED_SELECTION_SHA256: ${{ needs.select.outputs.selection_sha256 }}
+          ALLURE_RESULTS: ${{ runner.temp }}/chat-completion-allure-results
+        run: allurectl watch -- node tests/runner-e2e/chat-completion-testops-cli.mjs upload runner-e2e-testops
+      - name: Verify actual selected results and complete result-owned attachments
+        id: verification
+        if: always() && !cancelled() && (steps.allure_upload.outcome == 'success' || steps.allure_upload.outcome == 'failure')
+        env: *upload_env
+        run: node tests/runner-e2e/chat-completion-testops-cli.mjs verify-upload runner-e2e-testops
+      - name: Retain closed TestOps verification receipts
+        if: always() && !cancelled() && (steps.verification.outcome == 'success' || steps.verification.outcome == 'failure')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: chat-completion-testops-verification-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/chat-completion-testops-verify-upload/
+            ${{ runner.temp }}/chat-completion-testops-upload/exported.json
+          retention-days: 30
+          if-no-files-found: error
