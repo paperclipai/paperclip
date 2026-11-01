@@ -2125,6 +2125,32 @@ describe("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])("evaluates combined resume against requested blockers (replacement: %s)", async (replaceBlockers) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+    });
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({
+      ...makeIssue("blocked"), ...patch,
+    }));
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo", resume: true, comment: "Dependency repaired", ...(replaceBlockers ? { blockedByIssueIds: [] } : {}) });
+    expect(res.status).toBe(replaceBlockers ? 200 : 409);
+    if (replaceBlockers) {
+      expect(res.body.status).toBe("todo");
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        "11111111-1111-4111-8111-111111111111",
+        expect.objectContaining({ status: "todo", blockedByIssueIds: [] }),
+      );
+      expect(mockIssueService.getDependencyReadiness).not.toHaveBeenCalled();
+    } else {
+      expect(res.body.error).toBe("Issue follow-up blocked by unresolved blockers");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    }
+  });
+
   it("does not move dependency-blocked issues to todo via the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
