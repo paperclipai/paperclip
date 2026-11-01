@@ -17,6 +17,7 @@ import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   await notifyAttentionRetentionWork(db, { companyId });
@@ -145,6 +146,7 @@ export async function completeAgentHireApproval(txDb: Db, updated: AgentHireReco
   const tx = txDb;
   await agentCredentialService(txDb).syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
   if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
         companyId: updated.companyId,
