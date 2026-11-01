@@ -4,6 +4,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
+import { useCompanyCreationAccess } from "../hooks/useCompanyCreationAccess";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
@@ -46,6 +47,7 @@ export function Companies() {
   // A cloud stack holds exactly one company; creating another is a 403 floor
   // server-side, so the wizard entry point is hidden rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
+  const { canCreateCompany } = useCompanyCreationAccess(!isCloud);
 
   const { data: stats } = useQuery({
     queryKey: queryKeys.companies.stats,
@@ -110,7 +112,7 @@ export function Companies() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-end">
-        {isCloud ? null : (
+        {canCreateCompany && (
           <Button size="sm" onClick={() => openOnboarding()}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Organization

@@ -34,6 +34,7 @@ import {
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCompanyCreationAccess } from "@/hooks/useCompanyCreationAccess";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { useSignOut } from "@/hooks/useSignOut";
@@ -197,6 +198,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
   const currentName = selectedCompany?.name ?? null;
   // Managed hosts forbid local company creation. Their extension owns that action.
   const companyCreationManaged = Boolean(useCloudInstance());
+  const { canCreateCompany } = useCompanyCreationAccess(!companyCreationManaged);
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
@@ -228,7 +230,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
   }
 
   function addCompany() {
-    if (companyCreationManaged) return;
+    if (!canCreateCompany) return;
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
     // Skip the front-door "how would you like to get started?" choice and land
@@ -358,7 +360,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
           ) : null}
         </div>
         <div className="flex flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
-          {!companyCreationManaged && (
+          {canCreateCompany && (
             <DropdownMenuItem
               onClick={addCompany}
               className={ORGANIZATION_ACTION_CLASS}

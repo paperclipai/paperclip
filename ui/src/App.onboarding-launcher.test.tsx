@@ -54,6 +54,11 @@ const dialogState = vi.hoisted(() => ({
   openOnboarding: vi.fn(),
 }));
 const mockGoalsApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockBoardAccess = vi.hoisted(() => vi.fn());
+vi.mock("./api/access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./api/access")>();
+  return { ...actual, accessApi: { ...actual.accessApi, getCurrentBoardAccess: mockBoardAccess } };
+});
 
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
@@ -133,6 +138,7 @@ describe("the onboarding launcher's Add Agent button", () => {
   }
 
   beforeEach(() => {
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
     container = document.createElement("div");
     document.body.appendChild(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -205,5 +211,36 @@ describe("the onboarding launcher's Add Agent button", () => {
     });
 
     expect(dialogState.openOnboarding).toHaveBeenCalledWith();
+  });
+
+  it("explains restricted creation on a direct route even while the wizard requests to open", async () => {
+    routeState.companyPrefix = undefined;
+    dialogState.onboardingOpen = true;
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    await render();
+    await settle();
+    expect(container.textContent).toContain("Only instance administrators can create organizations");
+    expect(container.querySelector("button")).toBeNull();
+    expect(dialogState.openOnboarding).not.toHaveBeenCalled();
+  });
+
+  it("still allows onboarding agents in an existing organization for non-instance admins", async () => {
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    await render();
+    await settle();
+    await act(async () => addAgentButton().click());
+    expect(dialogState.openOnboarding).toHaveBeenCalledWith({ initialStep: ONBOARDING_AGENT_STEP, companyId: "company-1" });
+  });
+
+  it("offers retry when the permission lookup fails", async () => {
+    routeState.companyPrefix = undefined;
+    mockBoardAccess.mockRejectedValue(new Error("Access unavailable"));
+    await render();
+    await settle();
+    expect(container.textContent).toContain("Couldn't check organization creation permissions");
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
+    await act(async () => container.querySelector("button")!.click());
+    await settle();
+    expect(container.textContent).toContain("Start Onboarding");
   });
 });
