@@ -28,7 +28,7 @@ Runner setting in addition to Dot and Assistant connections (MCP).
    expiry, and event instructions. Paste the prompt into your Dot so it can add
    or reuse the private plugin and finish OAuth in its own browser. Dot enters
    the one-use code on the Paperclip connection page and chooses
-   **Connect Dot with pairing code**. Entering a valid code first shows the
+   **Allow agent connection**. Entering a valid code first shows the
    exact company, agent, permissions, and ongoing revocable access duration;
    previewing consumes no code and creates no grant. No operator sign-in in Dot’s browser is
    needed. The personal `/mcp/paperclip` connection

@@ -19,13 +19,31 @@ const meta = {
   component: AgentConversationSidebar,
   parameters: { layout: "fullscreen", docs: { description: { component:
     "Secondary agent navigation at the same width as the app's other contextual sidebars. Uses production AgentAvatar, Input, and Button. The entire row is a link; selection and search are interactive. Search matches agent name, title, and role. Escape clears the query. Browse all agents links to the existing agent directory in the page stories."
-  } } },
+  } },
+    paperclip: {
+      "capabilities": [
+        "agent-chat/discovery",
+        "agent-chat/history"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Support module re-exports production AgentConversationSidebar; search/selection use fixture callbacks."
+    },
+  },
   args: { agents: sidebarAgents, availableAgents: sidebarRoster(), activeId: "agent-codex", previews: sidebarPreviews },
   render: args => <InteractiveSidebar key={JSON.stringify(args)} {...args} />,
 } satisfies Meta<typeof AgentConversationSidebar>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = { name: "01 · Agent list · Interactive" };
+export const UnreadMessages: Story = {
+  name: "11 · Proactive message unread",
+  args: { unreadAgentIds: [sidebarAgents[0].id] },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole("img", { name: `Unread messages from ${sidebarAgents[0].name}` })).toBeVisible();
+  },
+};
 export const Search: Story = { name: "02 · Search by role", args: { initialSearch: "research" } };
 export const NoResults: Story = { name: "03 · No matches", args: { initialSearch: "accountant" } };
 export const Loading: Story = { name: "04 · Loading", args: { agents: [], availableAgents: [], loading: true } };

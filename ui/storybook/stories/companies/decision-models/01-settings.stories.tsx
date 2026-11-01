@@ -3,7 +3,17 @@ import { fn } from "storybook/test";
 import { DecisionModelSettingsView } from "@/components/decision-models/DecisionModelSettings";
 import { choices, configured, result, unconfigured } from "../../../support/decision-models/fixtures";
 
-const meta = { id: "decision-models-01-settings",
+const meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "companies/identity",
+        "budgets-costs/cost-reporting",
+        "companies/decision-models"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Related decision-service examples show connection/model configuration, bounded test receipts or invocation history using shipped subjects and simulated data. No paid provider or authorization proof."
+    } }, id: "decision-models-01-settings",
   title: "Getting started and access/Companies and portability/Decision models/01 Settings", component: DecisionModelSettingsView,
   decorators: [Story => <main className="p-6"><Story /></main>],
   args: { settings: configured, choices, onSave: fn(), onTest: fn(), onAdd: fn() },

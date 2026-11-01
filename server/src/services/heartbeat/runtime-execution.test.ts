@@ -1,11 +1,19 @@
+import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
+
+import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
+import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, budgetPolicies, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { createRunPreparationTiming, measureRunPhase, measureWorkspaceSyncPhase, withRunExecutionTiming } from "../execution-preparation-timing.js";
+import { recoveryPostgresSupport as support, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
+import * as pluginWorkspaces from "../plugin-workspaces.js";
 import * as legacyRecovery from "../legacy-execution-recovery.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { createAdapterExecutionControl } from "../adapter-execution-control.js";
@@ -37,15 +45,14 @@ vi.mock("./run-preparation.js", async original => ({
   revokeHeartbeatRunGatewayTokens: vi.fn(async () => {}),
 }));
 
-const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: Db;
   let home: string;
   beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), "paperclip-runtime-execution-"));
     vi.stubEnv("PAPERCLIP_HOME", home);
-    database = await startEmbeddedPostgresTestDatabase("paperclip-runtime-execution");
+    database = await startRecoveryPostgres("paperclip-runtime-execution");
     db = createDb(database.connectionString);
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
@@ -56,9 +63,9 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     vi.mocked(executePaperclipNativeSession).mockResolvedValue({ exitCode: 0, signal: null, timedOut: false });
   });
 
-  async function fixture(native = false) {
+  async function fixture(native = false, provider: "codex" | "grok_bot" | "openai_dot" = "codex") {
     const [company] = await db.insert(companies).values({ name: "Runtime execution", issuePrefix: "EXE" }).returning();
-    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Executing agent", status: "running", adapterType: native ? "paperclip_runner" : "process", adapterConfig: { provider: "codex" } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Executing agent", status: "running", adapterType: native ? "paperclip_runner" : "process", adapterConfig: provider === "codex" ? { provider } : { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: true, [provider === "grok_bot" ? "externalBindingId" : "dotBindingId"]: randomUUID() } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Complete this task", assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: native ? "native" : "legacy" }).returning();
     const state = createHeartbeatRunState(db);
@@ -68,14 +75,15 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     const nativeExecution = native ? buildNativeExecutionInput({
       companyId: company.id, agentId: agent.id, runId: run.id, issue,
       taskPrompt: issue.title, workspace: { id: run.id, cwd: home, repoUrl: null, repoRef: null, branchName: null },
-      normalizedSessionId: null, provider: "codex", runtimeContext: nativeRuntimeContextFixture(),
+      normalizedSessionId: null, provider, runtimeContext: nativeRuntimeContextFixture(),
+      dotBinding: { bindingId: randomUUID(), bindingGeneration: 1, companyId: company.id, agentId: agent.id, acceptByUnixMs: Date.now() + 60_000, expiresAtUnixMs: Date.now() + 120_000 },
       completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: issue.title, criteria: [{ id: "output", requirement: issue.title }] } },
     }) : null;
     const input: HeartbeatRuntimeExecutionInput = {
       run, agent, options: {},
       task: { issueRef: issue, issueContext: null, context: {}, issueId: issue.id, taskKey: issue.id, executionContinuation: null },
       runtime: { nativeExecution, nativeRunnerInstanceId: native ? randomUUID() : null, getNativeFreshSessionHandoff: undefined,
-        nativeRuntimeResolution: resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: native, runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: null, workspaceId: null }),
+        nativeRuntimeResolution: resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: native, grokEnabled: true, dotEnabled: true, runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: null, workspaceId: null }),
         adapter, runtimeForAdapter: { taskKey: issue.id, sessionId: null, sessionParams: null, sessionDisplayId: null }, getFreshSessionHandoff: undefined, runOptions: {},
       },
       workspace: { persistedExecutionWorkspace: null, executionWorkspace: { baseCwd: home, cwd: home, source: "agent_home", projectId: null, workspaceId: null, repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false },
@@ -112,6 +120,16 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(revokeHeartbeatRunGatewayTokens).toHaveBeenCalledWith({ db, companyId: input.agent.companyId, runId: input.run.id });
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
+
+  it("passes preparation renewal ownership to native dispatch", async () => {
+    const { input } = await fixture(true);
+    const acquired = vi.fn(async () => undefined);
+    input.runtime.runOptions.onNativeExecutionLeaseAcquired = acquired;
+    await executeHeartbeatRuntime(db, input);
+    expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({ onExecutionLeaseAcquired: acquired }));
+    // Preparation is still protected until the native executor claims its lease.
+    expect(acquired).not.toHaveBeenCalled();
+  });
 
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
     const { input, adapter } = await fixture(native);
@@ -176,7 +194,10 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.effects.onNativeDispatchStarted).toHaveBeenCalledOnce();
     expect(input.effects.onLegacyAdapterEntered).not.toHaveBeenCalled();
     expect(await finalizations()).toHaveLength(0);
-    expectCleanup(input);
+    if (error instanceof NativeControllerDetachedForRestartError) {
+      expect(revokeHeartbeatRunGatewayTokens).not.toHaveBeenCalled();
+      expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
+    } else expectCleanup(input);
   });
 
   it("dispatches native execution with the selected session and persists its usage", async () => {
@@ -195,6 +216,60 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
+  it("returns the accepted exact native rate-card price and preserves its live budget hold", async () => {
+    const { input, run } = await fixture(true);
+    input.workspace.executionTarget = { kind: "remote", transport: "sandbox", remoteCwd: home };
+    input.runtime.nativeExecution!.provider = { kind: "codex", model: "gpt-6.1-sol" };
+    await db.insert(budgetPolicies).values({ companyId: run.companyId, scopeType: "agent", scopeId: input.agent.id,
+      metric: "billed_cents", windowKind: "lifetime", amount: 100, notifyEnabled: false });
+    let exact: string | undefined;
+    vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async native => {
+      expect(native.onUsage).toBeUndefined();
+      const delivery = await createNativeUsageDelivery(db, { companyId: run.companyId, runId: run.id,
+        runnerInstanceId: native.runnerInstanceId, provider: native.execution.provider,
+        billing: { provider: "openai", biller: "openai", billingType: "metered_api" } });
+      const event = (sourceSeq: number, eventType: string, payload: Record<string, unknown>): PrpEvent => ({
+        sourceKind: "runner", sourceInstanceId: native.runnerInstanceId, runId: run.id, sourceSeq, sourceEventId: `priced-${sourceSeq}`,
+        turnId: "priced-turn", eventType, emittedAt: new Date().toISOString(), payload,
+      } as PrpEvent);
+      await delivery.capture(event(1, "usage.reported", { runDeltaBasis: "run", runDeltaAvailable: true,
+        runDelta: { inputTokens: 1000, outputTokens: 100000, providerCostUsd: 0 } }));
+      await delivery.capture(event(2, "turn.completed", {}));
+      const saved = (await read(run.id)).usageJson!;
+      exact = saved.costUsdExact as string;
+      expect(Number(exact)).toBe(1.002);
+      expect(saved.budgetExposure).toMatchObject({ costCents: "100.2000000" });
+      expect((await db.select().from(agents).where(eq(agents.id, input.agent.id)))[0].lifecycleHolds).toContain("budget");
+      return { exitCode: 0, signal: null, timedOut: false, usageComplete: true, costUsd: null, model: "gpt-6.1-sol" };
+    });
+    const result = await executeHeartbeatRuntime(db, input);
+    if (!result.dispatched) throw new Error("expected native dispatch");
+    expect(result.adapterResult).toMatchObject({ costUsdExact: exact, costStatus: "estimated", usageComplete: true,
+      pricingProvenance: { source: "rate_card" }, usage: { inputTokens: 1000, outputTokens: 100000 } });
+  });
+
+  it.each(["expected", "wrong"])("finalizes a plugin worktree through its owner (branch: %s)", async branch => {
+    const { input } = await fixture(true);
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: input.agent.companyId,
+      name: "Plugin worktree", providerType: "plugin", providerRef: "provider:opaque-worktree", cwd: "/workspaces/plugin-only",
+      mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch" }).returning();
+    input.workspace.persistedExecutionWorkspace = workspace;
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
+      branchName: branch === "expected" ? "task-branch" : "other-branch", headSha: "a".repeat(40),
+      hasDirtyTrackedFiles: true, hasUntrackedFiles: false, hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
+    try {
+      const result = executeHeartbeatRuntime(db, input);
+      if (branch === "expected") {
+        await expect(result).resolves.toMatchObject({ dispatched: true });
+        expect(await finalizations()).toMatchObject([{ status: "succeeded" }]);
+      } else {
+        await expect(result).rejects.toThrow("plugin_workspace_branch_mismatch");
+        expect((await finalizations()).some(row => row.status === "succeeded")).toBe(false);
+      }
+      expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id, providerRef: workspace.providerRef }), { agentId: input.agent.id, runId: input.run.id });
+    } finally { inspect.mockRestore(); }
+  });
+
   it("retains the same-run retry signal without recording a failed workspace", async () => {
     const { input, run } = await fixture(true);
     await db.update(heartbeatRuns).set({ nativeIssueId: input.task.issueId }).where(eq(heartbeatRuns.id, run.id));
@@ -209,12 +284,31 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
+  it("preserves the retained sandbox while native admission waits for its current owner", async () => {
+    const { input } = await fixture(true);
+    const error = new NativeControllerRecoveryWaitingError(new Date(Date.now() + 60_000));
+    vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({
+      name: "NativeSessionResumeScheduledError", original: error,
+    });
+    expect(input.effects.onNativeSessionResumeScheduled).toHaveBeenCalledOnce();
+    expect(input.effects.onProviderResourceDisposition).not.toHaveBeenCalledWith("stop_and_retain");
+    expect(await finalizations()).toHaveLength(0);
+  });
+
   it("records native restoration inside the workspace finalization operation", async () => {
     const { input, run } = await fixture(true);
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    expect(trace.setGlobalTracerProvider(provider)).toBe(true);
     const restore = vi.fn(async () => {
       expect(await finalizations()).toMatchObject([{
         status: "running", metadata: { owningService: "native_workspace_finalizer" },
       }]);
+      await measureWorkspaceSyncPhase("workspace.restore", async () => {});
+      await measureRunPhase("execution.workspace_commit", async () => {});
     });
     input.workspace.nativeWorkspaceSync = {
       mode: "host_current",
@@ -224,11 +318,94 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       restoreWorkspace: restore,
       cleanup: vi.fn(async () => {}),
     };
-    expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
-    expect(restore).toHaveBeenCalledOnce();
-    expect(await finalizations()).toMatchObject([{
-      status: "succeeded", metadata: { owningService: "native_workspace_finalizer" },
-    }]);
+    try {
+      expect(await withRunExecutionTiming(run.id, () => executeHeartbeatRuntime(db, input))).toMatchObject({ dispatched: true });
+      expect(restore).toHaveBeenCalledOnce();
+      expect(await finalizations()).toMatchObject([{
+        status: "succeeded", metadata: { owningService: "native_workspace_finalizer" },
+      }]);
+      await provider.forceFlush();
+      const spans = exporter.getFinishedSpans();
+      const attempt = spans.find(span => span.name === "task.execution_attempt")!;
+      expect(attempt).toBeDefined();
+      for (const name of ["execution.usage_startup", "execution.mcp_handoff", "execution.dispatch_admission"]) {
+        const startup = spans.filter(span => span.name === name);
+        expect(startup).toHaveLength(1);
+        expect(startup[0].parentSpanContext?.spanId).toBe(attempt.spanContext().spanId);
+      }
+      const copyback = spans.filter(span => span.name === "execution.workspace_restore");
+      const commit = spans.filter(span => span.name === "execution.workspace_commit");
+      expect(copyback).toHaveLength(1);
+      expect(commit).toHaveLength(1);
+      const finalization = spans.find(span => span.name === "execution.workspace_finalize")!;
+      expect(finalization).toBeDefined();
+      for (const child of [...copyback, ...commit]) expect(child.parentSpanContext?.spanId).toBe(finalization.spanContext().spanId);
+    } finally {
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
+      trace.disable();
+      await provider.shutdown();
+    }
+  });
+
+  it.each([false, true])("ends admission timing without losing later provider spans (native: %s)", async native => {
+    const { input, adapter, run } = await fixture(native);
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+    let release!: (result: Awaited<ReturnType<typeof executePaperclipNativeSession>>) => void;
+    const providerResult = new Promise<Awaited<ReturnType<typeof executePaperclipNativeSession>>>(resolve => { release = resolve; });
+    const providerWork = async () => {
+      const result = await providerResult;
+      await createRunPreparationTiming(run.id, "native.controller")("coordinator_release", async () => {});
+      return result;
+    };
+    if (native) vi.mocked(executePaperclipNativeSession).mockImplementationOnce(providerWork);
+    else adapter.execute.mockImplementationOnce(providerWork);
+    const running = withRunExecutionTiming(run.id, () => executeHeartbeatRuntime(db, input));
+    try {
+      await vi.waitFor(() => {
+        expect(exporter.getFinishedSpans().filter(span => span.name === "execution.dispatch_admission")).toHaveLength(1);
+      }, { timeout: 5_000 });
+      expect(native ? executePaperclipNativeSession : adapter.execute).toHaveBeenCalledOnce();
+      expect(exporter.getFinishedSpans().find(span => span.name === "task.execution_attempt")).toBeUndefined();
+      expect(await finalizations()).toHaveLength(0);
+      release({ exitCode: 0, signal: null, timedOut: false });
+      await running;
+      const spans = exporter.getFinishedSpans();
+      const attempt = spans.find(span => span.name === "task.execution_attempt")!;
+      const later = spans.filter(span => span.name === "native.controller.coordinator_release");
+      expect(later).toHaveLength(1);
+      expect(later[0].spanContext().traceId).toBe(attempt.spanContext().traceId);
+      expect(later[0].parentSpanContext?.spanId).toBe(attempt.spanContext().spanId);
+    } finally {
+      release({ exitCode: 0, signal: null, timedOut: false });
+      await running;
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
+      trace.disable();
+      await provider.shutdown();
+    }
+  });
+
+  it.each(["codex", "grok_bot", "openai_dot"] as const)("retains user files only when %s can access the workspace after a dispatch failure", async provider => {
+    const { input, run } = await fixture(true, provider);
+    input.workspace.nativeWorkspaceSync = {
+      mode: "host_current",
+      reference: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: run.id, leaseId: randomUUID(), providerLeaseId: "sandbox", remoteCwd: "/workspace", resourceDisposition: "destroy" },
+      restoreWorkspace: vi.fn(), cleanup: vi.fn(),
+    };
+    const error = new Error("runner_remote_process_identity_unavailable");
+    vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    input.instructions.releaseInstructionCopy = vi.fn(async () => {
+      if (provider === "codex") expect(input.effects.onProviderResourceDisposition).toHaveBeenCalledWith("stop_and_retain");
+      else expect(input.effects.onProviderResourceDisposition).not.toHaveBeenCalledWith("stop_and_retain");
+    });
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    expect(input.workspace.nativeWorkspaceSync.restoreWorkspace).not.toHaveBeenCalled();
+    expectCleanup(input);
   });
 
   it("records a failed barrier if the successful finalization write fails", async () => {

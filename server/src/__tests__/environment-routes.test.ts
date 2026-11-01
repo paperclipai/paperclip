@@ -129,6 +129,8 @@ vi.mock("../services/plugin-environment-driver.js", () => ({
   REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema: async (input: { db: unknown; driverKey: string }) =>
+    (await mockResolvePluginSandboxProviderDriverByKey(input))?.driver?.configSchema ?? null,
   startPluginEnvironmentInteractiveSetup: mockStartPluginEnvironmentInteractiveSetup,
   getPluginEnvironmentInteractiveSetup: mockGetPluginEnvironmentInteractiveSetup,
   capturePluginEnvironmentTemplate: mockCapturePluginEnvironmentTemplate,

@@ -50,6 +50,8 @@ export interface SandboxOrphanCleanupSpool {
    * failure and skips a malformed file.
    */
   load(): Promise<DeferredOrphanCleanupRecord[]>;
+  /** Distinguish empty storage from unread work without discarding readable records. */
+  loadWithStatus?(): Promise<{ records: DeferredOrphanCleanupRecord[]; readFailed: boolean }>;
   /**
    * Remove one persisted orphan record after its durable `pending_cleanup` row
    * lands. The removal runs after the database insert succeeds, so a crash
@@ -143,6 +145,29 @@ export function createSandboxOrphanCleanupSpool(spoolDir?: string): SandboxOrpha
   const dir = spoolDir ?? idleOrphanSpoolPath();
   registerIdleSpoolDirectory(dir);
 
+  async function loadWithStatus() {
+    let names: string[];
+    try { names = await fs.readdir(dir); }
+    catch (error) {
+      return { records: [], readFailed: (error as NodeJS.ErrnoException).code !== "ENOENT" };
+    }
+    const records: DeferredOrphanCleanupRecord[] = [];
+    let readFailed = false;
+    for (const name of names) {
+      if (!name.endsWith(RECORD_FILE_SUFFIX)) continue;
+      try {
+        const parsed: unknown = JSON.parse(await fs.readFile(path.join(dir, name), "utf8"));
+        if (isDeferredOrphanCleanupRecord(parsed)) records.push(parsed);
+        else readFailed = true;
+      } catch (error) {
+        // A concurrent successful flush can remove a listed record. Other read
+        // failures and malformed records remain unresolved cleanup obligations.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") readFailed = true;
+      }
+    }
+    return { records, readFailed };
+  }
+
   return {
     async append(record) {
       const absPath = path.join(dir, recordFileName(record));
@@ -158,31 +183,8 @@ export function createSandboxOrphanCleanupSpool(spoolDir?: string): SandboxOrpha
       }
     },
 
-    async load() {
-      let names: string[];
-      try {
-        names = await fs.readdir(dir);
-      } catch {
-        // The directory does not exist yet, or the read failed. Either way, no
-        // record waits on the disk.
-        return [];
-      }
-      const records: DeferredOrphanCleanupRecord[] = [];
-      for (const name of names) {
-        if (!name.endsWith(RECORD_FILE_SUFFIX)) continue;
-        try {
-          const raw = await fs.readFile(path.join(dir, name), "utf8");
-          const parsed: unknown = JSON.parse(raw);
-          if (isDeferredOrphanCleanupRecord(parsed)) {
-            records.push(parsed);
-          }
-        } catch {
-          // Skip a malformed or unreadable file. A partial file cannot authorize
-          // a teardown, so the load ignores it and keeps the other records.
-        }
-      }
-      return records;
-    },
+    async load() { return (await loadWithStatus()).records; },
+    loadWithStatus,
 
     async remove(record) {
       const absPath = path.join(dir, recordFileName(record));

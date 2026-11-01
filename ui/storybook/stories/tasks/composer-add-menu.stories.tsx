@@ -115,6 +115,14 @@ const meta = {
     layout: "fullscreen",
     options: { showPanel: false },
     docs: { description: { component: "The production task composer. The Add menu opens upward on desktop and as a dialog on mobile for files, supported goals, Plan mode, and Ask mode. Plan and Ask are exclusive; selecting a mode shows a removable chip. Cmd+. cycles standard, Plan, and Ask. Mobile stories include capsule agent avatars and the actual bottom navigation." } },
+    paperclip: {
+      "capabilities": [
+        "tasks/create"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
   args: { initialMode: "standard", goalAvailable: true, mobile: false, mobileContext: false, fullBleedMobileContext: false },
 } satisfies Meta<typeof ComposerAddStory>;

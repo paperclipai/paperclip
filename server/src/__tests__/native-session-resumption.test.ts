@@ -1,3 +1,4 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -8,12 +9,14 @@ import { eq, inArray } from "drizzle-orm";
 import {
   activityLog,
   agentWakeupRequests,
+  agentTaskSessions,
   agents,
   companies,
   authUsers,
   companyMemberships,
   completionContracts,
   createDb,
+  closeRegisteredClients,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -77,7 +80,11 @@ vi.mock("../sentry.js", async () => {
   return { ...actual, captureRunFailure: mockCaptureRunFailure };
 });
 
+import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
+import { issueService } from "../services/issues.js";
+import * as heartbeatWorkspaces from "../services/heartbeat/workspaces.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
 describe("P6-25 pre-result native session recovery", () => {
@@ -94,6 +101,9 @@ describe("P6-25 pre-result native session recovery", () => {
   const bootstrapRetryRunId = "79000000-0000-4000-8000-000000000009";
   const observedExpiredRunId = "79000000-0000-4000-8000-000000000010";
   const observedLivePidRunId = "79000000-0000-4000-8000-000000000011";
+  const fixtureRunIds = [runId, cancelledRunId, exhaustedRunId, missingCheckpointRunId,
+    initialRunId, bootstrapRetryRunId, observedExpiredRunId, observedLivePidRunId];
+  const issueForRun = (id: string) => id === runId ? issueId : id;
   const persistedProfile = {
     mode: "native",
     nativeExecutionInput: { schema: "paperclip.native-execution-input.v1", binding: { runId } },
@@ -117,14 +127,10 @@ describe("P6-25 pre-result native session recovery", () => {
       adapterType: "codex_local",
       status: "running",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Resume the same native run",
-      status: "in_progress",
-      assigneeAgentId: agentId,
-      workMode: "standard",
-    });
+    await db.insert(issues).values(fixtureRunIds.map(id => ({
+      id: issueForRun(id), companyId, title: "Resume the same native run",
+      status: "in_progress", assigneeAgentId: agentId, workMode: "standard" as const,
+    })));
     await db.insert(heartbeatRuns).values([
       {
         id: runId,
@@ -229,7 +235,10 @@ describe("P6-25 pre-result native session recovery", () => {
         },
         contextSnapshot: { issueId },
       })),
-    ]);
+    ].map(run => ({ ...run, runtimeMode: "native" as const,
+      nativeIssueId: issueForRun(run.id), contextSnapshot: { issueId: issueForRun(run.id) },
+    })));
+
     await db.insert(nativeRunFinalizations).values([
       { runId, companyId, issueId, phase: "retryable_failure", attempt: 1, nextAttemptAt: new Date(0) },
       { runId: cancelledRunId, companyId, issueId, phase: "retryable_failure", attempt: 1, nextAttemptAt: new Date(0) },
@@ -262,7 +271,10 @@ describe("P6-25 pre-result native session recovery", () => {
         leaseOwner: "prior-native-owner",
         leaseExpiresAt: new Date(0),
       })),
-    ]);
+    ].map(value => ({ ...value, issueId: issueForRun(value.runId),
+      phase: value.phase as typeof nativeRunFinalizations.$inferInsert.phase,
+    })));
+
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => temporary?.cleanup());
@@ -275,12 +287,15 @@ describe("P6-25 pre-result native session recovery", () => {
     );
     const eligibleRunId = "79100000-0000-4000-8000-000000000099";
     const candidateRunIds = [...heldRunIds, eligibleRunId];
+    await db.insert(issues).values(candidateRunIds.map(id => ({
+      id, companyId, title: "Independent recovery candidate", status: "in_progress", assigneeAgentId: agentId,
+    })));
     await db.insert(heartbeatRuns).values(
       candidateRunIds.map((candidateRunId) => ({
         id: candidateRunId,
         companyId,
         agentId,
-        nativeIssueId: issueId,
+        nativeIssueId: candidateRunId,
         status: "running",
         runtimeMode: "native",
         nativePhase:
@@ -308,7 +323,7 @@ describe("P6-25 pre-result native session recovery", () => {
       candidateRunIds.map((candidateRunId) => ({
         runId: candidateRunId,
         companyId,
-        issueId,
+        issueId: candidateRunId,
         phase: "retryable_failure",
         attempt: 1,
         nextAttemptAt: new Date(0),
@@ -340,12 +355,14 @@ describe("P6-25 pre-result native session recovery", () => {
         ),
       ).toBe(true);
     } finally {
+      await db.delete(heartbeatRunEvents).where(inArray(heartbeatRunEvents.runId, candidateRunIds));
       await db
         .delete(nativeRunFinalizations)
         .where(inArray(nativeRunFinalizations.runId, candidateRunIds));
       await db
         .delete(heartbeatRuns)
         .where(inArray(heartbeatRuns.id, candidateRunIds));
+      await db.delete(issues).where(inArray(issues.id, candidateRunIds));
     }
   });
 
@@ -522,7 +539,7 @@ describe("P6-25 pre-result native session recovery", () => {
       expect.objectContaining({ phase: "terminal_failure", failureCode: "native_session_interrupted" }),
     ]);
     await expect(db.select().from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, issueId))).resolves.toEqual([
+      .where(eq(issueRecoveryActions.sourceIssueId, missingCheckpointRunId))).resolves.toEqual([
       expect.objectContaining({ cause: "native_session_interrupted", wakePolicy: null }),
     ]);
   });
@@ -541,11 +558,13 @@ describe("P6-25 pre-result native session recovery", () => {
 
   it("sends exactly one Sentry event when a sweep resolves a run from running to failed", async () => {
     const freshRunId = "79000000-0000-4000-8000-000000000101";
+    await db.insert(issues).values({ id: freshRunId, companyId, title: "Independent failure report",
+      status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({
       id: freshRunId,
       companyId,
       agentId,
-      nativeIssueId: issueId,
+      nativeIssueId: freshRunId,
       status: "running",
       runtimeMode: "native",
       runtimeModeResolvedAt: new Date(),
@@ -555,12 +574,12 @@ describe("P6-25 pre-result native session recovery", () => {
           binding: { runId: freshRunId },
         },
       },
-      contextSnapshot: { issueId },
+      contextSnapshot: { issueId: freshRunId },
     });
     await db.insert(nativeRunFinalizations).values({
       runId: freshRunId,
       companyId,
-      issueId,
+      issueId: freshRunId,
       phase: "retryable_failure",
       attempt: 1,
     });
@@ -577,11 +596,13 @@ describe("P6-25 pre-result native session recovery", () => {
 
   it("sends no Sentry event when a sweep finds a run that is already failed", async () => {
     const freshRunId = "79000000-0000-4000-8000-000000000102";
+    await db.insert(issues).values({ id: freshRunId, companyId, title: "Independent failure report",
+      status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({
       id: freshRunId,
       companyId,
       agentId,
-      nativeIssueId: issueId,
+      nativeIssueId: freshRunId,
       status: "failed",
       runtimeMode: "native",
       runtimeModeResolvedAt: new Date(),
@@ -591,12 +612,12 @@ describe("P6-25 pre-result native session recovery", () => {
           binding: { runId: freshRunId },
         },
       },
-      contextSnapshot: { issueId },
+      contextSnapshot: { issueId: freshRunId },
     });
     await db.insert(nativeRunFinalizations).values({
       runId: freshRunId,
       companyId,
-      issueId,
+      issueId: freshRunId,
       phase: "retryable_failure",
       attempt: 1,
     });
@@ -606,6 +627,46 @@ describe("P6-25 pre-result native session recovery", () => {
     await waitForPendingRunFailureReports();
 
     expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(0);
+  });
+
+  it("sends one Sentry event when a sweep ends an unreported pending retry", async () => {
+    const freshRunId = "79000000-0000-4000-8000-000000000103";
+    await db.insert(issues).values({ id: freshRunId, companyId, title: "Independent failure report",
+      status: "in_progress", assigneeAgentId: agentId });
+    // The executor stores a scheduled same-run retry as failed + retryable_failure,
+    // and reportRunFailure skips that write. The sweep's terminal write reports it.
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      nativeIssueId: freshRunId,
+      status: "failed",
+      nativePhase: "retryable_failure",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      runnerProfileJson: {
+        nativeExecutionInput: {
+          ...persistedProfile.nativeExecutionInput,
+          binding: { runId: freshRunId },
+        },
+      },
+      contextSnapshot: { issueId: freshRunId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId: freshRunId,
+      companyId,
+      issueId: freshRunId,
+      phase: "retryable_failure",
+      attempt: 1,
+    });
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
+    await waitForPendingRunFailureReports();
+
+    const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
+    expect(newCaptures).toHaveLength(1);
+    expect(newCaptures[0]?.[0]).toMatchObject({ runId: freshRunId, runStatus: "failed" });
   });
 });
 
@@ -988,13 +1049,10 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
       );
       await once(staleProviderProcess, "spawn");
       expect(staleProviderProcess.pid).toEqual(expect.any(Number));
-      await db
-        .update(heartbeatRuns)
-        .set({
-          processPid: staleProviderProcess.pid!,
-          processStartedAt: new Date("2026-08-09T04:00:00.000Z"),
-        })
-        .where(eq(heartbeatRuns.id, runId));
+      await persistHeartbeatRunProcessMetadata(db, runId, {
+        pid: staleProviderProcess.pid!, processGroupId: null,
+        startedAt: new Date("2026-08-09T04:00:00.000Z").toISOString(), targetKind: "local",
+      });
       const factoryInputs: NativeExecutionInput[] = [];
       const freshStartTurn = vi.fn<NativeSession["startTurn"]>();
       const freshBackend = (
@@ -1457,3 +1515,167 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
     }, 30_000);
   },
 );
+
+
+
+describe("goal-less native task-session publication", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+  let db: ReturnType<typeof createDb>;
+  beforeAll(async () => {
+    const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
+    if (external) db = createDb(external);
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-native-pointer-");
+      db = createDb(database.connectionString);
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+  afterAll(async () => {
+    await closeRegisteredClients(process.env.PAPERCLIP_TEST_DATABASE_URL ?? database!.connectionString);
+    await database?.cleanup();
+  });
+
+  it.each(["retained", "reset"] as const)("publishes the completed task session before provider cleanup and resumes an ordinary comment (%s)", async mode => {
+    const home = createIsolatedTestHome();
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = home.home;
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const issuePrefix = `NPT${companyId.slice(0, 6).toUpperCase()}`;
+    const projectId = randomUUID(), projectWorkspaceId = randomUUID(), workProductId = randomUUID();
+    let providerSessionId: string | undefined;
+    const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+    const evidenceRef = `work_product:${workProductId}`;
+    const inputs: NativeExecutionInput[] = [];
+    const configs: Record<string, unknown>[] = [];
+    const buildMetadata = heartbeatWorkspaces.buildEffectiveRunSessionConfigMetadata;
+    const configuration = vi.spyOn(heartbeatWorkspaces, "buildEffectiveRunSessionConfigMetadata").mockImplementation(input => {
+      configs.push(structuredClone(input.effectiveAdapterConfig));
+      return buildMetadata(input);
+    });
+    const openSession = vi.fn(), recoverSession = vi.fn(), startTurn = vi.fn();
+    let releaseClose!: () => void, notifyClose!: () => void;
+    const closeHeld = new Promise<void>(resolve => { releaseClose = resolve; });
+    const closeEntered = new Promise<void>(resolve => { notifyClose = resolve; });
+    let firstRunId: string | undefined;
+    const backendFactory = (execution: NativeExecutionInput): NativeSessionBackend => {
+      inputs.push(structuredClone(execution));
+      firstRunId ??= execution.binding.runId;
+      const currentRunId = execution.binding.runId;
+      const currentProviderSessionId = `provider-${execution.session.normalizedSessionId}`;
+      providerSessionId ??= currentProviderSessionId;
+      const turnId = `turn-${currentRunId}`;
+      const identity = { companyId, agentId, issueId, runId: currentRunId, sessionId: execution.session.normalizedSessionId };
+      const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
+      result.completionClaim.contractRevision = execution.completionContract.contract.revision;
+      result.completionClaim.criteria = execution.completionContract.contract.criteria.map(criterion => ({
+        ...result.completionClaim.criteria[0]!, criterionId: criterion.id, evidenceRefs: [evidenceRef],
+      }));
+      result.evidence = [{ kind: "work_product", ref: evidenceRef }];
+      result.verification[0]!.artifactRef = evidenceRef;
+      let started!: () => void;
+      const turnStarted = new Promise<void>(resolve => { started = resolve; });
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+        async *events() {
+          await turnStarted;
+          const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, currentRunId));
+          yield { schema: "paperclip.prp.event.v1", sourceEventId: `${currentRunId}:terminal`, sourceSeq: 1,
+            sourceInstanceId: run.runnerInstanceId!, sourceKind: "runner", runId: currentRunId,
+            normalizedSessionId: identity.sessionId, turnId, eventType: "turn.completed", schemaVersion: 1,
+            priority: 0, emittedAt: new Date().toISOString(), payload: {} } satisfies PrpEvent;
+        },
+        async startTurn(input) { startTurn(input); started(); return { turnId }; },
+        async result() { await turnStarted; return { result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId }; },
+        async snapshot() { return { backendKind: "mock", sessionId: "driver-retained", identity, providerSessionId: currentProviderSessionId,
+          activeTurnId: null, pendingRuntimeRequests: [], lineage: [], cursor: "1" }; },
+        async close() { if (currentRunId === firstRunId) { notifyClose(); await closeHeld; } },
+      };
+      return {
+        async descriptor() { return { kind: "mock", name: "task-pointer-backend", version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+          runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }; },
+        async openSession(input) { openSession(input); return session; },
+        async recoverSession(snapshot) { recoverSession(snapshot); expect(snapshot.providerSessionId).toBe(currentProviderSessionId);
+          return { recovered: true, session }; },
+      };
+    };
+    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: backendFactory });
+    try {
+      await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
+      await db.insert(authUsers).values({ id: "pointer-user", name: "Pointer user", email: "pointer@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await db.insert(companies).values({ id: companyId, name: "Native pointer", issuePrefix, status: "active", defaultResponsibleUserId: "pointer-user" });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "pointer-user", status: "active", membershipRole: "member" });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Pointer project", status: "active" });
+      await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId, projectId, name: "Pointer workspace", cwd: repoRoot, isPrimary: true });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Pointer agent", adapterType: "paperclip_runner", status: "active",
+        adapterConfig: { provider: "codex", workspaceStrategy: { type: "project_primary" } },
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+      await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId, issueNumber: 1,
+        identifier: `${issuePrefix}-1`, title: "Deliver the saved artifact", status: "in_progress", assigneeAgentId: agentId, workMode: "standard",
+        // Declare the shared mode up front, as the normal profile does. The
+        // first workspace otherwise materializes this setting and legitimately
+        // changes the effective adapter strategy before the next admission.
+        executionWorkspaceSettings: { mode: "shared_workspace" } });
+      await db.insert(issueWorkProducts).values({ id: workProductId, companyId, issueId, type: "artifact", provider: "paperclip",
+        title: "Saved artifact", status: "ready_for_review", reviewState: "approved" });
+      const first = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId }, contextSnapshot: { issueId, taskId: issueId, skipIssueComment: true } });
+      expect(first).not.toBeNull();
+      await closeEntered;
+      const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first!.id));
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, first!.id))).toHaveLength(1);
+      expect(persisted.runnerProfileJson?.sessionCheckpoint).toMatchObject({ identity: { sessionId: persisted.nativeSessionId },
+        providerSessionId, semanticResult: expect.any(Object), terminal: { runTerminalState: "succeeded" } });
+      const pointer = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, agentId));
+      expect(pointer).toEqual([expect.objectContaining({ lastRunId: first!.id,
+        sessionParamsJson: expect.objectContaining({ sessionId: persisted.nativeSessionId }), sessionDisplayId: providerSessionId })]);
+      if (mode === "reset") {
+        expect(await heartbeat.resetRuntimeSession(agentId, { taskKey: issueId })).toMatchObject({ clearedTaskSessions: 1 });
+        expect(await heartbeat.listTaskSessions(agentId)).toEqual([]);
+      }
+      releaseClose();
+      await heartbeat.drainActiveRunExecutions();
+      if (mode === "reset") expect(await heartbeat.listTaskSessions(agentId)).toEqual([]);
+      // The normal comment route reopens a completed task before its user wake.
+      // Use those public services; a raw comment on a still-done task is stale.
+      const issuesSvc = issueService(db);
+      await issuesSvc.update(issueId, { status: "todo", actorUserId: "pointer-user" });
+      const comment = await issuesSvc.addComment(issueId, "Continue using the saved artifact.", { userId: "pointer-user" });
+      const second = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
+        requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId, commentId: comment.id, mutation: "comment", reopenedFrom: "done" },
+        contextSnapshot: { issueId, taskId: issueId, wakeCommentId: comment.id, reopenedFrom: "done", skipIssueComment: true } });
+      expect(second).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const after = await heartbeat.getRun(second!.id);
+      expect(after?.status).toBe("succeeded");
+      expect(inputs).toHaveLength(2);
+      if (mode === "retained") {
+        const changedKeys = [...new Set(configs.flatMap(config => Object.keys(config)))].filter(key =>
+          JSON.stringify(configs[0]?.[key]) !== JSON.stringify(configs.at(-1)?.[key]));
+        expect(changedKeys).toEqual([]);
+        expect(after).toMatchObject({ nativeSessionId: persisted.nativeSessionId, sessionIdAfter: providerSessionId });
+        expect(openSession).toHaveBeenCalledOnce();
+        expect(recoverSession).toHaveBeenCalledOnce();
+      } else {
+        expect(after?.nativeSessionId).not.toBe(persisted.nativeSessionId);
+        expect(after?.sessionIdAfter).not.toBe(providerSessionId);
+        expect(openSession).toHaveBeenCalledTimes(2);
+        expect(recoverSession).not.toHaveBeenCalled();
+      }
+      expect(startTurn).toHaveBeenCalledTimes(2);
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, second!.id))).toHaveLength(1);
+    } finally {
+      releaseClose();
+      try {
+        await heartbeat.drainActiveRunExecutions();
+      } finally {
+        configuration.mockRestore();
+        if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+        else process.env.PAPERCLIP_HOME = previousHome;
+        home.cleanup();
+      }
+    }
+  }, 30_000);
+});
+
+enableRunFailureReporting();

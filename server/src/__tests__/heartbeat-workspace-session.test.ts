@@ -44,7 +44,6 @@ import {
   normalizeSessionParams,
   isTaskSessionCredentialCompatible,
   shouldResetTaskSessionForWake,
-  scrubGitCredentialText,
   buildAnchorFallbackWorkspaceNotes,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -943,45 +942,6 @@ describe("assertGitWorktreeBaseWorkspaceReady", () => {
         repoRef: null,
       },
     })).resolves.toBeUndefined();
-  });
-});
-
-describe("scrubGitCredentialText", () => {
-  it("masks URL userinfo including tokens", () => {
-    expect(scrubGitCredentialText(
-      'fatal: unable to access "https://x-access-token:ghp_abc123@github.com/example/repo.git"',
-    )).toBe('fatal: unable to access "https://***@github.com/example/repo.git"');
-  });
-
-  it("masks bare-username userinfo and multiple occurrences", () => {
-    expect(scrubGitCredentialText(
-      "clone https://alice@github.com/a.git then http://token@internal.example/b.git",
-    )).toBe("clone https://***@github.com/a.git then http://***@internal.example/b.git");
-  });
-
-  it("masks userinfo on non-HTTP schemes, leaving scp-style remotes alone", () => {
-    expect(scrubGitCredentialText(
-      "fatal: cannot clone ssh://deploy:hunter2@internal.example/repo.git or git+ssh://bob@host/x.git",
-    )).toBe("fatal: cannot clone ssh://***@internal.example/repo.git or git+ssh://***@host/x.git");
-    expect(scrubGitCredentialText("fetch from git@github.com:example/repo.git failed")).toBe(
-      "fetch from git@github.com:example/repo.git failed",
-    );
-  });
-
-  it("masks entire URL query strings regardless of parameter names", () => {
-    expect(scrubGitCredentialText(
-      "fatal: unable to access 'https://github.com/example/repo.git?access_token=ghs_secret&ref=main'",
-    )).toBe("fatal: unable to access 'https://github.com/example/repo.git?***'");
-    expect(scrubGitCredentialText(
-      "clone https://gitlab.example/repo.git?anything=glpat-123 failed",
-    )).toBe("clone https://gitlab.example/repo.git?*** failed");
-  });
-
-  it("leaves credential-free text unchanged", () => {
-    const text = 'Failed to clone "https://github.com/example/repo.git": exit code 128';
-    expect(scrubGitCredentialText(text)).toBe(text);
-    const plain = "git clone failed with exit code=128 at key step ref=main";
-    expect(scrubGitCredentialText(plain)).toBe(plain);
   });
 });
 
@@ -2460,6 +2420,57 @@ describe("effective run session config freshness", () => {
         configuredModel: "gpt-5.4-mini",
         taskSessionParams: sessionParamsWithConfigMetadata(base),
         configMetadata: workspaceChanged,
+      }),
+    ).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig"],
+    });
+  });
+
+  it.each([null, "2026-06-01T00:00:00.000Z"])("does not reset for project row timestamps (%s) but still resets for project policy", async (revision) => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: revision,
+        projectPolicy: null,
+      },
+    });
+    const projectTouched = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+        projectPolicy: null,
+      },
+    });
+    const policyChanged = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+      },
+    });
+
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: projectTouched,
+      }),
+    ).toMatchObject({
+      reset: false,
+      changedCategories: [],
+      reasons: [],
+    });
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: policyChanged,
       }),
     ).toMatchObject({
       reset: true,

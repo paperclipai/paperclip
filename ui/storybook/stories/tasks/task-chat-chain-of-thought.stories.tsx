@@ -162,7 +162,17 @@ const meta = {
   id: "tasks-task-chat-review-fixes",
   title: "Tasks and conversations/Task creation and lifecycle/Tasks/Task chat review fixes",
   component: ChainOfThoughtReview,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion",
+        "runs-adapters/runs"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 } satisfies Meta<typeof ChainOfThoughtReview>;
 
 export default meta;

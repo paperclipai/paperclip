@@ -100,6 +100,13 @@ const meta = {
           "Stalled reviews remain actionable in the Decisions queue after removing decision summaries from the issue header.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "task-coordination/signoff"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof AttentionQueueRow>;
 

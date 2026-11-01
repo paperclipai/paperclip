@@ -64,6 +64,14 @@ const meta = {
           "Shows local development recovery surfaces, including the restart-required banner and its manual restart action.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "instance-operations/server-service"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The recipe distinguishes process liveness from authenticated database readiness; these examples do not exercise that operator API boundary."
+    },
   },
 } satisfies Meta<typeof DevOpsSurfacesStory>;
 

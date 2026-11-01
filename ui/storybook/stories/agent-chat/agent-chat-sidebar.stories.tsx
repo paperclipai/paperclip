@@ -8,7 +8,17 @@ const meta = {
   component: AgentChatPrototype,
   parameters: { layout: "fullscreen", docs: { description: { component:
     "The production chat sidebar and pages inside the real Paperclip Layout, including the existing transcript, composer, and context panel. Click Chat to see the landing page, search by name or role, or use + to start or reopen an agent conversation. Each agent has one conversation; sends stay in this Storybook's in-memory fixtures."
-  } } },
+  } },
+    paperclip: {
+      "capabilities": [
+        "agent-chat/discovery",
+        "agent-chat/history"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Wrapper mounts production Layout and AgentChat; conversation selection and sends use in-memory routes. Directory name is not prototype evidence."
+    },
+  },
   args: { sidebarScenario: "conversation", scenario: "returning", contextInitiallyOpen: false },
   render: args => <AgentChatPrototype key={JSON.stringify(args)} {...args} />,
 } satisfies Meta<typeof AgentChatPrototype>;

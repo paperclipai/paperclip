@@ -150,6 +150,17 @@ const meta = {
     layout: "fullscreen",
     options: { showPanel: false },
     docs: { description: { component: "The production task interaction card and composer shown together. Dismissed questions do not contribute a composer pending indicator; other unresolved inputs retain one. Skip or a decision resolves the card. This local composition does not model persisted dismissal or the thread's history entry; use Task Chat Unanswered Questions for that fixture journey." } },
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/questions",
+        "questions-and-approvals/confirmations",
+        "questions-and-approvals/audience"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Corrected local dismissal/send harness: questions leave no pending badge; confirmations retain reopen. Production cards/composer; persisted dismissal is covered separately by unanswered-question fixtures."
+    },
   },
   args: { interaction: pendingAskUserQuestionsInteraction, mobile: false },
 } satisfies Meta<typeof InteractionAboveComposer>;

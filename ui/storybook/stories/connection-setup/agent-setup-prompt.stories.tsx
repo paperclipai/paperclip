@@ -29,6 +29,14 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "A reusable handoff to an agent. Hover or focus to fan out the logos, click once to copy the prompt and open its preview. Logos travel into the preview; clipboard success stays in place. Supports reduced motion, keyboard dismissal, and manual copying when clipboard access fails. The default story copies the complete production Slack setup prompt." } },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/channel-setup",
+        "gateways-profiles/client-connect"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
   args: {
     prompt: slackPrompt,

@@ -1,4 +1,4 @@
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import type { Issue, IssueStatus, IssueSummary } from "@paperclipai/shared";
 
 export const RECENT_TASKS_LIMIT = 5;
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";
@@ -104,7 +104,7 @@ export function writeRecentTasks(storageKey: string, entries: RecentTaskEntry[])
   publishRecentTasks(storageKey, bounded);
 }
 
-type TaskSnapshot = Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "externalConversationState" | "updatedAt">;
+type TaskSnapshot = Omit<IssueSummary, "externalConversationState"> & Pick<Issue, "externalConversationState">;
 
 export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnapshot): RecentTaskEntry {
   if (entry.id !== issue.id || entry.companyId !== issue.companyId) return entry;

@@ -491,7 +491,16 @@ const meta: Meta<typeof Queue> = {
   id: "pages-decisions",
   title: "Tasks and conversations/Inbox, decisions, and search/Pages/Decisions",
   component: Queue,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "inbox-search/decisions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 };
 export default meta;
 

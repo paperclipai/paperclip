@@ -340,8 +340,117 @@ function createRecordingTraceContext(): {
   return { traceContext, spans };
 }
 
+function sandboxSpec(
+  sandboxId: string,
+  remoteCwd: string,
+): Parameters<typeof prepareSandboxManagedRuntime>[0]["spec"] {
+  return {
+    transport: "sandbox",
+    provider: "test",
+    sandboxId,
+    remoteCwd,
+    timeoutMs: 30_000,
+    apiKey: null,
+  };
+}
+
+function sandboxRuntimeInput(
+  spec: Parameters<typeof prepareSandboxManagedRuntime>[0]["spec"],
+  adapterKey: string,
+  client: SandboxManagedRuntimeClient,
+  workspaceLocalDir: string,
+): Parameters<typeof prepareSandboxManagedRuntime>[0] {
+  return {
+    spec,
+    adapterKey,
+    client,
+    workspaceLocalDir,
+  };
+}
+
+function plainFilesystemClient(): SandboxManagedRuntimeClient {
+  return {
+    makeDir: async (remotePath) => {
+      await mkdir(remotePath, { recursive: true });
+    },
+    writeFile: async (remotePath, bytes) => {
+      await mkdir(path.dirname(remotePath), { recursive: true });
+      await writeFile(remotePath, Buffer.from(bytes));
+    },
+    readFile: async (remotePath) => await readFile(remotePath),
+    listFiles: async () => [],
+    remove: async (remotePath) => {
+      await rm(remotePath, { recursive: true, force: true });
+    },
+    run: async (command) => {
+      await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+    },
+  };
+}
+
+function recordingFilesystemClient(
+  directWrites: string[],
+  directRuns: string[],
+): SandboxManagedRuntimeClient {
+  return {
+    makeDir: async (remotePath) => {
+      await mkdir(remotePath, { recursive: true });
+    },
+    writeFile: async (remotePath, bytes) => {
+      directWrites.push(remotePath);
+      await mkdir(path.dirname(remotePath), { recursive: true });
+      await writeFile(remotePath, Buffer.from(bytes));
+    },
+    readFile: async (remotePath) => await readFile(remotePath),
+    listFiles: async () => [],
+    remove: async (remotePath) => {
+      await rm(remotePath, { recursive: true, force: true });
+    },
+    run: async (command) => {
+      directRuns.push(command);
+      await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+    },
+  };
+}
+
 describe("sandbox managed runtime", () => {
   const cleanupDirs: string[] = [];
+
+  it.each([
+    { isolation: undefined, detect: false },
+    { isolation: undefined, detect: true },
+    { isolation: "worker" as const, detect: false },
+    { isolation: "worker" as const, detect: true },
+  ])("keeps snapshot workers opt-in through command preparation: %j", async ({ isolation, detect }) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-snapshot-mode-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local"), remote = path.join(root, "remote");
+    await mkdir(local);
+    await writeFile(path.join(local, "file.txt"), "before");
+    const mergeDirectoryWithBaseline = restoreMerge.mergeDirectoryWithBaseline;
+    const capture = vi.spyOn(restoreMerge, "captureDirectorySnapshotOffThread")
+      .mockImplementation(restoreMerge.captureDirectorySnapshot);
+    const merge = vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline")
+      .mockImplementation(input => mergeDirectoryWithBaseline({ ...input, workspaceSnapshotIsolation: undefined }));
+    try {
+      const prepared = await prepareCommandManagedRuntime({
+        runner: makeInlineSpawnRunner(),
+        spec: { remoteCwd: remote, timeoutMs: 30_000 },
+        adapterKey: "test",
+        workspaceLocalDir: local,
+        workspaceSnapshotIsolation: isolation,
+        workspaceCheckpoint: true,
+        ...(detect ? { installCommand: "exit 99", detectCommand: "sh" } : {}),
+      });
+      expect(capture.mock.calls.length > 0).toBe(isolation === "worker");
+      expect(await readFile(path.join(remote, "file.txt"), "utf8")).toBe("before");
+      await writeFile(path.join(remote, "file.txt"), "after");
+      await prepared.restoreWorkspace();
+      expect(merge).toHaveBeenCalled();
+      expect(merge.mock.calls.every(([input]) => input.workspaceSnapshotIsolation === isolation)).toBe(true);
+      expect(await readFile(path.join(local, "file.txt"), "utf8")).toBe("after");
+    } finally { capture.mockRestore(); merge.mockRestore(); }
+  });
 
   it.each(["host_current", "adopt_remote", "durable_seed"] as const)("stages and restores both project repositories with independent Git histories (%s)", async (mode) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-multi-repo-"));
@@ -370,7 +479,7 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(local, secondPath, "host-config.txt"), "excluded by operator");
     const seed = { workspaceArchivePath: path.join(root, "workspace.tar"), gitArchivePath: path.join(root, "git.tar") };
     const input = {
-      spec: { transport: "sandbox", provider: "test", sandboxId: "two-repos", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      spec: sandboxSpec("two-repos", remote),
       client: makeFilesystemClient(), adapterKey: "test", workspaceLocalDir: local,
       workspaceDurableSeed: seed,
       workspaceExclude: [`${secondPath}/host-config.txt`],
@@ -441,17 +550,7 @@ describe("sandbox managed runtime", () => {
     const syncIn = vi.spyOn(client, "syncIn");
 
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-warm",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-warm", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       workspaceInboundMode: "adopt_remote",
     });
 
@@ -492,17 +591,7 @@ describe("sandbox managed runtime", () => {
     );
 
     const first = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-first",
-        remoteCwd: firstRemoteDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client: makeFilesystemClient(),
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-first", firstRemoteDir), "test-adapter", makeFilesystemClient(), localWorkspaceDir),
       workspaceInboundMode: "host_current",
       workspaceDurableSeed: durableSeed,
     });
@@ -519,17 +608,7 @@ describe("sandbox managed runtime", () => {
       "utf8",
     );
     await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-replacement",
-        remoteCwd: replacementRemoteDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client: makeFilesystemClient(),
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-replacement", replacementRemoteDir), "test-adapter", makeFilesystemClient(), localWorkspaceDir),
       workspaceInboundMode: "durable_seed",
       workspaceDurableSeed: durableSeed,
       workspaceBaseline: first.workspaceSyncSnapshot!.baseline,
@@ -671,17 +750,7 @@ describe("sandbox managed runtime", () => {
 
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       workspaceExclude: [".claude"],
       preserveAbsentOnRestore: [".claude"],
       onRuntimeProgress: async (status) => {
@@ -753,17 +822,7 @@ describe("sandbox managed runtime", () => {
 
     const lines: string[] = [];
     await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       onProgress: (line) => { lines.push(line); },
     });
 
@@ -792,17 +851,7 @@ describe("sandbox managed runtime", () => {
       const client = makeFilesystemClient();
       await expect(
         prepareSandboxManagedRuntime({
-          spec: {
-            transport: "sandbox",
-            provider: "test",
-            sandboxId: "sandbox-1",
-            remoteCwd: remoteWorkspaceDir,
-            timeoutMs: 30_000,
-            apiKey: null,
-          },
-          adapterKey: "test-adapter",
-          client,
-          workspaceLocalDir: localWorkspaceDir,
+          ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
           assets: [{ key: reservedKey, localDir: localAssetsDir }],
         }),
       ).rejects.toThrow(/collides with a reserved runtime archive name/);
@@ -828,17 +877,7 @@ describe("sandbox managed runtime", () => {
       const client = makeFilesystemClient();
       await expect(
         prepareSandboxManagedRuntime({
-          spec: {
-            transport: "sandbox",
-            provider: "test",
-            sandboxId: "sandbox-1",
-            remoteCwd: remoteWorkspaceDir,
-            timeoutMs: 30_000,
-            apiKey: null,
-          },
-          adapterKey: "test-adapter",
-          client,
-          workspaceLocalDir: localWorkspaceDir,
+          ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
           assets: [{ key: unsafeKey, localDir: localAssetsDir }],
         }),
       ).rejects.toThrow(/is not a simple path segment/);
@@ -868,12 +907,7 @@ describe("sandbox managed runtime", () => {
     await git(host, ["commit", "-am", "upstream"]);
     await git(host, ["checkout", "work"]);
 
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: { transport: "sandbox", provider: "test", sandboxId: "rebase", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
-      adapterKey: "test-adapter",
-      client: makeFilesystemClient(),
-      workspaceLocalDir: host,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("rebase", remote), "test-adapter", makeFilesystemClient(), host));
     await git(remote, ["config", "user.name", "Paperclip Test"]);
     await git(remote, ["config", "user.email", "test@paperclip.dev"]);
     await git(remote, ["fetch", "--unshallow", host, "+refs/heads/*:refs/remotes/source/*"]);
@@ -898,6 +932,50 @@ describe("sandbox managed runtime", () => {
     expect(await git(host, ["diff", "--cached", "--name-only"])).toBe("");
   });
 
+  it("restores a separately fetched shallow branch whose boundary the host lacks", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-shallow-restore-"));
+    cleanupDirs.push(root);
+    const host = path.join(root, "host");
+    const remote = path.join(root, "remote");
+    const origin = path.join(root, "origin");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "tracked.txt"), "base\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "base"]);
+    const baseline = await git(host, ["rev-parse", "HEAD"]);
+    await git(root, ["clone", host, origin]);
+    await git(origin, ["config", "user.name", "Paperclip Test"]);
+    await git(origin, ["config", "user.email", "test@paperclip.dev"]);
+    for (const content of ["published", "review fix"]) {
+      await writeFile(path.join(origin, "tracked.txt"), content);
+      await git(origin, ["commit", "-am", content]);
+    }
+    const publishedHead = await git(origin, ["rev-parse", "HEAD"]);
+    const prepared = await prepareSandboxManagedRuntime({
+      ...sandboxRuntimeInput(sandboxSpec("shallow", remote), "test-adapter", makeFilesystemClient(), host),
+      workspaceRestoreRetryDelaysMs: [],
+    });
+    // Like checking out a PR in a fresh task workspace: only its tip is fetched,
+    // and the sandbox still has its independent original shallow boundary.
+    await git(remote, ["fetch", "--depth=1", origin, publishedHead]);
+    await git(remote, ["checkout", "--detach", "FETCH_HEAD"]);
+    await writeFile(path.join(remote, "evidence.txt"), "saved result\n");
+    await writeFile(path.join(host, "local-only.txt"), "concurrent host work\n");
+
+    await prepared.restoreWorkspace();
+
+    expect(await readFile(path.join(host, "tracked.txt"), "utf8")).toBe("review fix");
+    expect(await readFile(path.join(host, "evidence.txt"), "utf8")).toBe("saved result\n");
+    expect(await readFile(path.join(host, "local-only.txt"), "utf8")).toBe("concurrent host work\n");
+    expect(await git(host, ["cat-file", "-t", publishedHead])).toBe("commit");
+    // Imported shallow history must not truncate the host's existing history.
+    expect(await git(host, ["rev-parse", "HEAD^"])).toBe(baseline);
+    expect(await git(host, ["fsck", "--connectivity-only"])).not.toContain("missing");
+  });
+
   it("restores a sandbox reset to an ancestor with the matching clean working tree", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-reset-"));
     cleanupDirs.push(rootDir);
@@ -915,12 +993,7 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(host, "tracked.txt"), "change to discard\n");
     await git(host, ["commit", "-am", "later change"]);
 
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: { transport: "sandbox", provider: "test", sandboxId: "reset", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
-      adapterKey: "test-adapter",
-      client: makeFilesystemClient(),
-      workspaceLocalDir: host,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("reset", remote), "test-adapter", makeFilesystemClient(), host));
     await git(remote, ["fetch", "--unshallow", host, "work"]);
     await git(remote, ["reset", "--hard", ancestor]);
 
@@ -1001,17 +1074,7 @@ describe("sandbox managed runtime", () => {
 
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       onRuntimeProgress: async (status) => {
         runtimeStatuses.push({ phase: status.phase, message: status.message });
         if (status.phase === "config_sync") {
@@ -1137,19 +1200,7 @@ describe("sandbox managed runtime", () => {
     };
 
     attachFallbackSyncIn(client);
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     expect(await git(remoteWorkspaceDir, ["status", "--short"])).toContain("D restored.txt");
     await git(remoteWorkspaceDir, ["reset", "--hard", "HEAD"]);
@@ -1256,19 +1307,7 @@ describe("sandbox managed runtime", () => {
     };
 
     attachFallbackSyncIn(client);
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     const workspaceUpload = uploadedTars.find((entry) => path.posix.basename(entry.remotePath) === "workspace-upload.tar");
     expect(workspaceUpload).toBeDefined();
@@ -1353,17 +1392,19 @@ describe("sandbox managed runtime", () => {
     let realpathSpy: ReturnType<typeof vi.spyOn> | undefined;
     try {
       const preparing = prepareSandboxManagedRuntime({
-        spec: {
-          transport: "sandbox",
-          provider: "test",
-          sandboxId: "sandbox-1",
-          remoteCwd: path.join(rootDir, "remote"),
-          timeoutMs: 30_000,
-          apiKey: null,
-        },
-        adapterKey: "test-adapter",
-        client,
-        workspaceLocalDir: workspaceInputDir,
+        ...sandboxRuntimeInput(
+          {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-1",
+            remoteCwd: path.join(rootDir, "remote"),
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          "test-adapter",
+          client,
+          workspaceInputDir,
+        ),
         onRuntimeProgress: async (status) => {
           if (status.phase !== "config_sync") return;
           if (change === "root_alias") return;
@@ -1448,19 +1489,7 @@ describe("sandbox managed runtime", () => {
     };
     attachFallbackSyncIn(client);
 
-    await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir,
-    });
+    await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, workspaceLocalDir));
 
     const workspaceUpload = uploadedTars.find((entry) => path.posix.basename(entry.remotePath) === "workspace-upload.tar");
     expect(workspaceUpload).toBeDefined();
@@ -1510,17 +1539,7 @@ describe("sandbox managed runtime", () => {
 
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       assets: [{ key: "skills", localDir: localAssetsDir }],
     });
 
@@ -1596,17 +1615,7 @@ describe("sandbox managed runtime", () => {
 
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "codex", client, localWorkspaceDir),
       assets: [{
         key: "home",
         localDir: homeDir,
@@ -1689,17 +1698,7 @@ describe("sandbox managed runtime", () => {
     const lines: string[] = [];
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       assets: [{ key: "skills", localDir: localAssetsDir }],
       onProgress: (line) => {
         lines.push(line);
@@ -1756,19 +1755,7 @@ describe("sandbox managed runtime", () => {
     };
 
     attachFallbackSyncIn(client);
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     await prepared.restoreWorkspace();
     expect(downloadedTars).toHaveLength(1);
@@ -1814,18 +1801,7 @@ describe("sandbox managed runtime", () => {
 
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-      // No `provision` / `restore` on the asset: it must ride the default path.
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       assets: [{ key: "plain", localDir: localAssetsDir }],
     });
 
@@ -1855,43 +1831,16 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
     await writeFile(path.join(localAssetsDir, "seed.txt"), "seed\n", "utf8");
 
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
-      },
-    };
+    const client: SandboxManagedRuntimeClient = plainFilesystemClient();
 
     // A minimal shell quoter local to the test's custom extract command; the seam
     // itself carries no adapter knowledge — the fake asset supplies everything.
     const q = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
     const restored: string[] = [];
-    const stagedContentSeen: string[] = [];
 
     attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "generic-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "generic-adapter", client, localWorkspaceDir),
       assets: [{
         key: "widget",
         localDir: localAssetsDir,
@@ -1915,7 +1864,6 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(prepared.assetDirs.widget, "seed.txt"), "utf8")).resolves.toBe("seed\n");
     // ...the staged helper file was written to the runtime root and consumed by the custom extract command.
     await expect(readFile(path.join(prepared.assetDirs.widget, "helper.copied.txt"), "utf8")).resolves.toBe("helper-bytes\n");
-    stagedContentSeen.push("provisioned");
 
     // Simulate the sandbox refreshing a file inside the asset dir, then restore.
     await writeFile(path.join(prepared.assetDirs.widget, "refreshed.txt"), "refreshed-by-sandbox\n", "utf8");
@@ -1923,7 +1871,6 @@ describe("sandbox managed runtime", () => {
 
     // restore contribution was invoked with a working remote readFile against assetDir.
     expect(restored).toEqual(["refreshed-by-sandbox\n"]);
-    expect(stagedContentSeen).toEqual(["provisioned"]);
   });
 
   it("rejects a provision stageFile.name that is not a simple basename", async () => {
@@ -1964,17 +1911,7 @@ describe("sandbox managed runtime", () => {
       writtenPaths.length = 0;
       await expect(
         prepareSandboxManagedRuntime({
-          spec: {
-            transport: "sandbox",
-            provider: "test",
-            sandboxId: "sandbox-1",
-            remoteCwd: remoteWorkspaceDir,
-            timeoutMs: 30_000,
-            apiKey: null,
-          },
-          adapterKey: "generic-adapter",
-          client,
-          workspaceLocalDir: localWorkspaceDir,
+          ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "generic-adapter", client, localWorkspaceDir),
           assets: [{
             key: "widget",
             localDir: localAssetsDir,
@@ -2005,41 +1942,13 @@ describe("sandbox managed runtime", () => {
     // must make NO direct `writeFile`/`run` exec. These record any leak.
     const directWrites: string[] = [];
     const directRuns: string[] = [];
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        directWrites.push(remotePath);
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        directRuns.push(command);
-        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
-      },
-    };
+    const client: SandboxManagedRuntimeClient = recordingFilesystemClient(directWrites, directRuns);
     const captured: SandboxSyncOperation[] = [];
     attachNativeRecordingSyncIn(client, captured);
 
     const q = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "generic-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "generic-adapter", client, localWorkspaceDir),
       assets: [{
         key: "widget",
         localDir: localAssetsDir,
@@ -2111,41 +2020,11 @@ describe("sandbox managed runtime", () => {
 
     const directWrites: string[] = [];
     const directRuns: string[] = [];
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        directWrites.push(remotePath);
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        directRuns.push(command);
-        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
-      },
-    };
+    const client: SandboxManagedRuntimeClient = recordingFilesystemClient(directWrites, directRuns);
     const captured: SandboxSyncOperation[] = [];
     attachNativeRecordingSyncIn(client, captured);
 
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     // Delegated entirely to syncIn.
     expect(directWrites).toEqual([]);
@@ -2174,62 +2053,6 @@ describe("sandbox managed runtime", () => {
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
-  it("the workspace wipe command preserves in-flight sync scratch tarballs (.paperclip-upload-*)", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-scratch-shape-"));
-    cleanupDirs.push(rootDir);
-    const sourceRepoDir = path.join(rootDir, "source-repo");
-    const localWorkspaceDir = path.join(rootDir, "local-workspace");
-    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
-    await mkdir(sourceRepoDir, { recursive: true });
-    await git(sourceRepoDir, ["init"]);
-    await git(sourceRepoDir, ["checkout", "-b", "main"]);
-    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
-    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
-    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
-    await git(sourceRepoDir, ["add", "tracked.txt"]);
-    await git(sourceRepoDir, ["commit", "-m", "base"]);
-    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
-
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
-      },
-    };
-    const captured: SandboxSyncOperation[] = [];
-    attachNativeRecordingSyncIn(client, captured);
-
-    await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
-
-    // The wipe `find` runs before the extract. It must preserve the daytona
-    // scratch prefix so a concurrent referenced-project upload survives the wipe.
-    const wipeCommand = captured[0].postUploadCommands![0].command;
-    expect(wipeCommand).toContain("find ");
-    expect(wipeCommand).toContain("! -name '.paperclip-upload-*'");
-  });
 
   it("the workspace wipe keeps an in-flight scratch tarball at the root but removes a stale sibling", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-scratch-race-"));
@@ -2253,39 +2076,11 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(remoteWorkspaceDir, ".paperclip-upload-test.tar"), "scratch\n", "utf8");
     await writeFile(path.join(remoteWorkspaceDir, "stale-junk.txt"), "junk\n", "utf8");
 
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
-      },
-    };
+    const client: SandboxManagedRuntimeClient = plainFilesystemClient();
     const captured: SandboxSyncOperation[] = [];
     attachNativeRecordingSyncIn(client, captured);
 
-    await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     // The real `find` wipe ran through `sh -c`. The scratch tarball survived and
     // the unrelated sibling did not.
@@ -2316,23 +2111,7 @@ describe("sandbox managed runtime", () => {
     await mkdir(path.join(remoteWorkspaceDir, ".paperclip-runtime"), { recursive: true });
     await writeFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "keep.txt"), "keep\n", "utf8");
 
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
-      },
-    };
+    const client: SandboxManagedRuntimeClient = plainFilesystemClient();
     const captured: SandboxSyncOperation[] = [];
     attachNativeRecordingSyncIn(client, captured);
     // Count how many times `syncIn` is invoked so the merge collapses the two
@@ -2344,19 +2123,7 @@ describe("sandbox managed runtime", () => {
       return recordingSyncIn(operations);
     };
 
-    await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     // One `syncIn` call carrying exactly one operation for the whole workspace.
     expect(syncInCallCount).toBe(1);
@@ -2487,41 +2254,13 @@ describe("sandbox managed runtime", () => {
     // writeFile/run exec is a collapse regression.
     const directWrites: string[] = [];
     const directRuns: string[] = [];
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        directWrites.push(remotePath);
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        directRuns.push(command);
-        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
-      },
-    };
+    const client: SandboxManagedRuntimeClient = recordingFilesystemClient(directWrites, directRuns);
     const captured: SandboxSyncOperation[] = [];
     attachNativeRecordingSyncIn(client, captured);
 
     const q = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "codex", client, localWorkspaceDir),
       assets: [{
         key: "home",
         localDir: homeDir,
@@ -2592,32 +2331,12 @@ describe("sandbox managed runtime", () => {
     await mkdir(assetDir, { recursive: true });
     await writeFile(path.join(assetDir, "config.toml"), "model = \"gpt\"\n", "utf8");
 
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => { await mkdir(remotePath, { recursive: true }); },
-      writeFile: async (remotePath, bytes) => {
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => { await rm(remotePath, { recursive: true, force: true }); },
-      run: async (command) => { await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 }); },
-    };
+    const client: SandboxManagedRuntimeClient = plainFilesystemClient();
     const captured: SandboxSyncOperation[] = [];
     attachCapturingSyncIn(client, captured);
 
     await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       assets: [{ key: "home", localDir: assetDir }],
     });
 
@@ -2658,32 +2377,12 @@ describe("sandbox managed runtime", () => {
       await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
       await writeFile(path.join(referencedDir, "notes.md"), "reference\n", "utf8");
 
-      const client: SandboxManagedRuntimeClient = {
-        makeDir: async (remotePath) => { await mkdir(remotePath, { recursive: true }); },
-        writeFile: async (remotePath, bytes) => {
-          await mkdir(path.dirname(remotePath), { recursive: true });
-          await writeFile(remotePath, Buffer.from(bytes));
-        },
-        readFile: async (remotePath) => await readFile(remotePath),
-        listFiles: async () => [],
-        remove: async (remotePath) => { await rm(remotePath, { recursive: true, force: true }); },
-        run: async (command) => { await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 }); },
-      };
+      const client: SandboxManagedRuntimeClient = plainFilesystemClient();
       const captured: SandboxSyncOperation[] = [];
       attachCapturingSyncIn(client, captured);
 
       await prepareSandboxManagedRuntime({
-        spec: {
-          transport: "sandbox",
-          provider: "test",
-          sandboxId: "sandbox-1",
-          remoteCwd: remoteWorkspaceDir,
-          timeoutMs: 30_000,
-          apiKey: null,
-        },
-        adapterKey: "test-adapter",
-        client,
-        workspaceLocalDir: localWorkspaceDir,
+        ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
         additionalSources: [{ localPath: referencedDir, projectId: "proj-first", ignoreResolution: { kind: "other" } }],
       });
 
@@ -2721,32 +2420,12 @@ describe("sandbox managed runtime", () => {
       // small transfer that would still round down to "0.0 MB".
       await writeFile(path.join(referencedDir, "notes.md"), Buffer.alloc(300 * 1024, "a"));
 
-      const client: SandboxManagedRuntimeClient = {
-        makeDir: async (remotePath) => { await mkdir(remotePath, { recursive: true }); },
-        writeFile: async (remotePath, bytes) => {
-          await mkdir(path.dirname(remotePath), { recursive: true });
-          await writeFile(remotePath, Buffer.from(bytes));
-        },
-        readFile: async (remotePath) => await readFile(remotePath),
-        listFiles: async () => [],
-        remove: async (remotePath) => { await rm(remotePath, { recursive: true, force: true }); },
-        run: async (command) => { await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 }); },
-      };
+      const client: SandboxManagedRuntimeClient = plainFilesystemClient();
       attachCapturingSyncIn(client, []);
 
       const lines: string[] = [];
       await prepareSandboxManagedRuntime({
-        spec: {
-          transport: "sandbox",
-          provider: "test",
-          sandboxId: "sandbox-1",
-          remoteCwd: remoteWorkspaceDir,
-          timeoutMs: 30_000,
-          apiKey: null,
-        },
-        adapterKey: "test-adapter",
-        client,
-        workspaceLocalDir: localWorkspaceDir,
+        ...sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
         additionalSources: [{ localPath: referencedDir, projectId: "proj-first", ignoreResolution: { kind: "other" } }],
         onProgress: (line) => { lines.push(line); },
       });
@@ -3301,24 +2980,18 @@ describe("sandbox managed runtime", () => {
     };
 
     const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-pack",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client: makeFilesystemClient(),
-      workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(sandboxSpec("sandbox-pack", remoteWorkspaceDir), "test-adapter", makeFilesystemClient(), localWorkspaceDir),
       runtimeSpan,
     });
 
     // The workspace stage task opens its own `stage.workspace` span, and the
     // host tarball build opens the `pack` span inside it. The two pre-task
     // sub-steps stay ahead of the task.
-    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "stage.workspace", "pack"]);
+    expect(openedSpans).toEqual([
+      "workspace.source_root", "snapshot.git", "workspace.repositories", "workspace.ignore_rules",
+      "snapshot.baseline", "workspace.inbound_barrier", "stage.workspace", "pack",
+      "workspace.progress", "workspace.overlay_archive", "workspace.transfer", "workspace.progress",
+    ]);
     // The tarball build still lands the workspace inside the span, so the wrap
     // changes no staging behavior.
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("workspace body\n");
@@ -3357,17 +3030,7 @@ describe("sandbox managed runtime", () => {
       "stage.sync",
       async () => {
         await prepareSandboxManagedRuntime({
-          spec: {
-            transport: "sandbox",
-            provider: "test",
-            sandboxId: "sandbox-nest",
-            remoteCwd: remoteWorkspaceDir,
-            timeoutMs: 30_000,
-            apiKey: null,
-          },
-          adapterKey: "test-adapter",
-          client: makeFilesystemClient(),
-          workspaceLocalDir: localWorkspaceDir,
+          ...sandboxRuntimeInput(sandboxSpec("sandbox-nest", remoteWorkspaceDir), "test-adapter", makeFilesystemClient(), localWorkspaceDir),
           runtimeSpan: stageRuntimeSpan,
         });
       },
@@ -3387,8 +3050,11 @@ describe("sandbox managed runtime", () => {
     expect(packSpan!.ended).toBe(true);
     // The workspace stage task opens its own `stage.workspace` span under
     // `stage.sync`, and the `pack` span nests under `stage.workspace`.
-    expect(workspaceSpan!.parentName).toBe("stage.sync");
+    expect(workspaceSpan!.parentName).toBe("workspace.inbound_barrier");
     expect(packSpan!.parentName).toBe("stage.workspace");
+    expect(spans.find(span => span.name === "workspace.inbound_barrier")?.parentName).toBe("stage.sync");
+    expect(spans.find(span => span.name === "workspace.overlay_archive")?.parentName).toBe("pack");
+    expect(spans.find(span => span.name === "workspace.transfer")?.parentName).toBe("stage.workspace");
 
     // The two pre-`pack` staging sub-steps nest under `stage.sync` the same way,
     // so the previously hidden gap at the head of the step is now attributed.
@@ -3613,10 +3279,7 @@ describe("sandbox managed runtime inbound coordinator", () => {
     control.hold("workspace");
 
     const prepared = prepareSandboxManagedRuntime({
-      spec: makeSpec("/remote/cwd"),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec("/remote/cwd"), "codex", client, workspaceDir),
       assets: [{ key: "home", localDir: dirOf("home") }],
     });
     prepared.catch(() => undefined);
@@ -3770,10 +3433,7 @@ describe("sandbox managed runtime inbound coordinator", () => {
     // coordinator raises the workspace failure.
     await expect(
       prepareSandboxManagedRuntime({
-        spec: makeSpec("/remote/cwd"),
-        adapterKey: "codex",
-        client,
-        workspaceLocalDir: workspaceDir,
+        ...sandboxRuntimeInput(makeSpec("/remote/cwd"), "codex", client, workspaceDir),
         assets: [{ key: "asset-a", localDir: dirOf("asset-a") }],
       }),
     ).rejects.toThrow("workspace-fail");
@@ -3785,10 +3445,7 @@ describe("sandbox managed runtime inbound coordinator", () => {
     control.hold("workspace");
 
     const prepared = prepareSandboxManagedRuntime({
-      spec: makeSpec("/remote/cwd"),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec("/remote/cwd"), "codex", client, workspaceDir),
       assets: [{ key: "asset-a", localDir: dirOf("asset-a") }],
     });
     prepared.catch(() => undefined);
@@ -3812,10 +3469,7 @@ describe("sandbox managed runtime inbound coordinator", () => {
     const { runtimeSpan, opened } = makeSpanRecorder();
 
     await prepareSandboxManagedRuntime({
-      spec: makeSpec("/remote/cwd"),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec("/remote/cwd"), "codex", client, workspaceDir),
       assets: [{ key: "home", localDir: dirOf("home") }],
       additionalSources: [{ localPath: dirOf("proj"), projectId: "proj-1", ignoreResolution: { kind: "other" } }],
       runtimeSpan,
@@ -3836,10 +3490,7 @@ describe("sandbox managed runtime inbound coordinator", () => {
     control.hold("home");
 
     const prepared = prepareSandboxManagedRuntime({
-      spec: makeSpec("/remote/cwd"),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec("/remote/cwd"), "codex", client, workspaceDir),
       assets: [{ key: "home", localDir: dirOf("home") }],
       runtimeSpan,
     });
@@ -4073,7 +3724,7 @@ describe("sandbox managed runtime outbound coordinator", () => {
     ]);
   }
 
-  it.each([false, true])("records each failed restore phase in stable order (shared error: %s)", async (sharedError) => {
+  it.each([false, true])("records each failed restore phase and raises the first task error (shared error: %s)", async (sharedError) => {
     const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home", "private-asset"]);
     const { control, gate } = makeOutboundControl();
     const client = makeGatedOutboundClient(true, gate);
@@ -4082,7 +3733,7 @@ describe("sandbox managed runtime outbound coordinator", () => {
     control.failWith("home", sharedError ? workspaceError : Object.assign(new Error("private credential"), { status: 404 }));
     control.failWith("private-asset", sharedError ? workspaceError : new Error("private asset error"));
     const prepared = await prepareSandboxManagedRuntime({
-      spec: makeSpec(remoteWorkspaceDir), adapterKey: "codex", client, workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec(remoteWorkspaceDir), "codex", client, workspaceDir),
       assets: [
         makeControlledAsset("home", dirOf("home"), control, gate),
         makeControlledAsset("private-asset", dirOf("private-asset"), control, gate),
@@ -4109,9 +3760,7 @@ describe("sandbox managed runtime outbound coordinator", () => {
     const client = makeGatedOutboundClient(false, async (_label, run) => run());
     const syncOut = vi.spyOn(client, "syncOut");
     const run = vi.spyOn(client, "run");
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: makeSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: workspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(makeSpec(remoteWorkspaceDir), "test-adapter", client, workspaceDir));
     await writeFile(path.join(remoteWorkspaceDir, "file.txt"), "updated native bytes\n", "utf8");
     await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "native sync\n", "utf8");
     await prepared.restoreWorkspace();
@@ -4131,10 +3780,7 @@ describe("sandbox managed runtime outbound coordinator", () => {
     control.hold("workspace");
 
     const prepared = await prepareSandboxManagedRuntime({
-      spec: makeSpec(remoteWorkspaceDir),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec(remoteWorkspaceDir), "codex", client, workspaceDir),
       assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
     });
 
@@ -4201,10 +3847,7 @@ describe("sandbox managed runtime outbound coordinator", () => {
     control.hold("workspace");
 
     const prepared = await prepareSandboxManagedRuntime({
-      spec: makeSpec(remoteWorkspaceDir),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec(remoteWorkspaceDir), "codex", client, workspaceDir),
       assets: [makeControlledAsset("asset-a", dirOf("asset-a"), control, gate)],
     });
 
@@ -4264,40 +3907,14 @@ describe("sandbox managed runtime outbound coordinator", () => {
     expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
   });
 
-  it("opens one named span per outbound restore task: restore.workspace, restore.asset.<key>", async () => {
-    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
-    const { control, gate } = makeOutboundControl();
-    const client = makeGatedOutboundClient(true, gate);
-    const { runtimeSpan, opened } = makeSpanRecorder();
-
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: makeSpec(remoteWorkspaceDir),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
-      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
-      runtimeSpan,
-    });
-
-    await prepared.restoreWorkspace();
-
-    // Each outbound restore task carries its own named span. The workspace
-    // restore task and the home asset restore task each open one.
-    expect(opened).toContain("restore.workspace");
-    expect(opened).toContain("restore.asset.home");
-  });
-
   it("with concurrency permitted, the workspace and asset restore task spans overlap in time", async () => {
     const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
     const { control, gate } = makeOutboundControl();
     const client = makeGatedOutboundClient(true, gate);
-    const { runtimeSpan, openNow } = makeSpanRecorder();
+    const { runtimeSpan, opened, openNow } = makeSpanRecorder();
 
     const prepared = await prepareSandboxManagedRuntime({
-      spec: makeSpec(remoteWorkspaceDir),
-      adapterKey: "codex",
-      client,
-      workspaceLocalDir: workspaceDir,
+      ...sandboxRuntimeInput(makeSpec(remoteWorkspaceDir), "codex", client, workspaceDir),
       assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
       runtimeSpan,
     });
@@ -4318,6 +3935,8 @@ describe("sandbox managed runtime outbound coordinator", () => {
     control.release("workspace");
     control.release("home");
     await restore;
+    expect(opened).toContain("restore.workspace");
+    expect(opened).toContain("restore.asset.home");
   });
 });
 
@@ -4483,7 +4102,7 @@ describe("sandbox git-bundle export transport", () => {
     const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-diagnostic-");
     const client = makeTransportClient(step !== "workspace_extract", { syncOutOperations: [], readFilePaths: [] });
     const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       workspaceRestoreRetryDelaysMs: [0, 0],
     });
     await commitInSandbox(remoteWorkspaceDir);
@@ -4527,7 +4146,7 @@ describe("sandbox git-bundle export transport", () => {
     const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-retry-");
     const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
     const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       workspaceRestoreRetryDelaysMs: [0, 0],
     });
     await commitInSandbox(remoteWorkspaceDir);
@@ -4551,7 +4170,7 @@ describe("sandbox git-bundle export transport", () => {
     const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-retry-limit-");
     const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
     const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       workspaceRestoreRetryDelaysMs: [0, 0],
     });
     await commitInSandbox(remoteWorkspaceDir);
@@ -4575,7 +4194,7 @@ describe("sandbox git-bundle export transport", () => {
     const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-no-retry-");
     const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
     const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       workspaceRestoreRetryDelaysMs: [0, 0],
     });
     await commitInSandbox(remoteWorkspaceDir);
@@ -4597,7 +4216,7 @@ describe("sandbox git-bundle export transport", () => {
     await writeFile(path.join(localWorkspaceDir, "base.txt"), "base\n", "utf8");
     const client = makeTransportClient(true, { syncOutOperations: [], readFilePaths: [] });
     const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+      ...sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir),
       workspaceRestoreRetryDelaysMs: [0, 0],
     });
     await writeFile(path.join(remoteWorkspaceDir, "a-first.txt"), "first\n", "utf8");
@@ -4629,12 +4248,7 @@ describe("sandbox git-bundle export transport", () => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-bundle-native-");
     const client = makeTransportClient(true, capture);
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir),
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     await commitInSandbox(remoteWorkspaceDir);
     await prepared.restoreWorkspace();
@@ -4659,12 +4273,7 @@ describe("sandbox git-bundle export transport", () => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-bundle-fallback-");
     const client = makeTransportClient(false, capture);
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir),
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     await commitInSandbox(remoteWorkspaceDir);
     await prepared.restoreWorkspace();
@@ -4679,7 +4288,7 @@ describe("sandbox git-bundle export transport", () => {
     expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(true);
   });
 
-  it("retries the full bundle through the native branch when the delta misses its prerequisite", async () => {
+  it.each([[false, false, false], [true, false, false], [false, true, false], [false, false, true]])("restores native bundles with concurrent work %s, oversized transfer %s, oversized source %s", async (concurrentHostCommit, oversizedTransfer, oversizedSource) => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bundle-retry-"));
     cleanupDirs.push(rootDir);
@@ -4703,24 +4312,61 @@ describe("sandbox git-bundle export transport", () => {
     const stagedBase = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
 
     const client = makeTransportClient(true, capture);
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir),
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    let shallowProgressCalls = 0, completedShallowRead = false;
+    if (oversizedTransfer) {
+      const read = client.readFile.bind(client);
+      client.readFile = async (remotePath, options) => {
+        if (remotePath.endsWith("git-shallow.txt")) {
+          shallowProgressCalls++;
+          await options?.onProgress?.(0, 64 * 1024 + 1);
+          completedShallowRead = true;
+        }
+        return read(remotePath, options);
+      };
+    }
+    let sourceCapChecks = 0;
+    if (oversizedSource) {
+      const run = client.run.bind(client);
+      client.run = async (command, options) => {
+        if (command.includes("git-shallow.txt") && command.includes("wc -c")) sourceCapChecks++;
+        return run(command, options);
+      };
+    }
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     await commitInSandbox(remoteWorkspaceDir);
     const sandboxHead = await git(remoteWorkspaceDir, ["rev-parse", "HEAD"]);
+
+    if (oversizedSource) await writeFile(path.join(remoteWorkspaceDir, ".git", "shallow"), `${sandboxHead}\n`.repeat(2000));
 
     // The host drops below the staged base commit and prunes it. The delta
     // bundle names that boundary commit as a prerequisite the host no longer
     // holds, so the import fails and forces the full-bundle retry.
     await git(localWorkspaceDir, ["reset", "--hard", firstCommit]);
+    if (concurrentHostCommit) {
+      await writeFile(path.join(localWorkspaceDir, "host-only.txt"), "concurrent host commit\n");
+      await git(localWorkspaceDir, ["add", "host-only.txt"]);
+      await git(localWorkspaceDir, ["commit", "-m", "host work after reset"]);
+    }
+    const hostHead = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
     await git(localWorkspaceDir, ["reflog", "expire", "--expire=now", "--all"]);
     await git(localWorkspaceDir, ["gc", "--prune=now"]);
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${stagedBase}^{commit}`])).rejects.toThrow();
 
+    if (oversizedSource) {
+      await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "WORKSPACE_RESTORE_INVALID_GIT_METADATA" });
+      expect(sourceCapChecks).toBe(1);
+      expect(capture.readFilePaths.some(p => p.endsWith("git-shallow.txt"))).toBe(false);
+      expect(await git(localWorkspaceDir, ["rev-parse", "HEAD"])).toBe(hostHead);
+      return;
+    }
+    if (oversizedTransfer) {
+      await expect(prepared.restoreWorkspace()).rejects.toThrow("byte limit");
+      expect(shallowProgressCalls).toBe(1);
+      expect(completedShallowRead).toBe(false);
+      expect(await git(localWorkspaceDir, ["rev-parse", "HEAD"])).toBe(hostHead);
+      return;
+    }
     await prepared.restoreWorkspace();
 
     // Two bundle exports rode native file mappings: the delta attempt and the
@@ -4733,18 +4379,20 @@ describe("sandbox git-bundle export transport", () => {
     // The full bundle was self-contained: the host repository now holds the
     // sandbox head commit.
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${sandboxHead}^{commit}`])).resolves.toBe("");
+    if (concurrentHostCommit) {
+      expect(await readFile(path.join(localWorkspaceDir, "host-only.txt"), "utf8")).toBe("concurrent host commit\n");
+      expect(await readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).toBe("from sandbox\n");
+      expect((await git(localWorkspaceDir, ["rev-list", "--parents", "-1", "HEAD"])).split(" ").slice(1))
+        .toEqual([hostHead, sandboxHead]);
+      expect(await git(localWorkspaceDir, ["fsck", "--connectivity-only"])).not.toContain("missing");
+    }
   });
 
   it("reports the real transferred bytes for the native git-history export and workspace restore", async () => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-bytes-");
     const client = makeTransportClient(true, capture);
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: gitSpec(remoteWorkspaceDir),
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     // Add a sizeable, incompressible tracked file in the sandbox, so both the
     // packed git-history bundle and the restored working tree carry real,

@@ -26,6 +26,27 @@ authoring runbook for provider research, supported transport/auth patterns,
 credential handling, branding, implementation, testing, live proof, and PR
 submission.
 
+### Scoped repository rules
+
+Before editing or reviewing files, read the matching rules in `rules/*.mdc`.
+Each rule has Markdown content and YAML frontmatter: `globs` contains
+comma-separated, repository-relative file patterns, and `alwaysApply: true`
+means the rule applies throughout the repository. Read all rules whose scope
+matches the affected files. These rules supplement this file and any applicable
+nested `AGENTS.md` instructions.
+
+For `server/src/services/chat-channels.ts` and everything under
+`server/src/services/chat-channels/`, read
+[`rules/chat-channel-platform-boundaries.mdc`](rules/chat-channel-platform-boundaries.mdc).
+For `server/src/services/heartbeat.ts`, `server/src/services/heartbeat/`,
+heartbeat-prefixed sibling services, and heartbeat regression tests, read
+[`rules/heartbeat-execution-boundaries.mdc`](rules/heartbeat-execution-boundaries.mdc).
+For ACPX provider profiles, their release attestations and pins, the provider-pack
+contract registry, and ACPX driver and provider code under
+`packages/paperclip-runner/`, read
+[`rules/acpx-profile-identity.mdc`](rules/acpx-profile-identity.mdc).
+See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
+
 ## 3. Repo Map
 
 - `server/`: Express REST API and orchestration services
@@ -78,6 +99,10 @@ Explicit exception: announcement dismissals are instance-wide user preferences,
 keyed by user and announcement so they persist across companies. Their audit
 context must still validate company membership. The announcement publication-ID
 registry is instance-level feed metadata; it contains no company or user data.
+Personal workspace presentation preferences are also instance-wide by user, with
+validated company membership supplying audit context. They never grant execution
+authority, change company capabilities or agent configuration, or rewrite canonical
+work records. Optional conversation guidance must retain the same action permissions.
 
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
@@ -164,9 +189,11 @@ Its structural checks do not prove live behavior or authorization.
 
 Storybook has a downstream [feature catalog](maps/storybook-map/README.md).
 Use `maintain-storybook` for story/fixture drift and `review-storybook` for browser
-evidence. Keep the feature-map skills independent of this catalog. After story
-or declared review-source changes, reconcile affected entries and run
-`node scripts/storybook-catalog.mjs`; its checks are not production acceptance.
+evidence. Keep the feature-map skills independent of this catalog. After story or recipe changes, update the affected source annotations or
+recipe and run `node scripts/storybook-catalog.mjs`. Indexes are generated and
+ignored; never commit aggregate catalogs, refresh review fingerprints, or append
+a shared review journal. Use Git diffs and keep review evidence in the PR or issue.
+Structural checks are not production acceptance.
 
 Default local/agent test path:
 

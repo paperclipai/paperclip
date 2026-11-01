@@ -40,7 +40,16 @@ const meta: Meta<typeof RuntimeProvisionStatusValue> = {
   id: "workspaces-runtime-provisioning-status",
   title: "Projects and execution/Workspaces, services, and files/Workspaces/Runtime provisioning status",
   component: RuntimeProvisionStatusValue,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "workspaces/provisioning"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Task-workspace reconciliation reviewed ExecutionWorkspaceDetail null-project handling. This suite mounts only the unchanged RuntimeProvisionStatusValue inside a local context row; it does not exercise the full detail page or projectless queries."
+    },
+  },
 };
 
 export default meta;

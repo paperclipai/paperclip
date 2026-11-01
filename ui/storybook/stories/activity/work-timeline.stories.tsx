@@ -162,7 +162,15 @@ const meta: Meta<typeof TimelineHarness> = {
   id: "pages-work-timeline",
   title: "Oversight and operation/Dashboards and audit trails/Pages/Work Timeline",
   component: TimelineHarness,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "activity/timeline"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

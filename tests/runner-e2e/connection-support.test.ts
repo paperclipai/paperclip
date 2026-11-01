@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_ADAPTER_TYPES } from "../../packages/shared/src/constants.js";
@@ -9,9 +9,8 @@ import { connectionHarnesses, connectionScopeGaps, connectionCell, supportsConne
 import { parseConnectionConfig, targetOrigin, selectedSecret, resolveConnectionSecret, resolveConnectionSettings } from "./connection-config.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
-import { verifyConnectionTarget } from "./connection-target.js";
+import { ConnectionApi, verifyConnectionTarget } from "./connection-target.js";
 import { cleanupConnectionCompany, connectionCreationReceipt, runConnectionCampaign, safeConnectionFailure, withConnectionCampaignCancellation } from "./connection-launch.js";
-import type { ConnectionApi } from "./connection-target.js";
 import * as connectionConfig from "./connection-config.js";
 import * as connectionTarget from "./connection-target.js";
 import * as reportAssets from "./report-assets.js";
@@ -144,6 +143,16 @@ describe("live connection coverage", () => {
 });
 
 describe("target and selected credential boundaries", () => {
+  it("keeps scoped requests on tenant APIs and bounds extended probe timeouts", async () => {
+    const fetch = vi.fn(async (_url: string, _options: unknown) => ({ ok: () => true, json: async () => ({ passed: true }) }));
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await api.post("/api/companies/qa/adapters/paperclip_runner/test-environment", {}, { timeoutMs: 120_000 });
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ headers: { Origin: "https://qa.test.paperclip.app" }, timeout: 120_000, maxRedirects: 0 });
+    fetch.mockClear();
+    for (const route of ["https://other.test/api/health", "/api/../v1/admin", "/api/%2e%2e/v1/admin"]) await expect(api.get(route)).rejects.toThrow("invalid_api_route");
+    await expect(api.post("/api/health", {}, { timeoutMs: 120_001 })).rejects.toThrow("invalid_api_timeout");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("accepts local/staging origins and rejects credential-bearing or redirectable target strings", () => {
     expect(targetOrigin("http://127.0.0.1:3109/")).toBe("http://127.0.0.1:3109");
     expect(targetOrigin("https://staging.example.test")).toBe("https://staging.example.test");
@@ -179,6 +188,7 @@ describe("target and selected credential boundaries", () => {
       expect(await resolveConnectionSecret(config, undefined, {})).toBeUndefined();
       await expect(resolveConnectionSecret(config, "XAI_API_KEY", {})).rejects.toThrow("missing_XAI_API_KEY");
       await writeFile(path.join(root, "public"), "OPENAI_API_KEY=private", { mode: 0o644 });
+      await chmod(path.join(root, "public"), 0o644);
       await expect(resolveConnectionSecret(parseConnectionConfig({ secretFile: path.join(root, "public") }), "OPENAI_API_KEY", {})).rejects.toThrow(/owner_only/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });

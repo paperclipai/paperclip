@@ -130,3 +130,14 @@ export async function githubLifecycleEventFromRequest(
     threadId,
   };
 }
+
+export async function githubSupplementalLifecycleFromRequest(githubInspection: Request): Promise<GitHubLifecycleEvent | null> {
+  let lifecycle: GitHubLifecycleEvent | null = null;
+      try {
+        lifecycle = await githubLifecycleEventFromRequest(githubInspection);
+      } catch {
+        // Ignore only malformed or unsupported supplemental payloads. Once an
+        // event is recognized, its durable persistence failure must escape.
+      }
+  return lifecycle;
+}

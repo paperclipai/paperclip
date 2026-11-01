@@ -1,7 +1,7 @@
-import { issueReadSqlCondition, executionWorkspaceReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import fs from "node:fs/promises";
-import { assertExecutionWorkspaceRootReadAccess } from "./execution-workspace-repositories.js";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
@@ -18,7 +18,9 @@ import type {
   WorkspaceFilePreviewKind,
   WorkspaceFileSelector,
   WorkspaceFileWorkspaceKind,
+  WorkspaceFileSource,
 } from "@paperclipai/shared";
+import type { RemoteWorkspaceFiles, RemoteWorkspaceFileAccess, RemoteWorkspaceFileEntry } from "./remote-workspace-files.js";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import {
   isWorkspaceGitScanError,
@@ -32,6 +34,7 @@ export const WORKSPACE_FILE_LIST_DEFAULT_LIMIT = 25;
 export const WORKSPACE_FILE_LIST_MAX_LIMIT = 100;
 export const WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES = 5_000;
 export const WORKSPACE_FILE_AVAILABILITY_CONCURRENCY = 8;
+const MAX_AVAILABILITY_REMOTE_WORKSPACES = 8;
 const MAX_RELATIVE_PATH_BYTES = 4096;
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_LIST_DEPTH = 20;
@@ -123,6 +126,8 @@ type WorkspaceCandidate = {
   label: string;
   rootPath: string | null;
   remote: boolean;
+  remoteAuthority?: boolean;
+  source?: WorkspaceFileSource;
 };
 
 type NormalizedPath = {
@@ -133,6 +138,12 @@ type NormalizedPath = {
 type LocalResolvedFile = {
   resource: ResolvedWorkspaceResource;
   realPath: string;
+};
+
+export type PreparedWorkspaceFileDownload = LocalResolvedFile | {
+  resource: ResolvedWorkspaceResource;
+  stream: Readable;
+  cleanup(): Promise<void>;
 };
 
 type LocalResolvedDirectory = {
@@ -267,14 +278,21 @@ function unavailableAvailabilityResult(
 async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>) {
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  let failure: { error: unknown } | undefined;
   async function worker() {
-    while (nextIndex < items.length) {
+    while (nextIndex < items.length && !failure) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await mapper(items[index]!);
+      try {
+        results[index] = await mapper(items[index]!);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   }
+  // Every started mapper must settle before its request-owned resources close.
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  if (failure) throw failure.error;
   return results;
 }
 
@@ -371,7 +389,7 @@ function listItemFromStat(input: {
   candidate: WorkspaceCandidate;
   relativePath: string;
   stat: { size: number; mtime: Date };
-}): WorkspaceFileListItem | null {
+}): WorkspaceFileListItem {
   const contentType = contentTypeForPath(input.relativePath);
   const previewKind = previewKindForKnownContentType(contentType) ?? "unsupported";
   const previewable = previewKind !== "unsupported" && input.stat.size <= previewCapForKind(previewKind);
@@ -474,7 +492,7 @@ function remoteResource(candidate: WorkspaceCandidate, relativePath: string): Re
 function candidateFromExecutionWorkspace(row: ExecutionWorkspaceRow): WorkspaceCandidate {
   const provider = row.providerType || row.strategyType || "local_fs";
   const rootPath = row.cwd || row.providerRef || null;
-  const remote = !["local_fs", "git_worktree"].includes(provider) || !rootPath || row.status !== "active" || row.closedAt != null;
+  const remote = Boolean(row.metadata?.remoteWorkspace) || !["local_fs", "git_worktree"].includes(provider) || !rootPath || row.status !== "active" || row.closedAt != null;
   return {
     companyId: row.companyId,
     workspaceKind: "execution_workspace",
@@ -483,6 +501,7 @@ function candidateFromExecutionWorkspace(row: ExecutionWorkspaceRow): WorkspaceC
     label: row.name,
     rootPath,
     remote,
+    remoteAuthority: Boolean(row.metadata?.remoteWorkspace),
   };
 }
 
@@ -681,6 +700,7 @@ function unavailableFileList(input: {
     unavailableReason: input.reason,
     workspace: input.candidate
       ? {
+          ...(input.candidate.source ? { source: input.candidate.source } : {}),
           provider: input.candidate.provider,
           workspaceLabel: input.candidate.label,
           workspaceKind: input.candidate.workspaceKind,
@@ -719,6 +739,7 @@ function availableFileList(input: {
     kind: "workspace_file_list",
     state: "available",
     workspace: {
+      ...(input.candidate.source ? { source: input.candidate.source } : {}),
       provider: input.candidate.provider,
       workspaceLabel: input.candidate.label,
       workspaceKind: input.candidate.workspaceKind,
@@ -1042,25 +1063,72 @@ async function listChangedWorkspaceFiles(input: {
   };
 }
 
-export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
-  async function visibleCandidates(candidates: WorkspaceCandidate[], skipDeniedSources = false) {
+export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor, options: { remoteFiles?: RemoteWorkspaceFiles } = {}) {
+  async function remoteAccess(candidate: WorkspaceCandidate, signal?: AbortSignal) {
+    if (!options.remoteFiles || candidate.workspaceKind !== "execution_workspace") return null;
+    return options.remoteFiles.open({ companyId: candidate.companyId, workspaceId: candidate.workspaceId, signal });
+  }
+
+  function remoteEntryResource(candidate: WorkspaceCandidate, entry: RemoteWorkspaceFileEntry, access: RemoteWorkspaceFileAccess): ResolvedWorkspaceResource {
+    if (entry.kind === "directory") return { ...directoryResource({ candidate, relativePath: entry.relativePath }), source: access.source };
+    const contentType = contentTypeForPath(entry.relativePath);
+    const previewKind = previewKindForKnownContentType(contentType) ?? (entry.text ? "text" : "unsupported");
+    const tooLarge = entry.byteSize! > previewCapForKind(previewKind);
+    return {
+      kind: "file", provider: candidate.provider, title: path.posix.basename(entry.relativePath),
+      displayPath: candidate.projectName ? `${candidate.projectName} / ${entry.relativePath}` : entry.relativePath,
+      workspaceLabel: candidate.label, workspaceKind: candidate.workspaceKind, workspaceId: candidate.workspaceId,
+      projectId: candidate.projectId ?? null, projectName: candidate.projectName ?? null,
+      contentType: contentType ?? (previewKind === "text" ? "text/plain; charset=utf-8" : "application/octet-stream"),
+      byteSize: entry.byteSize, previewKind, source: access.source,
+      denialReason: tooLarge ? "too_large" : previewKind === "unsupported" ? "unsupported_content" : null,
+      capabilities: { preview: !tooLarge && previewKind !== "unsupported", download: true, listChildren: false },
+    };
+  }
+
+  async function resolveRemote(candidate: WorkspaceCandidate, normalized: NormalizedPath, directory: boolean,
+    requestAccess?: (candidate: WorkspaceCandidate) => Promise<RemoteWorkspaceFileAccess | null>) {
+    throwIfDenied(normalized.segments);
+    const access = await (requestAccess ?? remoteAccess)(candidate);
+    if (!access) return null;
+    try {
+      const entry = await access.stat(normalized.relativePath);
+      if (directory && entry.kind !== "directory") throw unprocessable("Workspace path is not a directory", { code: "not_directory" });
+      if (!directory && entry.kind !== "file") throw unprocessable("Workspace file is not a regular file", { code: "not_regular_file" });
+      return remoteEntryResource(candidate, entry, access);
+    } finally { if (!requestAccess) await access.close(); }
+  }
+
+  async function visibleCandidates(candidates: WorkspaceCandidate[], skipDeniedSources = false, task?: IssueRow) {
     if (!actor) return candidates;
     const visible: WorkspaceCandidate[] = [];
     for (const candidate of candidates) {
       const rows = candidate.workspaceKind === "execution_workspace"
         ? await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), await executionWorkspaceReadSqlCondition(db, actor)))
+          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, candidate.companyId)))
         : await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
           .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
           .where(and(eq(projectWorkspaces.id, candidate.workspaceId), await projectReadSqlCondition(db, actor)));
       if (!rows.length) continue;
-      if (candidate.rootPath && (!candidate.remote || candidate.provider === "local_fs" || LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES.has(candidate.provider))) {
+      if (candidate.workspaceKind === "execution_workspace") {
+        // A task-bound root grants file navigation, never disclosure of the workspace record.
+        if (!task || task.companyId !== candidate.companyId) continue;
+        if (task.executionWorkspaceId !== candidate.workspaceId) {
+          const [owner] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+            .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, task.companyId)));
+          if (owner?.sourceIssueId !== task.id) {
+            if (!task.parentId || owner?.sourceIssueId !== task.parentId) continue;
+            const [parent] = await db.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.id, task.parentId), eq(issues.companyId, task.companyId), await issueReadSqlCondition(db, actor)));
+            if (!parent) continue;
+          }
+        }
+        candidate.label = "Task workspace";
+      }
+      if (candidate.rootPath && !candidate.remoteAuthority && (!candidate.remote || candidate.provider === "local_fs" || LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES.has(candidate.provider))) {
         try {
           const canonicalCwd = await fs.realpath(candidate.rootPath);
-          await assertExecutionWorkspaceRootReadAccess(db, {
-            companyId: candidate.companyId, cwd: canonicalCwd, actor,
-            sourceWorkspaceId: candidate.workspaceKind === "execution_workspace" ? candidate.workspaceId : undefined,
-          });
+
           candidate.rootPath = canonicalCwd;
         } catch (error) {
           if (isHttpStatus(error, 403) || isHttpStatus(error, 404)
@@ -1169,7 +1237,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
       }
     }
 
-    return visibleCandidates(candidates, selector === "auto");
+    return visibleCandidates(candidates, selector === "auto", issue);
   }
 
   async function loadAvailabilityTargets(
@@ -1312,8 +1380,22 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
       ? await sameCompanyProjectWorkspaceCandidates(issue, new Set(initialCandidates.map((candidate) => candidate.workspaceId)))
       : [];
     const explicitTargets = await loadAvailabilityTargets(issue, queries);
+    const remoteAccesses = new Map<string, Promise<RemoteWorkspaceFileAccess | null>>();
+    const requestAccess = (candidate: WorkspaceCandidate) => {
+      // UUIDs can be equal across workspace tables; project roots never borrow task access.
+      if (!options.remoteFiles || candidate.workspaceKind !== "execution_workspace") return Promise.resolve(null);
+      const key = `${candidate.companyId}:${candidate.workspaceId}`;
+      const existing = remoteAccesses.get(key);
+      if (existing) return existing;
+      if (remoteAccesses.size >= MAX_AVAILABILITY_REMOTE_WORKSPACES) {
+        throw unprocessable("Too many remote workspaces in one availability request", { code: "workspace_unavailable" });
+      }
+      const access = remoteAccess(candidate);
+      remoteAccesses.set(key, access);
+      return access;
+    };
 
-    const results = await mapWithConcurrency(
+    const outcome = await mapWithConcurrency(
       queries,
       WORKSPACE_FILE_AVAILABILITY_CONCURRENCY,
       async (item): Promise<WorkspaceFileAvailabilityResult> => {
@@ -1338,6 +1420,16 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
           let lastNotFound: unknown = null;
           for (const candidate of candidates) {
             if (candidate.remote) {
+              try {
+                const resource = await resolveRemote(candidate, item.normalizedPath, item.directory, requestAccess);
+                if (resource) return availabilityResult(item.query, resource);
+              } catch (error) {
+                if (!hasExplicitTarget && item.query.workspace === "auto" && isHttpStatus(error, 404)) {
+                  lastNotFound = error;
+                  continue;
+                }
+                throw error;
+              }
               if (hasExplicitTarget || item.query.workspace !== "auto") {
                 return availabilityResult(item.query, remoteResource(candidate, item.normalizedPath.relativePath));
               }
@@ -1382,9 +1474,16 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
           return unavailableAvailabilityResult(item.query, reason);
         }
       },
-    );
+    ).then(results => ({ results }), (error: unknown) => ({ error }));
 
-    return { kind: "workspace_file_availability", results };
+    const opened = await Promise.allSettled(remoteAccesses.values());
+    const closed = await Promise.allSettled(opened.map(async result => {
+      if (result.status === "fulfilled") await result.value?.close();
+    }));
+    if ("error" in outcome) throw outcome.error;
+    const cleanupFailure = closed.find(result => result.status === "rejected");
+    if (cleanupFailure?.status === "rejected") throw cleanupFailure.reason;
+    return { kind: "workspace_file_availability", results: outcome.results };
   }
 
   async function resolve(issueId: string, input: {
@@ -1406,6 +1505,16 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
       if (candidate.remote) {
+        try {
+          const resource = await resolveRemote(candidate, normalized, isDirectoryRequest);
+          if (resource) return resource;
+        } catch (error) {
+          if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
+            lastNotFound = error;
+            continue;
+          }
+          throw error;
+        }
         if (explicitTarget || selector !== "auto") return remoteResource(candidate, normalized.relativePath);
         continue;
       }
@@ -1464,6 +1573,33 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
       if (candidate.remote) {
+        if (normalizedPath) throwIfDenied(normalizedPath.segments);
+        const access = await remoteAccess(candidate, opts.scanContext?.signal);
+        if (access) {
+          try {
+            const listed = await access.list({ relativePath: normalizedPath?.relativePath, mode, query: normalizedQuery,
+              limit, offset, maxScannedEntries: WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES, maxDepth: MAX_LIST_DEPTH });
+            const remoteCandidate = { ...candidate, source: access.source };
+            const items = listed.entries.filter(entry => {
+              try { return !shouldPruneSegments(normalizeWorkspaceRelativePath(entry.relativePath).segments); }
+              catch { return false; }
+            }).map(entry => ({
+              ...(entry.kind === "directory"
+                ? listItemFromDirectory({ candidate, relativePath: entry.relativePath, stat: entry.modifiedAt ? { mtime: new Date(entry.modifiedAt) } : undefined })
+                : listItemFromStat({ candidate, relativePath: entry.relativePath, stat: { size: entry.byteSize!, mtime: new Date(entry.modifiedAt ?? 0) } })),
+              source: access.source,
+            }));
+            return availableFileList({ selector, mode, path: normalizedPath?.relativePath ?? null, q, limit, offset,
+              candidate: remoteCandidate, items, scannedCount: listed.scannedCount, truncated: listed.truncated });
+          } catch (error) {
+            if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) { lastNotFound = error; continue; }
+            if (error instanceof HttpError && error.status === 422 && !normalizedPath) {
+              return unavailableFileList({ selector, mode, path: null, q, limit, offset,
+                candidate: { ...candidate, source: access.source }, reason: expectedAvailabilityReason(error) ?? "workspace_unavailable" });
+            }
+            throw error;
+          } finally { await access.close(); }
+        }
         firstUnavailable ??= { candidate, reason: "remote_workspace" };
         if (explicitTarget || selector !== "auto") {
           return unavailableFileList({
@@ -1670,6 +1806,25 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
       if (candidate.remote) {
+        throwIfDenied(normalized.segments);
+        const access = await remoteAccess(candidate);
+        if (access) {
+          try {
+            const resource = remoteEntryResource(candidate, await access.stat(normalized.relativePath), access);
+            if (resource.kind !== "file" || !resource.capabilities.preview) {
+              throw unprocessable("Workspace file cannot be previewed", { code: resource.denialReason ?? "not_regular_file" });
+            }
+            const data = await access.read(normalized.relativePath, { maxBytes: previewCapForKind(resource.previewKind) });
+            if (resource.previewKind === "text" && !looksLikeText(data.subarray(0, Math.min(data.length, TEXT_SNIFF_BYTES)))) {
+              throw unprocessable("Workspace file is not a text file", { code: "binary_content" });
+            }
+            return { resource, content: { encoding: resource.previewKind === "text" ? "utf8" : "base64",
+              data: resource.previewKind === "text" ? data.toString("utf8") : data.toString("base64") } };
+          } catch (error) {
+            if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) { lastNotFound = error; continue; }
+            throw error;
+          } finally { await access.close(); }
+        }
         if (explicitTarget || selector !== "auto") {
           throw unprocessable("Remote workspaces cannot be previewed by the server", { code: "remote_workspace" });
         }
@@ -1741,7 +1896,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     workspace?: WorkspaceFileSelector | null;
     projectId?: string | null;
     workspaceId?: string | null;
-  }, opts: { issue?: IssueRow } = {}): Promise<LocalResolvedFile> {
+  }, opts: { issue?: IssueRow } = {}): Promise<PreparedWorkspaceFileDownload> {
     const issue = opts.issue ?? await getIssue(issueId);
     const selector = input.workspace ?? "auto";
     const explicitTarget = Boolean(input.projectId || input.workspaceId);
@@ -1754,6 +1909,21 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
       if (candidate.remote) {
+        throwIfDenied(normalized.segments);
+        const access = await remoteAccess(candidate);
+        if (access) {
+          try {
+            const resource = remoteEntryResource(candidate, await access.stat(normalized.relativePath), access);
+            if (resource.kind !== "file") throw unprocessable("Workspace file is not a regular file", { code: "not_regular_file" });
+            const transfer = await access.download(normalized.relativePath);
+            return { resource: { ...resource, byteSize: transfer.byteSize }, stream: transfer.stream,
+              cleanup: async () => { try { transfer.stream.destroy(); await transfer.cleanup(); } finally { await access.close(); } } };
+          } catch (error) {
+            await access.close();
+            if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) { lastNotFound = error; continue; }
+            throw error;
+          }
+        }
         if (explicitTarget || selector !== "auto") {
           throw unprocessable("Remote workspaces cannot be downloaded by the server", { code: "remote_workspace" });
         }

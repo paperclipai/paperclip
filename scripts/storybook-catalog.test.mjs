@@ -1,142 +1,205 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
-import os from "node:os";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import { capabilities, fingerprint, renderIndex, scanStories, validateCatalog } from "./storybook-catalog.mjs";
+import { catalogFromStories, generateStorybook, renderIndex, renderVerification, scanStories, validateCatalog } from "./storybook-catalog.mjs";
+import { featureIndex } from "./feature-map.mjs";
+import { mapFixture } from "./map-test-fixture.mjs";
 
-function fixture(t) {
-  const root = mkdtempSync(path.join(os.tmpdir(), "storybook-catalog-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  function write(file, text) {
-    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-    writeFileSync(path.join(root, file), text);
-  }
-  write("maps/feature-map/README.md", "# Features\n\n### Tasks and conversations\n\n| [Tasks](./tasks.md) | Tasks |\n");
-  write("maps/feature-map/tasks.md", "# Tasks\n\n## Sub-features\n\n- `create`: create\n- `discussion`: discuss\n\n## How to get to it\n");
-  write("ui/storybook/.storybook/preview.tsx", "// shared fixtures\n");
-  const file = "ui/storybook/stories/tasks/task.stories.tsx";
-  write(file, "// a story\n");
-  write("ui/src/Task.tsx", "// production subject\n");
-  const sharedSources = ["ui/storybook/.storybook/preview.tsx"];
-  const sources = [file, "ui/src/Task.tsx"];
-  const catalog = {
-    version: 1, sharedReview: { sources: sharedSources, fingerprint: fingerprint(root, sharedSources) },
-    entries: [{ file, stableId: "tasks-create", sidebarTitle: "Tasks and conversations/Tasks/Create", capabilities: ["tasks/create", "tasks/discussion"], purpose: "Create a task", status: "current",
-      implementation: "production", boundary: "fixtures", notes: "Production subject; callbacks simulated.",
-      reviewedAt: "2026-10-12", sources, fingerprint: fingerprint(root, sources) }],
-  };
-  const stories = [{ file, title: "Tasks and conversations/Tasks/Create", metaId: "tasks-create", ids: ["tasks-create--empty"], plays: 0 }];
-  return { root, write, file, catalog, stories };
+function inspect(f) {
+  const index = featureIndex(f.root);
+  const stories = scanStories(f.root);
+  const catalog = catalogFromStories(stories, index);
+  return { catalog, stories, index, errors: validateCatalog(catalog, stories, index) };
 }
 
-test("complete inventory accepts production subjects with simulated data", t => {
-  const f = fixture(t);
-  assert.deepEqual(validateCatalog(f.root, f.catalog, f.stories), []);
+test("source annotations assemble an inventory without a registry or review stamps", t => {
+  const f = mapFixture(t);
+  const result = inspect(f);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.catalog.entries[0].purpose, "task");
+  assert.equal(result.catalog.entries[0].status, "unreviewed");
+  assert.equal(result.catalog.entries[0].stableId, "stable-task");
+  assert.equal(Object.hasOwn(result.catalog.entries[0], "fingerprint"), false);
+  assert.equal(Object.hasOwn(result.catalog.entries[0], "reviewedAt"), false);
+  f.story("new");
+  assert.equal(inspect(f).catalog.entries.length, 2);
+  rmSync(path.join(f.root, f.file));
+  assert.equal(inspect(f).catalog.entries.length, 1);
 });
 
-test("adding, removing or duplicating story files requires reconciliation", t => {
-  const f = fixture(t);
-  assert.match(validateCatalog(f.root, { ...f.catalog, entries: [] }, f.stories).join("\n"), /missing from catalog/);
-  assert.match(validateCatalog(f.root, f.catalog, []).join("\n"), /missing story file/);
-  f.catalog.entries.push(f.catalog.entries[0]);
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /duplicate catalog entry/);
+test("unknown capabilities, invalid annotations and inappropriate homes fail", t => {
+  const f = mapFixture(t);
+  f.story("task", { capabilities: ["tasks/missing"] });
+  assert.match(inspect(f).errors.join("\n"), /unknown feature capability/);
+  f.story("task", { capabilities: [], status: "passed" });
+  assert.match(inspect(f).errors.join("\n"), /invalid product status/);
+  assert.match(inspect(f).errors.join("\n"), /explicit reason/);
+  f.story("task", { capabilities: "tasks/create" });
+  assert.match(inspect(f).errors.join("\n"), /array of IDs/);
+  f.story("task", { capabilities: ["tasks/create"] }, { title: "Other/Task" });
+  assert.match(inspect(f).errors.join("\n"), /sidebar title/);
 });
 
-test("capability renames and unjustified unmapped stories fail", t => {
-  const f = fixture(t);
-  f.catalog.entries[0].capabilities = ["tasks/old-name"];
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /unknown feature capability/);
-  f.catalog.entries[0].capabilities = [];
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /explicit reason/);
-  f.catalog.entries[0].exception = "Shared foundation";
-  const file = "ui/storybook/stories/foundations/task.stories.tsx";
-  f.write(file, "export default {};");
-  const entry = f.catalog.entries[0];
-  entry.file = file;
-  entry.sources = [file, "ui/src/Task.tsx"];
-  entry.fingerprint = fingerprint(f.root, entry.sources);
-  entry.sidebarTitle = "Foundations/Task";
-  f.stories[0].file = file;
-  f.stories[0].title = entry.sidebarTitle;
-  assert.deepEqual(validateCatalog(f.root, f.catalog, f.stories), []);
+test("metadata is parsed without executing code or accepting obsolete bookkeeping fields", t => {
+  const f = mapFixture(t);
+  f.write(f.file, `export default { id: 'task', title: 'Work/Tasks/Test', parameters: { paperclip: (() => { throw new Error('executed'); })() } }; export const Empty = {};`);
+  assert.throws(() => scanStories(f.root), /expressions are not executed/);
+  f.story("task", { capabilities: ["tasks/create"], fingerprint: "old" });
+  assert.throws(() => scanStories(f.root), /unknown paperclip field fingerprint/);
+  f.write(f.file, "export default { id: 'task', title: 'Work/Tasks/Test', parameters: { paperclip: { capabilities: [], capabilities: [] } } }; export const Empty = {};");
+  assert.throws(() => scanStories(f.root), /unique literal properties/);
 });
 
-test("feature organization rejects wrong folders, sidebar homes and unstable meta IDs", t => {
-  const f = fixture(t);
-  f.catalog.entries[0].capabilities = ["tasks/discussion"];
-  assert.deepEqual(validateCatalog(f.root, f.catalog, f.stories), []);
-  f.stories[0].metaId = "renamed-task";
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /explicit meta ID/);
-  f.stories[0].metaId = "tasks-create";
-  f.stories[0].title = "Unrelated/Task";
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /sidebar title/);
-  f.stories[0].title = f.catalog.entries[0].sidebarTitle;
-  const originalFile = f.catalog.entries[0].file;
-  f.catalog.entries[0].file = "ui/storybook/stories/foundations/task.stories.tsx";
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /primary feature folder tasks/);
-  f.catalog.entries[0].file = originalFile;
-  f.write("maps/feature-map/README.md", "### Conversations\n| [Tasks](./tasks.md) | Tasks |\n");
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /sidebar title/);
+test("parameter spreads cannot silently overwrite a source annotation", t => {
+  const f = mapFixture(t);
+  f.write(f.file, "export default { id: 'task', title: 'Work/Tasks/Test', parameters: { paperclip: { capabilities: [] }, ...other } }; export const Empty = {};");
+  assert.throws(() => scanStories(f.root), /must follow parameter spreads/);
+  f.write(f.file, "export default { id: 'task', title: 'Work/Tasks/Test', parameters: { paperclip: { capabilities: [] }, [key]: other } }; export const Empty = {};");
+  assert.throws(() => scanStories(f.root), /must follow parameter spreads/);
+  f.write(f.file, "export default { id: 'task', title: 'Work/Tasks/Test', parameters: { ['paperclip']: { capabilities: [] } } }; export const Empty = {};");
+  assert.throws(() => scanStories(f.root), /must be a literal property/);
 });
 
-test("production and shared fixture drift invalidate review fingerprints", t => {
-  const f = fixture(t);
-  f.write("ui/src/Task.tsx", "// changed contract\n");
-  f.write("ui/storybook/.storybook/preview.tsx", "// changed shared mocks\n");
-  const errors = validateCatalog(f.root, f.catalog, f.stories);
-  assert.equal(errors.filter(error => error.includes("source changed")).length, 2);
-  assert.equal(f.catalog.entries[0].fingerprint.length, 64);
+test("foundations preserve home and cross-capability references", t => {
+  const f = mapFixture(t);
+  f.story("control", { capabilities: ["tasks/create"], home: "foundations", exception: "Shared control", implementation: "production" }, { area: "foundations", title: "Foundations/Control" });
+  const { catalog, errors } = inspect(f);
+  assert.deepEqual(errors, []);
+  assert.equal(catalog.entries.find(entry => entry.stableId === "stable-control").home, "foundations");
+  f.story("control", { capabilities: ["tasks/create"], home: "foundations" }, { area: "foundations", title: "Foundations/Control" });
+  assert.match(inspect(f).errors.join("\n"), /foundation home needs an explicit reason/);
 });
 
-test("missing and escaping source references cannot certify a review", t => {
-  const f = fixture(t);
-  f.catalog.entries[0].sources.push("../outside.ts");
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /invalid review sources/);
+test("design proposals keep stable IDs and capability links in a separate catalog section without filling coverage gaps", t => {
+  const f = mapFixture(t);
+  const originalIds = scanStories(f.root)[0].ids;
+  rmSync(path.join(f.root, f.file));
+  f.story("task", {
+    home: "design-proposals",
+    status: "proposed",
+    capabilities: ["tasks/create", "tasks/discussion"],
+    implementation: "production",
+    boundary: "fixtures",
+    exception: "Opt-in task row refresh awaiting design review and application rollout.",
+  }, { area: "design-proposals", title: "Design proposals/Tasks/Task row" });
+  const { catalog, stories, index, errors } = inspect(f);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(stories[0].ids, originalIds);
+  assert.equal(catalog.entries[0].home, "design-proposals");
+  assert.equal(catalog.entries[0].purpose, "Tasks/Task row");
+  const report = renderIndex(catalog, stories, index);
+  const proposalSection = report.split("## Design proposals\n")[1].split("## Work\n")[0];
+  assert.match(proposalSection, /Design proposals\/Tasks\/Task row/);
+  assert.doesNotMatch(report, /feature-map\/design-proposals\.md/);
+  assert.match(report, /- `tasks\/create`: .*\(proposed\)/);
+  assert.match(report, /- `tasks\/discussion`: .*\(proposed\)/);
+  assert.match(renderVerification(catalog, index), /2 without a current, mixed or unreviewed example/);
 });
 
-test("cross-capability lookup retains one canonical file and honest status", t => {
-  const f = fixture(t);
-  f.catalog.entries[0].status = "historical";
-  const index = renderIndex(f.catalog, f.stories, capabilities(f.root));
-  assert.match(index, /tasks\/create.*\(historical\)/);
-  assert.match(index, /tasks\/discussion.*\(historical\)/);
-  assert.match(index, /1 story files; 1 indexed stories/);
-  assert.match(index, /historical \/ production \/ fixtures/);
+test("design proposal homes require proposed status, a staging reason and their own navigation", t => {
+  const f = mapFixture(t);
+  const metadata = { home: "design-proposals", status: "proposed", capabilities: ["tasks/create"], exception: "Staged refresh for review." };
+  const options = { area: "design-proposals", title: "Design proposals/Tasks/Task row" };
+  for (const status of ["current", "mixed", "unreviewed", "historical"]) {
+    f.story("proposal", { ...metadata, status }, options);
+    assert.match(inspect(f).errors.join("\n"), /design proposal home requires proposed status/);
+  }
+  f.story("proposal", { ...metadata, exception: undefined }, options);
+  assert.match(inspect(f).errors.join("\n"), /design proposal home needs an explicit staging reason/);
+  f.story("proposal", metadata, { ...options, title: "Work/Tasks/Task row" });
+  assert.match(inspect(f).errors.join("\n"), /sidebar title/);
+  f.story("misplaced", metadata, { title: options.title });
+  assert.match(inspect(f).errors.join("\n"), /primary feature folder design-proposals/);
 });
 
-test("duplicate story IDs cannot silently collapse distinct examples", t => {
-  const f = fixture(t);
-  f.stories[0].ids.push(f.stories[0].ids[0]);
-  assert.match(validateCatalog(f.root, f.catalog, f.stories).join("\n"), /Duplicate story IDs/);
+test("duplicate IDs, missing replacement references and collisions with generated guides fail", t => {
+  const f = mapFixture(t);
+  f.story("other", { capabilities: ["tasks/create"] }, { id: "stable-task" });
+  assert.match(inspect(f).errors.join("\n"), /Duplicate story IDs/);
+  f.story("other", { capabilities: ["tasks/create"] }, { id: "feature-map-tasks", exports: "export const Overview = {};" });
+  assert.match(inspect(f).errors.join("\n"), /Duplicate story IDs/);
+  f.story("other", { capabilities: ["tasks/create"], replacement: "missing.stories.tsx" });
+  assert.match(inspect(f).errors.join("\n"), /replacement story is missing/);
 });
 
-test("Storybook parser discovers nested files, filters helpers, preserves explicit IDs and counts play functions", t => {
-  const f = fixture(t);
-  f.write("ui/package.json", '{"type":"module"}');
-  symlinkSync(fileURLToPath(new URL("../ui/node_modules", import.meta.url)), path.join(f.root, "ui/node_modules"), "junction");
-  f.write(f.file, `
-    import type { Meta, StoryObj } from "@storybook/react-vite";
-    const meta = { title: "Tasks/Create", id: "stable-task", excludeStories: ["empty"] } satisfies Meta;
+test("recipe, component and shared fixture edits need no fingerprint acknowledgements", t => {
+  const f = mapFixture(t);
+  const before = inspect(f).catalog;
+  f.write("ui/src/Task.tsx", "export const Task = () => null;");
+  f.write("ui/storybook/.storybook/preview-base.tsx", "export default { parameters: { changed: true } };");
+  const file = "maps/feature-map/tasks.md";
+  f.write(file, readFileSync(path.join(f.root, file), "utf8").replace("discussion work.", "Discuss revised behavior."));
+  assert.deepEqual(inspect(f).catalog, before);
+  assert.deepEqual(inspect(f).errors, []);
+});
+
+test("check mode needs no generated outputs and generation leaves authored files intact", t => {
+  const f = mapFixture(t);
+  const before = readFileSync(path.join(f.root, f.file), "utf8");
+  generateStorybook(f.root, { write: false });
+  assert.equal(existsSync(path.join(f.root, "ui/storybook/generated")), false);
+  generateStorybook(f.root);
+  assert.ok(existsSync(path.join(f.root, "ui/storybook/generated/catalog.json")));
+  assert.ok(existsSync(path.join(f.root, "maps/generated/verification.md")));
+  assert.equal(readFileSync(path.join(f.root, f.file), "utf8"), before);
+  const first = readFileSync(path.join(f.root, "maps/generated/storybook.md"), "utf8");
+  generateStorybook(f.root);
+  assert.equal(readFileSync(path.join(f.root, "maps/generated/storybook.md"), "utf8"), first);
+});
+
+test("gap reports combine associations with local verification scope and retain historical gaps", t => {
+  const f = mapFixture(t);
+  f.story("task", { capabilities: ["tasks/create"], status: "historical" });
+  const file = "maps/feature-map/tasks.md";
+  f.write(file, readFileSync(path.join(f.root, file), "utf8") + "\n### Storybook verification\n\n#### `create`\n\nScope: cli\nStorybook: No story required for the command.\nProduction: Run the command.\nSources: Inspect the CLI.\n");
+  const { catalog, index } = inspect(f);
+  const report = renderVerification(catalog, index);
+  assert.match(report, /2 without a current, mixed or unreviewed example/);
+  assert.match(report, /No story required for the command/);
+  assert.match(report, /Production: Run the command/);
+});
+
+test("the CSF parser preserves explicit IDs, export filtering and play counts", t => {
+  const f = mapFixture(t);
+  f.write(f.file, `import type { Meta } from '@storybook/react-vite';
+    const meta = { id: 'stable-task', title: 'Work/Tasks/Create', excludeStories: ['helper'], parameters: { paperclip: { capabilities: ['tasks/create'] } } } satisfies Meta;
     export default meta;
-    type Story = StoryObj<typeof meta>;
-    export const empty = { value: "fixture" };
-    export const Empty: Story = {};
-    export const Filled: Story = { play: async () => {} };
-  `);
-  f.write("ui/storybook/stories/nested/other.stories.ts", `
-    export default { title: "Other/Subject", includeStories: ["Included"] };
     export const helper = {};
-    export const Included = {};
+    export const Empty = {};
+    export const Filled = { play: async () => {} };
   `);
-  f.write("ui/storybook/stories/nested/fixture.ts", "export const fixture = {};");
-  const stories = scanStories(f.root);
-  assert.equal(stories.length, 2);
-  assert.deepEqual(stories.find(story => story.file === f.file), {
-    file: f.file, title: "Tasks/Create", metaId: "stable-task", ids: ["stable-task--empty", "stable-task--filled"], plays: 1,
+  const [story] = scanStories(f.root);
+  assert.deepEqual(story.ids, ["stable-task--empty", "stable-task--filled"]);
+  assert.equal(story.plays, 1);
+});
+
+test("independent story and feature branches merge in either order with identical clean generated maps", t => {
+  const f = mapFixture(t);
+  f.write(".gitignore", readFileSync(path.join(f.root, ".gitignore"), "utf8") + "node_modules\n");
+  const git = (...args) => execFileSync("git", ["-c", "user.name=Map test", "-c", "user.email=map@example.test", "-c", "commit.gpgsign=false", ...args], {
+    cwd: f.root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
   });
-  assert.deepEqual(stories.find(story => story.file.endsWith("other.stories.ts")), {
-    file: "ui/storybook/stories/nested/other.stories.ts", title: "Other/Subject", metaId: undefined, ids: ["other-subject--included"], plays: 0,
-  });
+  git("init", "-b", "main");
+  git("add", ".");
+  git("commit", "-qm", "Initial recipes and story");
+  git("checkout", "-b", "story-change");
+  f.story("task", { capabilities: ["tasks/create"], notes: "Retain creation draft." }, { exports: "export const Empty = {}; export const Draft = {};" });
+  git("add", "."); git("commit", "-qm", "Add task draft example");
+  git("checkout", "-b", "feature-addition", "main");
+  f.feature("goals", "Goals", ["hierarchy"], { order: 20 });
+  f.story("goal", { capabilities: ["goals/hierarchy"] }, { area: "goals", title: "Work/Goals/Goal" });
+  git("add", "."); git("commit", "-qm", "Add goal capability and example");
+  const results = [];
+  for (const [first, second] of [["story-change", "feature-addition"], ["feature-addition", "story-change"]]) {
+    git("checkout", "-b", `merged-${first}`, "main");
+    git("merge", "--no-edit", first);
+    git("merge", "--no-edit", second);
+    const result = generateStorybook(f.root);
+    assert.equal(git("status", "--porcelain"), "");
+    assert.deepEqual(result.stories.flatMap(story => story.ids).sort(), ["stable-goal--empty", "stable-task--draft", "stable-task--empty"]);
+    results.push(["ui/storybook/generated/catalog.json", "ui/storybook/generated/feature-index.json", "maps/generated/storybook.md", "maps/generated/verification.md", "ui/storybook/.storybook/preview.tsx"].map(file => readFileSync(path.join(f.root, file), "utf8")));
+  }
+  assert.deepEqual(results[0], results[1]);
 });

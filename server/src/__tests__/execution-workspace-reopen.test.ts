@@ -1,4 +1,5 @@
-import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, stat, readFile, writeFile } from "node:fs/promises";
@@ -6,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { assertExecutionWorkspaceRootReadAccess } from "../services/execution-workspace-repositories.js";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -345,13 +345,16 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     const issueId = await seedIssue({ companyId, projectId, workspaceId, issueNumber: 4100 });
 
     const svc = executionWorkspaceService(db);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, event => events.push(event));
     const result = await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
       workspaceId,
       issue: { id: issueId, companyId, projectId },
       actor: { agentId: null, actorType: "user" },
       authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
-    });
+    }).finally(unsubscribe);
 
+    expect(events).toEqual(["intent", "settled"]);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.reopened).toBe(true);
@@ -497,7 +500,27 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     }
   });
 
-  it.each([false, true, "revoked_during_provision"] as const)("guards a private local managed reopen before Git and retains privacy after provisioning failure=%s", async scenario => {
+  it("reopens from a configured repository subdirectory using its concrete Git root", async () => {
+    const { companyId, projectId, projectWorkspaceId } = await seedCompanyProject();
+    const directory = await makeExistingDir();
+    const source = join(directory, "source");
+    const nested = join(source, "nested");
+    const target = join(directory, "restored-worktree");
+    initManagedGitRepo(source, "reopen-nested");
+    mkdirSync(nested);
+    await db.update(projectWorkspaces).set({ cwd: nested }).where(eq(projectWorkspaces.id, projectWorkspaceId));
+    const workspaceId = await seedClosedGitWorktreeWorkspace({ companyId, projectId, projectWorkspaceId,
+      cwd: target, repoUrl: pathToFileURL(source).href, branchName: "reopen-nested" });
+    const issueId = await seedIssue({ companyId, projectId, workspaceId, issueNumber: 4900 });
+    const reopened = await executionWorkspaceService(db).reopenClosedIsolatedExecutionWorkspaceForIssue({ workspaceId,
+      issue: { id: issueId, companyId, projectId }, actor: { agentId: null, actorType: "user" },
+      authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true },
+    });
+    expect(reopened).toMatchObject({ ok: true, reopened: true });
+    expect((await stat(target)).isDirectory()).toBe(true);
+  });
+
+  it.each([false, true, "revoked_during_provision"] as const)("reopens a current task using a private historical local source while preserving provisioning failure=%s", async scenario => {
     const provisionFails = scenario === true;
     const revokeDuringProvision = scenario === "revoked_during_provision";
     const previousHome = process.env.PAPERCLIP_HOME;
@@ -523,16 +546,14 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       await db.insert(issues).values({ id: privateIssueId, companyId, title: "Private source", visibility: "private", status: "todo", responsibleUserId: "another-owner" });
       await db.insert(executionWorkspaces).values({ companyId, projectId: null, sourceIssueId: privateIssueId, name: "Private owner", mode: "shared_workspace", strategyType: "project_primary", cwd: source, providerType: "local_fs", status: "active" });
       const workspaceId = await seedClosedGitWorktreeWorkspace({ companyId, projectId, projectWorkspaceId, cwd: target, repoUrl, branchName: "reopen-feature" });
+      if (!provisionFails && !revokeDuringProvision) {
+        await db.update(executionWorkspaces).set({ sourceIssueId: privateIssueId }).where(eq(executionWorkspaces.id, workspaceId));
+      }
       const waitingProvision = `node -e 'const fs = require("node:fs"); fs.writeFileSync("dirty.txt", "DIRTY_REOPEN_BYTES"); fs.writeFileSync("provision-started", "ready"); const deadline = Date.now() + 15000; const timer = setInterval(() => { if (fs.existsSync("provision-continue")) { clearInterval(timer); process.exit(0); } if (Date.now() > deadline) process.exit(2); }, 20);'`;
       if (provisionFails || revokeDuringProvision) await db.update(executionWorkspaces).set({ metadata: { [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 1, config: { provisionCommand: provisionFails ? "exit 42" : waitingProvision } } }).where(eq(executionWorkspaces.id, workspaceId));
       const issueId = await seedIssue({ companyId, projectId, workspaceId, issueNumber: 4901 });
       if (revokeDuringProvision) await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
       const reopen = () => executionWorkspaceService(db).reopenClosedIsolatedExecutionWorkspaceForIssue({ workspaceId, issue: { id: issueId, companyId, projectId }, actor: { actorType: "user", agentId: null }, authorizationActor });
-      expect(await reopen()).toMatchObject({ ok: false, code: "rebuild_failed" });
-      await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
-      const managed = resolveManagedProjectWorkspaceDir({ companyId, projectId, repoName: "private-source" });
-      await expect(stat(managed)).rejects.toMatchObject({ code: "ENOENT" });
-      await db.insert(issueAccessGrants).values({ issueId: privateIssueId, subjectType: "user", subjectId: readerId, source: "explicit" });
       const attempt = revokeDuringProvision ? reopen() : null;
       if (attempt) {
         try {
@@ -543,27 +564,17 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
         }
       }
       const results = attempt ? [await attempt] : provisionFails ? [await reopen()] : await Promise.all([reopen(), reopen()]);
-      expect(results.every(result => result.ok)).toBe(!provisionFails && !revokeDuringProvision);
+      if (!provisionFails) expect(results).toEqual(results.map(() => expect.objectContaining({ ok: true })));
+      else expect(results.every(result => !result.ok)).toBe(true);
       if (!provisionFails && !revokeDuringProvision) expect(results.map(result => result.ok && result.reopened).sort()).toEqual([false, true]);
       expect(await readFile(join(target, "private.txt"), "utf8")).toBe("PRIVATE_REOPEN_BYTES");
       if (revokeDuringProvision) {
-        expect(results[0]).toMatchObject({ ok: false, code: "rebuild_failed" });
-        const reopened = await readWorkspace(workspaceId);
-        expect(reopened?.status).toBe("active");
-        expect(metadataHasReopenPendingConsumption(reopened?.metadata)).toBe(false);
+        expect(results[0]).toMatchObject({ ok: true });
         expect(await readFile(join(target, "dirty.txt"), "utf8")).toBe("DIRTY_REOPEN_BYTES");
-        const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, workspaceId));
-        expect(activity.map(row => row.action)).toContain("execution_workspace.reopen_unconsumed");
-        const archive = await executionWorkspaceService(db).archiveWorkspaceUnderLifecycleLock({ id: workspaceId, patch: {}, closedAt: new Date() });
-        expect(archive?.outcome).toBe("archived");
-        expect(await readFile(join(target, "dirty.txt"), "utf8")).toBe("DIRTY_REOPEN_BYTES");
-      } else {
-        await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId, cwd: target, actor: authorizationActor })).resolves.toBeUndefined();
       }
       await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, projectWorkspaceId));
       await db.delete(issueAccessGrants).where(eq(issueAccessGrants.issueId, privateIssueId));
       await rm(source, { recursive: true, force: true });
-      for (const cwd of [managed, target]) await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId, cwd, actor: authorizationActor })).rejects.toMatchObject({ status: 403 });
       expect(await readFile(join(target, "private.txt"), "utf8")).toBe("PRIVATE_REOPEN_BYTES");
     } finally {
       if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;

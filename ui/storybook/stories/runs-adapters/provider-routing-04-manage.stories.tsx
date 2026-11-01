@@ -7,7 +7,17 @@ const meta = {
   id: "ai-connections-provider-routing-04-manage",
   title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Provider routing/04 Manage",
   component: Management,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "status": "mixed",
+      "implementation": "mixed",
+      "boundary": "fixtures",
+      "notes": "Design-review route uses simulated account/provider state; audit the rendered subject before treating it as the live connection flow."
+    },
+  },
   ...reviewLifecycle,
   decorators: [
     (Story) => (

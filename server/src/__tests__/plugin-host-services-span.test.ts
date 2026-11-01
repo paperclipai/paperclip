@@ -6,6 +6,7 @@ import {
   buildHostServices,
   clampProviderSpanAttributes,
   parseTraceparent,
+  recordWorkerProviderSpan,
 } from "../services/plugin-host-services.js";
 
 // Capture every span the host trust boundary hands to the real tracer.
@@ -328,4 +329,53 @@ describe("clampProviderSpanAttributes", () => {
     expect(clampProviderSpanAttributes({ [A.transferDirection]: "" })).toEqual({});
     expect(clampProviderSpanAttributes({ [A.transferDirection]: 1 })).toEqual({});
   });
+});
+
+describe("nested worker timing receipts",()=>{
+ it("uses host-generated parents, clamps content and bounds child clocks",()=>{
+  mockRecordSpan.mockReset();
+  const childParent={traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"1111111111111111",traceFlags:1};
+  mockRecordSpan.mockReturnValue(childParent);
+  const now=Date.now();
+  recordWorkerProviderSpan({name:"plugin.worker",startTimeMs:now-100,endTimeMs:now,children:[
+   {name:"plugin.remote.operation",startTimeMs:now-90,endTimeMs:now-10,attributes:{"plugin.operation":"script.settings",secret:"private"}},
+   {name:"plugin.runtime.verify",startTimeMs:now-200,endTimeMs:now},
+  ]},{traceparent:VALID_TRACEPARENT} as WorkerHostCallContext);
+  expect(mockRecordSpan).toHaveBeenCalledTimes(2);
+  expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({parent:childParent,attributes:{"plugin.operation":"script.settings"}});
+  expect(JSON.stringify(mockRecordSpan.mock.calls)).not.toContain("private");
+ });
+});
+
+it("allows a workspace provider timing receipt without environment-driver authority",async()=>{
+ mockRecordSpan.mockReset();
+ await handlersFor(["workspaces.manage"])["span.record"]({name:"plugin.worker"},{traceparent:VALID_TRACEPARENT} as WorkerHostCallContext);
+ expect(mockRecordSpan).toHaveBeenCalledTimes(1);
+});
+
+it("retains short children of a multi-hour worker invocation and shares its aggregate budget",()=>{
+ mockRecordSpan.mockReset();mockRecordSpan.mockReturnValue({traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"1111111111111111",traceFlags:1});
+ const now=Date.now(),context={traceparent:VALID_TRACEPARENT,providerSpanBudget:{remaining:3}};
+ recordWorkerProviderSpan({name:"plugin.worker",startTimeMs:now-7200000,endTimeMs:now,children:[
+  {name:"pack",startTimeMs:now-7199990,endTimeMs:now-7199980}
+ ]},context);
+ recordWorkerProviderSpan({name:"pack"},context);recordWorkerProviderSpan({name:"pack"},context);
+ expect(mockRecordSpan).toHaveBeenCalledTimes(3);
+ expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({name:"sandbox.daytona.pack",startTimeMs:now-7199990});
+});
+
+
+it("links bounded earlier remote lifecycles to their host-owned observer",()=>{
+ mockRecordSpan.mockReset();mockRecordSpan.mockReturnValue({traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"1111111111111111",traceFlags:1});
+ const now=Date.now();
+ recordWorkerProviderSpan({name:"plugin.worker",startTimeMs:now-10,endTimeMs:now,children:[
+  {name:"plugin.remote.lifecycle",relationship:"linked",startTimeMs:now-1000,endTimeMs:now-100,children:[
+   {name:"plugin.remote.operation",startTimeMs:now-900,endTimeMs:now-200}
+  ]},
+  {name:"plugin.remote.operation",relationship:"linked",startTimeMs:now-1000,endTimeMs:now-100},
+  {name:"plugin.remote.lifecycle",relationship:"linked",startTimeMs:now-700000,endTimeMs:now-100},
+ ]},{traceparent:VALID_TRACEPARENT});
+ expect(mockRecordSpan).toHaveBeenCalledTimes(3);
+ expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({name:"plugin.remote.lifecycle",linked:true,startTimeMs:now-1000});
+ expect(mockRecordSpan.mock.calls[2][0].linked).toBeUndefined();
 });

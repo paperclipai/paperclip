@@ -446,6 +446,16 @@ const meta: Meta<typeof RoutineCShell> = {
   parameters: {
     layout: "fullscreen",
     a11y: { test: "off" },
+    paperclip: {
+      "capabilities": [
+        "routines/definition",
+        "routines/management",
+        "activity/routine-audit"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Activity mounts the shipped ActivitySection with fixture trigger/run/configuration events. This does not establish live routine execution or audit persistence."
+    },
   },
 };
 

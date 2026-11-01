@@ -14,7 +14,15 @@ const meta = {
   id: "ai-connections-review",
   title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Review",
   component: AiConnectionsReview,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   decorators: [(Story, context) => (
     <AiReviewFrame {...aiReviewContext(context.id, context.args)}><Story /></AiReviewFrame>
   )],

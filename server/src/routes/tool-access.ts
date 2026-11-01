@@ -9,6 +9,7 @@ import { agents, companies, connectionGrants, issueThreadInteractions, toolConne
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
+  isConnectorFeatureEnabled,
   isMemoryConnectorId,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
@@ -57,8 +58,10 @@ import {
   updateToolProfileEntrySchema,
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
+import { filterConnectionManagementRows, filterConnectionManagementPolicies, connectionManagementGuard, requiredConnectionUserAction, connectionRequestActor, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
+import { connectionManagementService } from "../services/connection-management.js";
 import { validate } from "../middleware/validate.js";
-import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { getActorInfo, assertBoard, assertBoardOrAgent, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
@@ -513,22 +516,29 @@ function connectorEnrollmentPrincipal(req: Request): string {
   }
 
   const access = accessService(db);
+  const managementGuard = connectionManagementGuard(db, "tool");
 
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
-    assertBoard(req);
+    if (req.actor.type === "agent") {
+      const context = connectionRequestContext(req);
+      if (!context || context.resource.companyId !== companyId) throw forbidden("This operation requires an authorized management context");
+      await context.reauthorize();
+      return;
+    }
+    assertBoardOrAgent(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    const userId = req.actor.userId;
+    const userId = connectionRequestUserId(req);
     if (userId && await access.hasPermission(companyId, "user", userId, permissionKey)) return;
     throw forbidden(`Missing permission: ${permissionKey}`);
   }
 
   function activeToolMembership(req: Request, companyId: string) {
-    assertBoard(req);
+    assertBoardOrAgent(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return null;
-    const membership = Array.isArray(req.actor.memberships)
-      ? req.actor.memberships.find((item) => item.companyId === companyId)
+    const membership = Array.isArray((req.actor.type === "agent" ? req.actor.onBehalfOfMemberships : req.actor.memberships))
+      ? (req.actor.type === "agent" ? req.actor.onBehalfOfMemberships : req.actor.memberships)?.find((item) => item.companyId === companyId)
       : null;
     if (!membership || membership.status !== "active") {
       throw forbidden("User does not have active company access");
@@ -540,13 +550,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
   }
 
   async function isToolConnectionManager(req: Request, companyId: string) {
-    assertBoard(req);
+    assertBoardOrAgent(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-    return Boolean(req.actor.userId && await access.hasPermission(
+    return Boolean(connectionRequestUserId(req) && await access.hasPermission(
       companyId,
       "user",
-      req.actor.userId,
+      connectionRequestUserId(req)!,
       "tools:manage_connections",
     ));
   }
@@ -557,7 +567,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   ) {
     activeToolMembership(req, connection.companyId);
     if (await isToolConnectionManager(req, connection.companyId)) return;
-    if (req.actor.userId && connection.createdByUserId === req.actor.userId) return;
+    if (connectionRequestUserId(req) && connection.createdByUserId === connectionRequestUserId(req)) return;
     throw forbidden(
       "Only the connection creator or a connection manager can configure, reconnect, or delete this connection",
     );
@@ -569,7 +579,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   ) {
     activeToolMembership(req, connection.companyId);
     if (await isToolConnectionManager(req, connection.companyId)) return;
-    if (req.actor.userId && connection.createdByUserId === req.actor.userId) return;
+    if (connectionRequestUserId(req) && connection.createdByUserId === connectionRequestUserId(req)) return;
     const [grant] = await db
       .select({ id: connectionGrants.id })
       .from(connectionGrants)
@@ -579,8 +589,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
         eq(connectionGrants.status, "active"),
         or(
           eq(connectionGrants.kind, "organization"),
-          req.actor.userId
-            ? and(eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, req.actor.userId))
+          connectionRequestUserId(req)
+            ? and(eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, connectionRequestUserId(req)!))
             : eq(connectionGrants.kind, "organization"),
         ),
       ))
@@ -607,8 +617,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
       return { unrestricted: true, role: null, isViewer: false, isActive: true };
     }
-    const membership = Array.isArray(req.actor.memberships)
-      ? req.actor.memberships.find((item) => item.companyId === companyId)
+    const membership = Array.isArray((req.actor.type === "agent" ? req.actor.onBehalfOfMemberships : req.actor.memberships))
+      ? (req.actor.type === "agent" ? req.actor.onBehalfOfMemberships : req.actor.memberships)?.find((item) => item.companyId === companyId)
       : null;
     const isActive = Boolean(membership && membership.status === "active");
     const role = membership?.membershipRole ?? null;
@@ -616,14 +626,19 @@ function connectorEnrollmentPrincipal(req: Request): string {
   }
 
   async function isToolConnectionManagerQuiet(req: Request, companyId: string) {
+    if (req.actor.type === "agent") return (await connectionManagementService(db).capability(req.actor, "connections:configure", {
+      ...connectionRequestContext(req)?.resource, type: "connection_management", companyId,
+      connectionId: undefined, selfServiceUserId: undefined, readOnly: false,
+      operation: connectionRequestContext(req)?.resource.operation ?? "configure",
+    }, { readContext: connectionRequestContext(req) })).allowed;
     const membership = toolMembershipRole(req, companyId);
     if (membership.unrestricted) return true;
     if (!membership.isActive || membership.isViewer) return false;
     if (membership.role === "owner" || membership.role === "admin") return true;
-    return Boolean(req.actor.userId && await access.hasPermission(
+    return Boolean(connectionRequestUserId(req) && await access.hasPermission(
       companyId,
       "user",
-      req.actor.userId,
+      connectionRequestUserId(req)!,
       "tools:manage_connections",
     ));
   }
@@ -654,32 +669,40 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const membership = toolMembershipRole(req, connection.companyId);
     const isManager = await isToolConnectionManagerQuiet(req, connection.companyId);
     const mutationCapable = membership.unrestricted || (membership.isActive && !membership.isViewer);
-    const isCreator = Boolean(req.actor.userId && connection.createdByUserId === req.actor.userId);
-    const canConfigure = isManager || (mutationCapable && isCreator);
+    const isCreator = Boolean(connectionRequestUserId(req) && connection.createdByUserId === connectionRequestUserId(req));
+    const management = connectionManagementService(db);
+    const resource = { ...connectionRequestContext(req)?.resource, type: "connection_management" as const,
+      companyId: connection.companyId, connectionId: connection.id, operation: "configure",
+      readOnly: false, selfServiceUserId: connection.createdByUserId };
+    const manage = await management.capability(req.actor, "connections:configure", resource, { readContext: connectionRequestContext(req) });
+    const use = await management.capability(req.actor, "connections:test", { ...resource, operation: "use" }, { mutation: false, readContext: connectionRequestContext(req) });
+    const toolAccess = req.actor.type === "agent" && req.actor.agentId && options.toolGateway
+      ? await options.toolGateway.summarizeConnectionAccessForAgent({ companyId: connection.companyId, connectionId: connection.id,
+        agentId: req.actor.agentId, heartbeatRunId: req.actor.runId, issueId: resource.issueId, projectId: resource.projectId }) : null;
+    const usage = toolAccess ? { ...use, allowed: use.allowed && toolAccess.allowedCount > 0,
+      reason: !use.allowed ? use.reason : toolAccess.allowedCount > 0 ? "Configured actions are allowed; each call reauthorizes."
+        : toolAccess.askFirstCount > 0 ? "Configured actions require approval." : "No configured actions are available.",
+      requiresApproval: toolAccess.askFirstCount > 0, allowedCount: toolAccess.allowedCount, askFirstCount: toolAccess.askFirstCount } : use;
+    const canConfigure = manage.allowed;
     const editableAgentIds: string[] = [];
     if (mutationCapable) {
-      const companyAgents = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(eq(agents.companyId, connection.companyId));
-      for (const agent of companyAgents) {
-        const decision = await access.decide({
-          actor: req.actor,
-          action: "agent_config:update",
-          resource: { type: "agent", companyId: connection.companyId, agentId: agent.id },
-        });
-        if (decision.allowed) editableAgentIds.push(agent.id);
+      const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, connection.companyId));
+      const capabilities = await management.describeAgentInstallCapabilities(req.actor, resource, companyAgents.map(agent => agent.id), { readContext: connectionRequestContext(req) });
+      for (let i = 0; i < companyAgents.length; i++) {
+        if (capabilities[i].allowed) editableAgentIds.push(companyAgents[i].id);
       }
     }
     return {
       canConfigure,
+      management: manage,
+      usage,
       canCreateOrganizationGrant: canConfigure,
       canSetCompanyInstall: canConfigure,
       // Personal consent belongs to the person: it needs a named board user, and
       // it is never available to a viewer or to an unauthenticated principal.
-      canConnectAsCurrentUser: Boolean(req.actor.userId) && mutationCapable,
+      canConnectAsCurrentUser: Boolean(connectionRequestUserId(req)) && mutationCapable,
       canManageAgentInstalls: mutationCapable && editableAgentIds.length > 0,
-      canViewOtherPersonalIdentities: isManager,
+      canViewOtherPersonalIdentities: req.actor.type === "board" && isManager,
       editableAgentIds,
     };
   }
@@ -704,10 +727,10 @@ function connectorEnrollmentPrincipal(req: Request): string {
   }
 
   async function assertBoardAnyToolPermission(req: Request, companyId: string, permissionKeys: PermissionKey[]) {
-    assertBoard(req);
+    assertBoardOrAgent(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    const userId = req.actor.userId;
+    const userId = connectionRequestUserId(req);
     if (userId) {
       for (const permissionKey of permissionKeys) {
         if (await access.hasPermission(companyId, "user", userId, permissionKey)) return;
@@ -756,6 +779,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   }
 
   async function assertToolsAdmin(req: Request, companyId: string) {
+    assertBoard(req);
     await assertBoardToolPermission(req, companyId, "tools:admin");
   }
 
@@ -763,7 +787,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     await assertBoardToolPermission(req, companyId, "tools:manage_runtime");
   }
 
-  router.post("/agents/me/connections/:connectionId/start-authorization", validate(startConnectionAuthorizationSchema), async (req, res) => {
+  router.post("/agents/me/connections/:connectionId/start-authorization", managementGuard("connections:configure", "POST /agents/me/connections/:connectionId/start-authorization", { personal: true }), validate(startConnectionAuthorizationSchema), async (req, res) => {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
       res.status(401).json({ error: "Active agent run authentication required" });
       return;
@@ -777,8 +801,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
       scopes: req.body.scopes,
       returnTo: req.body.returnTo,
       redirectUri: oauthRedirectUri(req),
+      managementContext: connectionRequestContext(req),
     });
-    res.json({ url: result.authorizationUrl, ...(result.handoff ? { handoff: result.handoff } : {}) });
+    res.json({ ...requiredConnectionUserAction(req, { type: "connection", id: req.params.connectionId as string, companyId: req.actor.companyId }, result.authorizationUrl, "Authenticate the selected account and consent to the requested provider access."), url: result.authorizationUrl, ...(result.handoff ? { handoff: result.handoff } : {}) });
   });
 
   router.post("/agents/me/connections/:connectionId/token", validate(connectionTokenRequestSchema), async (req, res) => {
@@ -806,11 +831,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   function assertToolAppMutationAccess(req: Request, companyId: string) {
+    if (req.actor.type === "agent" && !connectionRequestContext(req)) throw forbidden("An authorized connection management operation is required");
     activeToolMembership(req, companyId);
   }
 
-  router.get("/companies/:companyId/tools/gallery", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/gallery", managementGuard("connections:read", "GET /companies/:companyId/tools/gallery", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const advertisedProfiles = options.paperclipCloudConnector === undefined
@@ -819,7 +845,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
     const vercelConnect = vercelConnectIntegrationStatus();
-    const { enableMemoryConnectors } = await instanceSettingsService(db).getExperimental();
+    const settings = await instanceSettingsService(db).getExperimental();
     let oauthCallbackUrl: string | undefined;
     try {
       // Setup must display the callback used by its initiating POST. Provider
@@ -850,14 +876,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
             : "Vercel Connect setup is disabled on this Paperclip instance.",
         },
       },
-      apps: [...APP_STORE_DEFINITIONS.filter((app) => (enableMemoryConnectors || !isMemoryConnectorId(app.slug))).map((app) =>
+      apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
+        && isConnectorFeatureEnabled(app, settings)).map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
   });
 
-  router.get("/companies/:companyId/tools/apps/:galleryKey/preflight", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/apps/:galleryKey/preflight", managementGuard("connections:read", "GET /companies/:companyId/tools/apps/:galleryKey/preflight", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const methodKey = typeof req.query.methodKey === "string" ? req.query.methodKey.trim() || null : null;
@@ -880,7 +907,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.type("application/json").json(oauthClientIdMetadataDocument({ clientId, redirectUri }));
   });
 
-  router.post("/companies/:companyId/tools/apps/connect", validate(connectToolAppSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/apps/connect", managementGuard("connections:configure", "POST /companies/:companyId/tools/apps/connect", { personal: true }), validate(connectToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     // An omitted grant kind is the backward-compatible organization default.
@@ -911,7 +938,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       );
     }
     try {
-      const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
+      const result = await svc.connectGalleryApp(companyId, req.body, connectionRequestActor(req));
       if (result.auth?.kind === "oauth") {
         try {
           // "Just me" must consent as the caller, not as the workspace: passing
@@ -919,11 +946,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
           // caller's personal grant instead of an organization grant
           // (PAP-17835). The service refuses any subject other than the actor,
           // so this cannot start consent on someone else's behalf.
-          const personalSubjectUserId = req.body.grantKind === "user" ? req.actor.userId ?? null : null;
+          const personalSubjectUserId = (req.actor.type === "agent" || req.body.grantKind === "user") ? connectionRequestUserId(req) ?? null : null;
           const dedicatedSubjectAgentId = req.body.grantKind === "agent" ? req.body.subjectAgentId ?? null : null;
           const start = await svc.startOAuth(companyId, result.connectionId, {
+            workspaceServices: req.body.workspaceServices,
             redirectUri: oauthRedirectUri(req),
-            actor: getActorInfo(req),
+            actor: connectionRequestActor(req),
             ...(personalSubjectUserId ? { subjectUserId: personalSubjectUserId } : {}),
             ...(dedicatedSubjectAgentId ? { subjectAgentId: dedicatedSubjectAgentId } : {}),
             ...(req.body.interactionId ? { interactionId: req.body.interactionId } : {}),
@@ -947,8 +975,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       }
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_app.connected",
         entityType: "tool_connection",
         entityId: result.connectionId,
@@ -962,38 +989,40 @@ function connectorEnrollmentPrincipal(req: Request): string {
           canMakeChangesActionCount: result.actions.canMakeChanges.length,
         },
       });
-      res.status(201).json(result);
+      res.status(201).json({ ...result, ...(result.auth?.kind === "oauth" && result.auth.startUrl
+        ? requiredConnectionUserAction(req, { type: "connection", id: result.connectionId, companyId }, result.auth.startUrl,
+          "Open this saved setup and authenticate the account in your browser.") : {}) });
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
     }
   });
 
   router.post(
-    "/companies/:companyId/tools/connections/:connectionId/start-authorization",
+    "/companies/:companyId/tools/connections/:connectionId/start-authorization", managementGuard("connections:configure", "POST /companies/:companyId/tools/connections/:connectionId/start-authorization", { personal: true }),
     validate(startConnectionAuthorizationSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       activeToolMembership(req, companyId);
-      if (!req.actor.userId || req.actor.userId !== req.body.subjectUserId) {
+      if (!connectionRequestUserId(req) || connectionRequestUserId(req) !== req.body.subjectUserId) {
         throw forbidden("Board users may only authorize their own connection subject");
       }
       const existing = await svc.getConnection(req.params.connectionId as string, companyId);
       await assertToolConnectionAccess(req, existing);
       const result = await svc.startOAuth(companyId, existing.id, {
         redirectUri: oauthRedirectUri(req),
-        actor: getActorInfo(req),
+        actor: connectionRequestActor(req),
         subjectUserId: req.body.subjectUserId,
         scopes: req.body.scopes,
         returnTo: req.body.returnTo,
       });
-      res.json({ url: result.authorizationUrl, ...(result.handoff ? { handoff: result.handoff } : {}) });
+      res.json({ ...requiredConnectionUserAction(req, { type: "connection", id: existing.id, companyId: existing.companyId }, result.authorizationUrl, "Authenticate the selected account and consent to the requested provider access."), url: result.authorizationUrl, ...(result.handoff ? { handoff: result.handoff } : {}) });
     },
   );
 
-  router.post("/tools/oauth/:connectionId/start", validate(startToolOAuthSchema), async (req, res) => {
+  router.post("/tools/oauth/:connectionId/start", managementGuard("connections:configure", "POST /tools/oauth/:connectionId/start", { personal: true }), validate(startToolOAuthSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    const subjectUserId = req.body?.asCurrentUser === true ? req.actor.userId ?? null : null;
+    const subjectUserId = (req.actor.type === "agent" || req.body?.asCurrentUser === true) ? connectionRequestUserId(req) ?? null : null;
     const subjectAgentId = req.body?.asAgentId ?? null;
     if (req.body?.asCurrentUser === true && !subjectUserId) {
       throw forbidden("Connecting an app as yourself requires a signed-in user");
@@ -1008,14 +1037,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
       await assertToolConnectionConfigureAccess(req, existing);
     }
     const result = await svc.startOAuth(existing.companyId, existing.id, {
+      workspaceServices: req.body.workspaceServices,
       redirectUri: oauthRedirectUri(req),
-      actor: getActorInfo(req),
+      actor: connectionRequestActor(req),
       returnTo: oauthBrowserOrigin(req) ?? undefined,
       ...(subjectUserId ? { subjectUserId } : {}),
       ...(subjectAgentId ? { subjectAgentId } : {}),
       ...(req.body?.interactionId ? { interactionId: req.body.interactionId } : {}),
     });
-    res.json(result);
+    res.json({ ...result, ...requiredConnectionUserAction(req, { type: "connection", id: existing.id, companyId: existing.companyId }, result.authorizationUrl, "Authenticate the selected account and consent to the requested provider access.") });
   });
 
   router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
@@ -1462,17 +1492,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.post(
-    "/companies/:companyId/tools/apps/:connectionId/finalize-oauth-access",
+    "/companies/:companyId/tools/apps/:connectionId/finalize-oauth-access", managementGuard("connections:configure", "POST /companies/:companyId/tools/apps/:connectionId/finalize-oauth-access", { personal: true }),
     validate(finalizeOAuthAccessSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const existing = await svc.getConnection(req.params.connectionId as string, companyId);
       await assertToolConnectionConfigureAccess(req, existing);
-      const result = await svc.finalizeOAuthAccess(companyId, existing.id, req.body, getActorInfo(req));
+      const result = await svc.finalizeOAuthAccess(companyId, existing.id, req.body, connectionRequestActor(req));
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_app.oauth_access_finalized",
         entityType: "tool_connection",
         entityId: result.connection.id,
@@ -1486,15 +1515,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     },
   );
 
-  router.post("/companies/:companyId/tools/apps/:connectionId/finish", validate(finishToolAppSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/apps/:connectionId/finish", managementGuard("connections:configure", "POST /companies/:companyId/tools/apps/:connectionId/finish", { personal: true }), validate(finishToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const existing = await svc.getConnection(req.params.connectionId as string, companyId);
     await assertToolConnectionConfigureAccess(req, existing);
-    const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, getActorInfo(req));
+    const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, connectionRequestActor(req));
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_app.finished",
       entityType: "tool_connection",
       entityId: result.connection.id,
@@ -1510,39 +1538,46 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(result);
   });
 
-  router.get("/companies/:companyId/tools/examples", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/examples", managementGuard("connections:read", "GET /companies/:companyId/tools/examples", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ examples: await svc.listExamples(companyId) });
   });
 
-  router.get("/companies/:companyId/tools/apps/attention", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/apps/attention", managementGuard("connections:read", "GET /companies/:companyId/tools/apps/attention", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.listAppsNeedingAttention(companyId));
+    const result = await svc.listAppsNeedingAttention(companyId);
+    const apps = await filterConnectionManagementRows(db, req, "connections:read", result.apps, row => ({ connectionId: row.connection.id }));
+    res.json({ ...result, apps, totals: {
+      connections: apps.length, health: apps.filter(app => app.healthNeedsAttention).length,
+      quarantinedCatalogEntries: apps.reduce((sum, app) => sum + app.quarantinedCatalogEntryCount, 0),
+      pendingActionRequests: apps.reduce((sum, app) => sum + app.pendingActionRequestCount, 0),
+      newToolsPendingReview: apps.reduce((sum, app) => sum + app.newToolsPendingReviewCount, 0),
+      newToolsPendingProfiles: new Set(apps.flatMap(app => app.newToolsPendingProfiles.map(profile => profile.profileId))).size,
+    } });
   });
 
-  router.get("/companies/:companyId/tools/action-requests", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/action-requests", managementGuard("connections:read", "GET /companies/:companyId/tools/action-requests", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const statusRaw = typeof req.query.status === "string" ? req.query.status : "pending";
     const status = (TOOL_ACTION_REQUEST_STATUSES as readonly string[]).includes(statusRaw)
       ? (statusRaw as (typeof TOOL_ACTION_REQUEST_STATUSES)[number])
       : "pending";
-    res.json({ actionRequests: await svc.listActionRequests(companyId, status) });
+    res.json({ actionRequests: await filterConnectionManagementRows(db, req, "connections:read", await svc.listActionRequests(companyId, status), row => ({ connectionId: row.connectionId, issueId: row.request.issueId })) });
   });
 
-  router.post("/companies/:companyId/tools/examples/:id/install", async (req, res) => {
+  router.post("/companies/:companyId/tools/examples/:id/install", managementGuard("connections:configure", "POST /companies/:companyId/tools/examples/:id/install", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
-    const result = await svc.installExample(companyId, req.params.id as string, getActorInfo(req));
+    const result = await svc.installExample(companyId, req.params.id as string, connectionRequestActor(req));
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_example.installed",
       entityType: "tool_example",
       entityId: result.example.id,
@@ -1586,22 +1621,21 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(result);
   });
 
-  router.get("/companies/:companyId/tools/applications", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/applications", managementGuard("connections:read", "GET /companies/:companyId/tools/applications", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ applications: await svc.listApplications(companyId) });
   });
 
-  router.post("/companies/:companyId/tools/applications", validate(createToolApplicationSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/applications", managementGuard("connections:configure", "POST /companies/:companyId/tools/applications", { personal: true }), validate(createToolApplicationSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
-      const application = await svc.createApplication(companyId, req.body);
+      const application = await svc.createApplication(companyId, req.body, connectionRequestContext(req));
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_application.created",
         entityType: "tool_application",
         entityId: application.id,
@@ -1613,16 +1647,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.patch("/tool-applications/:applicationId", validate(updateToolApplicationSchema), async (req, res) => {
+  router.patch("/tool-applications/:applicationId", managementGuard("connections:configure", "PATCH /tool-applications/:applicationId", { personal: true }), validate(updateToolApplicationSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getApplication(req.params.applicationId as string), "Tool application not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
     try {
-      const application = await svc.updateApplication(existing.id, req.body);
+      const application = await svc.updateApplication(existing.id, req.body, connectionRequestContext(req));
       await logActivity(db, {
         companyId: application.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_application.updated",
         entityType: "tool_application",
         entityId: application.id,
@@ -1634,15 +1667,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.delete("/tool-applications/:applicationId", async (req, res) => {
+  router.delete("/tool-applications/:applicationId", managementGuard("connections:configure", "DELETE /tool-applications/:applicationId", { personal: true }), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getApplication(req.params.applicationId as string), "Tool application not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
-    const application = await svc.deleteApplication(existing.id);
+    const application = await svc.deleteApplication(existing.id, connectionRequestContext(req));
     await logActivity(db, {
       companyId: application.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_application.deleted",
       entityType: "tool_application",
       entityId: application.id,
@@ -1651,29 +1683,32 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(application);
   });
 
-  router.get("/companies/:companyId/tools/connections", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/connections", managementGuard("connections:read", "GET /companies/:companyId/tools/connections", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const connections = await svc.listConnections(companyId, req.actor.userId);
+    const connections = await svc.listConnections(companyId, connectionRequestUserId(req) ?? undefined);
     const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
-    res.json({
-      connections: filterVisibleToolConnections(connections, {
-        userId: req.actor.userId,
-        canManageConnections,
-      }),
-    });
+    let visible = filterVisibleToolConnections(connections, { userId: connectionRequestUserId(req), canManageConnections });
+    if (req.actor.type === "agent") {
+      const management = connectionManagementService(db);
+      const allowed = await Promise.all(visible.map(connection => management.capability(req.actor, "connections:read", {
+        type: "connection_management", companyId, connectionId: connection.id,
+        operation: "GET /companies/:companyId/tools/connections", readOnly: true,
+      }, { mutation: false, readContext: connectionRequestContext(req) })));
+      visible = visible.filter((_, index) => allowed[index].allowed);
+    }
+    res.json({ connections: visible });
   });
 
-  router.post("/companies/:companyId/tools/connections", validate(createToolConnectionSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/connections", managementGuard("connections:configure", "POST /companies/:companyId/tools/connections", { personal: true }), validate(createToolConnectionSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
-      const connection = await svc.createConnection(companyId, req.body, getActorInfo(req));
+      const connection = await svc.createConnection(companyId, req.body, connectionRequestActor(req));
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_connection.created",
         entityType: "tool_connection",
         entityId: connection.id,
@@ -1691,40 +1726,40 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.get("/tool-connections/:connectionId", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId", managementGuard("connections:read", "GET /tool-connections/:connectionId", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(
       req,
       res,
-      svc.getConnection(req.params.connectionId as string, undefined, req.actor.userId),
+      svc.getConnection(req.params.connectionId as string, undefined, connectionRequestUserId(req) ?? undefined),
       "Tool connection not found",
     );
     if (!connection) return;
     res.json(connection);
   });
 
-  router.post("/tool-connections/:connectionId/railway/ssh", validate(configureRailwaySshSchema), async (req, res) => {
-    assertBoard(req);
+  router.post("/tool-connections/:connectionId/railway/ssh", managementGuard("connections:configure", "POST /tool-connections/:connectionId/railway/ssh", { personal: true }), validate(configureRailwaySshSchema), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     await assertToolConnectionConfigureAccess(req, connection);
-    const setup = await svc.configureRailwaySsh(connection.id, connection.companyId, req.body, getActorInfo(req)).catch((error) => {
+    const setup = await svc.configureRailwaySsh(connection.id, connection.companyId, req.body, connectionRequestActor(req)).catch((error) => {
       if (error instanceof RailwayError) throw new HttpError(error.status, error.message);
       throw error;
     });
-    await logActivity(db, { companyId: connection.companyId, actorType: "user", actorId: req.actor.userId ?? "board", action: "tool_connection.railway_ssh_updated", entityType: "tool_connection", entityId: connection.id, details: { action: req.body.action, grantId: req.body.grantId, enabled: setup?.enabled ?? false } });
+    await logActivity(db, { companyId: connection.companyId, ...connectionRequestActor(req), action: "tool_connection.railway_ssh_updated", entityType: "tool_connection", entityId: connection.id, details: { action: req.body.action, grantId: req.body.grantId, enabled: setup?.enabled ?? false } });
     res.json(setup);
   });
 
-  router.get("/tool-connections/:connectionId/grants", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/grants", managementGuard("connections:read", "GET /tool-connections/:connectionId/grants", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     const listed = await svc.listConnectionGrants(connection.id, connection.companyId);
     const capabilities = await describeConnectionCapabilities(req, connection);
     const membership = toolMembershipRole(req, connection.companyId);
     const grantContext = {
-      userId: req.actor.userId ?? null,
+      userId: connectionRequestUserId(req) ?? null,
       isManager: await isToolConnectionManagerQuiet(req, connection.companyId),
       mutationCapable: membership.unrestricted || (membership.isActive && !membership.isViewer),
     };
@@ -1750,10 +1785,10 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.put(
-    "/tool-connections/:connectionId/grants/:grantId/members",
+    "/tool-connections/:connectionId/grants/:grantId/members", managementGuard("connections:profiles", "PUT /tool-connections/:connectionId/grants/:grantId/members", { personal: true }),
     validate(replaceConnectionGrantMembersSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
       if (!connection) return;
       // Viewer/inactive principals are rejected before anything else, so a
@@ -1762,19 +1797,18 @@ function connectorEnrollmentPrincipal(req: Request): string {
       const { grants } = await svc.listConnectionGrants(connection.id, connection.companyId);
       const target = grants.find((grant) => grant.id === req.params.grantId);
       if (!target) throw notFound("Connection grant not found");
-      const isGrantCreator = Boolean(req.actor.userId && target.createdByUserId === req.actor.userId);
+      const isGrantCreator = Boolean(connectionRequestUserId(req) && target.createdByUserId === connectionRequestUserId(req));
       if (!isGrantCreator) await assertToolConnectionConfigureAccess(req, connection);
       const memberUserIds = req.body.memberUserIds as string[];
       const grant = await svc.replaceConnectionGrantMembers(
         connection.id,
         target.id,
         memberUserIds,
-        getActorInfo(req),
+        connectionRequestActor(req),
       );
       await logActivity(db, {
         companyId: connection.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_connection.grant_audience_replaced",
         entityType: "connection_grant",
         entityId: grant.id,
@@ -1784,8 +1818,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     },
   );
 
-  router.post("/tool-connections/:connectionId/grants/installations", async (req, res) => {
-    assertBoard(req);
+  router.post("/tool-connections/:connectionId/grants/installations", managementGuard("connections:profiles", "POST /tool-connections/:connectionId/grants/installations", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     await assertToolConnectionConfigureAccess(req, connection);
@@ -1798,11 +1832,10 @@ function connectorEnrollmentPrincipal(req: Request): string {
       providerTenant,
       credentialSecretRefs,
       isDefault: body.isDefault === true,
-    }, getActorInfo(req));
+    }, connectionRequestActor(req));
     await logActivity(db, {
       companyId: connection.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_connection.grant_added",
       entityType: "connection_grant",
       entityId: grant.id,
@@ -1811,23 +1844,22 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.status(201).json(grant);
   });
 
-  router.delete("/tool-connections/:connectionId/grants/:grantId", async (req, res) => {
-    assertBoard(req);
+  router.delete("/tool-connections/:connectionId/grants/:grantId", managementGuard("connections:configure", "DELETE /tool-connections/:connectionId/grants/:grantId", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     const { grants } = await svc.listConnectionGrants(connection.id, connection.companyId);
     const grantToRevoke = grants.find((grant) => grant.id === req.params.grantId);
     const canRevokeOwnGrant = Boolean(
-      req.actor.userId
+      connectionRequestUserId(req)
       && grantToRevoke
-      && (grantToRevoke.subjectUserId === req.actor.userId || grantToRevoke.createdByUserId === req.actor.userId),
+      && (grantToRevoke.subjectUserId === connectionRequestUserId(req) || grantToRevoke.createdByUserId === connectionRequestUserId(req)),
     );
     if (!canRevokeOwnGrant) await assertToolConnectionConfigureAccess(req, connection);
-    const grant = await svc.revokeConnectionGrant(connection.id, req.params.grantId as string, getActorInfo(req));
+    const grant = await svc.revokeConnectionGrant(connection.id, req.params.grantId as string, connectionRequestActor(req));
     await logActivity(db, {
       companyId: connection.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_connection.grant_revoked",
       entityType: "connection_grant",
       entityId: grant.id,
@@ -1836,11 +1868,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(grant);
   });
 
-  router.post("/tool-connections/:connectionId/grants/:grantId/delegations", validate(createConnectionGrantDelegationSchema), async (req, res) => {
-    assertBoard(req);
+  router.post("/tool-connections/:connectionId/grants/:grantId/delegations", managementGuard("connections:profiles", "POST /tool-connections/:connectionId/grants/:grantId/delegations", { personal: true }), validate(createConnectionGrantDelegationSchema), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
-    const ownerUserId = req.actor.userId;
+    const ownerUserId = connectionRequestUserId(req);
     if (!ownerUserId) throw forbidden("A named user is required to delegate a personal grant");
     const agentId = req.body.agentId;
     const delegation = await svc.createConnectionGrantDelegation(
@@ -1848,11 +1880,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
       req.params.grantId as string,
       agentId,
       ownerUserId,
+      connectionRequestContext(req),
     );
     await logActivity(db, {
       companyId: connection.companyId,
-      actorType: "user",
-      actorId: ownerUserId,
+      ...connectionRequestActor(req),
       action: "tool_connection.grant_delegated",
       entityType: "connection_grant",
       entityId: req.params.grantId as string,
@@ -1861,14 +1893,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.status(201).json(delegation);
   });
 
-  router.delete("/tool-connections/:connectionId/grants/:grantId/delegations/:delegationId", async (req, res) => {
-    assertBoard(req);
+  router.delete("/tool-connections/:connectionId/grants/:grantId/delegations/:delegationId", managementGuard("connections:profiles", "DELETE /tool-connections/:connectionId/grants/:grantId/delegations/:delegationId", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     const { grants } = await svc.listConnectionGrants(connection.id, connection.companyId);
     const grant = grants.find((candidate) => candidate.id === req.params.grantId);
     if (!grant) throw notFound("Connection grant not found");
-    const canRevokeOwnDelegation = Boolean(req.actor.userId && grant.subjectUserId === req.actor.userId);
+    const canRevokeOwnDelegation = Boolean(connectionRequestUserId(req) && grant.subjectUserId === connectionRequestUserId(req));
     if (!canRevokeOwnDelegation && !await isToolConnectionManager(req, connection.companyId)) {
       throw forbidden("Only the personal grant owner or a connection manager can revoke a delegation");
     }
@@ -1876,12 +1908,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
       connection.id,
       grant.id,
       req.params.delegationId as string,
-      getActorInfo(req),
+      connectionRequestActor(req),
     );
     await logActivity(db, {
       companyId: connection.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_connection.grant_delegation_revoked",
       entityType: "connection_grant",
       entityId: grant.id,
@@ -1890,8 +1921,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(delegation);
   });
 
-  router.get("/tool-connections/:connectionId/usage", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/usage", managementGuard("connections:read", "GET /tool-connections/:connectionId/usage", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     const range = req.query.range === "30d" ? "30d" : req.query.range === undefined || req.query.range === "7d" ? "7d" : null;
@@ -1899,18 +1930,18 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(await svc.getConnectionUsage(connection.id, range, connection.companyId));
   });
 
-  router.get("/tool-connections/:connectionId/installs", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/installs", managementGuard("connections:profiles", "GET /tool-connections/:connectionId/installs", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     res.json({ connectionId: connection.id, installs: connection.installs ?? [] });
   });
 
   router.put(
-    "/tool-connections/:connectionId/installs",
+    "/tool-connections/:connectionId/installs", managementGuard("connections:profiles", "PUT /tool-connections/:connectionId/installs", { personal: true }),
     validate(putToolConnectionInstallsSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
       if (!connection) return;
       const existingInstalls = await db
@@ -1954,11 +1985,10 @@ function connectorEnrollmentPrincipal(req: Request): string {
           }
         }
       }
-      const snapshot = await svc.putConnectionInstalls(connection.id, req.body, getActorInfo(req));
+      const snapshot = await svc.putConnectionInstalls(connection.id, req.body, connectionRequestActor(req));
       await logActivity(db, {
         companyId: connection.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_connection.installs_synced",
         entityType: "tool_connection",
         entityId: connection.id,
@@ -1970,8 +2000,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     },
   );
 
-  router.get("/tool-connections/:connectionId/test-agents", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/test-agents", managementGuard("connections:read", "GET /tool-connections/:connectionId/test-agents", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     if (!options.toolGateway) {
       res.status(501).json({ error: "Tool gateway service is not configured" });
       return;
@@ -2011,8 +2041,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ agents: candidates });
   });
 
-  router.get("/tool-connections/:connectionId/test-agents/:agentId/access", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/test-agents/:agentId/access", managementGuard("connections:read", "GET /tool-connections/:connectionId/test-agents/:agentId/access", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     if (!options.toolGateway) {
       res.status(501).json({ error: "Tool gateway service is not configured" });
       return;
@@ -2031,69 +2061,69 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   async function composioAppManager(req: Request, res: Response) {
-    assertBoard(req);
+    assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return null;
     if (!await isToolConnectionManager(req, connection.companyId)) throw forbidden("Only a connection manager can configure apps and grant agent access");
     return connection;
   }
 
-  router.get("/tool-connections/:connectionId/aggregator/apps", async (req, res) => {
+  router.get("/tool-connections/:connectionId/aggregator/apps", managementGuard("connections:read", "GET /tool-connections/:connectionId/aggregator/apps", { personal: true }), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
     res.set("Cache-Control", "private, no-store");
-    res.json(await svc.listAggregatorApps(connection.id, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.listAggregatorApps(connection.id, { ...connectionRequestActor(req), }));
   });
-  router.post("/tool-connections/:connectionId/aggregator/apps/sync", validate(aggregatorAppsSyncSchema), async (req, res) => {
+  router.post("/tool-connections/:connectionId/aggregator/apps/sync", managementGuard("connections:configure", "POST /tool-connections/:connectionId/aggregator/apps/sync", { personal: true }), validate(aggregatorAppsSyncSchema), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
-    res.json(await svc.syncAggregatorApps(connection.id, req.body.force, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.syncAggregatorApps(connection.id, req.body.force, { ...connectionRequestActor(req), }));
   });
-  router.post("/tool-connections/:connectionId/aggregator/apps/refresh", validate(aggregatorAppsRefreshSchema), async (req, res) => {
+  router.post("/tool-connections/:connectionId/aggregator/apps/refresh", managementGuard("connections:configure", "POST /tool-connections/:connectionId/aggregator/apps/refresh", { personal: true }), validate(aggregatorAppsRefreshSchema), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
-    res.json(await svc.refreshAggregatorApps(connection.id, req.body.toolkits, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.refreshAggregatorApps(connection.id, req.body.toolkits, { ...connectionRequestActor(req), }));
   });
-  router.put("/tool-connections/:connectionId/aggregator/discovery", validate(arcadeDiscoverySetupSchema), async (req, res) => {
+  router.put("/tool-connections/:connectionId/aggregator/discovery", managementGuard("connections:configure", "PUT /tool-connections/:connectionId/aggregator/discovery", { personal: true }), validate(arcadeDiscoverySetupSchema), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
-    res.json(await svc.configureArcadeDiscovery(connection.id, req.body, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.configureArcadeDiscovery(connection.id, req.body, { ...connectionRequestActor(req), }));
   });
 
-  router.get("/tool-connections/:connectionId/composio/apps", async (req, res) => {
+  router.get("/tool-connections/:connectionId/composio/apps", managementGuard("connections:read", "GET /tool-connections/:connectionId/composio/apps", { personal: true }), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
-    res.json(await svc.listComposioApps(connection.id, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.listComposioApps(connection.id, { ...connectionRequestActor(req), }));
   });
 
-  router.post("/tool-connections/:connectionId/composio/apps/sync", validate(composioAppsSyncSchema), async (req, res) => {
+  router.post("/tool-connections/:connectionId/composio/apps/sync", managementGuard("connections:configure", "POST /tool-connections/:connectionId/composio/apps/sync", { personal: true }), validate(composioAppsSyncSchema), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
-    res.json(await svc.syncComposioApps(connection.id, req.body.force, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.syncComposioApps(connection.id, req.body.force, { ...connectionRequestActor(req), }));
   });
 
-  router.post("/tool-connections/:connectionId/composio/apps/refresh", validate(composioAppsRefreshSchema), async (req, res) => {
+  router.post("/tool-connections/:connectionId/composio/apps/refresh", managementGuard("connections:configure", "POST /tool-connections/:connectionId/composio/apps/refresh", { personal: true }), validate(composioAppsRefreshSchema), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
-    res.json(await svc.refreshComposioApps(connection.id, req.body.toolkits, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.refreshComposioApps(connection.id, req.body.toolkits, { ...connectionRequestActor(req), }));
   });
 
-  router.post("/tool-connections/:connectionId/composio/apps/:toolkit/accounts", validate(composioAppAccountSchema), async (req, res) => {
+  router.post("/tool-connections/:connectionId/composio/apps/:toolkit/accounts", managementGuard("connections:configure", "POST /tool-connections/:connectionId/composio/apps/:toolkit/accounts", { personal: true }), validate(composioAppAccountSchema), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
-    res.json(await svc.manageComposioAppAccount(connection.id, req.params.toolkit as string, req.body, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+    res.json(await svc.manageComposioAppAccount(connection.id, req.params.toolkit as string, req.body, { ...connectionRequestActor(req), }));
   });
 
-  router.post("/tool-connections/:connectionId/composio/apps/:toolkit/setup", validate(composioAppSetupSchema), async (req, res) => {
+  router.post("/tool-connections/:connectionId/composio/apps/:toolkit/setup", managementGuard("connections:configure", "POST /tool-connections/:connectionId/composio/apps/:toolkit/setup", { personal: true }), validate(composioAppSetupSchema), async (req, res) => {
     const connection = await composioAppManager(req, res);
     if (!connection) return;
     const result = await svc.setupComposioApp(connection.id, req.params.toolkit as string, req.body,
-      { actorType: "user", actorId: req.actor.userId ?? "board" });
+      { ...connectionRequestActor(req), });
     res.json(result);
   });
 
-  router.post("/tool-connections/:connectionId/test-calls", validate(toolConnectionTestCallSchema), async (req, res) => {
-    assertBoard(req);
+  router.post("/tool-connections/:connectionId/test-calls", managementGuard("connections:test", "POST /tool-connections/:connectionId/test-calls", { personal: true }), validate(toolConnectionTestCallSchema), async (req, res) => {
+    assertBoardOrAgent(req);
     if (!options.toolGateway) {
       res.status(501).json({ error: "Tool gateway service is not configured" });
       return;
@@ -2104,10 +2134,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
     await assertCanTestAsAgent(req, connection.companyId, req.body.agentId);
     try {
       const result = await options.toolGateway.executeTestCall({
+        managementContext: connectionRequestContext(req),
         companyId: connection.companyId,
         connectionId: connection.id,
         agentId: req.body.agentId,
-        userId: req.actor.userId ?? "board",
+        userId: connectionRequestUserId(req) ?? "board",
         toolName: req.body.toolName,
         parameters: req.body.parameters ?? {},
       });
@@ -2117,8 +2148,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.get("/tool-connections/:connectionId/test-calls/:actionRequestId", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/test-calls/:actionRequestId", managementGuard("connections:test", "GET /tool-connections/:connectionId/test-calls/:actionRequestId", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     if (!options.toolGateway) {
       res.status(501).json({ error: "Tool gateway service is not configured" });
       return;
@@ -2128,6 +2159,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     await assertBoardAnyToolPermission(req, connection.companyId, ["tools:use", "tools:manage_connections"]);
     try {
       const status = await options.toolGateway.getTestCallStatus({
+        actor: req.actor,
         companyId: connection.companyId,
         connectionId: connection.id,
         actionRequestId: req.params.actionRequestId as string,
@@ -2138,20 +2170,19 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.patch("/tool-connections/:connectionId", validate(updateToolConnectionSchema), async (req, res) => {
+  router.patch("/tool-connections/:connectionId", managementGuard("connections:configure", "PATCH /tool-connections/:connectionId", { personal: true }), validate(updateToolConnectionSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     await assertToolConnectionConfigureAccess(req, existing);
     if (aiConnectionRouterPluginKey(existing)) throw badRequest("Update this connection pool through its pool settings.");
-    const connection = await svc.updateConnection(existing.id, req.body);
+    const connection = await svc.updateConnection(existing.id, req.body, connectionRequestContext(req));
     const lifecycleChanges = classifyConnectionUpdate(
       { enabled: existing.enabled, config: existing.config },
       { enabled: connection.enabled, config: connection.config },
     );
     const baseLog = {
       companyId: connection.companyId,
-      actorType: "user" as const,
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_connection.updated",
       entityType: "tool_connection",
       entityId: connection.id,
@@ -2185,7 +2216,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(connection);
   });
 
-  router.delete("/tool-connections/:connectionId", async (req, res) => {
+  router.delete("/tool-connections/:connectionId", managementGuard("connections:configure", "DELETE /tool-connections/:connectionId", { personal: true }), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     await assertToolConnectionConfigureAccess(req, existing);
@@ -2194,7 +2225,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const { connection, removal } = await svc.archiveConnection(
       existing.id,
       existing.companyId,
-      getActorInfo(req),
+      connectionRequestActor(req),
     );
     const applicationAfter = await svc.getApplication(existing.applicationId);
     // The receipt is counts and outcomes only. Removal is a revocation boundary
@@ -2202,8 +2233,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     // company-readable activity, so it never carries a secret name or value.
     await logActivity(db, {
       companyId: connection.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_connection.archived",
       entityType: "tool_connection",
       entityId: connection.id,
@@ -2212,8 +2242,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
       await logActivity(db, {
         companyId: applicationAfter.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_application.archived",
         entityType: "tool_application",
         entityId: applicationAfter.id,
@@ -2223,16 +2252,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ ...connection, removal });
   });
 
-  router.post("/tool-connections/:connectionId/health-check", async (req, res) => {
+  router.post("/tool-connections/:connectionId/health-check", managementGuard("connections:configure", "POST /tool-connections/:connectionId/health-check", { personal: true }), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     if (existing.credentialPolicy === "per_user") await assertToolConnectionAccess(req, existing);
     else await assertToolConnectionConfigureAccess(req, existing);
-    res.json(await svc.checkHealth(existing.id, getActorInfo(req)));
+    res.json(await svc.checkHealth(existing.id, connectionRequestActor(req)));
   });
 
   router.post(
-    "/tool-connections/:connectionId/reconnect",
+    "/tool-connections/:connectionId/reconnect", managementGuard("connections:configure", "POST /tool-connections/:connectionId/reconnect", { personal: true }),
     validate(reconnectToolAppSchema),
     async (req, res) => {
       const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
@@ -2242,12 +2271,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
         existing.id,
         existing.companyId,
         req.body,
-        getActorInfo(req),
+        connectionRequestActor(req),
       );
       await logActivity(db, {
         companyId: existing.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_app.reconnected",
         entityType: "tool_connection",
         entityId: existing.id,
@@ -2257,15 +2285,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     },
   );
 
-  router.post("/tool-connections/:connectionId/catalog/refresh", async (req, res) => {
+  router.post("/tool-connections/:connectionId/catalog/refresh", managementGuard("connections:configure", "POST /tool-connections/:connectionId/catalog/refresh", { personal: true }), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     await assertToolConnectionConfigureAccess(req, existing);
-    const result = await svc.refreshCatalog(existing.id, getActorInfo(req));
+    const result = await svc.refreshCatalog(existing.id, connectionRequestActor(req));
     await logActivity(db, {
       companyId: existing.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_connection.catalog_refresh",
       entityType: "tool_connection",
       entityId: existing.id,
@@ -2277,45 +2304,44 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(result);
   });
 
-  router.get("/tool-connections/:connectionId/catalog", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/catalog", managementGuard("connections:read", "GET /tool-connections/:connectionId/catalog", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId) });
+    res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId, getActorInfo(req)) });
   });
 
-  router.get("/tool-connections/:connectionId/activity", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-connections/:connectionId/activity", managementGuard("connections:audit", "GET /tool-connections/:connectionId/activity", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     const limitRaw = Number(req.query.limit ?? 20);
     const limit = Number.isFinite(limitRaw) ? limitRaw : 20;
-    res.json(await svc.listConnectionActivity(existing.id, existing.companyId, limit));
+    res.json(await svc.listConnectionActivity(existing.id, existing.companyId, limit, connectionRequestContext(req)));
   });
 
-  router.get("/companies/:companyId/tools/profiles", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/profiles", managementGuard("connections:profiles", "GET /companies/:companyId/tools/profiles", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json({ profiles: await svc.listProfiles(companyId) });
+    res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", await svc.listProfiles(companyId), row => ({ profileId: row.id })) });
   });
 
-  router.get("/tool-profiles/:profileId/new-tools", async (req, res) => {
-    assertBoard(req);
+  router.get("/tool-profiles/:profileId/new-tools", managementGuard("connections:profiles", "GET /tool-profiles/:profileId/new-tools", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     res.json(await svc.listProfileNewTools(existing.id, existing.companyId));
   });
 
-  router.post("/companies/:companyId/tools/profiles", validate(createToolProfileWithEntriesSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/profiles", managementGuard("connections:profiles", "POST /companies/:companyId/tools/profiles", { personal: true }), validate(createToolProfileWithEntriesSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
-      const profile = await svc.createProfile(companyId, req.body);
+      const profile = await svc.createProfile(companyId, req.body, connectionRequestContext(req));
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_profile.created",
         entityType: "tool_profile",
         entityId: profile.id,
@@ -2327,23 +2353,27 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.get("/companies/:companyId/tools/profiles/effective/agents/:agentId", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/profiles/effective/agents/:agentId", managementGuard("connections:profiles", "GET /companies/:companyId/tools/profiles/effective/agents/:agentId", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.getEffectiveProfilesForAgent(companyId, req.params.agentId as string));
+    const effective = await svc.getEffectiveProfilesForAgent(companyId, req.params.agentId as string);
+    const profiles = await filterConnectionManagementRows(db, req, "connections:profiles", effective.profiles, profile => ({ profileId: profile.id }));
+    const connectionIds = [...new Set([...effective.allowedTools.map(tool => tool.connectionId), ...effective.installedConnections.map(connection => connection.id)])];
+    const connections = await filterConnectionManagementRows(db, req, "connections:profiles", connectionIds, connectionId => ({ connectionId }));
+    if (profiles.length !== effective.profiles.length || connections.length !== connectionIds.length) throw forbidden("Effective profile resources are unavailable to this delegated principal");
+    res.json(effective);
   });
 
-  router.patch("/tool-profiles/:profileId", validate(updateToolProfileWithEntriesSchema), async (req, res) => {
+  router.patch("/tool-profiles/:profileId", managementGuard("connections:profiles", "PATCH /tool-profiles/:profileId", { personal: true }), validate(updateToolProfileWithEntriesSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
     try {
-      const profile = await svc.updateProfile(existing.id, req.body);
+      const profile = await svc.updateProfile(existing.id, req.body, connectionRequestContext(req));
       await logActivity(db, {
         companyId: profile.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_profile.updated",
         entityType: "tool_profile",
         entityId: profile.id,
@@ -2355,16 +2385,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.post("/tool-profiles/:profileId/duplicate", validate(duplicateToolProfileSchema), async (req, res) => {
+  router.post("/tool-profiles/:profileId/duplicate", managementGuard("connections:profiles", "POST /tool-profiles/:profileId/duplicate", { personal: true }), validate(duplicateToolProfileSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
     try {
-      const profile = await svc.duplicateProfile(existing.id, req.body);
+      const profile = await svc.duplicateProfile(existing.id, req.body, connectionRequestContext(req));
       await logActivity(db, {
         companyId: profile.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_profile.duplicated",
         entityType: "tool_profile",
         entityId: profile.id,
@@ -2381,15 +2410,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.delete("/tool-profiles/:profileId", validate(deleteToolProfileSchema), async (req, res) => {
+  router.delete("/tool-profiles/:profileId", managementGuard("connections:profiles", "DELETE /tool-profiles/:profileId", { personal: true }), validate(deleteToolProfileSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
-    const result = await svc.deleteProfile(existing.id, req.body);
+    const result = await svc.deleteProfile(existing.id, req.body, connectionRequestContext(req));
     await logActivity(db, {
       companyId: existing.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_profile.deleted",
       entityType: "tool_profile",
       entityId: existing.id,
@@ -2403,15 +2431,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(result);
   });
 
-  router.post("/tool-profiles/:profileId/new-tools/review", validate(reviewToolProfileNewToolsSchema), async (req, res) => {
+  router.post("/tool-profiles/:profileId/new-tools/review", managementGuard("connections:profiles", "POST /tool-profiles/:profileId/new-tools/review", { personal: true }), validate(reviewToolProfileNewToolsSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
-    const result = await svc.reviewProfileNewTools(existing.id, req.body, getActorInfo(req));
+    const result = await svc.reviewProfileNewTools(existing.id, req.body, connectionRequestActor(req));
     await logActivity(db, {
       companyId: existing.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_profile.new_tools_reviewed",
       entityType: "tool_profile",
       entityId: existing.id,
@@ -2424,15 +2451,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(result);
   });
 
-  router.post("/tool-profiles/:profileId/entries", validate(createToolProfileEntryForProfileSchema), async (req, res) => {
+  router.post("/tool-profiles/:profileId/entries", managementGuard("connections:profiles", "POST /tool-profiles/:profileId/entries", { personal: true }), validate(createToolProfileEntryForProfileSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
-    const entry = await svc.addProfileEntry(existing.id, req.body);
+    const entry = await svc.addProfileEntry(existing.id, req.body, connectionRequestContext(req));
     await logActivity(db, {
       companyId: entry.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_profile_entry.created",
       entityType: "tool_profile_entry",
       entityId: entry.id,
@@ -2441,15 +2467,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.status(201).json(entry);
   });
 
-  router.patch("/tool-profile-entries/:entryId", validate(updateToolProfileEntrySchema), async (req, res) => {
+  router.patch("/tool-profile-entries/:entryId", managementGuard("connections:profiles", "PATCH /tool-profile-entries/:entryId", { personal: true }), validate(updateToolProfileEntrySchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfileEntry(req.params.entryId as string), "Tool profile entry not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
-    const entry = await svc.updateProfileEntry(existing.id, req.body);
+    const entry = await svc.updateProfileEntry(existing.id, req.body, connectionRequestContext(req));
     await logActivity(db, {
       companyId: entry.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_profile_entry.updated",
       entityType: "tool_profile_entry",
       entityId: entry.id,
@@ -2458,15 +2483,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(entry);
   });
 
-  router.delete("/tool-profile-entries/:entryId", async (req, res) => {
+  router.delete("/tool-profile-entries/:entryId", managementGuard("connections:profiles", "DELETE /tool-profile-entries/:entryId", { personal: true }), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfileEntry(req.params.entryId as string), "Tool profile entry not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
-    const entry = await svc.deleteProfileEntry(existing.id);
+    const entry = await svc.deleteProfileEntry(existing.id, connectionRequestContext(req));
     await logActivity(db, {
       companyId: entry.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_profile_entry.deleted",
       entityType: "tool_profile_entry",
       entityId: entry.id,
@@ -2476,18 +2500,17 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.post(
-    "/companies/:companyId/tools/profiles/:profileId/bind",
+    "/companies/:companyId/tools/profiles/:profileId/bind", managementGuard("connections:profiles", "POST /companies/:companyId/tools/profiles/:profileId/bind", { personal: true }),
     validate(createToolProfileBindingForProfileSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertToolAppMutationAccess(req, companyId);
       const existing = await svc.getProfile(req.params.profileId as string, companyId);
       try {
-        const binding = await svc.bindProfile(existing.id, req.body, getActorInfo(req));
+        const binding = await svc.bindProfile(existing.id, req.body, connectionRequestActor(req));
         await logActivity(db, {
           companyId,
-          actorType: "user",
-          actorId: req.actor.userId ?? "board",
+          ...connectionRequestActor(req),
           action: "tool_profile_binding.created",
           entityType: "tool_profile_binding",
           entityId: binding.id,
@@ -2501,17 +2524,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
   );
 
   router.post(
-    "/companies/:companyId/tools/profiles/:profileId/unbind",
+    "/companies/:companyId/tools/profiles/:profileId/unbind", managementGuard("connections:profiles", "POST /companies/:companyId/tools/profiles/:profileId/unbind", { personal: true }),
     validate(unbindToolProfileBindingSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertToolAppMutationAccess(req, companyId);
       const existing = await svc.getProfile(req.params.profileId as string, companyId);
-      const result = await svc.unbindProfile(existing.id, req.body);
+      const result = await svc.unbindProfile(existing.id, req.body, connectionRequestContext(req));
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_profile_binding.deleted",
         entityType: "tool_profile",
         entityId: existing.id,
@@ -2521,62 +2543,62 @@ function connectorEnrollmentPrincipal(req: Request): string {
     },
   );
 
-  router.get("/companies/:companyId/tools/runtime-slots", async (req, res) => {
+  router.get("/companies/:companyId/tools/runtime-slots", managementGuard("connections:runtime", "GET /companies/:companyId/tools/runtime-slots", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertToolsRuntimeManage(req, companyId);
-    res.json({ runtimeSlots: await svc.listRuntimeSlots(companyId) });
+    res.json({ runtimeSlots: await filterConnectionManagementRows(db, req, "connections:runtime", await svc.listRuntimeSlots(companyId), row => ({ connectionId: row.connectionId, issueId: row.issueId })) });
   });
 
-  router.post("/companies/:companyId/tools/runtime-slots/:id/stop", async (req, res) => {
+  router.post("/companies/:companyId/tools/runtime-slots/:id/stop", managementGuard("connections:runtime", "POST /companies/:companyId/tools/runtime-slots/:id/stop", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertToolsRuntimeManage(req, companyId);
-    res.json(await svc.stopRuntimeSlot(companyId, req.params.id as string, getActorInfo(req)));
+    res.json(await svc.stopRuntimeSlot(companyId, req.params.id as string, connectionRequestActor(req)));
   });
 
-  router.post("/companies/:companyId/tools/runtime-slots/:id/restart", async (req, res) => {
+  router.post("/companies/:companyId/tools/runtime-slots/:id/restart", managementGuard("connections:runtime", "POST /companies/:companyId/tools/runtime-slots/:id/restart", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertToolsRuntimeManage(req, companyId);
-    res.json(await svc.restartRuntimeSlot(companyId, req.params.id as string, getActorInfo(req)));
+    res.json(await svc.restartRuntimeSlot(companyId, req.params.id as string, connectionRequestActor(req)));
   });
 
-  router.get("/companies/:companyId/tools/runtime-health", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/runtime-health", managementGuard("connections:runtime", "GET /companies/:companyId/tools/runtime-health", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json(await svc.getRuntimeHealth(companyId));
   });
 
-  router.get("/companies/:companyId/tools/runs/:runId/decisions", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/runs/:runId/decisions", managementGuard("connections:audit", "GET /companies/:companyId/tools/runs/:runId/decisions", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.getRunDecisionLookup(companyId, req.params.runId as string));
+    const result = await svc.getRunDecisionLookup(companyId, req.params.runId as string);
+    res.json({ ...result, decisions: await filterConnectionManagementRows(db, req, "connections:audit", result.decisions, row => ({ connectionId: row.invocation.connectionId, issueId: row.invocation.issueId })) });
   });
 
-  router.get("/companies/:companyId/tools/trust-rules", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/trust-rules", managementGuard("connections:profiles", "GET /companies/:companyId/tools/trust-rules", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json({ trustRules: await policySvc.listTrustRules(companyId) });
+    res.json({ trustRules: await filterConnectionManagementPolicies(db, req, await policySvc.listTrustRules(companyId)) });
   });
 
-  router.get("/companies/:companyId/tools/policies", async (req, res) => {
-    assertBoard(req);
+  router.get("/companies/:companyId/tools/policies", managementGuard("connections:profiles", "GET /companies/:companyId/tools/policies", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json({ policies: await policySvc.listPolicies(companyId) });
+    res.json({ policies: await filterConnectionManagementPolicies(db, req, await policySvc.listPolicies(companyId)) });
   });
 
   // Rules UI sentence slots map exactly onto policy selectors:
   // capability -> riskLevel, app -> applicationId, actions -> toolNames.
-  router.post("/companies/:companyId/tools/policies/reorder", validate(reorderToolPoliciesSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/policies/reorder", managementGuard("connections:profiles", "POST /companies/:companyId/tools/policies/reorder", { personal: true }), validate(reorderToolPoliciesSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
-    const policies = await policySvc.reorderPolicies(companyId, req.body);
+    const policies = await policySvc.reorderPolicies(companyId, req.body, connectionRequestContext(req));
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_policy.reordered",
       entityType: "tool_policy",
       entityId: companyId,
@@ -2588,15 +2610,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ policies });
   });
 
-  router.post("/companies/:companyId/tools/policies", validate(createToolPolicySchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/policies", managementGuard("connections:profiles", "POST /companies/:companyId/tools/policies", { personal: true }), validate(createToolPolicySchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
-      const policy = await policySvc.createPolicy(companyId, req.body, { userId: req.actor.userId ?? null });
+      const policy = await policySvc.createPolicy(companyId, req.body, { userId: connectionRequestUserId(req) ?? null, agentId: req.actor.agentId ?? null }, connectionRequestContext(req));
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_policy.created",
         entityType: "tool_policy",
         entityId: policy.id,
@@ -2608,20 +2629,20 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.post("/companies/:companyId/tools/policies/:policyId/duplicate", validate(duplicateToolPolicySchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/policies/:policyId/duplicate", managementGuard("connections:profiles", "POST /companies/:companyId/tools/policies/:policyId/duplicate", { personal: true }), validate(duplicateToolPolicySchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
       const policy = await policySvc.duplicatePolicy({
         companyId,
+        managementContext: connectionRequestContext(req),
         policyId: req.params.policyId as string,
         body: req.body,
-        actor: { userId: req.actor.userId ?? null },
+        actor: { userId: connectionRequestUserId(req) ?? null, agentId: req.actor.agentId ?? null },
       });
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_policy.duplicated",
         entityType: "tool_policy",
         entityId: policy.id,
@@ -2638,19 +2659,19 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.patch("/companies/:companyId/tools/policies/:policyId", validate(updateToolPolicySchema), async (req, res) => {
+  router.patch("/companies/:companyId/tools/policies/:policyId", managementGuard("connections:profiles", "PATCH /companies/:companyId/tools/policies/:policyId", { personal: true }), validate(updateToolPolicySchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
       const policy = await policySvc.updatePolicy({
         companyId,
+        managementContext: connectionRequestContext(req),
         policyId: req.params.policyId as string,
         body: req.body,
       });
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...connectionRequestActor(req),
         action: "tool_policy.updated",
         entityType: "tool_policy",
         entityId: policy.id,
@@ -2662,17 +2683,17 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
   });
 
-  router.delete("/companies/:companyId/tools/policies/:policyId", async (req, res) => {
+  router.delete("/companies/:companyId/tools/policies/:policyId", managementGuard("connections:profiles", "DELETE /companies/:companyId/tools/policies/:policyId", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     const policy = await policySvc.deletePolicy({
       companyId,
+        managementContext: connectionRequestContext(req),
       policyId: req.params.policyId as string,
     });
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_policy.deleted",
       entityType: "tool_policy",
       entityId: policy.id,
@@ -2710,19 +2731,18 @@ function connectorEnrollmentPrincipal(req: Request): string {
     },
   );
 
-  router.post("/companies/:companyId/tools/trust-rules/:policyId/revoke", validate(revokeToolTrustRuleSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/trust-rules/:policyId/revoke", managementGuard("connections:profiles", "POST /companies/:companyId/tools/trust-rules/:policyId/revoke", { personal: true }), validate(revokeToolTrustRuleSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     const policy = await policySvc.revokeTrustRule({
       companyId,
       policyId: req.params.policyId as string,
       body: req.body,
-      actor: { userId: req.actor.userId ?? null },
+      actor: { userId: connectionRequestUserId(req) ?? null, agentId: req.actor.agentId ?? null },
     });
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...connectionRequestActor(req),
       action: "tool_trust_rule.revoked",
       entityType: "tool_policy",
       entityId: policy.id,
@@ -2731,7 +2751,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(policy);
   });
 
-  router.get("/companies/:companyId/tools/stdio-templates", async (req, res) => {
+  router.get("/companies/:companyId/tools/stdio-templates", managementGuard("connections:read", "GET /companies/:companyId/tools/stdio-templates"), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertToolsAdmin(req, companyId);
     res.json({ templates: await svc.approvedStdioTemplates(companyId) });
@@ -2796,11 +2816,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(preview);
   });
 
-  router.post("/companies/:companyId/tools/policy/test", validate(toolPolicyTestRequestSchema), async (req, res) => {
-    assertBoard(req);
+  router.post("/companies/:companyId/tools/policy/test", managementGuard("connections:configure", "POST /companies/:companyId/tools/policy/test", { personal: true }), validate(toolPolicyTestRequestSchema), async (req, res) => {
+    assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const input = { ...req.body, companyId };
+    const input = { ...req.body, companyId,
+      ...(req.actor.type === "agent" ? { actorType: "agent", actorId: req.actor.agentId } : {}) };
     const decision = await policySvc.decide(input);
     let auditEvent = null;
     if (input.writeAuditEvent === true) {

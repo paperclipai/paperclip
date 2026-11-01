@@ -13,6 +13,10 @@ const record = (v: unknown): Record<string, unknown> => v !== null && typeof v =
 const identity = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(v);
 const shellIdentity = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_.-]{1,80}$/u.test(v);
 const digest = (v: string) => createHash("sha256").update(v).digest("hex");
+function boundedSemanticInputDigest(value: unknown): string | undefined {
+  try { if (Buffer.byteLength(JSON.stringify(value)) <= 1024 * 1024) return semanticInputSha256(value); }
+  catch { /* Malformed input cannot correlate. */ }
+}
 
 /**
  * Observation only, bound to one active ACP prompt iterator and its permission
@@ -104,14 +108,19 @@ export function createCopilotToolEvidence(binding: {
       let publishPendingRead = false;
       if (state.kind === "read") {
         state.read = updateSingleReadEvidence(state.read, call, binding.workingDirectory);
+        // Copilot classifies empty-argument semantic context calls as reads.
+        // Explicit {} is a complete input, so publish its real pending origin
+        // before execution/receipt. Only absent arguments may stream later;
+        // neither shape acquires file-path evidence without an actual path.
+        if (state.read.pendingOriginInput && call.tag === "tool_call" && call.rawInput !== null
+          && typeof call.rawInput === "object" && !Array.isArray(call.rawInput) && Object.keys(call.rawInput).length === 0) state.read = {};
         if (state.read.pendingOriginInput && call.tag === "tool_call") state.pendingReadNotice = true;
         if (state.pendingReadNotice && state.read.pendingOriginInput) return;
         if (state.pendingReadNotice) { state.pendingReadNotice = false; publishPendingRead = true; }
       }
       if (call.rawInput !== undefined) {
         // Retain only a bounded digest of the native arguments, never their text.
-        let inputDigest: string | undefined;
-        try { if (Buffer.byteLength(JSON.stringify(call.rawInput)) <= 1024 * 1024) inputDigest = semanticInputSha256(call.rawInput); } catch { /* Malformed input cannot correlate. */ }
+        const inputDigest = boundedSemanticInputDigest(call.rawInput);
         if (state.semanticInput && inputDigest !== state.semanticInput) { state.invalid = true; notice("evidence_incomplete", id, { reason: "changed_tool_input" }); return; }
         state.semanticInput = inputDigest;
         const fields = inputFields({ ...call, kind: state.kind });

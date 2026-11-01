@@ -2,7 +2,16 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { ConnectionPoolConnectorHost } from "../../prototypes/ConnectionPoolConnectorHost";
 const meta = { id: "connectors-pool-host",
-  title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/Connectors/Pool host", component: ConnectionPoolConnectorHost, parameters: { layout: "fullscreen" } } satisfies Meta<typeof ConnectionPoolConnectorHost>;
+  title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/Connectors/Pool host", component: ConnectionPoolConnectorHost, parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation",
+        "connection-setup/catalog"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  } } satisfies Meta<typeof ConnectionPoolConnectorHost>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Catalog: Story = {};

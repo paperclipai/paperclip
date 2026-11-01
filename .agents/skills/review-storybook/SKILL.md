@@ -17,6 +17,13 @@ variants where affected. Record chosen files/exports and omitted scope. For a
 full source review, account for every file; do not describe sampling as full
 render or interaction coverage.
 
+When reviewing navigation/index changes, compare the guide and sidebar with the
+full ordered index generated from feature recipes' navigation metadata. Open a feature without examples and a
+feature whose related suite lives elsewhere; check capability order, gap messages,
+classifications, recipe links, and actual suite navigation. Compare built entry IDs
+before/after so existing links survive. Generated Overview pages do not establish
+new example coverage.
+
 Use [the existing Storybook commands](../../../doc/DEVELOPING.md#storybook):
 `pnpm build-storybook`, or an owned Storybook dev server on an available local
 port. Use the built `ui/storybook-static/index.json` for actual story IDs and

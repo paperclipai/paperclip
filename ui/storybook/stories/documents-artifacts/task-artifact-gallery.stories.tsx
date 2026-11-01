@@ -94,7 +94,16 @@ function GalleryStory({ scenario = "videos", width = 480 }: { scenario?: Scenari
 }
 const meta = {
   id: "tasks-artifact-gallery",
-  title: "Tasks and conversations/Documents, attachments, and work products/Tasks/Artifact Gallery", component: GalleryStory, parameters: { layout: "fullscreen" },
+  title: "Tasks and conversations/Documents, attachments, and work products/Tasks/Artifact Gallery", component: GalleryStory, parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/library",
+        "documents-artifacts/work-products"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   args: { scenario: "videos", width: 480 },
   beforeEach: ({ args }) => {
     const originalFetch = window.fetch;

@@ -66,7 +66,7 @@ function makeAgent(id: string, name: string, role: string): Agent {
   };
 }
 
-function makePreview(errors: string[] = []): CatalogTeamImportPreviewResult {
+export function makePreview(errors: string[] = []): CatalogTeamImportPreviewResult {
   return {
     team: baseTeam,
     portabilityPreview: {
@@ -139,6 +139,18 @@ function Frame({ children, width = "max-w-3xl" }: { children: React.ReactNode; w
 }
 
 const meta: Meta = {
+  excludeStories: ["makePreview"],
+  parameters: { paperclip: {
+      "capabilities": [
+        "teams/preview",
+        "teams/discovery",
+        "teams/install",
+        "teams/configuration"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Renders shipped TeamCatalog source, but feature map documents current CLI/API access and no top-level catalog route. InstallApplyProgress, InstallSuccess and InstalledStates show simulated installation results; InstallPreview edits adapter choices in local state. No routed catalog, real package installation, account setup or working-agent proof."
+    } },
   id: "surfaces-team-catalog",
   title: "Agents and reusable capabilities/Team packages and installation/Surfaces/Team Catalog",
 };

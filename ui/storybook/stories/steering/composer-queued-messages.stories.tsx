@@ -133,6 +133,17 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "The production queued-message strip sits above the production composer. Steer, edit, reorder, discard, and legacy interrupt can be tried locally." } },
+    paperclip: {
+      "capabilities": [
+        "steering/queue",
+        "steering/edit-order-discard",
+        "steering/steer",
+        "steering/interrupt"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
   args: { protocol: "paperclip_runner_v1", steeringDisposition: "available", initialEdit: false, mobile: false },
 } satisfies Meta<typeof QueuedComposer>;
