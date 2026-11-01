@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { confidenceFor, readinessVerdict } from "./check-readiness.mjs";
 import { findCandidates } from "./find-candidates.mjs";
@@ -10,6 +11,7 @@ import {
   resolveAuthorAllowlist,
   summarizePullRequestBody,
 } from "./lib.mjs";
+import { evaluateGate, shaReferencesHead } from "./merge-gated.mjs";
 import { renderReport } from "./render-report.mjs";
 
 test("extracts only pull requests from the requested repository", () => {
@@ -314,4 +316,130 @@ test("scripts contain no mutating GitHub commands", async () => {
   const source = scripts.join("\n");
   assert.doesNotMatch(source, /\bgh\s+pr\s+(merge|close|review|comment|ready|reopen)\b/i);
   assert.doesNotMatch(source, /--method\s+(POST|PATCH|PUT|DELETE)\b/i);
+});
+
+// AUT-2230 merge gate. Regression cover for PR #164, which squash-merged at
+// 98ebddf while the only approvals named 9aef067.
+test("merge gate rejects sign-off scoped to a superseded head", () => {
+  const gate = evaluateGate({
+    headSha: "98ebddfd73edb0b57ed2aeea0ceda2de88158d56",
+    comments: [
+      { body: "security-approved at 9aef0674d701d99621458d3d98c6c61fc6f8cea", source: "pr" },
+      { body: "qa-approved at 98ebddfd73edb0b57ed2aeea0ceda2de88158d56", source: "pr" },
+    ],
+  });
+  assert.equal(gate.ok, false);
+  assert.deepEqual(gate.missing.map((entry) => entry.role), ["security"]);
+});
+
+test("merge gate rejects when QA never approved at all", () => {
+  const gate = evaluateGate({
+    headSha: "98ebddfd73edb0b57ed2aeea0ceda2de88158d56",
+    comments: [
+      { body: "changes requested at fc3bdd9", source: "pr" },
+      { body: "security-approved at 98ebddfd73edb0b57ed2aeea0ceda2de88158d56", source: "pr" },
+    ],
+  });
+  assert.equal(gate.ok, false);
+  assert.deepEqual(gate.missing.map((entry) => entry.role), ["qa"]);
+});
+
+test("merge gate accepts abbreviated and full sign-off SHAs at the current head", () => {
+  const head = "98ebddfd73edb0b57ed2aeea0ceda2de88158d56";
+  const abbreviated = evaluateGate({
+    headSha: head,
+    comments: [
+      { body: "qa-approved\nHead SHA reviewed: 98ebddf", source: "pr" },
+      { body: `security-approved\nHead SHA reviewed: ${head}`, source: "paperclip:AUT-5553" },
+    ],
+  });
+  assert.equal(abbreviated.ok, true);
+  assert.equal(abbreviated.results[1].source.startsWith("paperclip:AUT-5553"), true);
+});
+
+test("merge gate ignores hex tokens shorter than a SHA prefix", () => {
+  assert.equal(shaReferencesHead("deadbeef", "98ebddfd73edb0b57ed2aeea0ceda2de88158d56"), false);
+  assert.equal(shaReferencesHead("c4284c8", "98ebddfd73edb0b57ed2aeea0ceda2de88158d56"), false);
+  assert.equal(shaReferencesHead("98ebddf", "98ebddfd73edb0b57ed2aeea0ceda2de88158d56"), true);
+});
+
+test("merge gate script never uses --auto or a mutating api method", () => {
+  const source = readFileSync(new URL("./merge-gated.mjs", import.meta.url), "utf8");
+  const executable = source
+    .split("\n")
+    .filter((line) => !/^\s*(?:\/\/|\*)/.test(line));
+  for (const line of executable) {
+    assert.doesNotMatch(line, /--auto\b/, "no --auto outside comments");
+    assert.doesNotMatch(line, /\bgh\s+pr\s+close\b/i);
+    assert.doesNotMatch(line, /--method\s+(POST|PATCH|PUT|DELETE)\b/i);
+  }
+});
+
+// AUT-5537: replay PR CannonFodder151/autobrain-mobile#127 exactly as it
+// stood at 2026-10-04T05:27:41Z, when it was squash-merged at c48faa6d.
+// The comment set below is the real one, verbatim, minus the two records
+// that were backfilled hours after the merge (the `## qa-approved` post at
+// 10:22Z and the Paperclip `security-approved`/`qa-approved` posts).
+const PR_127_HEAD = "c48faa6d70a583164f9c35fa4f2ece1004266964";
+const PR_127_COMMENTS_AT_MERGE = [
+  {
+    createdAt: "2026-10-03T18:59:38Z",
+    source: "pr",
+    body: "## QA + Security sign-off: **APPROVE** (AUT-5372, paperclip)\nReviewed at head `9b4a385` (single commit, 5 files, +158/-0).",
+  },
+  {
+    createdAt: "2026-10-03T19:35:44Z",
+    source: "pr",
+    body: "## QA verification — second pass, independent (Senior QA Reviewer, AUT-5372/AUT-5322)\nRe-verified on a fresh clone of `9b4a385`; sign-off from the first pass stands.",
+  },
+  {
+    createdAt: "2026-10-04T01:34:58Z",
+    source: "pr",
+    body: "security-approved — CannonFodder151/autobrain-mobile#127 @ head `cbc4d6dd5b320ea0c5442f49c7688393368b8079` (base `main@9b39e660`, `mergeable_state: clean`)",
+  },
+  {
+    createdAt: "2026-10-04T05:27:30Z",
+    source: "pr",
+    body: "## QA re-verification at head `c48faa6d` — APPROVE (AUT-5322 / AUT-5372)\nVerdict: APPROVE. AUT-2230 gates are clean, so this PR is squash-merged immediately.",
+  },
+];
+
+test("AUT-5537: the #127 merge would have been blocked at its merge-time head", () => {
+  const gate = evaluateGate({ headSha: PR_127_HEAD, comments: PR_127_COMMENTS_AT_MERGE });
+  assert.equal(gate.ok, false);
+  // Security approved, but at cbc4d6dd, an already-superseded head: the
+  // base merge happened at 03:00Z and the sign-off predates it.
+  assert.equal(gate.results.find((result) => result.role === "security").satisfied, false);
+  // QA's 05:27:30Z re-verification names the right head and, phrased as a
+  // re-verification rather than `qa-approved`, is recognised as a sign-off.
+  assert.equal(gate.results.find((result) => result.role === "qa").satisfied, true);
+  assert.deepEqual(gate.missing.map((entry) => entry.role), ["security"]);
+});
+
+test("AUT-5537: a natural QA sign-off naming the current head satisfies the gate", () => {
+  const head = "98ebddfd73edb0b57ed2aeea0ceda2de88158d56";
+  const gate = evaluateGate({
+    headSha: head,
+    comments: [
+      { body: "## QA re-verification at head `98ebddf` — APPROVE\nVerdict: APPROVE.", source: "pr" },
+      { body: `security sign-off — reviewed at \`${head}\``, source: "pr" },
+    ],
+  });
+  assert.equal(gate.ok, true);
+});
+
+test("AUT-5537: a QA verdict with no head reference does not unlock a merge", () => {
+  const gate = evaluateGate({
+    headSha: PR_127_HEAD,
+    comments: [
+      ...PR_127_COMMENTS_AT_MERGE.slice(0, 3),
+      {
+        createdAt: "2026-10-04T05:27:30Z",
+        source: "pr",
+        body: "## QA re-verification — APPROVE (AUT-5322 / AUT-5372)\nVerdict: APPROVE. Head moved; the previous approval still stands.",
+      },
+    ],
+  });
+  assert.equal(gate.ok, false);
+  assert.deepEqual(gate.missing.map((entry) => entry.role), ["qa", "security"]);
 });
