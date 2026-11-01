@@ -1,5 +1,5 @@
 import { museRunnerBroker } from "../muse-runner-broker.js";
-import { readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
+import { assertEphemeralNativeLifecycle, readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import {
@@ -515,6 +515,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       (["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
         ? { mode: "per_turn" as const, idleTimeoutMs: null }
         : environmentLifecyclePolicy ?? agentLifecyclePolicy);
+    if (!["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend)) {
+      assertEphemeralNativeLifecycle(effectiveLifecyclePolicy.mode);
+    }
     if (
       effectiveLifecyclePolicy.mode === "warm" &&
       executionTarget?.kind === "remote" &&

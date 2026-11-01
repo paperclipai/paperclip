@@ -108,6 +108,9 @@ export function registerNativeRuntimeResponseDelivery(db: Db, coordinator: Retur
               turnId: command.request.turnId, resolution: command.resolution, commandId: command.commandId,
               authorizeBeforeDispatch: async () => { await authorize(db, command); } });
           } catch (error) {
+            if (error instanceof NativeRuntimeRequestResolutionError && error.code === "runtime_request_stale_turn") {
+              throw new RuntimeResponseObsoleteError();
+            }
             if (!(error instanceof NativeRuntimeRequestResolutionError)
               || !["native_session_not_active", "runtime_request_resolution_unsupported"].includes(error.code)) throw error;
             const { pending, actor } = await authorize(db, command);

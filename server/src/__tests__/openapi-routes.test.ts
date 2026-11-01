@@ -65,6 +65,7 @@ const apiPrefixes: Record<string, string> = {
   "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
+  "ready.ts": "/api/ready",
   "liveness.ts": "/api/liveness",
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
@@ -202,7 +203,7 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   ) {
     return routePath;
   }
-  if ((file === "companies.ts" || file === "health.ts" || file === "liveness.ts") && routePath === "/") {
+  if ((file === "companies.ts" || file === "health.ts" || file === "liveness.ts" || file === "ready.ts") && routePath === "/") {
     return prefix;
   }
   if (file === "companies.ts" || file === "health.ts") {

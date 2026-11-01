@@ -64,8 +64,8 @@ Measure one-time setup separately from repeated attempts. Keep failed evidence.
 | Item | State | Next action |
 | --- | --- | --- |
 | Prior prerequisites | #18403 now merged; current source fetched | Characterize remaining local authority paths |
-| Core implementation | `/private/tmp/paperclip-zero-downtime-20261031`, durable files, readiness/drain and migration/cleanup implemented, uncommitted | Cross-process commands, browser/assets, active Runner qualification |
-| Cloud implementation | `/private/tmp/paperclip-cloud-zero-downtime-20261031`, persisted ephemeral shape and image/variable gates implemented, uncommitted | Complete lifecycle guards, test and deploy qualification |
+| Core implementation | `/private/tmp/paperclip-zero-downtime-20261031`, durable files, readiness/drain and migration/cleanup implemented in draft PR #18518 | Cross-process commands, browser/assets, active Runner qualification |
+| Cloud implementation | `/private/tmp/paperclip-cloud-zero-downtime-20261031`, persisted ephemeral shape and image/variable gates implemented in draft PR #1096 | Complete lifecycle guards, test and deploy qualification |
 | Staging / production | Not selected or deployed | Record exact target, owner, artifact and campaign before action |
 
 Keep PRs, tested revisions, artifact identities, evidence paths, deployment targets
@@ -192,5 +192,24 @@ command changes; packaged maintenance entry is being verified separately.
 Remaining gates: large cold directories, real Runner A/B overlap (including
 Stop/answer/follow-up), complete bounded shutdown, packaged-release overlap,
 existing-volume maintenance orchestration, exact staging/production targets,
-review/merge, ten staging deploys and production forward/rollback. No PR,
-commit, merge or deployment yet. The same owned worktrees and acceptance remain.
+review/merge, ten staging deploys and production forward/rollback. Draft PRs are
+[Core #18518](https://github.com/paperclipai/paperclip/pull/18518) at `cf31fa7620` and
+[Cloud #1096](https://github.com/paperclipai/paperclip-cloud/pull/1096) at `387ebb37`.
+Cloud CI passed; Core CI and review corrections are underway. No merge or deployment yet. The same owned worktrees and acceptance remain.
+
+Migration must preserve the original `decision-signing.key` as the stable
+`PAPERCLIP_DECISION_SIGNING_SECRET` before removing the volume. Ephemeral startup
+now refuses a missing/short value. Fresh Cloud provisioning must supply a stable
+key too; the storage master key alone does not preserve decision signatures.
+
+Review round 1 corrected missing decision-key admission, stale runtime answers,
+and raw-versus-effective lifecycle policy. Local server typecheck passed using
+the installed TypeScript binary (the pnpm shim could not reach its signature
+registry in the sandbox). Runtime/config regressions passed 38 tests; startup
+shutdown and OpenAPI regressions passed 152 tests. CI's response mock counts and
+missing WebSocket mock were fixed; `/api/ready` now has explicit GET/HEAD OpenAPI
+contracts. These receipts precede the next commit and do not qualify a live run.
+Cloud review corrections cover partial-create retries, legacy shape preservation,
+pre-allocation image qualification, actual extra-service detection and protected
+storage settings. Fresh ephemeral stacks now initialize a decision key in the
+vault before deployment; already-started stacks require their existing key.

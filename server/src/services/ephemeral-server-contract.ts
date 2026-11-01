@@ -18,6 +18,9 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
   if (!env.PAPERCLIP_SECRETS_MASTER_KEY || !isValidLocalEncryptedMasterKey(env.PAPERCLIP_SECRETS_MASTER_KEY)) {
     refuse("a stable PAPERCLIP_SECRETS_MASTER_KEY is required");
   }
+  if ((env.PAPERCLIP_DECISION_SIGNING_SECRET?.trim().length ?? 0) < 32) {
+    refuse("a stable PAPERCLIP_DECISION_SIGNING_SECRET of at least 32 characters is required; preserve the existing decision key during migration");
+  }
   let runtime: URL, listener: URL;
   try { runtime = new URL(config.databaseUrl ?? ""); listener = new URL(env.PAPERCLIP_DATABASE_LISTEN_URL ?? ""); }
   catch { return refuse("external DATABASE_URL and PAPERCLIP_DATABASE_LISTEN_URL are required"); }

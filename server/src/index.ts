@@ -305,6 +305,7 @@ async function startServerWithDatabaseTeardown(
   await sentryReady;
   const startupConfig = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
   if ("deploymentMode" in startupConfig) {
+    assertEphemeralServerConfig(startupConfig);
     ensureDecisionSigningSecret();
     initializeRuntimeConfigConsumers(startupConfig);
   }

@@ -77,11 +77,20 @@ export function shouldUseRemoteWorkspaces(input: {
  * cannot make that promise. External conversation providers own no task disk. */
 export function assertEphemeralWorkspaceExecution(input: {
   externalConversation: boolean; native: boolean; adapterType: string;
-  lifecycleMode: unknown; pluginTaskWorkspace: boolean; remoteAuthority: boolean;
+  pluginTaskWorkspace: boolean; remoteAuthority: boolean;
 }) {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" || input.externalConversation) return;
-  if (!input.native || input.adapterType !== "paperclip_runner" || input.lifecycleMode !== "warm"
+  if (!input.native || input.adapterType !== "paperclip_runner"
     || (!input.pluginTaskWorkspace && !input.remoteAuthority)) {
+    throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
+      { code: "ephemeral_execution_configuration_required" });
+  }
+}
+
+/** The runtime selector calls this after environment, credentials and saved
+ * execution policy have resolved. Raw agent settings are not lifecycle authority. */
+export function assertEphemeralNativeLifecycle(mode: "warm" | "per_turn") {
+  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && mode !== "warm") {
     throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
   }

@@ -13,7 +13,7 @@ import type { PendingNativeRuntimeRequest } from "../services/native-runtime/run
 const provider = vi.hoisted(() => ({ resolve: vi.fn(), accepted: vi.fn() }));
 vi.mock("../services/native-runtime/native-session-executor.js", () => ({
   resolveNativeRuntimeRequest: (...args: unknown[]) => provider.resolve(...args),
-  NativeRuntimeRequestResolutionError: class extends Error {},
+  NativeRuntimeRequestResolutionError: class extends Error { constructor(readonly code: string) { super(code); } },
 }));
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let a: ReturnType<typeof createDb>, b: ReturnType<typeof createDb>;
@@ -91,7 +91,7 @@ it("rechecks company access even for an administrator before dispatch", async ()
   await a.update(companyMemberships).set({ status: "inactive" }).where(eq(companyMemberships.principalId, userId));
   setNativeExecutionActive(runId, true);
   await expect.poll(() => state(request.requestId)).toBe("denied");
-  expect(provider.accepted).toHaveBeenCalledTimes(1);
+  expect(provider.accepted).not.toHaveBeenCalled();
   expect(errors).toEqual([]);
 });
 it("does not dispatch an answer after its request has become terminal", async () => {
@@ -101,6 +101,26 @@ it("does not dispatch an answer after its request has become terminal", async ()
     payload: { prpEvent: { payload: { requestId: request.requestId } } } });
   setNativeExecutionActive(runId, true);
   await expect.poll(() => state(request.requestId)).toBe("obsolete");
+  expect(provider.accepted).not.toHaveBeenCalled();
+  expect(errors).toEqual([]);
+});
+
+it("retires a stale provider turn and still delivers the next pending answer", async () => {
+  setNativeExecutionActive(runId, false);
+  await a.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, userId));
+  const stale = await pending(), current = await pending();
+  await enqueue(stale);
+  await enqueue(current);
+  const { NativeRuntimeRequestResolutionError } = await import("../services/native-runtime/native-session-executor.js");
+  provider.resolve.mockImplementation(async (input: { requestId: string; authorizeBeforeDispatch: () => Promise<void>; commandId: string }) => {
+    if (input.requestId === stale.requestId) throw new NativeRuntimeRequestResolutionError("runtime_request_stale_turn", "fixture stale turn");
+    await input.authorizeBeforeDispatch();
+    provider.accepted(input.commandId);
+    return { commandId: input.commandId };
+  });
+  setNativeExecutionActive(runId, true);
+  await expect.poll(() => state(stale.requestId)).toBe("obsolete");
+  await expect.poll(() => state(current.requestId)).toBe("queued");
   expect(provider.accepted).toHaveBeenCalledTimes(1);
   expect(errors).toEqual([]);
 });

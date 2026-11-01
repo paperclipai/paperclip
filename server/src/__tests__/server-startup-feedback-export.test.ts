@@ -391,7 +391,7 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 vi.mock("../realtime/live-events-ws.js", () => ({
-  setupLiveEventsWebSocketServer: vi.fn(),
+  setupLiveEventsWebSocketServer: vi.fn(() => ({ clients: new Set(), close: vi.fn() })),
 }));
 
 vi.mock("../services/attention-retention.js", async importOriginal => ({
