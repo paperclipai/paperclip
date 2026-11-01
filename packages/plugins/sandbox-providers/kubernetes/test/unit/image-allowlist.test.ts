@@ -60,3 +60,20 @@ describe("resolveImage", () => {
     ).toThrow(/not in allowlist/);
   });
 });
+
+describe("resolveImage with a URL-shaped imageRegistry", () => {
+  it.each([
+    ["https://registry.example.com/team", "registry.example.com/team/agent-runtime-claude:v1"],
+    ["https://registry.example.com/team/", "registry.example.com/team/agent-runtime-claude:v1"],
+    ["http://localhost:5000/x", "localhost:5000/x/agent-runtime-claude:v1"],
+    ["registry.example.com/team", "registry.example.com/team/agent-runtime-claude:v1"],
+  ])("rewrites %s without the scheme", (registry, expected) => {
+    expect(
+      resolveImage(
+        { imageOverride: null },
+        { runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1" },
+        { imageAllowList: [], imageRegistry: registry },
+      ),
+    ).toBe(expected);
+  });
+});
