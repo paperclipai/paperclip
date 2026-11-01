@@ -19,7 +19,7 @@ export function TaskChatLoadingShell({ mobile, streamlined, coordinator }: {
       streamlined && "md:px-0",
     )}>
       <div className="space-y-3">
-        <div data-slot="task-loading-title" className={cn("space-y-3", coordinator ? "text-2xl font-normal" : "text-xl font-semibold", "leading-normal")}>
+        <div data-slot="task-loading-title" className={cn("space-y-3", coordinator ? "text-2xl font-normal" : streamlined ? "text-xl font-semibold" : "text-base font-semibold", "leading-normal")}>
           <Skeleton className="h-6 w-4/5" />
           <Skeleton className="h-6 w-3/5" />
         </div>

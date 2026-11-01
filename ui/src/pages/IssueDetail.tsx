@@ -1055,7 +1055,7 @@ export function IssueDetailLoadingState({
 
         {headerSeed ? (
           <>
-            <h2 className="text-xl font-semibold leading-normal">
+            <h2 className="text-xl font-bold">
               {headerSeed.title}
             </h2>
             <div className="space-y-2">
@@ -3495,12 +3495,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [issueId]);
 
   useEffect(() => {
-    if (!issue) return;
+    if (!issue || !taskInterfaceSettingsLoaded || !taskRouteReady) return;
     scheduleIssueDetailPaintMeasure(
       ISSUE_DETAIL_HEADER_PAINT_MARK,
       ISSUE_DETAIL_HEADER_MEASURE,
     );
-  }, [issue?.id]);
+  }, [issue?.id, taskInterfaceSettingsLoaded, taskRouteReady]);
 
   useEffect(() => {
     if (!classicTaskInterfaceEnabled || !issue || commentsLoading) return;

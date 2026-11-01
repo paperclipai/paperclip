@@ -124,7 +124,7 @@ test("a cold task waits for the first session and retains a title saved during a
     await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
     await coreReady;
     const header = page.getByTestId("issue-detail-header");
-    await expect(page.getByTestId("task-detail-presentation-loading")).toBeVisible();
+    await expect(page.getByTestId("shell-configuration-loading")).toBeVisible();
     await expect(header).toHaveCount(0);
     releaseSession();
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });

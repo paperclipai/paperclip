@@ -26,7 +26,7 @@ it.each([
   ["/PAP/issues", false],
   ["/PAP/chats/agent", false],
   ["/PAP/apps", false],
-])("permits only a guarded task detail while the personal preference loads: %s", async (path, permitted) => {
+])("prepares only guarded task data behind the loading view while preferences load: %s", async (path, permitted) => {
   const container = document.createElement("div");
   const root = createRoot(container);
   try {
@@ -35,7 +35,11 @@ it.each([
         <Route path="*" element={<div>Guarded task content</div>} />
       </Route>
     </Routes></MemoryRouter>));
-    expect(container.textContent).toBe(permitted ? "Guarded task content" : "Loading shell");
+    expect(container.textContent).toContain("Loading shell");
+    expect(container.textContent?.includes("Guarded task content")).toBe(permitted);
+    const prepared = container.querySelector<HTMLElement>('[data-testid="shell-prepared-outlet"]');
+    expect(prepared?.hidden ?? null).toBe(permitted ? true : null);
+    if (prepared) expect(prepared.hasAttribute("inert")).toBe(true);
   } finally { await act(async () => root.unmount()); }
 });
 
@@ -71,4 +75,28 @@ it.each([false, true])("runs access checks while shell settings are pending (mem
     await act(async () => root.unmount());
     client.clear();
   }
+});
+
+it("keeps prepared task content mounted without taking existing focus when the shell becomes visible", async () => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const input = document.createElement("input");
+  document.body.append(container, input);
+  const view = (loaded: boolean) => <MemoryRouter initialEntries={["/PAP/issues/PAP-1"]}><Routes>
+    <Route element={<ShellConfigurationGate loaded={loaded} allowPendingTaskDetail />}>
+      <Route path="*" element={<main id="main-content" tabIndex={-1} data-testid="prepared-task">Task data</main>} />
+    </Route>
+  </Routes></MemoryRouter>;
+  try {
+    await act(async () => root.render(view(false)));
+    const task = container.querySelector('[data-testid="prepared-task"]');
+    expect(task).not.toBeNull();
+    input.focus();
+    await act(async () => root.render(view(true)));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(document.activeElement).toBe(input);
+    expect(container.querySelector('[data-testid="prepared-task"]')).toBe(task);
+    expect(container.querySelector<HTMLElement>('[data-testid="shell-prepared-outlet"]')?.hidden).toBe(false);
+    expect(container.querySelector('[data-testid="shell-configuration-loading"]')).toBeNull();
+  } finally { await act(async () => root.unmount()); container.remove(); input.remove(); }
 });

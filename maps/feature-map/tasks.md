@@ -59,8 +59,9 @@ Filters → **Routine tasks** selects tasks created by routine runs. The
 
 ### `task-detail`
 
-During a cold open, a neutral placeholder waits for the personal presentation
-preference. The matching chat loading frame then owns the same viewport and
+During a cold open, task data prepares behind the shell loading view until the
+personal presentation preference resolves. The temporary shell stays hidden.
+The matching chat loading frame then owns the same viewport and
 composer geometry as the resolved conversation. The real title and monitor
 banner stay concealed until the initial reading position is prepared. The
 [rich loading journey](../../tests/perf/issue-detail/loading-layout.spec.ts)
@@ -68,7 +69,8 @@ checks direct and list-based entry, delayed fonts and preferences, and desktop/m
 with a long saved thread, cards, a monitor, and a pending confirmation. This
 synthetic local coverage does not establish a deployed staging pass. The normal
 [browser CI journey](../../tests/e2e/task-loading-frame.spec.ts) also covers the
-loading contract, Classic preference loading, and a bounded wait for stalled fonts.
+loading contract, Classic preference loading and typography, stable mobile chrome,
+and a bounded wait for stalled fonts.
 
 Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. Completed runs with saved replies defer their transcripts until the reader opens history. Live runs, failures, yielded runs and runs without a saved reply still hydrate; an already shown transcript stays available after completion. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single run with deferred output or a truncated legacy log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 

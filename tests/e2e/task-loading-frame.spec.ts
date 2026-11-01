@@ -107,7 +107,7 @@ test("Classic startup does not guess a chat layout while personal preferences ar
       await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: false } });
     });
     await page.goto(fixture.route);
-    await expect(page.getByTestId("task-detail-presentation-loading")).toBeVisible();
+    await expect(page.getByTestId("shell-configuration-loading")).toBeVisible();
     await expect(page.locator("[data-task-chat-shell]")).toHaveCount(0);
     await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
     release();
@@ -136,6 +136,87 @@ test("a stalled web font does not hide an otherwise prepared conversation indefi
   } finally {
     release();
     await page.unrouteAll({ behavior: "wait" });
+    await request.patch(`/api/companies/${fixture.company.id}`, { data: { status: "archived" } });
+  }
+});
+
+for (const coordinator of [false, true]) test(`mobile chrome stays fixed when personal preferences resolve (Coordinator=${coordinator})`, async ({ page, request }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const fixture = await createTask(request);
+  let release!: () => void;
+  const preferenceReady = new Promise<void>(resolve => { release = resolve; });
+  await page.addInitScript(() => {
+    const frames: number[][] = [];
+    Object.assign(window, { mobileShellFrames: frames });
+    const sample = () => {
+      const shell = document.querySelector(".paperclip-app-shell");
+      if (shell && shell.getBoundingClientRect().width > 0) {
+        const rects = [".app-breadcrumb", ".mobile-bottom-nav", "#main-content"].map(selector => document.querySelector(selector)!.getBoundingClientRect());
+        frames.push([innerWidth, innerHeight, scrollX, scrollY, ...rects.flatMap((rect, index) => index === 2 ? [rect.x, rect.y, rect.width] : [rect.x, rect.y, rect.width, rect.height])]);
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  try {
+    await page.route("**/api/instance/settings/experimental", async route => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), enableClassicTaskInterface: true, enableStreamlinedUi: false } });
+    });
+    await page.route("**/api/workspace-preferences/me", async route => {
+      await preferenceReady;
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: coordinator } });
+    });
+    await page.goto(fixture.route);
+    await expect(page.getByTestId("shell-configuration-loading")).toBeVisible();
+    await expect(page.locator(".paperclip-app-shell")).toBeHidden();
+    expect(await page.evaluate(() => (window as unknown as { mobileShellFrames: number[][] }).mobileShellFrames)).toEqual([]);
+    release();
+    if (coordinator) await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible();
+    else await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
+    await page.waitForTimeout(300);
+    const frames = await page.evaluate(() => (window as unknown as { mobileShellFrames: number[][] }).mobileShellFrames);
+    await info.attach("mobile-preference-chrome", { body: JSON.stringify(frames), contentType: "application/json" });
+    expect(frames.length).toBeGreaterThan(5);
+    for (let dimension = 0; dimension < frames[0].length; dimension++) {
+      const values = frames.map(frame => frame[dimension]);
+      expect(Math.max(...values) - Math.min(...values)).toBeLessThanOrEqual(2);
+    }
+  } finally {
+    release();
+    await request.patch(`/api/companies/${fixture.company.id}`, { data: { status: "archived" } });
+  }
+});
+
+test("a seeded Classic loading title uses the resolved title typography", async ({ page, request }) => {
+  const fixture = await createTask(request);
+  let release!: () => void;
+  const coreReady = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await page.route("**/api/instance/settings/experimental", async route => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), enableClassicTaskInterface: true, enableStreamlinedUi: false } });
+    });
+    await page.route("**/api/workspace-preferences/me", async route => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: false } });
+    });
+    await page.goto(`/${fixture.company.issuePrefix}/issues`);
+    await page.getByRole("link").filter({ hasText: fixture.title }).first().click();
+    await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
+    await page.route("**/api/issues/*", async route => { await coreReady; await route.continue(); });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const loadingTitle = page.getByRole("heading", { name: fixture.title, exact: true });
+    await expect(loadingTitle).toBeVisible();
+    await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
+    const font = await loadingTitle.evaluate(element => getComputedStyle(element).font);
+    release();
+    const title = page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true });
+    await expect(title).toBeVisible();
+    expect(await title.evaluate(element => getComputedStyle(element).font)).toBe(font);
+  } finally {
+    release();
     await request.patch(`/api/companies/${fixture.company.id}`, { data: { status: "archived" } });
   }
 });
