@@ -7,6 +7,9 @@ import {
   buildInlineMigrationSecretName,
   buildMigratedAgentEnv,
   collectInlineSecretMigrationCandidates,
+  collectRedactedInlineEnvValues,
+  formatRedactedSkipWarning,
+  isServerMigratableEnvKey,
   parseSecretsInclude,
   registerSecretCommands,
   toPlainEnvValue,
@@ -208,6 +211,49 @@ describe("secrets CLI helpers", () => {
     ]);
   });
 
+  it("does not treat the API redaction placeholder as an inline value to migrate", () => {
+    const agents = [
+      agent({
+        id: "agent-12345678",
+        adapterConfig: {
+          env: {
+            ANTHROPIC_API_KEY: { type: "plain", value: "***REDACTED***" },
+            GH_TOKEN: "***REDACTED***",
+            OPENAI_API_KEY: { type: "plain", value: "sk-real" },
+          },
+        },
+      }),
+    ];
+
+    expect(collectInlineSecretMigrationCandidates(agents, []).map((row) => row.envKey)).toEqual(["OPENAI_API_KEY"]);
+    expect(collectRedactedInlineEnvValues(agents)).toEqual([
+      { agentId: "agent-12345678", agentName: "Coder", envKey: "ANTHROPIC_API_KEY" },
+      { agentId: "agent-12345678", agentName: "Coder", envKey: "GH_TOKEN" },
+    ]);
+  });
+
+  it("only points skipped keys at the server script when that script would migrate them", () => {
+    expect(isServerMigratableEnvKey("ANTHROPIC_API_KEY")).toBe(true);
+    expect(isServerMigratableEnvKey("GH_TOKEN")).toBe(false);
+    expect(isServerMigratableEnvKey("TOKEN")).toBe(false);
+
+    const row = (envKey: string) => ({ agentId: "agent-12345678", agentName: "Coder", envKey });
+    expect(formatRedactedSkipWarning([])).toBeNull();
+
+    const covered = formatRedactedSkipWarning([row("ANTHROPIC_API_KEY")])!;
+    expect(covered).toContain("pnpm secrets:migrate-inline-env");
+    expect(covered).not.toContain("does not pick up");
+
+    const tokenOnly = formatRedactedSkipWarning([row("GH_TOKEN"), row("TOKEN"), row("GH_TOKEN")])!;
+    expect(tokenOnly).not.toContain("pnpm secrets:migrate-inline-env");
+    expect(tokenOnly).toContain("does not pick up GH_TOKEN, TOKEN,");
+
+    const mixed = formatRedactedSkipWarning([row("ANTHROPIC_API_KEY"), row("GH_TOKEN")])!;
+    expect(mixed).toContain("Skipping 2 env value(s)");
+    expect(mixed).toContain("pnpm secrets:migrate-inline-env");
+    expect(mixed).toContain("does not pick up GH_TOKEN,");
+  });
+
   it("builds migrated env bindings without preserving secret values", () => {
     const next = buildMigratedAgentEnv(
       {
@@ -303,6 +349,48 @@ describe("secrets API parity commands", () => {
       ["POST", "http://localhost:3100/api/companies/company-1/secrets/remote-import/preview"],
       ["POST", "http://localhost:3100/api/companies/company-1/secrets/remote-import"],
     ]);
+  });
+
+  it("never writes the redaction placeholder as a secret value on migrate-inline-env --apply", async () => {
+    const agents = [
+      agent({
+        id: "agent-12345678",
+        adapterConfig: {
+          env: {
+            ANTHROPIC_API_KEY: { type: "plain", value: "***REDACTED***" },
+            OPENAI_API_KEY: { type: "plain", value: "sk-real" },
+          },
+        },
+      }),
+      agent({
+        id: "agent-87654321",
+        adapterConfig: { env: { GH_TOKEN: { type: "plain", value: "***REDACTED***" } } },
+      }),
+    ];
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.endsWith("/agents")) return Promise.resolve(jsonResponse(agents));
+      if (method === "GET" && url.endsWith("/secrets")) return Promise.resolve(jsonResponse([]));
+      if (method === "POST") return Promise.resolve(jsonResponse(secret({ id: "secret-new" })));
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runSecretCommand(["secrets", "migrate-inline-env", "--company-id", "company-1", "--apply"]);
+
+    expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
+      ["GET", "http://localhost:3100/api/companies/company-1/agents"],
+      ["GET", "http://localhost:3100/api/companies/company-1/secrets"],
+      ["POST", "http://localhost:3100/api/companies/company-1/secrets"],
+      ["PATCH", "http://localhost:3100/api/agents/agent-12345678"],
+    ]);
+    const created = JSON.parse(String(fetchMock.mock.calls[2]![1]!.body));
+    expect(created).toMatchObject({ name: "agent_agent-12_openai_api_key", value: "sk-real" });
+    const patched = JSON.parse(String(fetchMock.mock.calls[3]![1]!.body));
+    expect(patched.adapterConfig.env).toEqual({
+      ANTHROPIC_API_KEY: { type: "plain", value: "***REDACTED***" },
+      OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-new", version: "latest" },
+    });
   });
 
   it("wraps secret metadata, rotation, usage, access event, and delete endpoints", async () => {
