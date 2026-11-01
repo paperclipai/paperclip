@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { classifyContinuationFailure } from "./service.js";
+import { classifyContinuationFailure, shouldHoldRecoveryForPausedAgent } from "./service.js";
 
 const run = (errorCode: string | null) =>
   ({ errorCode } as unknown as Parameters<typeof classifyContinuationFailure>[0]);
 
 describe("pause durability: continuation retry classification", () => {
+  it("holds assigned and review work while their agent is intentionally paused", () => {
+    const paused = { status: "paused", companyId: "company-a" };
+    expect(shouldHoldRecoveryForPausedAgent(paused, "company-a")).toBe(true);
+    expect(shouldHoldRecoveryForPausedAgent({ ...paused, status: "active" }, "company-a")).toBe(false);
+    expect(shouldHoldRecoveryForPausedAgent(paused, "company-b")).toBe(false);
+    expect(shouldHoldRecoveryForPausedAgent(null, "company-a")).toBe(false);
+  });
   it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_failed", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled"])("does not grant %s another recovery budget", (code) => {
     expect(classifyContinuationFailure(run(code))).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });

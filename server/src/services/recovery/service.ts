@@ -741,6 +741,13 @@ type ContinuationRetryClassification = {
   errorCode: string | null;
 };
 
+export function shouldHoldRecoveryForPausedAgent(
+  agent: { status: string; companyId: string } | null | undefined,
+  issueCompanyId: string,
+): boolean {
+  return agent?.status === "paused" && agent.companyId === issueCompanyId;
+}
+
 export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
 ): ContinuationRetryClassification {
@@ -4669,6 +4676,15 @@ export function recoveryService(
         continue;
       }
 
+      const agent = await getAgent(agentId);
+      // A deliberate pause holds all assigned and review work, including
+      // review-path repair and successful legacy runs. Resume returns it to
+      // the normal sweep.
+      if (shouldHoldRecoveryForPausedAgent(agent, issue.companyId)) {
+        result.skipped += 1;
+        continue;
+      }
+
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       // Terminal run/wake rows survive a restart even if finalization never
       // reached the escalation transaction. Retry that idempotent disposition
@@ -4714,7 +4730,6 @@ export function recoveryService(
         }
       }
 
-      const agent = await getAgent(agentId);
       if (agent?.companyId === issue.companyId && isAgentAwaitingSetup(agent)) {
         result.skipped += 1;
         continue;
