@@ -267,10 +267,18 @@ describe("BlockedInboxView", () => {
 
     const rowText = container.querySelector("a")?.parentElement?.textContent ?? "";
     expect(rowText.indexOf("Pending board decision")).toBeGreaterThanOrEqual(0);
-    expect(rowText.indexOf("Needs decision")).toBeGreaterThan(rowText.indexOf("Pending board decision"));
-    expect(rowText.indexOf("Board")).toBeGreaterThan(rowText.indexOf("Needs decision"));
-    expect(rowText).not.toContain("Accept or reject");
-    expect(container.querySelector('[data-testid="blocked-row-reason-column"]')?.textContent).toContain("Needs decision");
+    expect(rowText.indexOf("Board")).toBeGreaterThan(rowText.indexOf("Pending board decision"));
+    // K-20108: the row now shows the server's recommended next step. It used to
+    // assert the opposite -- `not.toContain("Accept or reject")` -- which is how
+    // the action stayed invisible on 69 live rows while still being searchable.
+    expect(rowText).toContain("Accept or reject");
+    const reasonColumn = container.querySelector('[data-testid="blocked-row-reason-column"]');
+    // The chip prints the specific reason, not the group label. `data-variant`
+    // still carries the group so colour/icon stay right.
+    expect(reasonColumn?.textContent).toContain("Pending board decision");
+    expect(reasonColumn?.querySelector('[data-testid="blocked-reason-chip"]')?.getAttribute("data-variant")).toBe("needs_decision");
+    expect(reasonColumn?.textContent).not.toContain("Needs decision");
+    expect(reasonColumn?.querySelector('[data-testid="blocked-row-action"]')?.textContent).toBe("Accept or reject");
     const taskRow = container.querySelector('[data-slot="task-row"]');
     const identifier = container.querySelector('[data-slot="task-row-identifier"]');
     const timestamp = container.querySelector('[data-slot="task-row-timestamp"]');
@@ -305,6 +313,256 @@ describe("BlockedInboxView", () => {
     const row = container.querySelector("a")?.parentElement;
     expect(row?.className).toContain("border-b");
     expect(row?.textContent).toContain("PAP-41");
+
+    act(() => root.unmount());
+  });
+
+  it("surfaces the action on the legacy presentation on desktop and mobile", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-legacy-action",
+        "PAP-42",
+        "Legacy row with a real next step",
+        attention({
+          reason: "pending_board_decision",
+          severity: "high",
+          action: { label: "Accept or reject", detail: null },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} presentation="legacy" />,
+      container,
+    );
+    await waitFor(() => container.textContent?.includes("Legacy row with a real next step") === true);
+
+    // The action is presentation-independent: legacy and task rows share the
+    // same trailing/meta slots, so the server's next step is not a task-presentation
+    // feature. Both the desktop column and the mobile meta line must carry it.
+    const desktopAction = container.querySelector('[data-testid="blocked-row-action"]');
+    expect(desktopAction?.textContent).toBe("Accept or reject");
+    expect(desktopAction?.getAttribute("title")).toBe("Accept or reject");
+    const mobileAction = container.querySelector('[data-testid="blocked-row-action-mobile"]');
+    expect(mobileAction?.textContent).toBe("Accept or reject");
+
+    act(() => root.unmount());
+  });
+
+  it("surfaces the action on the task presentation on mobile as well as desktop", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-task-action",
+        "PAP-43",
+        "Task row with a real next step",
+        attention({
+          reason: "missing_successful_run_disposition",
+          action: { label: "Choose disposition", detail: null },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} presentation="task" />,
+      container,
+    );
+    await waitFor(() => container.textContent?.includes("Task row with a real next step") === true);
+
+    expect(container.querySelector('[data-testid="blocked-row-action"]')?.textContent).toBe("Choose disposition");
+    expect(container.querySelector('[data-testid="blocked-row-action-mobile"]')?.textContent).toBe("Choose disposition");
+
+    act(() => root.unmount());
+  });
+
+  it("renders no action element for the suppressed blocked_chain_stalled fallback", async () => {
+    // The suppression rule, at the render boundary. `Inspect blocker chain` is
+    // the liveness-walk fallback: identical on every stalled row, `leafIssue`
+    // null on all of them, and the rows already sit under a group header that
+    // says the same thing. Suppressing it must remove it from the DOM, not just
+    // from the search haystack -- otherwise the search box is still a liar.
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-stalled",
+        "PAP-44",
+        "Stalled row",
+        attention({
+          reason: "blocked_chain_stalled",
+          action: {
+            label: "Inspect blocker chain",
+            detail: "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
+          },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} searchQuery="" />,
+      container,
+    );
+    await waitFor(() => container.textContent?.includes("Stalled row") === true);
+
+    expect(container.querySelector('[data-testid="blocked-row-action"]')).toBeNull();
+    expect(container.querySelector('[data-testid="blocked-row-action-mobile"]')).toBeNull();
+    // The chip still says the specific reason, so the row is not left nameless.
+    expect(container.querySelector('[data-testid="blocked-reason-chip"]')?.textContent).toContain(
+      "Blocked chain stalled",
+    );
+    expect(container.textContent).not.toContain("Inspect blocker chain");
+
+    act(() => root.unmount());
+  });
+
+  it("drops rows that only matched a suppressed action", async () => {
+    // Parity, end to end: searching the suppressed label must return nothing,
+    // because the label is not on the row.
+    const issues: Issue[] = [
+      makeIssue(
+        "issue-stalled-1",
+        "PAP-50",
+        "Stalled one",
+        attention({
+          reason: "blocked_chain_stalled",
+          action: { label: "Inspect blocker chain", detail: null },
+        }),
+      ),
+      makeIssue(
+        "issue-decision",
+        "PAP-51",
+        "Waiting on a confirmation",
+        attention({
+          reason: "pending_board_decision",
+          action: { label: "Answer confirmation", detail: null },
+        }),
+      ),
+    ];
+    mockIssuesApi.list.mockResolvedValue(issues);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} searchQuery="Inspect blocker chain" />,
+      container,
+    );
+    await waitFor(
+      () => container.querySelector('[data-testid="blocked-inbox-no-search-results"]') !== null,
+    );
+
+    const links = Array.from(container.querySelectorAll("a")).map((a) => a.textContent ?? "");
+    expect(links.some((t) => t.includes("Stalled one"))).toBe(false);
+    expect(links.some((t) => t.includes("Waiting on a confirmation"))).toBe(false);
+
+    act(() => root.unmount());
+  });
+
+  it("does not match the group label when grouping is off, and does when it is on", async () => {
+    // Parity, at the only place it is conditional. The variant label reaches
+    // the screen through the group header, so with grouping set to "None" there
+    // is no header and nothing draws it. Indexing it anyway let a search for
+    // "Needs attention" return a row that reads only "Parked blocker" -- the
+    // same findable-but-invisible defect the parity contract exists to stop.
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-group-label",
+        "PAP-60",
+        "Parked chain",
+        attention({
+          reason: "blocked_by_assigned_backlog_issue",
+          action: { label: "Resume parked blocker", detail: null },
+        }),
+      ),
+    ]);
+
+    const ungrouped = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} groupBy="none" searchQuery="Needs attention" />,
+      container,
+    );
+    await waitFor(
+      () => container.querySelector('[data-testid="blocked-inbox-no-search-results"]') !== null,
+    );
+    // The row is on the wire and its group label is "Needs attention"...
+    expect(mockIssuesApi.list.mock.results.length).toBeGreaterThan(0);
+    // ...but no header is drawn, so the label must not match.
+    expect(container.querySelector('[data-testid="blocked-inbox"]')).toBeNull();
+    act(() => ungrouped.root.unmount());
+    container.remove();
+
+    const fresh = document.createElement("div");
+    document.body.appendChild(fresh);
+    const grouped = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} groupBy="blocker_type" searchQuery="Needs attention" />,
+      fresh,
+    );
+    await waitFor(() => fresh.querySelectorAll("a").length > 0);
+    expect(fresh.textContent).toContain("Parked chain");
+    expect(fresh.textContent).toContain("Needs attention");
+    act(() => grouped.root.unmount());
+    fresh.remove();
+  });
+
+  it("finds a row by the owner name it displays, not the raw owner field", async () => {
+    // The inverse direction of the same contract: the server sets
+    // `owner.label: null` on the finding-driven path, and the row still draws
+    // the assignee name resolved from `owner.agentId`. A displayed name that
+    // the filter cannot reach is a search box that lies by omission.
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-owner",
+        "PAP-61",
+        "Waiting on a review gate",
+        attention({
+          reason: "in_review_without_action_path",
+          owner: { type: "agent", agentId: "agent-77", userId: null, label: null },
+          action: { label: "Choose review path", detail: null },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView
+        {...blockedViewProps}
+        agentNameById={new Map([["agent-77", "Priya"]])}
+        searchQuery="Priya"
+      />,
+      container,
+    );
+    await waitFor(() => container.querySelectorAll("a").length > 0);
+
+    expect(container.textContent).toContain("Waiting on a review gate");
+    // The name is on the row and the filter reaches it.
+    expect(container.querySelector('[data-testid="blocked-row-owner-mobile"]')?.textContent).toBe(
+      "Priya",
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("keeps a stalled row findable by the specific reason its chip prints", async () => {
+    // The other half of the same contract: suppression must not make a row
+    // unfindable. "Parked blocker" is the exact case from the report -- it used
+    // to match K-20036 and then the row displayed "Needs attention".
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-parked",
+        "PAP-52",
+        "Parked chain",
+        attention({
+          reason: "blocked_by_assigned_backlog_issue",
+          action: { label: "Resume parked blocker", detail: null },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} searchQuery="Parked blocker" />,
+      container,
+    );
+    await waitFor(() => container.querySelectorAll("a").length > 0);
+
+    expect(container.textContent).toContain("Parked chain");
+    const chip = container.querySelector('[data-testid="blocked-reason-chip"]');
+    expect(chip?.textContent).toContain("Parked blocker");
+    expect(chip?.getAttribute("data-variant")).toBe("needs_attention");
+    expect(container.querySelector('[data-testid="blocked-row-action"]')?.textContent).toBe(
+      "Resume parked blocker",
+    );
 
     act(() => root.unmount());
   });
