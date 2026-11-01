@@ -498,13 +498,6 @@ describe("claude execute", () => {
     }
   });
 
-  /**
-   * Regression tests for https://github.com/paperclipai/paperclip/issues/2848
-   *
-   * --append-system-prompt-file should only be passed on fresh sessions.
-   * On resumed sessions the instructions are already in the session cache;
-   * re-injecting them wastes tokens and may be rejected by the CLI.
-   */
   it("passes --append-system-prompt-file on a fresh session when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-fresh-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
@@ -539,16 +532,16 @@ describe("claude execute", () => {
     }
   });
 
-  it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
+  it("passes the same --append-system-prompt-file on a resumed session as on the fresh one", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
-    try {
+    const run = async (sessionId: string | null) => {
       await execute({
-        runId: "run-resume",
+        runId: sessionId ? "run-resume" : "run-fresh",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
           command: commandPath,
@@ -562,21 +555,23 @@ describe("claude execute", () => {
         onLog: async () => {},
         onMeta: async () => {},
       });
-      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
-      expect(captured.argv).not.toContain("--append-system-prompt-file");
-      expect(captured.argv).toContain("--resume");
+      return JSON.parse(await fs.readFile(capturePath, "utf-8"));
+    };
+    try {
+      const fresh = await run(null);
+      const resumed = await run("11111111-1111-4111-8111-111111111111");
+      expect(fresh.argv).not.toContain("--resume");
+      expect(resumed.argv).toContain("--resume");
+      expect(resumed.argv).toContain("--append-system-prompt-file");
+      expect(resumed.instructionsFilePath).toBe(fresh.instructionsFilePath);
+      expect(resumed.instructionsContents).toBe(fresh.instructionsContents);
+      expect(resumed.instructionsContents).toContain("# Agent instructions");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
 
-  /**
-   * Regression tests for commandNotes accuracy (Greptile P2).
-   *
-   * commandNotes should only claim instructions were injected when the flag
-   * was actually passed — i.e. on fresh sessions, not resumed ones.
-   */
   it("commandNotes reports injection on a fresh session with instructionsFile", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-fresh-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
@@ -608,7 +603,7 @@ describe("claude execute", () => {
     }
   });
 
-  it("commandNotes is empty on a resumed session even when instructionsFile is set", async () => {
+  it("commandNotes reports injection on a resumed session with instructionsFile", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-resume-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
@@ -632,7 +627,7 @@ describe("claude execute", () => {
         onLog: async () => {},
         onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
       });
-      expect(capturedNotes).toHaveLength(0);
+      expect(capturedNotes.some((n) => n.includes("--append-system-prompt-file"))).toBe(true);
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
@@ -687,7 +682,7 @@ describe("claude execute", () => {
       expect(prompts[0]).not.toContain("FRESH_HANDOFF");
       expect(prompts[1]).toContain("FRESH_HANDOFF: original goal and prior decisions");
       expect(captured[0]?.argv).toContain("--resume");
-      expect(captured[0]?.argv).not.toContain("--append-system-prompt-file");
+      expect(captured[0]?.argv).toContain("--append-system-prompt-file");
       expect(captured[1]?.argv).not.toContain("--resume");
       expect(captured[1]?.argv).toContain("--append-system-prompt-file");
       expect(captured[1]?.appendedSystemPromptFilePath).toContain("agent-instructions.md");
@@ -701,7 +696,7 @@ describe("claude execute", () => {
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`,
       );
       expect(metaEvents).toHaveLength(2);
-      expect(metaEvents[0]?.commandNotes).toHaveLength(0);
+      expect(metaEvents[0]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
       expect(result.sessionId).toBe("22222222-2222-4222-8222-222222222222");
       expect(result.clearSession).toBe(false);
@@ -1396,7 +1391,7 @@ describe("claude execute", () => {
       expect(capture1.addDir).toBeTruthy();
       expect(capture1.addDir).toBe(capture2.addDir);
       expect(capture1.instructionsFilePath).toBeTruthy();
-      expect(capture2.instructionsFilePath ?? null).toBeNull();
+      expect(capture2.instructionsFilePath).toBe(capture1.instructionsFilePath);
       expect(capture1.addDir?.startsWith(expectedRoot)).toBe(true);
       expect(capture1.instructionsFilePath?.startsWith(expectedRoot)).toBe(true);
       expect(capture1.instructionsContents).toContain("You are managed instructions.");
@@ -1443,6 +1438,7 @@ describe("claude execute", () => {
       let sessionParams: Record<string, unknown> | null = null;
       let previousBundleKey: unknown;
       let previousInstructionsPath = "";
+      let previousSystemPromptFilePath: string | null = null;
       for (const [index, change] of ["initial", "location", "instructions", "skill"].entries()) {
         const runId = `run-${index}`;
         const instructionsPath = path.join(root, "companies", "company-1", "agents", "agent-1",
@@ -1474,7 +1470,8 @@ describe("claude execute", () => {
         if (change === "location") {
           expect(capture.argv).toContain("--resume");
           expect(capture.argv).toContain("11111111-1111-4111-8111-111111111111");
-          expect(capture.instructionsFilePath).toBeNull();
+          expect(capture.instructionsFilePath).toBe(previousSystemPromptFilePath);
+          expect(capture.instructionsContents).not.toContain(instructionsPath);
           expect(result.sessionParams?.promptBundleKey).toBe(previousBundleKey);
         } else {
           expect(capture.argv).not.toContain("--resume");
@@ -1494,6 +1491,7 @@ describe("claude execute", () => {
         sessionParams = sessionCodec.deserialize(sessionCodec.serialize(result.sessionParams ?? null));
         previousBundleKey = result.sessionParams?.promptBundleKey;
         previousInstructionsPath = instructionsPath;
+        previousSystemPromptFilePath = capture.instructionsFilePath;
       }
     } finally {
       vi.unstubAllEnvs();
