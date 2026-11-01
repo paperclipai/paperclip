@@ -180,8 +180,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     result.set(issue.id, presentation);
     const run = runMap.get(issue.id);
     const runStatus = HEARTBEAT_RUN_STATUSES.find(status => status === run?.status);
-    if (presentation?.responsibility === "system" && presentation.state === "failed" &&
-        !presentation.projectAccess && run && runStatus) {
+    if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus) {
       captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
         runId: run.id, runStatus, intentId: presentation.intentId,
         agentAdapter: agentMap.get(run.agentId)?.adapterType ?? "unknown" });
