@@ -129,6 +129,16 @@ describe("paperclip api helper", () => {
     expect(requests[0]?.body).toBe(input ?? bodyArgs[0]);
   });
 
+  it("succeeds on HEAD without waiting for a body", async () => {
+    const { baseUrl, requests } = await startServer(200, '{"status":"ok"}');
+
+    const result = await runHelper(baseUrl, ["HEAD", "/api/liveness"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/^HTTP\/1\.1 200/);
+    expect(requests[0]).toMatchObject({ method: "HEAD", url: "/api/liveness" });
+  });
+
   it("passes binary responses through unchanged", async () => {
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0a, 0x00, 0xff]);
     const { baseUrl } = await startServer(200, bytes);

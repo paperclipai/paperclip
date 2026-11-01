@@ -34,7 +34,12 @@ state_dir=${PAPERCLIP_HELPER_STATE_DIR:-${PAPERCLIP_WORKSPACE_CWD:-$PWD}/.paperc
 response_file=$(umask 077; mkdir -p "$state_dir" && mktemp "$state_dir/response.XXXXXX")
 trap 'rm -f "$response_file"' EXIT
 
-args=(-sS -m 60 -X "$method" -o "$response_file" -w '%{http_code}')
+args=(-sS -m 60 -o "$response_file" -w '%{http_code}')
+if [[ $method == HEAD ]]; then
+  args+=(--head)
+else
+  args+=(-X "$method")
+fi
 if [[ -n ${PAPERCLIP_RUN_ID:-} ]]; then
   args+=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
 fi
@@ -51,7 +56,7 @@ curl_exit=$?
 set -e
 
 cat "$response_file"
-if [[ $curl_exit -ne 0 || ${http_code:-0} -ge 400 || ${http_code:-0} -eq 0 ]] || [[ $method != GET && $method != DELETE && ! -s $response_file ]]; then
+if [[ $curl_exit -ne 0 || ${http_code:-0} -ge 400 || ${http_code:-0} -eq 0 ]] || [[ $method != GET && $method != HEAD && $method != DELETE && ! -s $response_file ]]; then
   detail=$(head -c 4000 "$response_file" | tr -d '\0')
   printf '%s %s FAILED (curl exit %s, HTTP %s): %s\n' "$method" "$path" "$curl_exit" "${http_code:-000}" "${detail:-<empty response>}" >&2
   exit 1
