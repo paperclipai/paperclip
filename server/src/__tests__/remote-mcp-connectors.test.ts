@@ -191,6 +191,31 @@ describe("remote connector lifecycle", () => {
     expect(calls).toHaveLength(3);
     expect(calls[2]).not.toBe(executionSession);
   });
+  it("omits structuredContent when a remote tool sends none and keeps the object when it does", async () => {
+    const org = await company();
+    const [agent] = await db.insert(agents).values({ companyId: org.id, name: "Result shape tester", role: "engineer", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+    const send = async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return Response.json({ id: body.id, result: { protocolVersion: "2025-06-18" } }, { headers: { "Mcp-Session-Id": "shape-session" } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "tools/list") return Response.json({ id: body.id, result: { tools: [tool("text_only"), tool("structured")] } });
+      // A tool with no structured output omits the key, which the spec allows.
+      return Response.json({ id: body.id, result: body.params.name === "structured"
+        ? { content: [{ type: "text", text: "ok" }], structuredContent: { ok: true } }
+        : { content: [{ type: "text", text: "ok" }] } });
+    };
+    const service = toolAccessService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }], remoteHttpRequest: send });
+    const connected = await service.connectGalleryApp(org.id, { galleryKey: "arcade", connectionMethodKey: "mcp", link: "https://api.arcade.dev/mcp/result-shape", authMode: "none" }, actor);
+    await service.finishGalleryAppConnection(org.id, connected.connectionId, { enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents" }, actor);
+    const gateway = createToolGatewayService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpRequest: send });
+    const call = (toolName: string) => gateway.executeTestCall({ companyId: org.id, connectionId: connected.connectionId, agentId: agent.id, userId: actor.actorId, toolName, parameters: {} });
+    const textOnly = await call("text_only");
+    expect(textOnly).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
+    // `structuredContent` is optional, and it is an object when present. `null` is invalid, so
+    // a client that validates the result schema rejects the whole response.
+    expect((textOnly as { result: { data: Record<string, unknown> } }).result.data).not.toHaveProperty("structuredContent");
+    expect(await call("structured")).toMatchObject({ decision: "allowed", result: { data: { structuredContent: { ok: true } } } });
+  });
   it("saves a vaulted draft without contacting the provider and resumes with custom headers", async () => {
     const org = await company(); const remote = remoteFixture();
     const input = { galleryKey: "arcade", connectionMethodKey: "mcp", link: "https://api.arcade.dev/mcp/fixture", authMode: "bearer" as const };
