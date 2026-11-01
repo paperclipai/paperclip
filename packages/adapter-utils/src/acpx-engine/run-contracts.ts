@@ -468,6 +468,7 @@ export interface SessionKeyIdentity {
   readonly companyId: string;
   readonly agentId: string;
   readonly taskKey: string;
+  readonly conversationGeneration?: number;
 }
 
 declare const RUN_SCOPED_CONTRIBUTION: unique symbol;
