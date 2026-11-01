@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/shared";
+import {
+  isAllInterfacesHost,
+  isLoopbackHost,
+  resolveRuntimeBind,
+  validateConfiguredBindMode,
+} from "@paperclipai/shared";
 import { buildPresetServerConfig } from "../config/server-bind.js";
 
 const ORIGINAL_PATH = process.env.PATH;
@@ -62,8 +67,20 @@ describe("network bind helpers", () => {
       });
 
       expect(preset.server.host).toBe("127.0.0.1");
-    } finally {
+        } finally {
       process.env.PATH = ORIGINAL_PATH;
     }
+  });
+
+  it("matches bracketed IPv6 loopback and all-interfaces hosts", () => {
+    expect(isLoopbackHost("[::1]")).toBe(true);
+    expect(isAllInterfacesHost("[::]")).toBe(true);
+    expect(
+      validateConfiguredBindMode({
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        host: "[::1]",
+      }),
+    ).toEqual([]);
   });
 });
