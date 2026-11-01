@@ -514,6 +514,22 @@ function formatGiB(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 }
 
+async function gitCommonDir(localDir: string): Promise<string | null> {
+  try {
+    const result = await runLocalGit(localDir, ["rev-parse", "--git-common-dir"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    const raw = result.stdout.trim().split("\n")[0]?.trim() ?? "";
+    if (!raw) return null;
+    return path.isAbsolute(raw) ? raw : path.join(localDir, raw);
+  } catch (error) {
+    const text = `${(error as { stderr?: unknown })?.stderr ?? ""} ${(error as Error)?.message ?? ""}`;
+    if (text.includes("not a git repository")) return null;
+    throw error;
+  }
+}
+
 async function stagingSharesVolume(stagingRoot: string, localDirs: readonly string[]): Promise<boolean> {
   let stagingDev: unknown;
   try {
@@ -524,6 +540,18 @@ async function stagingSharesVolume(stagingRoot: string, localDirs: readonly stri
   for (const dir of localDirs) {
     try {
       if ((await fs.stat(dir)).dev === stagingDev) return true;
+    } catch {
+      return true;
+    }
+    try {
+      const commonDir = await gitCommonDir(dir);
+      if (commonDir) {
+        try {
+          if ((await fs.stat(commonDir)).dev === stagingDev) return true;
+        } catch {
+          return true;
+        }
+      }
     } catch {
       return true;
     }

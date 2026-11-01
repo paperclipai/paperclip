@@ -383,6 +383,33 @@ describe("ssh workspace sync staging", { timeout: 90_000 }, () => {
     expect(await readFile(path.join(localDir, "src/app.ts"), "utf8")).toBe("export const app = 2;\n");
   });
 
+  itWithGnuDu("keeps the shared-volume allowance when the git dir shares the temp volume", async () => {
+    const mainRepo = path.join(stagingRoot, "main-repo");
+    await mkdir(mainRepo, { recursive: true });
+    await writeTree(mainRepo, { "src/app.ts": "export const app = 1;\n" });
+    await git(mainRepo, ["init", "-q", "-b", "main"]);
+    await git(mainRepo, ["add", "-A"]);
+    await git(mainRepo, ["commit", "-q", "-m", "init"]);
+    await rm(localDir, { recursive: true, force: true });
+    await git(mainRepo, ["worktree", "add", localDir, "-b", "linked-wt"]);
+    const commonDir = await gitOutput(localDir, ["rev-parse", "--git-common-dir"]);
+    const prepared = await prepare();
+    const remote = prepared.workspaceRemoteDir;
+    await writeFile(path.join(remote, "data.bin"), Buffer.alloc(2 * MB, 7));
+    await git(remote, ["add", "-A"]);
+    await git(remote, ["commit", "-q", "-m", "remote work"]);
+    vi.spyOn(fsPromises, "statfs").mockResolvedValue({ bavail: 3 * 1024, bsize: 1024 } as Awaited<ReturnType<typeof fsPromises.statfs>>);
+    const realStat = fsPromises.stat.bind(fsPromises);
+    vi.spyOn(fsPromises, "stat").mockImplementation((async (target: string) => {
+      const result = await realStat(target);
+      const dev = target === stagingRoot || target === commonDir || target.startsWith(stagingRoot + path.sep) ? 1 : 2;
+      return Object.assign(Object.create(Object.getPrototypeOf(result)), result, { dev });
+    }) as typeof fsPromises.stat);
+
+    await expect(restoreWorkspaceFromSshExecution({ spec, localDir, remoteDir: remote }))
+      .rejects.toMatchObject({ code: "ssh_sync_insufficient_staging_space" });
+  });
+
   it("does not delete a local nested worktree when the remote replaces its parent directory", async () => {
     await writeTree(localDir, {
       "packages/a/x.ts": "local\n",
