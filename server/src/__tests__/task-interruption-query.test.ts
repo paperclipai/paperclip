@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
@@ -106,5 +107,20 @@ describe("task interruption latest run query", () => {
     expect(result.get(input[3]!.id)?.state).toBe("retry_scheduled");
     for (const n of [4, 5]) expect(result.get(input[n]!.id)?.state).toBe("resolved");
     for (const n of [6, 8]) expect(result.get(input[n]!.id)?.responsibility).toBe("user");
+  });
+
+  it("keeps the failed run's adapter after the task is reassigned", async () => {
+    const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+    const [nextAgent] = await db.insert(agents).values({
+      companyId: f.companyId, name: "Next worker", adapterType: "codex_local",
+    }).returning();
+    const [reassigned] = await db.update(issues).set({ assigneeAgentId: nextAgent!.id })
+      .where(eq(issues.id, f.input[0]!.id)).returning();
+    captureTaskInterruptionFailure.mockClear();
+    const result = await taskInterruptionPresentations(db, f.companyId, [reassigned!]);
+    expect(result.get(reassigned!.id)?.state).toBe("failed");
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: reassigned!.id, agentAdapter: "process",
+    }));
   });
 });

@@ -105,19 +105,20 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
-      agentId: heartbeatRuns.agentId,
+      agentId: heartbeatRuns.agentId, agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
         'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied')`,
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
+      .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
     db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt)),
-    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason, adapterType: agents.adapterType }).from(agents)
+    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason }).from(agents)
       .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
     projectIds.length ? db.select({ id: projects.id, pausedAt: projects.pausedAt, pauseReason: projects.pauseReason }).from(projects)
       .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds))) : [],
@@ -183,7 +184,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus) {
       captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
         runId: run.id, runStatus, intentId: presentation.intentId,
-        agentAdapter: agentMap.get(run.agentId)?.adapterType ?? "unknown" });
+        agentAdapter: run.agentAdapter ?? "unknown" });
     }
   }
   return result;
