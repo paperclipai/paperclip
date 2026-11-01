@@ -143,6 +143,22 @@ describe("live events re-read the membership role while the socket stays open", 
   const SETTLE_MS = 1_000;
   const settle = () => new Promise(resolve => setTimeout(resolve, SETTLE_MS));
 
+  /**
+   * Budget for one `expect.poll` barrier, and for a whole case.
+   *
+   * `vitest.config.ts` sets `testTimeout: 15000`, but a case here can hold up to
+   * five of these barriers plus the settle window, so the sum of a case's own
+   * waits exceeds the default budget. Every barrier returns in milliseconds on a
+   * healthy runner, which is why that went unnoticed; on a loaded one the case
+   * would expire before reaching its assertions, which reports a timeout instead
+   * of the authorization result the case exists to report. Each case therefore
+   * names a timeout above its own worst case, so a slow runner can only ever
+   * make a case slow, never red. Raising this is preferable to shortening a
+   * barrier: the witness barrier is what makes the negative assertions sound.
+   */
+  const WAIT_MS = 10_000;
+  const CASE_TIMEOUT_MS = 90_000;
+
   it("stops delivering to a staff member who is changed to client mid-stream", async () => {
     const staff = randomUUID(), demoted = randomUUID();
     const companyId = await seedCompany("MIDSOCKA", [
@@ -184,9 +200,9 @@ describe("live events re-read the membership role while the socket stays open", 
       // publication on the staff socket. That establishes the events really did
       // fan out, so the demoted socket's queue has received them.
       const after = publishMarker(companyId);
-      await expect.poll(() => sawMarker(staffClient.messages, after), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => sawMarker(staffClient.messages, after), { timeout: WAIT_MS }).toBe(true);
       const again = publishMarker(companyId);
-      await expect.poll(() => sawMarker(staffClient.messages, again), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => sawMarker(staffClient.messages, again), { timeout: WAIT_MS }).toBe(true);
 
       // Assert the denials while the member is still a client. The role is not
       // restored first, on purpose -- see the note at the top of this file.
@@ -201,13 +217,13 @@ describe("live events re-read the membership role while the socket stays open", 
       // so nothing here can race.
       await setRole(companyId, demoted, "operator");
       const restored = publishMarker(companyId);
-      await expect.poll(() => sawMarker(demotedClient.messages, restored), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => sawMarker(demotedClient.messages, restored), { timeout: WAIT_MS }).toBe(true);
     } finally {
       staffClient.socket.close();
       demotedClient.socket.close();
       server.close();
     }
-  });
+  }, CASE_TIMEOUT_MS);
 
   /**
    * This case guards against over-denying rather than under-denying, so unlike
@@ -249,7 +265,7 @@ describe("live events re-read the membership role while the socket stays open", 
       adminClient.socket.close();
       server.close();
     }
-  });
+  }, CASE_TIMEOUT_MS);
 
   /**
    * An agent key is a separate principal class: the socket's key branch
@@ -315,9 +331,9 @@ describe("live events re-read the membership role while the socket stays open", 
 
       await setRole(companyId, responsible, "client");
       const denied = publishMarker(companyId);
-      await expect.poll(() => sawMarker(witnessClient.messages, denied), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => sawMarker(witnessClient.messages, denied), { timeout: WAIT_MS }).toBe(true);
       const deniedAgain = publishMarker(companyId);
-      await expect.poll(() => sawMarker(witnessClient.messages, deniedAgain), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => sawMarker(witnessClient.messages, deniedAgain), { timeout: WAIT_MS }).toBe(true);
 
       // Assert the denials while the responsible user is still a client, before
       // the role is restored -- see the note at the top of this file.
@@ -330,13 +346,13 @@ describe("live events re-read the membership role while the socket stays open", 
       // latch. A positive assertion, so nothing here can race.
       await setRole(companyId, responsible, "operator");
       const restored = publishMarker(companyId);
-      await expect.poll(() => sawMarker(messages, restored), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => sawMarker(messages, restored), { timeout: WAIT_MS }).toBe(true);
     } finally {
       socket.close();
       witnessClient.socket.close();
       server.close();
     }
-  });
+  }, CASE_TIMEOUT_MS);
 
   /**
    * Guards the narrowing above: a key with no responsible user has no human
@@ -374,5 +390,5 @@ describe("live events re-read the membership role while the socket stays open", 
       socket.close();
       server.close();
     }
-  });
+  }, CASE_TIMEOUT_MS);
 });
