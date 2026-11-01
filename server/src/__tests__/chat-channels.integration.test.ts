@@ -76916,7 +76916,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           resolveSessionBeforeForWakeup: async () => null,
         });
         return adapter.withIssueExecutionLock({ companyId: context.fixture.companyId, runId: releaseRunId, now: new Date() }, async (_locked, ports) => {
-          const target = { companyId: context.fixture.companyId, wakeId: context.action.id, now: new Date() };
+          const target = { companyId: context.fixture.companyId, wakeId: context.action.id, agentId: context.fixture.assignedAgentId, now: new Date() };
           if (change === "queue rejection") await ports.transaction.cancelDeferredWake({ ...target, reason: "PRIVATE rejection" });
           else await ports.transaction.failDeferredWake(target);
           return { outcome: { kind: "released" }, postCommitEffects: [] };

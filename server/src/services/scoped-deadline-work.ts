@@ -13,7 +13,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     batchSize?: number;
     minimumPassIntervalMs?: number;
     concurrentChecks?: { limit: number; key(entry: Entry): string };
-    reconstructionIntervalMs?: number;
+    reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
     beforePass?(): Promise<void>;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
@@ -62,7 +62,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     } },
     run: async signal => {
       if (!canRun() || Date.now() < earliest) return;
-      if ((options.reconstructionIntervalMs ?? 0) > 0) for (const [hint, until] of reconstructAfter) {
+      for (const [hint, until] of reconstructAfter) {
         if (until <= Date.now()) reconstructAfter.delete(hint);
       }
       const ready = [...dirty].filter(hint => Math.max(reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
@@ -98,8 +98,10 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
             entries.delete(entry.id); failures.delete(entry.id);
           }
           scans.delete(hint);
-          if ((options.reconstructionIntervalMs ?? 0) > 0) {
-            reconstructAfter.set(hint, Date.now() + options.reconstructionIntervalMs!);
+          const reconstructionInterval = typeof options.reconstructionIntervalMs === "function"
+            ? options.reconstructionIntervalMs(scope) : (options.reconstructionIntervalMs ?? 0);
+          if (reconstructionInterval > 0) {
+            reconstructAfter.set(hint, Date.now() + reconstructionInterval);
           }
           if ((versions.get(hint) ?? 0) !== scan.version) dirty.add(hint); else versions.delete(hint);
           if (!scope) scopeFailures.clear(); else scopeFailures.delete(hint);

@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
-import { activeNativeTurnStarted, nativeCancellationHasNoLaterWork, nativeStopAcknowledged, nativeWorkEvents, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
+import { nativeCancellationHasNoLaterWork, nativeStopAcknowledged, nativeWorkEvents, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
+import { activeStopWorkBoundary, stoppedRunAccountingFinalized, STOP_REVISION_WAIT, type StopWorkBoundary } from "./stop-redirect-evidence.js";
 import { runnerTasks } from "../catalog.js";
 import { everydayTasks, SLUGIFY_REQUIREMENTS, SLUGIFY_REVISION } from "../everyday-cases.js";
 import { latestStoryDelivery, type StoryDelivery } from "../everyday-delivery.js";
@@ -214,25 +215,30 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     await runArtifactOracle(null, "base", options.deadlineAt);
     const issue = await create("", SLUGIFY_REQUIREMENTS);
     const initial = await download(issue, await settled(issue, 1), "checkpoint", "base");
-    await reply(issue, SLUGIFY_REVISION);
+    await reply(issue, `${SLUGIFY_REVISION}\n${STOP_REVISION_WAIT}`);
     const state = await waitFor(options.deadlineAt, () => read(issue), value => value.taskRuns.some(run => run.status === "running"), "stop_boundary_not_active");
     const original = state.taskRuns.find(run => run.status === "running")!;
     await open(issue);
     const originalEvents = () => collectRunEvents<Row>((afterSeq, limit) =>
       context.api.get(`/api/heartbeat-runs/${original.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
-    const boundary = await waitFor(options.deadlineAt, async () => {
-      const events = await originalEvents();
-      await retain("stop-startup-events.json", events);
-      const current = await read(issue);
-      const run = current.taskRuns.find(row => row.id === original.id);
-      if (!run || !active(run)) throw new JourneyError("failed", "stop_boundary_already_settled");
-      return { state: current, run, events };
-    }, value => activeNativeTurnStarted(value.run, value.events), "stop_native_turn_not_active");
-    await retain("stop-before.json", boundary.state);
     cancelled.push(original.id);
-    const runActivity = async () => nativeWorkEvents(await originalEvents());
     let beforeEvents: Row[];
+    let boundary: StopWorkBoundary;
+    const runActivity = async () => nativeWorkEvents(await originalEvents(), boundary);
     const redirected = await stopAndRedirectThroughUi({ page: context.page, nonce,
+      beforeStop: async () => {
+        const observed = await waitFor(options.deadlineAt, async () => {
+          const events = await originalEvents();
+          await retain("stop-startup-events.json", events);
+          const current = await read(issue);
+          const run = current.taskRuns.find(row => row.id === original.id);
+          if (!run || !active(run)) throw new JourneyError("failed", "stop_boundary_already_settled");
+          return { state: current, boundary: activeStopWorkBoundary(run, events) };
+        }, value => Boolean(value.boundary), "stop_native_command_and_usage_not_observed");
+        boundary = observed.boundary!;
+        await retain("stop-boundary.json", boundary);
+        await retain("stop-before.json", observed.state);
+      },
       awaitRetirement: async () => {
         const stopped = await waitFor(options.deadlineAt, () => read(issue), value => {
           const run = value.taskRuns.find(row => row.id === original.id);
@@ -245,7 +251,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
           return events;
         }, events => events.some(row => row.payload?.prpEvent?.eventType === "turn.cancelled"), "stop_native_terminal_not_retained");
         check("stop-native-terminal-retained", beforeEvents.some(row => row.payload?.prpEvent?.eventType === "turn.cancelled"));
-        if (!nativeCancellationHasNoLaterWork(beforeEvents)) check("stopped-run-no-later-events", false);
+        if (!nativeCancellationHasNoLaterWork(beforeEvents, boundary)) check("stopped-run-no-later-events", false);
       },
       beforeRedirect: async () => {
         const leases = await waitFor(options.deadlineAt, () => context.api.get<Row[]>(`/api/environments/${context.environmentId}/leases`), rows => {
@@ -253,6 +259,13 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
           return owned.length > 0 && owned.every(row => ["released", "retained", "expired"].includes(row.status) && row.cleanupStatus === "success");
         }, "stopped_run_resources_not_released");
         await retain("stop-leases.json", leases.filter(row => row.issueId === issue.id && row.heartbeatRunId === original.id));
+        const accounted = await waitFor(options.deadlineAt, async () =>
+          (await read(issue)).taskRuns.find(row => row.id === original.id),
+        run => Boolean(run && stoppedRunAccountingFinalized(run, boundary)), "stopped_run_accounting_not_finalized");
+        await retain("stop-accounting.json", { runId: accounted!.id, costAccountingPending: accounted!.costAccountingPending,
+          costAccountedAt: accounted!.costAccountedAt, receiptId: accounted!.usageJson.accountingReceiptId,
+          sourceId: accounted!.usageJson.accountingReceiptSourceId, sequence: accounted!.usageJson.accountingReceiptSequence,
+          ready: accounted!.usageJson.accountingReceiptReady });
         check("active-work-stopped");
       },
       reply: message => reply(issue, message),
@@ -264,7 +277,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     check("new-direction-completed", completion.runId !== original.id);
     check("stopped-run-remained-terminal", final.taskRuns.find(run => run.id === original.id)?.status === "cancelled");
     const afterEvents = await runActivity();
-    check("stopped-run-no-later-events", nativeCancellationHasNoLaterWork(afterEvents)
+    check("stopped-run-no-later-events", nativeCancellationHasNoLaterWork(afterEvents, boundary!)
       && JSON.stringify(beforeEvents!) === JSON.stringify(afterEvents));
     check("stop-preserved-download", createHash("sha256").update(await context.api.bytes(`/api/attachments/${initial.attachmentId}/content`)).digest("hex") === initial.sha256);
     const queue = await context.api.get<Row>(`/api/issues/${issue.id}/queued-comments`);
