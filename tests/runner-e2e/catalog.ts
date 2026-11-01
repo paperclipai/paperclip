@@ -26,6 +26,7 @@ import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDig
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
+import { apiArtifactTransferTask } from "./api-artifact-transfer.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
 import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
@@ -1517,6 +1518,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
     tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
     definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
+    id: "api-artifact-transfer", label: "Verified API artifact transfer", manualOnly: true,
+    description: "Install an authorized complete API artifact in Daytona and independently verify the delivered bytes.",
+    groups: [], environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [apiArtifactTransferTask], expectedMatrixSize: 1,
+    definitionMetadata: { version: 1, grading: "source-installation-and-independent-download-digest", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
   },
   {
     id: "task-titles", label: "Automatic task titles", manualOnly: true,

@@ -40,6 +40,7 @@ import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAsser
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
+import { artifactTransferDescription, gradeApiArtifactTransfer, usesApiResponseProof } from "./api-artifact-transfer.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
@@ -998,10 +999,10 @@ for (const execution of executions) {
 
       }
 
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         const source = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
           title: `Synthetic diagnostic evidence ${nonce}`,
-          description: responseEvidenceDescription(nonce), status: "backlog",
+          description: execution.suite.id === "api-artifact-transfer" ? artifactTransferDescription(nonce) : responseEvidenceDescription(nonce), status: "backlog",
         });
         apiResponseSourceId = source.id;
         prompt = prompt.replaceAll("{{API_RESPONSE_SOURCE_ID}}", source.id);
@@ -2332,10 +2333,21 @@ for (const execution of executions) {
             ]),
         ),
       );
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         downloadedResponseProof = await readResponseProof(api, issue.id, run.id);
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
-        await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+        if (execution.suite.id === "api-artifact-transfer") {
+          const transfer = gradeApiArtifactTransfer(runEventsByRun.flatMap(captured => captured.events),
+            apiResponseSourceId ?? "", downloadedResponseProof, artifactTransferDescription(nonce));
+          await writeSanitizedJson(snapshotsDir, "api-artifact-transfer.json", transfer, secrets);
+          if (!transfer.passed) invariantFailures.push(`Verified artifact transfer was not proven: ${transfer.failure}`);
+          await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", {
+            attachmentId: downloadedResponseProof.attachmentId, sha256: downloadedResponseProof.sha256,
+            byteSize: Buffer.byteLength(downloadedResponseProof.content),
+          }, secrets);
+        } else {
+          await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+        }
       }
       const registeredArtifacts = await readRegisteredArtifacts(api, issue.id, run.id,
         taskMatchers.filter(matcher => matcher.kind === "artifact_exact").map(matcher => matcher.name));
@@ -2817,7 +2829,7 @@ for (const execution of executions) {
       if (execution.suite.id === "task-titles") {
         await expect(page.getByRole("heading", { name: issue.title.trim(), exact: true })).toBeVisible();
       }
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         // File delivery renders a card instead of an exact summary bubble.
         // Prove the visible link points to the same independently checked bytes.
         const proofLink = page.getByRole("link", { name: "Open api-response-proof.txt", exact: true }).first();

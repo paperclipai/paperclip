@@ -639,6 +639,28 @@ or `--offline` to require cached data. Offline mode supports reports and assets
 already visited; it reports uncached artifacts explicitly. The preview contains
 only published evidence, not private Playwright traces or videos.
 
+## Verified API artifact transfer
+
+The explicit-only `api-artifact-transfer` suite has one native Codex Daytona
+cell: `api-artifact-transfer.runner-codex.daytona.verified-artifact-copy`.
+It seeds a 388131-byte synthetic description containing Unicode and escaped
+characters. The agent must read the source through the authenticated API,
+install its saved response with `download_artifact`, and deliver the unchanged
+file. The oracle correlates the source capture and completed installation with
+the independently downloaded attachment size, hash, source ID and full content.
+A missing tool, incomplete receipt, copied substitute or one-byte loss fails.
+The browser must show the same downloadable attachment after reloading.
+
+This is one attempt, one native run and a ten-minute attempt deadline. Existing
+fixture ownership, credential isolation, usage reporting and cleanup apply.
+Use the protected Runner Full-Stack E2E workflow with this exact ID and the
+candidate branch. Its existing governed credentials and immutable image provide
+the live transport; local oracle tests and catalog registration are separate
+from a completed live pass. It is excluded from `--all`.
+
+Private evidence retains the normal run transcript. The added structured proof
+contains identities, counts and hashes; it does not publish the full API body.
+
 ## Credentials
 
 Copy `.env.runner-e2e.example` to `.env.runner-e2e.local` and fill only the
