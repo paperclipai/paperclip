@@ -186,7 +186,7 @@ export async function configure(opts: {
             currentAuth: config.auth,
           });
           config.server = server;
-          config.auth = auth;
+          config.auth = { ...auth, oidc: config.auth?.oidc };
         }
         break;
       case "storage":
