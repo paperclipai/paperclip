@@ -20,15 +20,14 @@ function isGateOnly(receipt: Pick<Receipt, "status" | "payload">) {
     && !receipt.payload?.queuedCommentInterrupt;
 }
 
-// Match readmitUnblockedExecutionWaits' task/company eligibility, but retain
-// live execution locks: their eventual release is precisely what we await.
+// Match the receipt resume paths' task/company eligibility, but retain
+// live execution locks and saved chat receipts: owner.resume handles both.
 const readmissionEligible = sql<boolean>`exists (select 1 from issues i
   join companies c on c.id = i.company_id
   where i.company_id = ${agentWakeupRequests.companyId}
     and i.id::text = ${agentWakeupRequests.payload}->>'issueId'
     and i.assignee_agent_id = ${agentWakeupRequests.agentId}
-    and i.status not in ('done', 'cancelled') and c.status = 'active')
-  and coalesce(${agentWakeupRequests.idempotencyKey}, '') not like 'chat-inbound:%'`;
+    and i.status not in ('done', 'cancelled') and c.status = 'active')`;
 
 // Gate-only waits are claimed by readmitUnblockedExecutionWaits after 60s.
 function readmissionDeadline(receipt: Receipt) {
