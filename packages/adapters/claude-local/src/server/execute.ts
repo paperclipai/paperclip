@@ -107,6 +107,47 @@ import {
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
 
+async function hasLocalClaudeSessionTranscript(input: {
+  configDir: string;
+  cwd: string;
+  sessionId: string;
+}): Promise<boolean | null> {
+  // Claude Code stores CLI transcripts under the effective config directory,
+  // keyed by its encoded project cwd and session id. Only call this for local
+  // execution; a host-side miss says nothing about a remote execution host.
+  const encodedCwd = input.cwd.replace(/[^a-zA-Z0-9-]/g, "-");
+  const transcriptPath = path.join(
+    input.configDir,
+    "projects",
+    encodedCwd,
+    `${input.sessionId}.jsonl`,
+  );
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const inspection = fs.stat(transcriptPath).then(
+      (stat) => stat.isFile(),
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+        return null;
+      },
+    );
+    return await Promise.race([
+      inspection,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 500);
+      }),
+    ]);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    // If the configured storage cannot be inspected, preserve Claude's normal
+    // resume attempt instead of turning an I/O problem into a false miss.
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 interface ClaudeExecutionInput {
   agentIdentity?: AdapterExecutionContext["agentIdentity"];
   runId: string;
@@ -786,7 +827,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Refreshing tools does not invalidate the saved conversation.
     hasMatchingSessionCwd &&
     hasMatchingExecutionTarget;
-  const sessionId = canResumeSession ? runtimeSessionId : null;
+  let sessionId = canResumeSession ? runtimeSessionId : null;
+  if (sessionId && !executionTargetIsRemote) {
+    const transcriptAvailable = await hasLocalClaudeSessionTranscript({
+      configDir: resolveSharedClaudeConfigDir(effectiveEnv),
+      cwd: effectiveExecutionCwd,
+      sessionId,
+    });
+    if (transcriptAvailable === false) {
+      await onLog(
+        "stdout",
+        `[paperclip] Claude session "${sessionId}" has no transcript in the active local config directory; starting a fresh session without a resume attempt.\n`,
+      );
+      sessionId = null;
+    } else if (transcriptAvailable === null) {
+      await onLog(
+        "stderr",
+        `[paperclip] Could not inspect the local Claude transcript for session "${sessionId}"; preserving the normal resume attempt.\n`,
+      );
+    }
+  }
   if (runtimeSessionId && !isValidUuid) {
     await onLog(
       "stdout",
@@ -1369,10 +1429,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const initial = await runAttempt(sessionId ?? null);
+    const stoppedAfterTerminalResult = initial.proc.terminalResultCleanup?.terminalResultSeen === true;
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
+      ((initial.proc.exitCode ?? 0) !== 0 ||
+        (stoppedAfterTerminalResult &&
+          !executionTargetIsRemote &&
+          initial.parsed?.is_error === true)) &&
       initial.parsed
         ? isClaudeUnknownSessionError(initial.parsed)
           ? "unknown"
