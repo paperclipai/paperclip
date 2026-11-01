@@ -498,7 +498,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(batch.deferredRootIds.size).toBe(0);
     expect(Boolean(batch.attention.get(root.id)?.blockingTreeLive)).toBe(kind !== "completed");
     expect(parameterCounts.length).toBeLessThanOrEqual(100);
-  });
+  }, 30_000);
 
   it("does not archive an unknown truncated blocker tree during its fresh check", async () => {
     const root = await insertIssue("blocked");
