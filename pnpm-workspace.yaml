@@ -47,3 +47,24 @@ overrides:
   # Parsers and highlighters must share NodeProp IDs from one Lezer instance.
   # Mixed copies can interpret unrelated node metadata as highlighting tags.
   "@lezer/common": "^1.5.2"
+  # Security floors for dependency vulnerability advisories. Each selector is
+  # the advisory's vulnerable range; each value pins to the patched series so
+  # resolution cannot drift across majors. Keep in sync with
+  # package.json#pnpm.overrides.
+  "body-parser@>=2.0.0 <2.3.0": "^2.3.0"
+  "brace-expansion@>=4.0.0 <5.0.12": "^5.0.12"
+  "@esbuild-kit/core-utils>esbuild": "^0.25.0"
+  "fast-copy@>=4.0.0 <4.1.0": "^4.1.0"
+  "fast-uri@>=3.0.0 <3.1.8": "^3.1.8"
+  "form-data@>=4.0.0 <4.0.6": "^4.0.6"
+  "js-yaml@>=4.0.0 <4.3.2": "^4.3.2"
+  "katex@>=0.11.0 <0.18.2": "^0.18.2"
+  "path-to-regexp@>=8.0.0 <8.4.0": "^8.4.0"
+  "postcss-selector-parser@<7.1.6": "^7.1.6"
+  "proxy-addr@<2.0.8": "^2.0.8"
+  "qs@<6.16.0": "^6.16.0"
+  "sharp@<0.35.5": "^0.35.5"
+  "source-map-js@>=1.0.0 <1.2.2": "^1.2.2"
+  "undici@>=5.0.0 <6.28.1": "^6.28.1"
+  "undici@>=8.0.0 <8.10.2": "^8.10.2"
+  "svix>uuid": "^11.1.1"
