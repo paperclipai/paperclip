@@ -13,6 +13,7 @@ export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
 const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
+const initialParentPid = process.ppid;
 
 type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
 
@@ -637,6 +638,9 @@ export async function removeHotRestartIntent(homeDir?: string, expected?: HotRes
 export function shouldHonorHotRestartIntentForProcess(
   intent: HotRestartIntent,
   pid = process.pid,
+  parentPid = initialParentPid,
 ) {
-  return !intent.drainRequired && intent.previousServerPid === pid;
+  if (intent.drainRequired) return false;
+  if (intent.previousServerPid === pid) return true;
+  return parentPid > 1 && parentPid !== pid && intent.previousServerPid === parentPid;
 }
