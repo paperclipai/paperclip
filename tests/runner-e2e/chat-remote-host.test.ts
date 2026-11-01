@@ -22,6 +22,43 @@ async function fixture(lifecycle = "spot") {
     receipt: async () => JSON.parse(await readFile(path.join(root, "chat-remote-host.json"), "utf8")) };
 }
 describe("remote-only chat host qualification without native/provider calls", () => {
+  it.each(["projects.project-work", "projects.project-defaults", "instance-operations.restart-service"])("admits only the bound TestOps pilot cell %s on the actual AWS host", async scenario => {
+    const f = await fixture();
+    f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
+    Object.assign(f.env, { PAPERCLIP_CHAT_COMPLETION_TESTOPS: "v1", ALLURE_JOB_RUN_ID: "77", GITHUB_RUN_ATTEMPT: "1" });
+    f.executions[0]!.id = `chat-features.runner-opencode.local.${scenario}`;
+    f.executions[0]!.task.id = scenario;
+    expect(await prepareChatRemoteHost(f)).toMatchObject({ databaseLane: "embedded-postgres", maxAutomaticRetries: 0 });
+    expect(await f.receipt()).toMatchObject({ workflowRef: f.env.GITHUB_WORKFLOW_REF, evaluationAdmitted: false,
+      testOps: { admission: "v1", allureJobRunId: "77" } });
+  });
+  it.each(["foreign-cell", "wrong-task-id", "missing-admission", "missing-jobrun", "replay", "candidate-workflow"])("rejects TestOps %s before AWS metadata or inference", async kind => {
+    const f = await fixture();
+    f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
+    const extra = { PAPERCLIP_CHAT_COMPLETION_TESTOPS: "v1", ALLURE_JOB_RUN_ID: "77" };
+    Object.assign(f.env, extra); f.executions[0]!.id = "chat-features.runner-opencode.local.projects.project-work";
+    f.executions[0]!.task.id = "projects.project-work";
+    if (kind === "foreign-cell") f.executions[0]!.id = "chat-features.runner-opencode.local.tasks.delete";
+    if (kind === "wrong-task-id") f.executions[0]!.task.id = "foreign";
+    if (kind === "missing-admission") Object.assign(f.env, { PAPERCLIP_CHAT_COMPLETION_TESTOPS: undefined });
+    if (kind === "missing-jobrun") Object.assign(f.env, { ALLURE_JOB_RUN_ID: undefined });
+    if (kind === "replay") f.env.GITHUB_RUN_ATTEMPT = "2";
+    if (kind === "candidate-workflow") f.env.GITHUB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF.replace("refs/heads/master", "refs/heads/candidate");
+    await expect(prepareChatRemoteHost(f)).rejects.toThrow("trusted-github-linux-source-required");
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it.each(["00077", "9007199254740992", "12345678901234567"])("rejects the same unsafe job identity %s as the dedicated dispatcher", async jobRunId => {
+    const f = await fixture(); f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
+    Object.assign(f.env, { PAPERCLIP_CHAT_COMPLETION_TESTOPS: "v1", ALLURE_JOB_RUN_ID: jobRunId });
+    f.executions[0]!.task.id = "projects.project-work"; f.executions[0]!.id = `chat-features.runner-opencode.local.${f.executions[0]!.task.id}`;
+    await expect(prepareChatRemoteHost(f)).rejects.toThrow("trusted-github-linux-source-required"); expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it("admits the maximum safe job identity and retains it exactly", async () => {
+    const f = await fixture(); f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
+    Object.assign(f.env, { PAPERCLIP_CHAT_COMPLETION_TESTOPS: "v1", ALLURE_JOB_RUN_ID: "9007199254740991" });
+    f.executions[0]!.task.id = "projects.project-work"; f.executions[0]!.id = `chat-features.runner-opencode.local.${f.executions[0]!.task.id}`;
+    await prepareChatRemoteHost(f); expect(await f.receipt()).toMatchObject({ testOps: { admission: "v1", allureJobRunId: "9007199254740991" } });
+  });
   it("requires real Spot metadata and retains only closed source-bound host proof", async () => {
     const f = await fixture(); const policy = await prepareChatRemoteHost(f); const receipt = await f.receipt();
     expect(policy).toMatchObject({ databaseLane: "embedded-postgres", maxAutomaticRetries: 0, maxParallel: 2 });

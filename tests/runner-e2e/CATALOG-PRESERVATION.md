@@ -94,3 +94,14 @@ and durable retry deadlines. It also contains event-driven issue/receipt recover
 and the guard against a native run changing its own task status. These are
 upstream product changes, not qualifications
 of the preserved scenarios. Fresh pilots remain bound to their exact source.
+
+## TestOps completion pilot
+
+The dedicated main-only `chat-completion-testops.yml` workflow may select only
+`projects.project-work`, `projects.project-defaults`, and
+`instance-operations.restart-service` on the native OpenCode 1017 profile.
+It needs the TestOps admission marker, a real job-run identity, attempt one,
+and the same source-bound AWS host verification as the existing campaign.
+The entry point preserves original queries, grading, clocks and zero retries.
+Registration is separate from a real TestOps pass and verified result upload.
+The broader catalog remains on this integration branch.
