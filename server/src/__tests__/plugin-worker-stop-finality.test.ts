@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { pluginLoader, type PluginRuntimeServices } from "../services/plugin-loader.js";
 import {
+  createPluginWorkerHandle,
   createPluginWorkerManager,
   type PluginWorkerHandle,
   type PluginWorkerManager,
@@ -209,6 +210,55 @@ describe("plugin worker stop finality", () => {
     expect(await starting).toBe("rejected");
     expect(handle.status).toBe("stopped");
     expect(manager.getWorker("gated.plugin")).toBeUndefined();
+    expect(gate.spawned()).toBe(1);
+  });
+
+  it("a stop issued from the starting status callback waits for that start", async () => {
+    const gate = await createGate();
+    closeGate = gate.close;
+    const handle = createPluginWorkerHandle("gated.plugin", startOptions(gate.socketPath, "initialize"));
+    let startSettled = false;
+    let stopping: Promise<{ startSettled: boolean; pid: number | null; status: string }> | null = null;
+    handle.on("status", ({ status }) => {
+      if (status !== "starting" || stopping) return;
+      stopping = handle.stop().then(() => ({ startSettled, pid: handle.diagnostics().pid, status: handle.status }));
+    });
+
+    const starting = handle.start().then(() => "resolved", () => "rejected").finally(() => {
+      startSettled = true;
+    });
+
+    expect(await stopping).toEqual({ startSettled: true, pid: null, status: "stopped" });
+    expect(await starting).toBe("rejected");
+    expect(handle.diagnostics().pid).toBeNull();
+    expect(gate.spawned()).toBe(0);
+  });
+
+  it("a manager stop issued from the starting status callback of a restart waits for that start", async () => {
+    const gate = await createGate();
+    closeGate = gate.close;
+    manager = createPluginWorkerManager();
+    const workers = manager;
+    const handle = await workers.startWorker("gated.plugin", startOptions(gate.socketPath, ""));
+    let restartSettled = false;
+    let stopping: Promise<{ restartSettled: boolean; pid: number | null; registered: boolean }> | null = null;
+    handle.on("status", ({ status }) => {
+      if (status !== "starting" || stopping) return;
+      stopping = workers.stopWorker("gated.plugin").then(() => ({
+        restartSettled,
+        pid: handle.diagnostics().pid,
+        registered: workers.getWorker("gated.plugin") !== undefined,
+      }));
+    });
+
+    const restarting = handle.restart().then(() => "resolved", () => "rejected").finally(() => {
+      restartSettled = true;
+    });
+
+    await vi.waitFor(() => expect(stopping).not.toBeNull());
+    expect(await stopping).toEqual({ restartSettled: true, pid: null, registered: false });
+    expect(await restarting).toBe("rejected");
+    expect(handle.status).toBe("stopped");
     expect(gate.spawned()).toBe(1);
   });
 

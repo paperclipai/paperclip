@@ -3212,12 +3212,24 @@ export function createPluginWorkerHandle(
     if (!isStartAdmitted()) {
       return Promise.reject(new Error(`Worker starts for plugin "${pluginId}" are revoked`));
     }
-    const run = startOnce(startToken);
-    startInFlight = run;
-    void run.finally(() => {
-      if (startInFlight === run) startInFlight = null;
+    const token = startToken;
+    const run = settleLater();
+    startInFlight = run.promise;
+    void run.promise.finally(() => {
+      if (startInFlight === run.promise) startInFlight = null;
     }).catch(() => undefined);
-    return run;
+    startOnce(token).then(run.resolve, run.reject);
+    return run.promise;
+  }
+
+  function settleLater() {
+    let resolve!: () => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
   }
 
   function startSuperseded(token: number): boolean {
@@ -3227,6 +3239,10 @@ export function createPluginWorkerHandle(
   async function startOnce(token: number): Promise<void> {
     intentionalStop = false;
     setStatus("starting");
+    if (startSuperseded(token)) {
+      if (status === "starting") setStatus("stopped");
+      throw new Error(`Worker start for "${pluginId}" was superseded before spawn`);
+    }
     stderrExcerpt = "";
 
     const child = spawnProcess();
@@ -3286,12 +3302,13 @@ export function createPluginWorkerHandle(
   function stopInternal(): Promise<void> {
     stopRequests++;
     if (stopInFlight) return stopInFlight;
-    const run = stopOnce();
-    stopInFlight = run;
-    void run.finally(() => {
-      if (stopInFlight === run) stopInFlight = null;
+    const run = settleLater();
+    stopInFlight = run.promise;
+    void run.promise.finally(() => {
+      if (stopInFlight === run.promise) stopInFlight = null;
     }).catch(() => undefined);
-    return run;
+    stopOnce().then(run.resolve, run.reject);
+    return run.promise;
   }
 
   async function stopOnce(): Promise<void> {
