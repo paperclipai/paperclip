@@ -79,6 +79,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
     enableNativeRunner: false,
+    remoteWorkspaceStorageEnabled: false,
     enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,

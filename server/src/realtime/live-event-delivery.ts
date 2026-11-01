@@ -29,6 +29,7 @@ export function createLiveEventDelivery(input: {
   let draining = false;
   let disposed = false;
   let needsResync = false;
+  let resyncReason = "delivery_overflow";
   let notifiedRevision = -1;
   let congestionTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingReadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -57,14 +58,15 @@ export function createLiveEventDelivery(input: {
   }
   function resync() {
     if (!needsResync || !isOpen() || notifiedRevision === revision) return;
-    if (control({ type: "live.resync", version: 1, revision, reason: "delivery_overflow" })) notifiedRevision = revision;
+    if (control({ type: "live.resync", version: 1, revision, reason: resyncReason })) notifiedRevision = revision;
   }
-  function overflow() {
+  function overflow(reason = "delivery_overflow") {
     if (!negotiated) { socket.close(1013, "event backlog"); return; }
     epoch += 1;
     for (const item of queued) { retainedBytes -= item.bytes; retainedItems -= 1; }
     queued = [];
     needsResync = true;
+    resyncReason = reason;
     if (!congestionTimer) {
       congestionTimer = setTimeout(() => {
         congestionTimer = undefined;
@@ -162,6 +164,7 @@ export function createLiveEventDelivery(input: {
       queued.push({ event, bytes, epoch }); retainedBytes += bytes; retainedItems += 1;
       void drain();
     },
+    requestResync: () => overflow("controller_change"),
     dispose,
     metrics: () => ({ retainedBytes, retainedItems, negotiated, revision, needsResync }),
   };

@@ -105,6 +105,14 @@ API: `present` — representative operation IDs:
 
 - `GET /api/companies/{companyId}/decision-queues`.
 - `GET /api/companies/{companyId}/decision-queues/{key}/items`.
+- `GET /api/companies/{companyId}/attention/summary` — canonical outstanding
+  counts without decision cards, images, plan bodies, or pagination. Board user
+  and company access are required. Task privacy, addressee, dismissal, snooze,
+  archive, and complete-set counting rules match the attention feed. This read
+  grants no agent or resolution authority.
+- `GET /api/companies/{companyId}/attention/tasks` — the same canonical counts
+  and distinct accessible task IDs for Needs attention. It has the same board,
+  company, privacy, addressee, dismissal, snooze, and archive gates as the feed.
 - `GET /api/companies/{companyId}/attention/history` — read-only canonical
   interaction/Decisions-v1 projection with cursor, search, outcome, agent, project,
   date, and chronological sort filters. Each source and v1 target must pass task

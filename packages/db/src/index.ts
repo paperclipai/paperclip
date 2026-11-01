@@ -5,6 +5,8 @@ export {
   closeLivenessDb,
   checkpointDb,
   closeCheckpointDb,
+  fileStorageDb,
+  closeFileStorageDb,
   closeRegisteredClients,
   getPostgresDataDirectory,
   ensurePostgresDatabase,

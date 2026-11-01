@@ -1,3 +1,4 @@
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
 import { createRunDispatch, deriveCommentId } from "../../modules/run-dispatch/index.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
@@ -577,7 +578,12 @@ const support = externalDatabaseUrl
     });
     it("persists exactly one linked successor under competing sweepers and restarts", async () => {
       const source = await seed(2);
+      const owner = heartbeatService(db);
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const worker = owner.registerRunDispatchWork(coordinator, () => true);
+      await worker.ready;
       const now = new Date();
+      try {
       await Promise.all([
         reconcileSafeNativeReplacements(db, now),
         reconcileSafeNativeReplacements(db, now),
@@ -608,6 +614,10 @@ const support = externalDatabaseUrl
             .where(eq(nativeRunFinalizations.runId, source.runId))
         )[0]?.failureDetail?.successorRunId,
       ).toBe(children[0]!.id);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(children[0]!.scheduledRetryAt!.getTime()), { timeout: 5_000 });
+      } finally {
+        await worker.stop(); await coordinator.stop(); await owner.drainActiveRunExecutions();
+      }
     });
     it("retries status publication after a crash without dispatching provider work", async () => {
       await deliverExecutionStatuses(db);

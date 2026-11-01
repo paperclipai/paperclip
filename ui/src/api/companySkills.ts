@@ -193,7 +193,7 @@ export const companySkillsApi = {
     api.get<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files?path=${encodeURIComponent(relativePath)}`,
     ),
-  updateFile: (companyId: string, skillId: string, path: string, content: string, format: Pick<CompanySkillFileDetail, "encoding" | "executable"> = {}) =>
+  updateFile: (companyId: string, skillId: string, path: string, content: string, format: Pick<CompanySkillFileDetail, "encoding" | "executable"> & { expectedVersionId?: string | null } = {}) =>
     api.patch<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files`,
       { path, content, ...format },

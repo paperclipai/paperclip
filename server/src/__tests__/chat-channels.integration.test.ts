@@ -2834,12 +2834,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.wakeup).toHaveBeenCalledTimes(wakeCount);
       expect(await readIssueCommentsByIssueId(f.conversation.issueId!)).toHaveLength(1);
     });
-    async function toolReplyFixture(threadId = "github:paperclipai/paperclip:issue:418", reportOnly = false) {
+    async function toolReplyFixture(threadId = "github:paperclipai/paperclip:issue:418", reportOnly = false, findingCategories?: string[]) {
       const f = await reviewBotFixture();
-      if (reportOnly) {
+      if (reportOnly || findingCategories) {
         const config = await f.management.configuration(f.endpoint.id, "owner-user");
         await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: config.revision,
-          configuration: { ...config.configuration, defaults: { ...config.configuration.defaults, ratingThreshold: null } },
+          configuration: { ...config.configuration, defaults: { ...config.configuration.defaults, ...(reportOnly ? { ratingThreshold: null } : {}), ...(findingCategories ? { findingCategories } : {}) } },
         }, "owner-user");
       }
       const thread = makeThread({ channelId: "paperclipai/paperclip", id: threadId }).thread;
@@ -2945,8 +2945,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(endpoint.setup).toEqual(value);
     });
 
-    async function publicationRetryFixture() {
-      const f = await toolReplyFixture("github:paperclipai/paperclip:418", true);
+    async function publicationRetryFixture(findingCategories?: string[]) {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418", true, findingCategories);
       const head = "b".repeat(40);
       const inline: Array<{ id: number; body: string; html_url: string; user: { login: string } }> = [];
       const checks: Array<{ id: number; external_id: string; app: { id: number }; html_url: string }> = [];
@@ -2984,6 +2984,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )))[0];
       return { ...f, service, head, assessment, provider, action, inline, checks, writes };
     }
+    it("returns snapshot finding categories and publishes only accepted categories", async () => {
+      const categories = ["custom-reliability"];
+      const f = await publicationRetryFixture(categories);
+      const begin = await f.service.execute(f.session, "begin_review", { reviewedCommit: f.head });
+      expect(begin).toMatchObject({ findingCategories: categories });
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: config.revision,
+        configuration: { ...config.configuration, defaults: { ...config.configuration.defaults, findingCategories: ["new-category"] } },
+      }, "owner-user");
+      expect(await f.service.execute(f.session, "begin_review", { reviewedCommit: f.head }))
+        .toMatchObject({ findingCategories: categories });
+      const finding = { key: "one", path: "src/math.ts", line: 1, side: "RIGHT", severity: "error", category: "invented", body: "Concrete issue" };
+      await expect(f.service.execute(f.session, "submit_review", { ...f.assessment, findings: [finding] }, "bad-category"))
+        .rejects.toThrow('Accepted finding categories: ["custom-reliability"]');
+      expect(await f.action()).toBeUndefined();
+      const result = await f.service.execute(f.session, "submit_review", { ...f.assessment,
+        findings: [{ ...finding, category: categories[0] }],
+      }, "accepted-category");
+      expect(result).toMatchObject({ status: "processed" });
+      const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      expect(review.assessment?.findings[0].category).toBe(categories[0]);
+      expect((await f.action()).status).toBe("processed");
+      expect(f.responseComments.size).toBe(1);
+    });
     it("publishes one score heading when a newly configured bot submits a formatted summary", async () => {
       const f = await publicationRetryFixture();
       await db.update(chatEndpoints).set({ botDisplayName: "Fresh Review Bot" }).where(eq(chatEndpoints.id, f.endpoint.id));
@@ -16341,9 +16365,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await tx.update(toolConnections).set({ credentialSecretRefs: connection.credentialSecretRefs.map(ref => ({ ...ref,
             versionSelector: ref.versionSelector === "1" ? "latest" : "1" })) }).where(eq(toolConnections.id, connection.id));
         });
-        await expect.poll(async () => ((await f.checkpoint()).value as Record<string, unknown>).credentialFingerprint,
-          { timeout: 5000 }).not.toBe(oldWindow.credentialFingerprint);
-        expect((await f.checkpoint()).value).toMatchObject({ generation: oldWindow.generation, outcome: "epoch_initialized" });
+        // Credential synchronization and epoch initialization commit separately.
+        // Require the final epoch receipt, not just the intermediate fingerprint.
+        await expect.poll(async () => {
+          const value = (await f.checkpoint()).value as Record<string, unknown>;
+          return { ...value, fingerprintChanged: typeof value.credentialFingerprint === "string"
+            && value.credentialFingerprint !== oldWindow.credentialFingerprint };
+        }, { timeout: 5000 }).toMatchObject({
+          fingerprintChanged: true, generation: oldWindow.generation, outcome: "epoch_initialized",
+        });
         expect(f.requests).toEqual([]);
       } finally { await coordinator.stop(); }
     });
@@ -61038,7 +61068,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const beforeComments = await db
           .select({ id: issueComments.id })
           .from(issueComments)
-          .where(eq(issueComments.issueId, conversation.issueId));
+          .where(eq(issueComments.issueId, conversation.issueId))
+          .orderBy(issueComments.id);
         const beforeWakes = wakeup.mock.calls.length;
         const providerRuntime = runtime.endpoints.get(endpoint.id)!;
         const beforeProvider = {
@@ -61195,7 +61226,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           db
             .select({ id: issueComments.id })
             .from(issueComments)
-            .where(eq(issueComments.issueId, conversation.issueId)),
+            .where(eq(issueComments.issueId, conversation.issueId))
+            .orderBy(issueComments.id),
         ).resolves.toEqual(beforeComments);
         expect(wakeup.mock.calls.length).toBe(beforeWakes);
         expect({
@@ -76884,7 +76916,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           resolveSessionBeforeForWakeup: async () => null,
         });
         return adapter.withIssueExecutionLock({ companyId: context.fixture.companyId, runId: releaseRunId, now: new Date() }, async (_locked, ports) => {
-          const target = { companyId: context.fixture.companyId, wakeId: context.action.id, now: new Date() };
+          const target = { companyId: context.fixture.companyId, wakeId: context.action.id, agentId: context.fixture.assignedAgentId, now: new Date() };
           if (change === "queue rejection") await ports.transaction.cancelDeferredWake({ ...target, reason: "PRIVATE rejection" });
           else await ports.transaction.failDeferredWake(target);
           return { outcome: { kind: "released" }, postCommitEffects: [] };

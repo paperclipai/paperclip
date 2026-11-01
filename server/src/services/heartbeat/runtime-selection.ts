@@ -1,4 +1,5 @@
 import { museRunnerBroker } from "../muse-runner-broker.js";
+import { assertEphemeralNativeLifecycle, readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import {
@@ -118,7 +119,7 @@ export interface HeartbeatRuntimeSelectionInput {
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
   workspace: {
-    persistedExecutionWorkspace: { id: string } | null;
+    persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
     activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease">;
@@ -514,6 +515,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       (["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
         ? { mode: "per_turn" as const, idleTimeoutMs: null }
         : environmentLifecyclePolicy ?? agentLifecyclePolicy);
+    if (!["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend)) {
+      assertEphemeralNativeLifecycle(effectiveLifecyclePolicy.mode);
+    }
     if (
       effectiveLifecyclePolicy.mode === "warm" &&
       executionTarget?.kind === "remote" &&
@@ -946,6 +950,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
+          controllerBootId: null,
+          controllerLeaseExpiresAt: null,
+          executionStage: null,
           runtimeModeResolverVersion:
             lockedRun.runtimeModeResolverVersion ??
             nativeRuntimeResolution.resolverVersion,
@@ -1044,7 +1051,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     });
     if (!nativeSelected) return { selected: false };
     stopControllerLease();
-    nativeWorkspaceSync = await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
+    nativeWorkspaceSync = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata) ? null
+      : await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
       db,
       runId: run.id,
       companyId: agent.companyId,

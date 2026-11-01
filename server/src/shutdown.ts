@@ -55,22 +55,28 @@ export async function closeHttpListenerForShutdown(input: {
   server: ShutdownHttpListener;
   signal: "SIGINT" | "SIGTERM";
   timeoutMs?: number;
+  drainRequests?: (signal: AbortSignal) => Promise<void>;
   log: ShutdownLogger;
 }): Promise<"closed" | "timed_out" | "not_listening"> {
   if (!input.server.listening) return "not_listening";
   const timeoutMs = input.timeoutMs ?? 5_000;
   let timer: NodeJS.Timeout | null = null;
+  const controller = new AbortController();
   try {
+    const closed = new Promise<"closed">((resolve) => {
+      input.server.close((err) => {
+        if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+          input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
+        }
+        resolve("closed");
+      });
+      input.server.closeIdleConnections?.();
+    });
     return await Promise.race([
-      new Promise<"closed">((resolve) => {
-        input.server.close((err) => {
-          if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
-            input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
-          }
-          resolve("closed");
-        });
+      input.drainRequests ? input.drainRequests(controller.signal).then(() => {
         input.server.closeIdleConnections?.();
-      }),
+        return "closed" as const;
+      }) : closed,
       new Promise<"timed_out">((resolve) => {
         timer = setTimeout(() => {
           input.log.info(
@@ -85,6 +91,7 @@ export async function closeHttpListenerForShutdown(input: {
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    controller.abort();
   }
 }
 

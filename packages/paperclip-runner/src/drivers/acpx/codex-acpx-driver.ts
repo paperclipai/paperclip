@@ -5,6 +5,7 @@ import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } 
 
 import { requireAcpxResponseDelivery } from "./response-delivery.js";
 import { createPiMessageProjection, piBoundaryClearsFinal, type PiProjectedMessageEvent } from "./pi-message-projection.js";
+import { createKimiMessageProjection, kimiMessageBoundaryClears, type KimiProjectedMessageEvent } from "./kimi-message-boundary.js";
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "./profile-extensions.js";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -290,7 +291,7 @@ export class CodexAcpxDriver implements HarnessDriver {
     dependencies: CodexAcpxDriverDependencies = {},
   ) {
     assertAcpxProfileReleased(options.agent ?? "codex");
-    if (["pi", "cursor", "copilot"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
+    if (["pi", "cursor", "copilot", "kimi"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
       throw new Error("ACP candidate requires an explicit provider read-only policy");
     }
     this.#options = {
@@ -330,7 +331,7 @@ export class CodexAcpxDriver implements HarnessDriver {
       },
       capabilities: {
         ...descriptor.capabilities,
-        resume: true,
+        resume: descriptor.capabilities.resume,
         runtimeRequestResolution: true,
         runtimeRequestHandoff: true,
         unsupported: descriptor.capabilities.unsupported,
@@ -1481,7 +1482,8 @@ class CodexAcpxSession implements HarnessSession {
       const normalizeToolEvent =
         createAcpxToolEventNormalizer<AcpRuntimeEvent>();
       const piMessages = this.#agent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
-      const normalizeMessage = piMessages ? piMessages.normalize : this.#agent === "grok"
+      const kimiMessages = this.#agent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
+      const normalizeMessage = piMessages ? piMessages.normalize : kimiMessages ? kimiMessages.normalize : this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
         toolEvidence?.tool(event);
@@ -1490,7 +1492,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(projected)), turnId, ++index);
       }
       const result = await turn.result;
-      if (result.status === "completed") piMessages?.settle();
+      if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
       await drainExtensions();
       const usageAfter = await readUsageStatus(this.#host);
       // Diagnostic projection failures cannot replace the provider's terminal result.
@@ -1676,12 +1678,12 @@ class CodexAcpxSession implements HarnessSession {
   }
 
   #assistantItemId(turnId: string, messageId: string | null): string {
-    if (this.#agent !== "copilot") return `${turnId}:assistant-message`;
+    if (this.#agent !== "copilot" && this.#agent !== "kimi") return `${turnId}:assistant-message`;
     return messageId ? `${turnId}:assistant-message:${messageId}` : `${turnId}:assistant-activity`;
   }
 
   #mapRuntimeEvent(
-    event: PiProjectedMessageEvent<AcpRuntimeEvent>,
+    event: PiProjectedMessageEvent<KimiProjectedMessageEvent<AcpRuntimeEvent>>,
     turnId: string,
     index: number,
   ): void {
@@ -1691,10 +1693,15 @@ class CodexAcpxSession implements HarnessSession {
       const isReasoning =
         event.stream === "thought" || event.tag === "agent_thought_chunk";
       const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
+      let kimiCommentary: { text: string; itemId: string } | undefined;
       // The pinned Copilot mapper supplies actual native identity, including
       // empty starts. Unidentified session info/warnings remain activity only.
-      if (!isReasoning && !event.piMessageHistory && (this.#agent !== "copilot" || messageId)) {
-        if (piBoundaryClearsFinal(event)) this.#assistantText = "";
+      if (!isReasoning && !event.piMessageHistory && !event.assistantMessageHistory && (this.#agent !== "copilot" || messageId)) {
+        const kimiClears = this.#agent === "kimi" && kimiMessageBoundaryClears(event);
+        if (kimiClears && this.#assistantText) {
+          kimiCommentary = { text: this.#assistantText, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) };
+        }
+        if (piBoundaryClearsFinal(event) || kimiClears) this.#assistantText = "";
         if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) {
           if (this.#agent === "copilot" && this.#assistantText) {
             this.#emit("item.completed", { kind: "agentMessage", channel: "commentary", text: this.#assistantText },
@@ -1722,6 +1729,8 @@ class CodexAcpxSession implements HarnessSession {
             : this.#assistantItemId(turnId, messageId),
         },
       );
+      if (kimiCommentary) this.#emit("item.completed", { kind: "agentMessage", channel: "commentary", text: kimiCommentary.text },
+        { turnId, itemId: kimiCommentary.itemId });
     }
     if (event.type === "status" && event.tag === "usage_update") {
       this.#usage = boundedRecord({

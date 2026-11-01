@@ -21,6 +21,13 @@ export interface GetObjectInput {
   };
 }
 
+export interface DeleteObjectInput {
+  objectKey: string;
+  signal?: AbortSignal;
+  /** Remove every version and delete marker of this exact key before returning. */
+  allVersions?: boolean;
+}
+
 export interface GetObjectResult {
   stream: Readable;
   contentType?: string;
@@ -42,7 +49,17 @@ export interface StorageProvider {
   putObject(input: PutObjectInput): Promise<void>;
   getObject(input: GetObjectInput): Promise<GetObjectResult>;
   headObject(input: GetObjectInput): Promise<HeadObjectResult>;
-  deleteObject(input: GetObjectInput): Promise<void>;
+  deleteObject(input: DeleteObjectInput): Promise<void>;
+
+  putObjectConditional?(input: PutObjectInput & (
+    | { ifNoneMatch: "*"; ifMatch?: never }
+    | { ifMatch: string; ifNoneMatch?: never }
+  )): Promise<{ etag: string }>;
+
+  listObjects?(input: { prefix: string; continuationToken?: string; signal?: AbortSignal }): Promise<{
+    keys: string[];
+    continuationToken?: string;
+  }>;
 }
 
 export type PutFileInput = {
@@ -69,5 +86,5 @@ export interface StorageService {
   putFile(input: PutFileInput): Promise<PutFileResult>;
   getObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "range" | "signal">): Promise<GetObjectResult>;
   headObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "signal">): Promise<HeadObjectResult>;
-  deleteObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "signal">): Promise<void>;
+  deleteObject(companyId: string, objectKey: string, options?: Pick<DeleteObjectInput, "signal" | "allVersions">): Promise<void>;
 }

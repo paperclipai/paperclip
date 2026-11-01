@@ -10,7 +10,7 @@ import type {
 } from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
-import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { chatProviderRuns, classifyPreDispatchExecutionWait, isBlockedUnstartedWake, isReassignedUnstartedWake, verifyChatAdmissionWaitCoverage, type ChatAdmissionWait } from "./non-execution-wake.js";
 import { collectRunEvents } from "./run-observations.js";
 import { chatMarker } from "./chat-cases.js";
 import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopReady, runChatHardeningFlow } from "./chat-hardening.js";
@@ -68,6 +68,7 @@ export interface ChatRun {
   sessionIdBefore?: string | null;
   sessionIdAfter?: string | null;
   startedAt?: string | null;
+  nativeIssueId?: string | null;
 }
 type Comment = {
   id: string;
@@ -291,18 +292,26 @@ export async function readRunningChatLog(
 export async function collectChatRunEvidence(
   api: Pick<RunnerApi, "get">,
   run: ChatRun,
+  allowAdmissionWait = false,
 ) {
+  const admissionEvents = allowAdmissionWait ? await collectRunEvents((afterSeq, limit) =>
+    api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
+  ) : null;
+  const admissionWait = admissionEvents ? classifyPreDispatchExecutionWait(run, admissionEvents) : null;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   const providerNeverStarted = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+  const reassignedBeforeStart = isReassignedUnstartedWake(run);
   return {
     runId: run.id,
     ...(providerNeverStarted ? { logOmissionReason: "provider_not_started" } : {}),
-    log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted
+    ...(admissionWait ? { logOmissionReason: "pre_dispatch_execution_wait" } : {}),
+    ...(reassignedBeforeStart ? { logOmissionReason: "assignee_changed_before_start" } : {}),
+    log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted || admissionWait || reassignedBeforeStart
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
-    events: await collectRunEvents((afterSeq, limit) =>
+    events: admissionEvents ?? await collectRunEvents((afterSeq, limit) =>
       api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
     ),
   };
@@ -361,6 +370,7 @@ export interface ChatFlowInput {
   execution: MatrixExecution;
   nonce: string;
   workspacePath: string;
+  deadlineAt: number;
   restart: () => Promise<void>;
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
@@ -379,6 +389,10 @@ export async function runChatFlow(input: ChatFlowInput) {
   const expectedStops = new Map<string, string>();
   let issue: ChatIssue;
   let runs: ChatRun[] = [];
+  const admissionAccounting = execution.suite.id === "kimi-qualification" && caseId === "stop-new-resume" && execution.profile.generation === "native";
+  let admissionWaits: ChatAdmissionWait[] = [];
+  let stoppedForSessionReset: string | undefined;
+  const providerRuns = () => admissionAccounting ? chatProviderRuns(runs, admissionWaits) : runs.filter(run => !isResetRun(run));
   const settings = await api.get<Record<string, unknown>>(
     "/api/instance/settings/experimental",
   );
@@ -401,6 +415,14 @@ export async function runChatFlow(input: ChatFlowInput) {
       (a, b) =>
         a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
     );
+  const finalAdmissionEvidence = async () => ({
+    comments: await comments(),
+    runEvidence: await Promise.all(runs.map(run => collectChatRunEvidence(api, run, true))),
+    sources: await Promise.all(admissionWaits.map(async wait => ({
+      runId: stoppedForSessionReset!, recoveryActionId: wait.recoveryActionId,
+      response: await api.get(`/api/issues/${issue!.id}/recovery-actions?inspectSourceRunId=${stoppedForSessionReset}&inspectSourceActionId=${wait.recoveryActionId}`),
+    }))),
+  });
   const idle = async (minimumProviderRuns: number) => {
     const inconsistentIdle = createChatIdleFailureDetector(minimumProviderRuns);
     await pollUntil({
@@ -411,12 +433,35 @@ export async function runChatFlow(input: ChatFlowInput) {
         const resolved = await api.get<ChatIssue | null>(chatPath);
         if (resolved) issue = resolved;
         runs = await allRuns();
+        if (admissionAccounting) {
+          admissionWaits = [];
+          for (const run of runs.filter(row => row.errorCode === "execution_reconciliation_required")) {
+            const evidence = await collectChatRunEvidence(api, run, true);
+            const wait = classifyPreDispatchExecutionWait(run, evidence.events);
+            expect(wait?.companyId).toBe(f.company.id);
+            expect(wait?.agentId).toBe(f.agent.id);
+            expect(wait?.issueId).toBe(resolved?.id);
+            admissionWaits.push(wait!);
+          }
+        }
         if (resolved) input.observe(resolved, runs);
+        let admissionReady = true;
+        if (admissionAccounting && admissionWaits.length && minimumProviderRuns === 3 &&
+            providerRuns().length === 3 && runs.every(run => ["succeeded", "cancelled"].includes(run.status))) {
+          const proof = await finalAdmissionEvidence();
+          admissionReady = !proof.sources.some(source => {
+            const inspection = (source.response as { sourceInspection?: { status?: string; failureCode?: string } }).sourceInspection;
+            return inspection?.status === "blocked" && inspection.failureCode === "workspace_writer_active";
+          });
+          if (admissionReady) verifyChatAdmissionWaitCoverage({ runs, runEvidence: proof.runEvidence, comments: proof.comments,
+            issue: issue!, companyId: f.company.id, agentId: f.agent.id, stoppedRunId: stoppedForSessionReset, recoverySources: proof.sources });
+        }
         return {
+          admissionReady,
           resolved: Boolean(resolved),
           status: resolved?.status,
           conversationState: resolved?.conversationState,
-          providerRunCount: runs.filter((run) => !isResetRun(run)).length,
+          providerRunCount: providerRuns().length,
           activeRuns: runs
             .filter((run) => ["queued", "running"].includes(run.status))
             .map((run) => run.id),
@@ -426,6 +471,7 @@ export async function runChatFlow(input: ChatFlowInput) {
       reject: (state) => state.failure ?? inconsistentIdle(state),
       accept: (state) =>
         !state.failure &&
+        state.admissionReady &&
         state.resolved &&
         state.providerRunCount >= minimumProviderRuns &&
         state.activeRuns.length === 0 &&
@@ -455,7 +501,7 @@ export async function runChatFlow(input: ChatFlowInput) {
     expect(await allRuns()).toHaveLength(0);
 
     if (execution.suite.id === CHAT_FEATURE_SUITE) {
-      await runChatFeatureFlow({ input, issue: () => issue, allRuns,
+      return await runChatFeatureFlow({ input, issue: () => issue, allRuns,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
     } else if (caseId === "confirmation-ambiguous") {
       await runAmbiguousConfirmationReply({ input, issue: () => issue!, idle, comments });
@@ -488,7 +534,7 @@ export async function runChatFlow(input: ChatFlowInput) {
         1,
       );
       const initialId = issue!.id;
-      const before = runs.filter((run) => !isResetRun(run))[0]!;
+      const before = providerRuns()[0]!;
       await noTasks();
       await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
       if (caseId === "continuity-restart") {
@@ -540,6 +586,7 @@ export async function runChatFlow(input: ChatFlowInput) {
                   if (!isChatStopReady(events, caseId === "stop-startup-new-resume" ? "startup" : "active")) return false;
                 } else if (!(events.length || (await readRunningChatLog(api, active.id))?.length)) return false;
                 cancelledId = active.id;
+                stoppedForSessionReset = active.id;
                 await input.evidence("chat-stop-boundary.json", {
                   phase: caseId === "stop-startup-new-resume" ? "startup" : "active",
                   runId: active.id, events,
@@ -561,12 +608,14 @@ export async function runChatFlow(input: ChatFlowInput) {
         }
         const oldComments = await comments();
         await sendChatMessage(page, "/new");
+        // Stop can be acknowledged before workspace preservation retries.
+        // Observe the reset within the existing case deadline.
         await expect
           .poll(
             async () =>
               (await api.get<ChatIssue>(chatPath))
                 .conversationSessionGeneration,
-            { timeout: 30_000 },
+            { timeout: stopCase ? Math.max(1, input.deadlineAt - Date.now()) : 30_000 },
           )
           .toBe(1);
         await expect
@@ -1013,13 +1062,19 @@ export async function runChatFlow(input: ChatFlowInput) {
       hiringEvidence = await refreshHiringEvidence!();
       runs = hiringEvidence.runs;
     }
+    const finalAdmission = admissionAccounting ? await finalAdmissionEvidence() : undefined;
+    const finalComments = finalAdmission?.comments;
+    const admissionRunEvidence = finalAdmission?.runEvidence;
+    const admissionWaitSources = finalAdmission?.sources ?? [];
+    if (admissionAccounting) admissionWaits = verifyChatAdmissionWaitCoverage({ runs, runEvidence: admissionRunEvidence!, comments: finalComments!, issue: issue!,
+      companyId: f.company.id, agentId: f.agent.id, stoppedRunId: stoppedForSessionReset, recoverySources: admissionWaitSources });
     assertChatFlowRunCount({ suiteId: execution.suite.id, task: execution.task,
       // Hiring must account for every actual company run, including unexpected resets.
-      runs: execution.suite.id === "hiring-templates" ? runs : runs.filter((run) => !isResetRun(run)),
+      runs: execution.suite.id === "hiring-templates" ? runs : providerRuns(),
       hiringEvidence, hiringApiState: execution.suite.id === "hiring-templates"
         ? hiringEvidence!.turnApiState : undefined,
     });
-    for (const run of runs.filter((run) => !isResetRun(run))) {
+    for (const run of providerRuns()) {
       expect(run.runtimeMode).toBe(execution.profile.expectedRuntimeMode);
       expect(run.status).toBe(
         expectedStops.get(run.id) ?? (stopCase && run.status === "cancelled"
@@ -1030,7 +1085,9 @@ export async function runChatFlow(input: ChatFlowInput) {
     await input.evidence("api-state.json", {
       issue: issue!,
       runs,
+      ...(admissionAccounting ? { admissionWaitSources } : {}),
       runGroups: {
+        ...(admissionAccounting ? { admissionWaits: admissionWaits.map(wait => wait.runId) } : {}),
         resets: runs.filter(isResetRun).map((run) => run.id),
         cancelled: runs
           .filter((run) => run.status === "cancelled")
@@ -1038,18 +1095,16 @@ export async function runChatFlow(input: ChatFlowInput) {
         conversation: runs
           .filter(
             (run) =>
-              !isResetRun(run) && run.contextSnapshot?.issueId === issue!.id,
+              providerRuns().some(provider => provider.id === run.id) && run.contextSnapshot?.issueId === issue!.id,
           )
           .map((run) => run.id),
         handoff: runs
           .filter((run) => run.contextSnapshot?.issueId !== issue!.id)
           .map((run) => run.id),
       },
-      comments: await comments(),
+      comments: finalComments ?? await comments(),
       activity: await api.get(`/api/issues/${issue!.id}/activity`),
-      runEvidence: await Promise.all(
-        runs.map((run) => collectChatRunEvidence(api, run)),
-      ),
+      runEvidence: admissionRunEvidence ?? await Promise.all(runs.map(run => collectChatRunEvidence(api, run))),
     });
     await input.capture(
       "final-state",
