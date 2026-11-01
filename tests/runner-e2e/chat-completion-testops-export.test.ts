@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { exportCompletionPilot } from "./chat-completion-testops-export.js";
 import { exportPilotAllure } from "./chat-completion-testops-results.mjs";
-import { cases, targetSha, evidencePolicy } from "./chat-completion-testops-contract.mjs";
+import { cases, targetSha, evidencePolicy, hash } from "./chat-completion-testops-contract.mjs";
 import { authorizeManualPrivateEvidence } from "./manual-private-retention.js";
 
 const roots: string[] = [];
@@ -18,7 +18,7 @@ async function fixture() {
     schema: "paperclip.runner-e2e.result/v2", executionId: row.executionId, suiteId: "chat-features", suiteDefinitionHash: "c".repeat(64),
     source: { sha: targetSha, ref: "refs/heads/codex/chat-catalog-master-integration", workflowRunUrl: `https://github.com/paperclipai/paperclip/actions/runs/${binding.runId}` },
     attempt: 1, status: "passed", cleanup: "passed", evidenceValid: true,
-    runIds: Array.from({ length: row.key === "control" ? 1 : row.key === "defaults" ? 3 : 2 }, (_, i) => `synthetic-${row.key}-${i}`),
+    runIds: Array.from({ length: row.maximumRuns }, (_, i) => `synthetic-${row.key}-${i}`),
     profileId: "runner-opencode", environmentId: "local", caseId: row.scenario, provider: "opencode",
     model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeMode: "native",
     startedAt: "2026-11-01T00:00:00Z", finishedAt: "2026-11-01T00:00:01Z", durationMs: 1000,
@@ -64,6 +64,31 @@ it("uses the unchanged evidence authority owner for the authenticated exact sele
   expect(admitted).toMatchObject({ targetSha, executionIds: f.campaign.expected, protocol: "paperclip.manual-private-evidence/v1" });
   expect(() => authorizeManualPrivateEvidence({ ...identity, executionIds: ["chat-features.runner-opencode.local.foreign"] }, JSON.stringify(policy))).toThrow();
   expect(() => authorizeManualPrivateEvidence({ ...identity, targetSha: "b".repeat(40) }, JSON.stringify(policy))).toThrow();
+});
+
+it.each([1, 2, 3])("accepts a genuine project-work pass with %i declared provider runs through both export gates", async count => {
+  const f = await fixture();
+  f.results[2]!.runIds = Array.from({ length: count }, (_, i) => `project-work-${i}`); await f.save();
+  await exportCompletionPilot(f.report, f.output, binding, f.campaign.expected);
+  expect((await exportPilotAllure(f.output, f.allure, binding, f.selected))[2]!.status).toBe("passed");
+});
+
+it.each([0, 4])("rejects project-work outside its declared range: %i runs", async count => {
+  const f = await fixture();
+  f.results[2]!.runIds = Array.from({ length: count }, (_, i) => `project-work-${i}`); await f.save();
+  await expect(exportCompletionPilot(f.report, f.output, binding, f.campaign.expected)).rejects.toThrow();
+});
+
+it.each([0, 4])("the upload consumer independently rejects %i project-work runs", async count => {
+  const f = await fixture(); await exportCompletionPilot(f.report, f.output, binding, f.campaign.expected);
+  const file = path.join(f.output, "normalized-results.json");
+  const campaign = JSON.parse(await readFile(file, "utf8"));
+  campaign.results[2].runIds = Array.from({ length: count }, (_, i) => `project-work-${i}`);
+  const bytes = Buffer.from(JSON.stringify(campaign)); await writeFile(file, bytes);
+  const receiptFile = path.join(f.output, "binding.json"), receipt = JSON.parse(await readFile(receiptFile, "utf8"));
+  Object.assign(receipt.files.find((row: { path: string }) => row.path === "normalized-results.json"), { bytes: bytes.length, sha256: hash(bytes) });
+  await writeFile(receiptFile, JSON.stringify(receipt));
+  await expect(exportPilotAllure(f.output, f.allure, binding, f.selected)).rejects.toThrow();
 });
 
 it("retains failed grading and failed cleanup as a failed TestOps result", async () => {

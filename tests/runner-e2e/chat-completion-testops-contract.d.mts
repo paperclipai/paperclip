@@ -3,6 +3,8 @@ export interface PilotCase {
   scenario: string;
   name: string;
   checks: number;
+  minimumRuns: number;
+  maximumRuns: number;
   executionId: string;
   fullName: string;
 }
@@ -13,6 +15,7 @@ export const workflow: string;
 export const planName: string;
 export const model: string;
 export function hash(value: string | Uint8Array): string;
+export function validRunCount(ids: readonly string[] | undefined, descriptor: PilotCase): boolean;
 export interface PilotContext { runId: string; attempt: string; workflowSha: string; targetSha: string }
 export interface PilotSelection extends PilotContext {
   schema: string; projectId: number; planId: number; jobId: number; launchId: number;

@@ -8,13 +8,17 @@ export const workflow = '.github/workflows/chat-completion-testops.yml';
 export const planName = 'Chat completion pilot — OpenCode 1017';
 export const model = 'openrouter/deepseek/deepseek-v4.1-flash-1017';
 export const cases = Object.freeze([
-  { key: 'control', scenario: 'instance-operations.restart-service', name: 'Restart an instance and retain the conversation', checks: 9 },
-  { key: 'defaults', scenario: 'projects.project-defaults', name: 'Save project defaults for future work', checks: 11 },
-  { key: 'work', scenario: 'projects.project-work', name: 'Create and delegate project work through chat', checks: 15 },
+  { key: 'control', scenario: 'instance-operations.restart-service', name: 'Restart an instance and retain the conversation', checks: 9, minimumRuns: 1, maximumRuns: 1 },
+  { key: 'defaults', scenario: 'projects.project-defaults', name: 'Save project defaults for future work', checks: 11, minimumRuns: 3, maximumRuns: 3 },
+  { key: 'work', scenario: 'projects.project-work', name: 'Create and delegate project work through chat', checks: 15, minimumRuns: 1, maximumRuns: 3 },
 ].map(row => Object.freeze({ ...row, executionId: `chat-features.runner-opencode.local.${row.scenario}`,
   fullName: `paperclip.Product E2E.chat-features.${row.scenario}` })));
 export const positive = value => Number.isSafeInteger(value) && value > 0;
 export const hash = value => createHash('sha256').update(value).digest('hex');
+// These bounds are copied from the pinned source, not inferred from one
+// measurement. The real-source control checks them before provider access.
+export const validRunCount = (ids, descriptor) => Array.isArray(ids) && ids.length >= descriptor.minimumRuns
+  && ids.length <= descriptor.maximumRuns && new Set(ids).size === ids.length;
 const numeric = value => /^[1-9][0-9]{0,15}$/.test(value ?? '') && positive(Number(value));
 export function reject(code) { throw new Error(`chat_completion_testops_${code}`); }
 

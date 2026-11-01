@@ -202,6 +202,7 @@ export async function verifyPilotUpload(api, selection, context, exported, { now
     const run = await get(`/api/jobrun/${selection.allureJobRunId}`);
     const runUrl = `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`;
     if (run.id !== Number(selection.allureJobRunId) || run.job?.id !== selection.jobId || run.job?.type !== 'github'
+      || !['in_progress', 'finished'].includes(run.stage)
       || run.launchId !== selection.launchId || run.url !== runUrl) reject('jobrun_mismatch');
     const launch = await get(`/api/launch/${selection.launchId}`);
     if (launch.id !== selection.launchId || launch.projectId !== 1) reject('launch_mismatch');

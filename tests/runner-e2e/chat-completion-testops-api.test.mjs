@@ -101,6 +101,16 @@ test('verifies exact results and attachment metadata for all three cases', async
   assert.ok(value.results.every(row => row.attachmentsVerified && row.status === 'passed'));
 });
 
+test('accepts a finished TestOps job with its original complete results', async () => {
+  const value = await verifyPilotUpload(api({ '/api/jobrun/77': { ...jobrun, stage: 'finished' } }), selection, context, exported);
+  assert.equal(value.verification, 'VERIFIED');
+});
+for (const stage of ['cancelled', 'failed', 'scheduled']) {
+  test(`never qualifies a ${stage} TestOps job even with all results and attachments`, async () => {
+    await assert.rejects(verifyPilotUpload(api({ '/api/jobrun/77': { ...jobrun, stage } }), selection, context, exported));
+  });
+}
+
 test('waits for an explicitly missing attachment and requires final complete metadata', async () => {
   let polls = 0, slept = 0, clock = 0;
   const get = api({ '/api/testresult/attachment?testResultId=200&page=0&size=100': () => {

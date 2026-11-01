@@ -309,8 +309,8 @@ jobs:
 
   report:
     name: Retain private originals and build the exact safe TestOps projection
-    needs: [authorize, select, chat]
-    if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && needs.select.result == 'success'
+    needs: [authorize, select, build, chat]
+    if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && needs.select.result == 'success' && needs.build.result == 'success' && (needs.chat.result == 'success' || needs.chat.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: runner-e2e-private-history

@@ -23,7 +23,9 @@ export async function verifyHostContract(workspace, temporaryRoot, env = process
     for (const descriptor of cases) {
       const execution = runnerMatrix.find(row => row.id === descriptor.executionId);
       if (!execution || execution.task.id !== descriptor.scenario || execution.profile.model !== model
-        || execution.profile.id !== 'runner-opencode' || execution.environment.id !== 'local') throw new Error('Pinned source selection mismatch');
+        || execution.profile.id !== 'runner-opencode' || execution.environment.id !== 'local'
+        || execution.task.expectedRunCount !== descriptor.maximumRuns
+        || (execution.task.minimumExpectedRunCount ?? execution.task.expectedRunCount) !== descriptor.minimumRuns) throw new Error('Pinned source selection mismatch');
       const controlEnv = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_REF: 'refs/heads/master',
         GITHUB_WORKFLOW_REF: `paperclipai/paperclip/${workflow}@refs/heads/master`, GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1',
         PAPERCLIP_RUNNER_E2E_SOURCE_SHA: targetSha, PAPERCLIP_CHAT_COMPLETION_TESTOPS: paid.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS,

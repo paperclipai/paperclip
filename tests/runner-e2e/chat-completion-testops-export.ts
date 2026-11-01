@@ -5,7 +5,7 @@ import { buildRunnerCampaign } from "./history.js";
 import { assertSecretFree, findSecretLeakInJsonValues } from "./redaction.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import { publicBilling } from "./testops-chat-export.js";
-import { cases, targetSha, model, hash } from "./chat-completion-testops-contract.mjs";
+import { cases, targetSha, model, hash, validRunCount } from "./chat-completion-testops-contract.mjs";
 import type { RunnerE2EResult } from "./types.js";
 
 const pngMagic = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -54,9 +54,8 @@ export async function exportCompletionPilot(root: string, output: string, bindin
     const checks = original.matcherResults ?? [];
     if (checks.length > 200 || checks.some(check => check.matcher.kind !== "json_path" || !/^[A-Za-z0-9._-]{1,150}$/.test(check.matcher.path)
       || check.matcher.expected !== true || typeof check.passed !== "boolean")) throw new Error("Invalid pilot checks");
-    const runCount = descriptor.key === "control" ? 1 : descriptor.key === "defaults" ? 3 : 2;
     if (original.status === "passed" && (original.cleanup !== "passed" || original.evidenceValid !== true
-      || checks.length !== descriptor.checks || checks.some(check => !check.passed) || original.runIds?.length !== runCount)) throw new Error("Incomplete pilot pass");
+      || checks.length !== descriptor.checks || checks.some(check => !check.passed) || !validRunCount(original.runIds, descriptor))) throw new Error("Incomplete pilot pass");
     let image: Buffer | undefined;
     const relative = `evidence/${id}/attempt-1/final-state.png`;
     try { image = await ownedRead(root, relative, 12 * 1024 * 1024); }

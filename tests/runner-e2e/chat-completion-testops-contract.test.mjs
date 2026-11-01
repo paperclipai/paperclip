@@ -111,6 +111,9 @@ test('the real workflow separates metadata authority, provider execution and res
     if (!['select', 'upload'].includes(name)) assert.ok(!JSON.stringify(job).includes('secrets.ALLURE_TOKEN'), name);
   }
   assert.ok(w.jobs.upload.if.includes("needs.report.result == 'success'"));
+  assert.ok(w.jobs.report.needs.includes('build'));
+  assert.ok(w.jobs.report.if.includes("needs.build.result == 'success'"));
+  assert.ok(w.jobs.report.if.includes("needs.chat.result == 'failure'"));
   assert.ok(!text.includes('<<:')); assert.ok(!text.includes('target_branch:'));
   assert.equal(w.jobs.build.steps.find(step => step.name?.startsWith('Resolve the fixed')).run.includes('--ignore-scripts'), true);
   const paid = w.jobs.chat.steps.find(step => step.env?.OPENROUTER_API_KEY);

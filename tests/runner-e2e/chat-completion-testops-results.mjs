@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { cases, targetSha, model, hash, validateSelection, reject } from './chat-completion-testops-contract.mjs';
+import { targetSha, model, hash, validateSelection, validRunCount, reject } from './chat-completion-testops-contract.mjs';
 
 async function inventory(root, relative = '') {
   const found = []; const entries = await readdir(path.join(root, relative));
@@ -65,9 +65,8 @@ export async function readPilotExport(root, context, selection) {
     if (!evidence || ![true, false, null].includes(evidence.requiredEvidenceComplete)
       || evidence.finalScreenshot !== null && (!/^[a-f0-9]{64}$/.test(evidence.finalScreenshot?.sha256 ?? '')
         || !Number.isSafeInteger(evidence.finalScreenshot.bytes) || evidence.finalScreenshot.bytes < 24 || evidence.finalScreenshot.bytes > 12 * 1024 * 1024)) reject('private_evidence_receipt');
-    const runs = expected.key === 'control' ? 1 : expected.key === 'defaults' ? 3 : 2;
     if (row.status === 'passed' && (row.cleanup !== 'passed' || row.matcherResults.length !== expected.checks
-      || row.matcherResults.some(check => !check.passed) || row.runIds?.length !== runs
+      || row.matcherResults.some(check => !check.passed) || !validRunCount(row.runIds, expected)
       || evidence.requiredEvidenceComplete !== true || evidence.finalScreenshot === null)) reject('export_incomplete_pass');
   }
   return { campaign, selected, retained, privateEvidence: binding.privateEvidence };
