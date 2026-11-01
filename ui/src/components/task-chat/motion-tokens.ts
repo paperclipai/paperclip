@@ -32,6 +32,7 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-ease-in", group: "Easing", kind: "easing" },
   { name: "--motion-ease-pane-width-reset", group: "Easing", kind: "easing" },
   { name: "--motion-ease-pane-reveal", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-primary-crown-burst", group: "Easing", kind: "easing" },
 
   // Duration primitives
   { name: "--motion-duration-instant", group: "Durations", kind: "time", min: 0, max: 1000, step: 10 },
@@ -80,6 +81,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-pane-reveal", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-pane-width-reset", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-side-panel-tab", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-primary-crown-pop", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-primary-crown-pop-delay", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
 ];
 
 /** Common easing presets offered by the tweak panel's easing picker. */
