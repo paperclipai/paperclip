@@ -1,30 +1,36 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 13:28 UTC): existing-volume staging enrollment
+Date: 2026-10-31. Status (2026-11-01 13:54 UTC): existing-volume staging enrollment
 is complete and its read/save/file-integrity checks pass. Active-agent recovery,
-idle behavior and the ten-deploy staging campaign remain unqualified. No production
-canary yet.
+natural database idling and the ten-deploy staging campaign remain unqualified.
+No production canary yet.
 
-Latest critical path: Core #18543 includes the runtime admission correction and
-owned immutable-cache retirement. Review exposed a resolved host-source fallback;
-its fix passes all 122 workspace-preparation tests. The live test at `e14ca5f3e9`
-now reconstructs the agent-file projection, deletes A's entire home after graceful
-shutdown (22.8 seconds), and transfers ownership of the same remote execution.
-It then fails because adoption tries to rematerialize launch skills from A's
-deleted controller directory. That failure remains failed evidence; all three
-owned Daytona sandboxes were subsequently confirmed absent and the temporary
-credential revoked. Adoption now skips preparation of launch assets for the
-already-running provider. The regression fails before the fix and passes after
-it; all 71 related adoption/recovery transport cases pass with real local Runner
-processes and simulated providers. No paid-model success is inferred.
+Latest critical path: Core #18543 includes runtime admission, immutable-cache
+retirement, remote agent-file projection, and adoption without rematerializing
+launch assets. The live test at `67714af9ff` transferred the same runner/session to
+controller generation two after deleting A's entire home, then failed in the full
+backend constructor: composing system instructions still read A's retired bundle.
+All three owned Daytona sandboxes were independently confirmed absent; the child
+credential was revoked and the test object bucket deleted. This remains failed
+evidence, not a successful deployment qualification.
+
+The backend now accepts admitted instructions from a validated same-run Runner
+checkpoint. Runner owns checkpoint/template inspection; Core binds it to the
+current run, normalized session and context digest. Staged attachments select the
+validated target template. Fresh runs and ordinary later continuations still
+compose current instructions. The deleted-bundle reproduction failed before the
+fix, then passed with real backend session recovery and no new thread/turn start.
+All 59 backend factory tests and the focused checkpoint validation tests pass.
+The next step is a clean rebuilt live retry and exact-head PR review.
 
 Review also identified save quotas incorrectly applied during cache recovery.
-Recovery now uses the existing inbound remote projection and preserves path/link
-validation without enforcing save quotas on admission. The over-quota case still
-rejects an ordinary save. A broad directory run passed 110 cases but hit three
-cleanup timing failures; all 20 cleanup/cache-loss cases passed in isolation with
-the same timeouts. Server and Runner TypeScript checks pass. A rebuilt live retry
-and exact-head PR review are next.
+Recovery uses the existing inbound remote projection and preserves path/link
+validation without enforcing save quotas on admission. Ordinary saves still reject
+oversized changes. Related transport recovery tests passed 71 cases; directory
+cleanup/cache-loss tests passed 20 cases after three timing failures in a broad
+run. A separate CI attention-retention timeout reproduced on clean master: its
+fixed clock fell behind database-assigned updatedAt. Advancing across the saved
+deadline fixes it; all 53 tests in that file pass with original timeouts.
 
 Cloud #1102 merged as `461c4aea28` and is serving on the staging controller.
 The original enrollment completed using its original qualified image, a retained
@@ -34,10 +40,13 @@ The original browser tab reconnected and persisted a task title. Server logs lat
 showed old Agents chunks returned 404 and navigation recovered via a page reload:
 this is migration continuity evidence, not uninterrupted old-tab asset loading.
 
-The first eight-minute natural database-idle observation failed. A bounded SQL
-attribution window is underway and is explicitly not an idle observation. Normal
-automatic sleep was correctly refused because this development fixture is not
-eligible for the free/demo idle-sleep policy; manual sleep/wake is still pending.
+Two eight-minute natural database-idle observations failed. A separate bounded SQL
+attribution window saw no other app-database sessions; it is diagnostic stimulus,
+not idle proof, and does not establish the source of provider activity. Automatic
+idle sleep was correctly refused because this development fixture is not eligible
+for the free/demo policy. Manual sleep with force disabled passed: the registry
+reports sleeping, Railway has no active web deployment or attached volume, and
+Neon is idle. Browser wake is being verified through the normal organization entry.
 Private receipts remain under the task's live-test, staging enrollment and hosted
 probe directories; no credential or live target identity belongs here.
 

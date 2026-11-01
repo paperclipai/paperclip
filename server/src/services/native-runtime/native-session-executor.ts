@@ -145,6 +145,7 @@ import {
   executeNativeSession,
   applyNativeSessionGoalControl,
   inspectStagedRunAttachment,
+  inspectRetainedRunInstructions,
   inspectWarmRunTransition,
   parseNativeExecutionInput,
   parsePaperclipQuestionSet,
@@ -12545,6 +12546,19 @@ async function createRunnerdBackendWithinSessionClaim(
       : null;
   const stagedRecovery = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyStagedAttachmentRestart(input) : null;
+  const retainedSystemInstructions = input.restartRecovery?.kind === "reattach_remote_runner"
+    && "runtimeContext" in input.execution
+    && input.execution.schema !== "paperclip.native-execution-input.v6"
+    && input.execution.schema !== "paperclip.native-execution-input.v8"
+    ? inspectRetainedRunInstructions(JSON.parse(readBoundedNativeFile(
+        resolve(root, "control-plane", "control-plane-state.json"), NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
+        "native_runner_recovery_instructions_unavailable").toString("utf8")), {
+        runId: input.execution.binding.runId,
+        normalizedSessionId: nativeSessionKey(input.execution),
+        runtimeContextDigest: input.execution.runtimeContext.aggregateDigest,
+      })
+    : undefined;
+  if (retainedSystemInstructions === null) throw new Error("native_runner_recovery_instructions_unavailable");
   let stagedRecoveryPending = stagedRecovery !== null;
   const recoveryUsageIdentity = stagedRecovery?.sourceIdentity ?? input.remoteWarmRecovery?.identity ?? durableIdentity;
   const recoveryUsage = input.onAccountingEvent && recoveryUsageIdentity
@@ -12647,6 +12661,7 @@ async function createRunnerdBackendWithinSessionClaim(
       return current.execute(call);
     };
     const backend = createNativeSessionBackend(input.execution, {
+      retainedSystemInstructions,
       // The plugin resolves the VM directory while preparing the launch. Core keeps
       // its host environment out of the plugin and records the prepared directory.
       runnerInstanceId: prior?.runnerInstanceId ?? effectiveRunnerInstanceId, environment: {},
@@ -13981,6 +13996,7 @@ async function createRunnerdBackendWithinSessionClaim(
       runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });
   }
   const backend = createNativeSessionBackend(runnerExecution, {
+    retainedSystemInstructions,
     runnerInstanceId:
       retainedTransition?.runnerInstanceId ?? input.runnerInstanceId,
     environment: effectiveRunnerEnvironment,

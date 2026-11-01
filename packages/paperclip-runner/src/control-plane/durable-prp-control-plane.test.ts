@@ -33,6 +33,7 @@ import {
   decodeDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   inspectStagedRunAttachment,
+  inspectRetainedRunInstructions,
   inspectStagedRunAttachmentHeader,
   type DurablePrpCheckpoint,
   durableRecoveryInternals,
@@ -54,6 +55,33 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("recovers only the matching run's admitted instructions from a valid checkpoint", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-retained-instructions-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const digest = "b".repeat(64);
+  const expected = { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, runtimeContextDigest: digest };
+  const template = { provider: { instructions: "Exact admitted instructions.\n", runtimeContext: { aggregateDigest: digest } } };
+  try {
+    core.persistRunAttachTemplate(template);
+    expect(inspectRetainedRunInstructions(core.store.state, expected)).toBe(template.provider.instructions);
+    for (const field of ["runId", "normalizedSessionId", "runtimeContextDigest"] as const) {
+      expect(inspectRetainedRunInstructions(core.store.state, { ...expected, [field]: "foreign" })).toBeNull();
+    }
+    expect(inspectRetainedRunInstructions({ ...core.store.state, commands: null }, expected)).toBeNull();
+    expect(inspectRetainedRunInstructions({ ...core.store.state, runAttachTemplate: { provider: { ...template.provider, instructions: "" } } }, expected)).toBeNull();
+    const target = { ...identity, runId: "00000000-0000-4000-8000-000000000002", turnId: "next-turn", itemId: "next-item" };
+    const targetTemplate = { provider: { instructions: "Target instructions", runtimeContext: { aggregateDigest: "c".repeat(64) } } };
+    core.stageRunAttachment(target, targetTemplate);
+    const targetExpected = { ...expected, runId: target.runId, runtimeContextDigest: "c".repeat(64) };
+    expect(inspectRetainedRunInstructions(core.store.state, targetExpected)).toBe("Target instructions");
+    expect(inspectRetainedRunInstructions(core.store.state, { ...targetExpected, runtimeContextDigest: digest })).toBeNull();
+    expect(inspectRetainedRunInstructions(core.store.state, expected)).toBe(template.provider.instructions);
+    const corrupted = structuredClone(core.store.state);
+    corrupted.stagedRunAttachment!.templateDigest = `sha256:${"f".repeat(64)}`;
+    expect(inspectRetainedRunInstructions(corrupted, targetExpected)).toBeNull();
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
 
 it("persists an undispatched source-to-target attachment before bootstrap and preserves it after cache loss", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-staged-attachment-"));

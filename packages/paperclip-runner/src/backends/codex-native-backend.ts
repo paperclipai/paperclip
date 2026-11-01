@@ -21,6 +21,8 @@ import {
 } from "./runtime-context.js";
 
 export interface CodexNativeSessionBackendOptions {
+  /** Admitted instructions from a validated same-run checkpoint, supplied by the recovery owner. */
+  retainedSystemInstructions?: string;
   /** Effective provider environment, including the assigned workspace boundary. */
   environment?: NodeJS.ProcessEnv;
   observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
@@ -149,7 +151,7 @@ function createTransportBackedNativeSessionBackend(
     ...nativeTaskConstraints(input),
   ];
 
-  const baseInstructions = nativeSystemInstructions(input);
+  const baseInstructions = options.retainedSystemInstructions ?? nativeSystemInstructions(input);
   const transportFactory = options.transportFactory;
   return new HarnessDriverBackend(
     new CodexAppServerDriver({

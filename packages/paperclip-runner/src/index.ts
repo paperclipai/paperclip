@@ -39,6 +39,7 @@ export {
   RUNNER_PRP_PROTOCOL_MAX,
   inspectWarmRunTransition,
   inspectStagedRunAttachment,
+  inspectRetainedRunInstructions,
   inspectStagedRunAttachmentHeader,
   type StagedRunAttachment,
   type DurablePrpControlPlaneOptions,
