@@ -124,6 +124,24 @@ describe("setup-token reaper", () => {
     expect(store.rows.size).toBe(0);
   });
 
+  it("logs the release failure's cause instead of swallowing it", async () => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "orphan-3", leaseId: "lease-orphan-3", state: "failed" });
+    const leases = createFakeLeases({
+      releaseImpl: async () => {
+        throw new Error("sandbox worker unreachable");
+      },
+    });
+    const lines: string[] = [];
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW, log: (line) => lines.push(line) });
+
+    const result = await reaper.sweep();
+
+    expect(result.failed).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("sandbox worker unreachable");
+  });
+
   it("reaps every reapable record in one sweep and stays idempotent on the next", async () => {
     const store = createMemoryStore();
     store.seed({ sessionId: "orphan-a", leaseId: "lease-a", state: "failed" });
