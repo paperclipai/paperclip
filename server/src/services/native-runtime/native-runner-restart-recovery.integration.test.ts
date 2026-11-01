@@ -358,10 +358,12 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(next.kind).toBe("bootstrap_incomplete");
   });
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = !["warm", "same-server"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
     const perTurn = scenario.startsWith("diskless-per-turn");
+    const warmSuspended = scenario.startsWith("diskless-warm-suspended");
+    const resumedAfterSuspension = perTurn || warmSuspended;
     const container = process.env.PAPERCLIP_TEST_RUNNER_CONTAINER!;
     const tunnel = await createRunnerTestTlsTunnel({ port: Number(process.env.PAPERCLIP_TEST_RUNNER_PORT),
       key: process.env.PAPERCLIP_TEST_RUNNER_TLS_KEY!, cert: process.env.NODE_EXTRA_CA_CERTS! });
@@ -437,7 +439,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           if (message.ready) {
             clearTimeout(timer);
             timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error(`Warm controller admission exceeded 60 seconds: ${logs.join("").slice(-3_000)}`)); }, 60_000);
-            controller!.send?.({ connectionString: temporary.connectionString, container, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
+            controller!.send?.({ connectionString: temporary.connectionString, container, suspendAfterTurn: warmSuspended, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
               options: { ...executionOptions, db: undefined, onLog: undefined, runnerExecutionTarget: { ...executionOptions.runnerExecutionTarget, runner: undefined } } });
           }
           if (message.log) logs.push(message.log.text);
@@ -520,7 +522,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const snapshot = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });
       expect(snapshot.exitCode).toBe(0);
       const saved = JSON.parse(snapshot.stdout);
-      expect(saved.lifecycle).toBe(perTurn ? "suspended" : "ready");
+      expect(saved.lifecycle).toBe(resumedAfterSuspension ? "suspended" : "ready");
       const processBefore = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
       expect(processBefore.exitCode).toBe(0);
       const historyBefore = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/filesystem/codex-home/fake-codex-state.json`] });
@@ -589,7 +591,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           ...(perTurn ? { sessionCheckpoint: admission.checkpoint } : {}) } }).where(eq(heartbeatRuns.id, row.id));
       };
       await admitContinuation(nextOptions.execution);
-      if (scenario === "diskless-per-turn-read-retry") {
+      if (scenario.endsWith("-read-retry")) {
         let rejectedReads = 0;
         await expect(executePaperclipNativeSession({ ...nextOptions,
           runnerExecutionTarget: { ...nextOptions.runnerExecutionTarget, runner: { ...runner,
@@ -617,10 +619,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       expect(calls.stdout.split("\n").filter(line => line === "thread/start")).toHaveLength(1);
       const providerStarts = calls.stdout.split("\n").filter(line => line === "process-start").length;
       expect(providerStarts).toBeGreaterThanOrEqual(1);
-      expect(providerStarts).toBeLessThanOrEqual(perTurn || ["legacy", "changed"].includes(scenario) ? 3 : hardRestart ? 2 : 1);
+      expect(providerStarts).toBeLessThanOrEqual(resumedAfterSuspension || ["legacy", "changed"].includes(scenario) ? 3 : hardRestart ? 2 : 1);
       const processAfter = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
       expect(processAfter.exitCode).toBe(0);
-      if (perTurn || ["legacy", "changed"].includes(scenario)) expect(processAfter.stdout).not.toBe(processBefore.stdout);
+      if (resumedAfterSuspension || ["legacy", "changed"].includes(scenario)) expect(processAfter.stdout).not.toBe(processBefore.stdout);
       else expect(processAfter.stdout).toBe(processBefore.stdout);
       await finalizeNativeRun({ db: fixture.db, runId: nextRunId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
       if (diskless && controller) {
@@ -659,9 +661,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const finalCalls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
       expect(finalCalls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(3);
       expect(finalCalls.stdout.split("\n").filter(line => line === "thread/start")).toHaveLength(1);
-      expect(finalCalls.stdout.split("\n").filter(line => line === "process-start")).toHaveLength(providerStarts + (perTurn ? 1 : 0));
+      expect(finalCalls.stdout.split("\n").filter(line => line === "process-start")).toHaveLength(providerStarts + (resumedAfterSuspension ? 1 : 0));
       const finalProcess = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
-      if (perTurn) expect(finalProcess.stdout).not.toBe(processAfter.stdout);
+      if (resumedAfterSuspension) expect(finalProcess.stdout).not.toBe(processAfter.stdout);
       else expect(finalProcess.stdout).toBe(processAfter.stdout);
       expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: perTurn ? 0 : 1, busy: 0, failed: 0 });
       const suspended = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });

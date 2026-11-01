@@ -1,5 +1,5 @@
 import { createDb } from "@paperclipai/db";
-import { executePaperclipNativeSession } from "../../services/native-runtime/native-session-executor.js";
+import { closeIdleWarmNativeSessionsForRestart, executePaperclipNativeSession } from "../../services/native-runtime/native-session-executor.js";
 import { dockerCommandRunner } from "./docker-command-runner.js";
 
 // Separate TypeScript fixture import time from actual controller admission.
@@ -9,6 +9,7 @@ process.once("message", async (input: {
   connectionString: string;
   container: string;
   ingressUrl: string;
+  suspendAfterTurn?: boolean;
   options: Parameters<typeof executePaperclipNativeSession>[0];
 }) => {
   const target = input.options.runnerExecutionTarget;
@@ -31,6 +32,10 @@ process.once("message", async (input: {
       },
       onLog: async (stream, text) => { process.send?.({ log: { stream, text } }); },
     });
+    if (input.suspendAfterTurn) {
+      const closed = await closeIdleWarmNativeSessionsForRestart();
+      if (closed.closed !== 1 || closed.busy || closed.failed) throw new Error("Warm fixture failed to suspend");
+    }
     process.send?.({ result });
   } catch (error) {
     process.send?.({ error: error instanceof Error ? error.stack : String(error) });
