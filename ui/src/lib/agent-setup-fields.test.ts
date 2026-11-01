@@ -8,6 +8,7 @@ describe("model-specific setup efforts", () => {
     expect(setupEfforts("claude_local", "claude-sonnet-5-5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(setupEfforts("claude_local", "claude-opus-5-5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(setupEfforts("claude_local", "claude-haiku-4-5")).toEqual([]);
+    expect(setupEfforts("claude_local", "claude-haiku-5-5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
   it("offers xhigh on Grok 4.7 and 4.6, with the lower limit on 4.5", () => {
