@@ -60,3 +60,16 @@ it("publishes a blocked deadline immediately and never exports a late completion
   finish(result()); await service!.finished;
   expect((await request("/export", "POST")).status).toBe(409);
 });
+
+it("expires successful export authority at the original maintenance deadline", async () => {
+  let expired!: Promise<void>;
+  const { request } = await start(async signal => {
+    expired = new Promise(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return result();
+  }, 100);
+  await service!.finished;
+  expect(service!.receipt().state).toBe("ready");
+  await expired;
+  expect(service!.receipt()).toMatchObject({ state: "blocked", failure: "maintenance_deadline_exceeded" });
+  expect((await request("/export", "POST")).status).toBe(409);
+});

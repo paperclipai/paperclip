@@ -11,7 +11,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, notInArray, lte, or, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, databaseWorkScopeKey, type Db } from "@paperclipai/db";
 import {
   prepareAdapterExecutionTargetRuntime,
@@ -40,6 +40,15 @@ const MAX_COLLECTION_ATTEMPTS = 3;
 const liveTargets = new Map<string, AdapterExecutionTarget>();
 const targetKey = (companyId: string, runId: string) => `${companyId}:${runId}`;
 const copySaves = new WeakMap<object, Map<string, Promise<void>>>();
+
+/** A terminal run does not establish that its private local edits were saved.
+ * Enrollment may discard these paths only after this owner's save/resolution
+ * or explicit ownership transfer. Unavailable/conflicted copies fail closed. */
+export async function hasUnsettledLocalInstructionCopies(db: Db): Promise<boolean> {
+  return (await db.select({ runId: copies.runId }).from(copies).where(and(
+    eq(copies.location, "local"), notInArray(copies.state, ["saved", "unchanged", "resolved", "superseded"]),
+  )).limit(1)).length > 0;
+}
 
 function serializeCopySave<T>(db: Db, companyId: string, runId: string, save: () => Promise<T>): Promise<T> {
   const scope = databaseWorkScopeKey(db);

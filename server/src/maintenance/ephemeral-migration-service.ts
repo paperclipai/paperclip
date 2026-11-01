@@ -62,7 +62,12 @@ export async function startEphemeralMigrationService(input: {
       const code = error instanceof Error ? error.message : "owner_migration_failed";
       failure = /^[a-z_]{1,80}$/.test(code) ? code : "owner_migration_failed";
       state = "blocked";
-    } finally { clearTimeout(deadline); completedAt = new Date().toISOString(); }
+    } finally {
+      // Successful export authority expires at the original deadline too.
+      // A failed migration has no export authority to retain.
+      if (state !== "ready") clearTimeout(deadline);
+      completedAt = new Date().toISOString();
+    }
   })();
   return { server, finished, receipt,
     async close() {

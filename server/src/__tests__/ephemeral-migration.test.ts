@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { S3Client, CreateBucketCommand, DeleteBucketCommand, DeleteObjectsCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentFileRoots, companies, createDb, closeFileStorageDb, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, agents, agentFileRoots, agentInstructionWorkingCopies, companies, createDb, closeFileStorageDb, heartbeatRuns, providerTraceRecords } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { migrateEphemeralServerData } from "../maintenance/ephemeral-migration-data.js";
 import { agentFileStore } from "../services/agent-file-store.js";
@@ -42,6 +42,7 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await db.insert(companies).values({ id: companyId, name: "Enrollment fixture", issuePrefix: "MIG" });
   });
   afterEach(async () => {
+    await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
@@ -143,4 +144,35 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await expect(migrate()).rejects.toThrow();
     expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, row.id))).toEqual([]);
   });
+
+  it("retains unsaved terminal-run working copies until their owner records settlement", async () => {
+    const row = await agent();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: row.id, status: "succeeded" }).returning();
+    const privateRoot = path.join(home, "private-copy");
+    await materializeInstructionBytes(privateRoot, "AGENTS.md", Buffer.from("Unsaved work"));
+    await db.insert(agentInstructionWorkingCopies).values({ runId: run!.id, companyId, agentId: row.id,
+      responsibleUserId: "fixture", entryFile: "AGENTS.md", baseHash: "fixture", localRoot: privateRoot,
+      executionRoot: privateRoot, location: "local", state: "pending_collection" });
+    await expect(migrate()).rejects.toThrow("local_instruction_copies_require_settlement");
+    expect(await fs.readFile(path.join(privateRoot, "AGENTS.md"), "utf8")).toBe("Unsaved work");
+    expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, row.id))).toEqual([]);
+    // Simulate only the owning service's completed collection receipt. The
+    // enrollment coordinator must not fabricate that save or erase the copy.
+    await materializeInstructionBytes(row.root, "AGENTS.md", Buffer.from("Unsaved work"));
+    await db.update(agentInstructionWorkingCopies).set({ state: "saved", processStoppedAt: new Date() })
+      .where(eq(agentInstructionWorkingCopies.runId, run!.id));
+    expect((await migrate()).eligibility.eligible).toBe(true);
+  });
+
+  it("expires every page of local traces through their owner before final eligibility", async () => {
+    const row = await agent();
+    const runs = await db.insert(heartbeatRuns).values(Array.from({ length: 101 }, () => ({
+      companyId, agentId: row.id, status: "succeeded",
+    }))).returning();
+    await db.insert(providerTraceRecords).values(runs.map(run => ({ companyId, runId: run.id, provider: "codex",
+      traceRef: `${randomUUID()}.ndjson`, status: "complete", requestedBy: "fixture", expiresAt: new Date(0) })));
+    expect(await migrate()).toMatchObject({ eligibility: { eligible: true }, counts: { expiredTraces: 101 } });
+    expect((await db.select().from(providerTraceRecords).where(eq(providerTraceRecords.companyId, companyId)))
+      .every(trace => trace.status === "expired" && trace.deletedAt !== null)).toBe(true);
+  }, 120_000);
 });

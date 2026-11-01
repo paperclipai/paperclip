@@ -378,8 +378,9 @@ false until adoption completes.
 
 The process uses the existing agent-file, run-evidence and skill maintenance
 owners, follows all pages, verifies stored agent bytes and skill versions, and
-checks whole-database eligibility. Active execution, missing local bytes, local
-workspaces and external instructions block enrollment. Those conditions must be
+checks whole-database eligibility. The trace owner expires all due retention
+pages before the final check. Active execution, unresolved local working copies,
+missing local bytes, local workspaces and external instructions block enrollment. Those conditions must be
 resolved by their owning migration paths before detaching the volume.
 
 `GET /health` is a public maintenance liveness check. `GET /status` and
@@ -388,7 +389,8 @@ only the attempt, stamped Core commit, phase, counts and safe error code. Export
 is available only after all checks succeed; it also returns the original decision
 signing key for transfer into the stack vault. The process never generates a
 replacement key. Every response disables caching. Never log or retain the export
-body outside the vault. A 25-minute deadline blocks export; SIGTERM stops the
+body outside the vault. A 25-minute deadline blocks export even after migration
+has succeeded; SIGTERM stops the
 process, with a ten-second exit deadline.
 
 Cloud must verify the attempt and image commit, preserve the exact key, and

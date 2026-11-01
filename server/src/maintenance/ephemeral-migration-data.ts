@@ -6,6 +6,8 @@ import { readEphemeralServerDataEligibility } from "../services/ephemeral-server
 import { migrateRunEvidence } from "../services/run-evidence-migration.js";
 import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
+import { hasUnsettledLocalInstructionCopies } from "../services/agent-instruction-working-copies.js";
+import { providerTraceStore } from "../services/provider-trace-store.js";
 
 /** Runs only in the maintenance process after Cloud has confirmed all legacy
  * deployments stopped. Each owner retains its own migration/publication rules;
@@ -18,6 +20,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
     .where(inArray(heartbeatRuns.status, ["running", "queued"])).limit(1);
   if (active) throw new Error("active_execution_requires_drain");
+  if (await hasUnsettledLocalInstructionCopies(db)) throw new Error("local_instruction_copies_require_settlement");
   const before = await readEphemeralServerDataEligibility(db);
   const unsupported = before.blockers.filter(blocker => ![
     "agent_files_require_migration", "run_logs_require_migration", "provider_traces_require_migration", "skills_require_migration",
@@ -90,6 +93,15 @@ export async function migrateEphemeralServerData(db: Db, input: {
     after = page.after;
   }
   phase("eligibility");
+  // A trace can expire after the app stops or while other owners migrate.
+  // Its owner tombstones and cleans all expired pages before final eligibility.
+  const traces = providerTraceStore(db), expiryAt = new Date();
+  for (;;) {
+    signal.throwIfAborted();
+    const removed = await traces.cleanupExpired(expiryAt, signal);
+    counts.expiredTraces = (counts.expiredTraces ?? 0) + removed.length;
+    if (removed.length < 100) break;
+  }
   const eligibility = await readEphemeralServerDataEligibility(db);
   if (!eligibility.eligible) throw new Error("final_data_eligibility_failed");
   return { counts, eligibility };
