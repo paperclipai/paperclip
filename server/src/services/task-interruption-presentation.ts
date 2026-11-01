@@ -2,7 +2,8 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
-import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_STATUSES, type TaskInterruptionPresentation } from "@paperclipai/shared";
+import { captureTaskInterruptionFailure } from "../sentry.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
@@ -116,7 +117,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt)),
-    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason }).from(agents)
+    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason, adapterType: agents.adapterType }).from(agents)
       .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
     projectIds.length ? db.select({ id: projects.id, pausedAt: projects.pausedAt, pauseReason: projects.pauseReason }).from(projects)
       .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds))) : [],
@@ -168,14 +169,23 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   for (const issue of selected) {
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
-    result.set(issue.id, projectTaskInterruption(issue, {
+    const presentation = projectTaskInterruption(issue, {
       run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
-    }));
+    });
+    result.set(issue.id, presentation);
+    const run = runMap.get(issue.id);
+    const runStatus = HEARTBEAT_RUN_STATUSES.find(status => status === run?.status);
+    if (presentation?.responsibility === "system" && presentation.state === "failed" &&
+        !presentation.projectAccess && run && runStatus) {
+      captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
+        runId: run.id, runStatus, intentId: presentation.intentId,
+        agentAdapter: agentMap.get(run.agentId)?.adapterType ?? "unknown" });
+    }
   }
   return result;
 }

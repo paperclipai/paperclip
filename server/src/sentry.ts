@@ -56,6 +56,7 @@
 // `instrumentation.ts`.
 
 import os from "node:os";
+import type { HeartbeatRunStatus } from "@paperclipai/shared";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
@@ -173,7 +174,8 @@ export interface RunFailureEvent {
   /** The agent's adapter type, or `"unknown"` when the agent row is absent. */
   agentAdapter: string;
   /** The run status that triggered this report. */
-  runStatus: RunFailureStatus;
+  runStatus: HeartbeatRunStatus;
+  failureSource?: "task_interruption";
   /** Bounded, redacted diagnostics selected by the run failure reporter. */
   diagnostics?: RunFailureDiagnostics;
   /** Recorded process exit evidence, when available. Validated before capture. */
@@ -206,8 +208,8 @@ function normalizeRunSignal(value: unknown): string | null {
  * change run control flow.
  *
  */
-export function captureRunFailure(event: RunFailureEvent): void {
-  if (!sentryHandle || readRunFailureReportingMode() === "off") return;
+export function captureRunFailure(event: RunFailureEvent): boolean {
+  if (!sentryHandle || readRunFailureReportingMode() === "off") return false;
   const handle = sentryHandle;
   try {
     const errorCode = event.errorCode ?? "unknown";
@@ -270,6 +272,7 @@ export function captureRunFailure(event: RunFailureEvent): void {
     handle.captureException(exception, {
       tags: {
         event_kind: "run_failure",
+        ...(event.failureSource ? { failure_source: event.failureSource } : {}),
         ...(rootErrorCode ? { root_error_code: rootErrorCode } : {}),
         ...(failurePhase ? { failure_phase: failurePhase } : {}),
         run_id: event.runId,
@@ -294,9 +297,35 @@ export function captureRunFailure(event: RunFailureEvent): void {
       },
       fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : [])],
     });
+    return true;
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureRunFailure failed", err);
+    return false;
+  }
+}
+
+const reportedTaskInterruptions = new Set<string>();
+const MAX_REPORTED_TASK_INTERRUPTIONS = 1_000;
+
+export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
+  "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter"> & { intentId: string | null }): void {
+  const key = JSON.stringify([event.companyId, event.taskId, event.runId, event.intentId]);
+  if (reportedTaskInterruptions.has(key)) return;
+  if (!captureRunFailure({
+    companyId: event.companyId,
+    agentId: event.agentId,
+    taskId: event.taskId,
+    runId: event.runId,
+    runStatus: event.runStatus,
+    agentAdapter: event.agentAdapter,
+    errorMessage: "Couldn’t finish this attempt. Your message is saved.",
+    errorCode: "task_attempt_failed",
+    failureSource: "task_interruption",
+  })) return;
+  reportedTaskInterruptions.add(key);
+  if (reportedTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
+    reportedTaskInterruptions.delete(reportedTaskInterruptions.values().next().value!);
   }
 }
 
