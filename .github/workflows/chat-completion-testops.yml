@@ -162,13 +162,15 @@ jobs:
           version: 9.15.4
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.sha }}
-          path: .testops-trusted
+          ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
+      - name: Reject target-owned trusted helper paths
+        id: target_boundary
+        run: test -z "$(git ls-tree --name-only HEAD -- .testops-trusted)"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.authorize.outputs.target_sha }}
-          clean: false
+          ref: ${{ github.sha }}
+          path: .testops-trusted
           persist-credentials: false
       - name: Resolve the fixed candidate graph with lifecycle scripts disabled
         run: |
@@ -227,13 +229,15 @@ jobs:
       - *pnpm
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.sha }}
-          path: .testops-trusted
+          ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
+      - name: Reject target-owned trusted helper paths
+        id: target_boundary
+        run: test -z "$(git ls-tree --name-only HEAD -- .testops-trusted)"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.authorize.outputs.target_sha }}
-          clean: false
+          ref: ${{ github.sha }}
+          path: .testops-trusted
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

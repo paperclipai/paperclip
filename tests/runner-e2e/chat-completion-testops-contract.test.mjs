@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parse } from 'yaml';
@@ -122,4 +123,29 @@ test('the real workflow separates metadata authority, provider execution and res
   assert.ok(paid.run.includes('--max-automatic-retries 0'));
   assert.ok(w.jobs.build.steps.some(step => step.run?.includes('chat-completion-testops-host-control.mjs')));
   assert.ok(w.jobs.chat.steps.indexOf(paid) > w.jobs.chat.steps.findIndex(step => step.name?.startsWith('Verify source-bound')));
+});
+
+test('target checkout cannot populate or overwrite the trusted helper path', async () => {
+  const definition = parse(await readFile(new URL('../../.github/workflows/chat-completion-testops.yml', import.meta.url), 'utf8'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'testops-checkout-boundary-')));
+  try {
+    const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
+    git('init'); await writeFile(path.join(root, 'fixture.txt'), 'normal target'); git('add', '.');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'normal target');
+    for (const job of [definition.jobs.build, definition.jobs.chat]) {
+      const target = job.steps.findIndex(step => step.with?.ref === '${{ needs.authorize.outputs.target_sha }}');
+      const boundary = job.steps.findIndex(step => step.id === 'target_boundary');
+      const trusted = job.steps.findIndex(step => step.with?.path === '.testops-trusted');
+      assert.ok(target >= 0 && boundary > target && trusted > boundary, 'Reject reserved target paths, then check out trusted main last');
+      assert.notEqual(job.steps[target].with.clean, false);
+      execFileSync('bash', ['-euo', 'pipefail', '-c', job.steps[boundary].run], { cwd: root, stdio: 'pipe' });
+    }
+    await mkdir(path.join(root, '.testops-trusted'));
+    await writeFile(path.join(root, '.testops-trusted', 'helper.js'), 'candidate-controlled helper'); git('add', '.testops-trusted');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'reserved path in target');
+    for (const job of [definition.jobs.build, definition.jobs.chat]) {
+      const guard = job.steps.find(step => step.id === 'target_boundary');
+      assert.throws(() => execFileSync('bash', ['-euo', 'pipefail', '-c', guard.run], { cwd: root, stdio: 'pipe' }));
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
