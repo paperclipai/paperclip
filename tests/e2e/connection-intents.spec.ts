@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 import { send } from "./agent-chat.shared";
@@ -30,11 +30,13 @@ async function createAgent(
   request: APIRequestContext,
   companyId: string,
   name: string,
+  permissions?: Json,
 ): Promise<Agent> {
   return await json<Agent>(
     await request.post(`/api/companies/${companyId}/agents`, {
       data: {
         name,
+        ...(permissions ? { permissions } : {}),
         role: "qa",
         title: "Connection intent fixture agent",
         capabilities: "Exercises deterministic connection intent wiring.",
@@ -272,6 +274,197 @@ async function waitForAgentRun(
   return terminalRun;
 }
 
+async function requestNotionAccess(
+  page: Page,
+  request: APIRequestContext,
+  provider: Awaited<ReturnType<typeof startFakeProvider>>,
+) {
+  const seed = await newCompany(request);
+  const holder = await createAgent(
+    request,
+    seed.companyId,
+    "Existing access holder",
+  );
+
+  // Entry point one: connect and test the provider through the Connections store.
+  await page.goto(`/${seed.prefix}/apps`);
+  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({
+    timeout: 30_000,
+  });
+  const customConnector = page
+    .getByRole("list", { name: "Connector list" })
+    .getByRole("listitem")
+    .filter({ hasText: "Connect your own tool" });
+  await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
+  await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
+  await page
+    .getByPlaceholder("https://example.com/actions")
+    .fill(provider.url);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: /Check link/i }).click();
+  // A no-auth read-only provider can complete the access/install defaults in
+  // one commit. Other methods exercise the same intermediate steps in the
+  // shared-flow component suite.
+  await expect(page.getByRole("heading", { name: /is ready/i })).toBeVisible({
+    timeout: 30_000,
+  });
+
+  const connections = await json<{
+    connections: Array<{ id: string; name: string; config: Json }>;
+  }>(await request.get(`/api/companies/${seed.companyId}/tools/connections`));
+  expect(connections.connections).toHaveLength(1);
+  const connection = connections.connections[0]!;
+  const connectionId = connection.id;
+  await json(
+    await request.patch(`/api/tool-connections/${connectionId}`, {
+      data: {
+        config: {
+          ...connection.config,
+          url: provider.url,
+          sourceTemplateKey: "notion",
+        },
+      },
+    }),
+  );
+  await json(
+    await request.put(`/api/tool-connections/${connectionId}/installs`, {
+      data: {
+        installs: [{ targetType: "agent", targetId: holder.id }],
+      },
+    }),
+  );
+  const profiles = await json<{
+    profiles: Array<{ id: string; profileKey: string }>;
+  }>(await request.get(`/api/companies/${seed.companyId}/tools/profiles`));
+  const appProfile = profiles.profiles.find(
+    (profile) => profile.profileKey === `app:${connectionId}`,
+  );
+  expect(appProfile).toBeTruthy();
+  expect(
+    await json<{ unbound: number }>(
+      await request.post(
+        `/api/companies/${seed.companyId}/tools/profiles/${appProfile!.id}/unbind`,
+        { data: { targetType: "company", targetId: seed.companyId } },
+      ),
+    ),
+  ).toMatchObject({ unbound: 1 });
+
+  await page.goto(`/${seed.prefix}/apps/${connectionId}/permissions`);
+  const actionRow = page.locator("[data-action-id]").filter({ hasText: "List fixture pages" });
+  await actionRow.getByRole("button", { name: "Test", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Test List fixture pages" }),
+  ).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  await expect(page.getByText("Fixture page inventory")).toBeVisible({
+    timeout: 30_000,
+  });
+
+  const callsBeforeContinuation = provider.captures.filter(
+    (capture) => capture.method === "tools/call" && capture.toolName === "notion:list_pages",
+  ).length;
+
+  // Entry point two: a scripted agent requests Notion, then the same shared
+  // provider is reused from the task dialog and appears in the fresh run.
+  const scout = await createAgent(
+    request,
+    seed.companyId,
+    "Connection requester",
+    { trustPreset: "low_trust_review" },
+  );
+  await json(
+    await request.patch(`/api/agents/${scout.id}/permissions`, {
+      data: { canCreateAgents: false, canAssignTasks: false, trustPreset: "standard" },
+    }),
+  );
+  await json(
+    await request.patch(`/api/agents/${scout.id}`, {
+      data: {
+        adapterType: "process",
+        adapterConfig: {
+          command: process.execPath,
+          args: [
+            "--input-type=module",
+            "-e",
+            connectionAwareScript(connectionId),
+          ],
+        },
+        replaceAdapterConfig: true,
+      },
+    }),
+  );
+  const issue = await json<{ id: string; identifier: string }>(
+    await request.post(`/api/companies/${seed.companyId}/issues`, {
+      data: {
+        title: "Read our Notion pages",
+        status: "in_progress",
+        assigneeAgentId: scout.id,
+      },
+    }),
+  );
+  // Assigning an in-progress task is the production wake path. Waiting for
+  // that run avoids creating a second artificial request from an explicit
+  // heartbeat invocation.
+  const firstRun = await waitForAgentRun(request, seed.companyId, scout.id);
+
+  const requesterAccess = async () =>
+    (
+      await json<{ access: { tools: Array<{ toolName: string; decision: string }> } }>(
+        await request.get(`/api/tool-connections/${connectionId}/test-agents/${scout.id}/access`),
+      )
+    ).access.tools.find((tool) => tool.toolName === "notion:list_pages")?.decision ?? null;
+  expect(await requesterAccess()).not.toBe("allowed");
+  return {
+    seed,
+    holder,
+    connection,
+    connectionId,
+    scout,
+    issue,
+    firstRun,
+    requesterAccess,
+    callsBeforeContinuation,
+  };
+}
+
+async function expectContinuationDone(
+  request: APIRequestContext,
+  provider: Awaited<ReturnType<typeof startFakeProvider>>,
+  { seed, scout, issue, firstRun, callsBeforeContinuation }: Awaited<ReturnType<typeof requestNotionAccess>>,
+) {
+  await expect
+    .poll(
+      async () => {
+        const runs = await json<Array<{ id: string; status: string }>>(
+          await request.get(
+            `/api/companies/${seed.companyId}/heartbeat-runs?agentId=${scout.id}&limit=10`,
+          ),
+        );
+        return runs.find((run) => run.id !== firstRun.id)?.status ?? null;
+      },
+      { timeout: 45_000 },
+    )
+    .toBe("succeeded");
+  await expect
+    .poll(() =>
+      provider.captures.filter(
+        (capture) =>
+          capture.method === "tools/call" &&
+          capture.toolName === "notion:list_pages",
+      ).length,
+    )
+    .toBe(callsBeforeContinuation + 1);
+  const completedIssue = await json<{ status: string }>(
+    await request.get(`/api/issues/${issue.id}`),
+  );
+  expect(completedIssue.status).toBe("done");
+  const finalRuns = await json<Array<{ id: string; status: string }>>(
+    await request.get(`/api/companies/${seed.companyId}/heartbeat-runs?agentId=${scout.id}&limit=10`),
+  );
+  expect(finalRuns).toHaveLength(2);
+  expect(finalRuns.every((run) => run.status === "succeeded")).toBe(true);
+}
+
 test("store setup and task connection intent share one fake provider through continuation", async ({
   page,
   request,
@@ -279,113 +472,8 @@ test("store setup and task connection intent share one fake provider through con
   test.setTimeout(180_000);
   const provider = await startFakeProvider();
   try {
-    const seed = await newCompany(request);
-    const holder = await createAgent(
-      request,
-      seed.companyId,
-      "Existing access holder",
-    );
-
-    // Entry point one: connect and test the provider through the Connections store.
-    await page.goto(`/${seed.prefix}/apps`);
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({
-      timeout: 30_000,
-    });
-    const customConnector = page
-      .getByRole("list", { name: "Connector list" })
-      .getByRole("listitem")
-      .filter({ hasText: "Connect your own tool" });
-    await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
-    await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
-    await page
-      .getByPlaceholder("https://example.com/actions")
-      .fill(provider.url);
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByRole("button", { name: /Check link/i }).click();
-    // A no-auth read-only provider can complete the access/install defaults in
-    // one commit. Other methods exercise the same intermediate steps in the
-    // shared-flow component suite.
-    await expect(page.getByRole("heading", { name: /is ready/i })).toBeVisible({
-      timeout: 30_000,
-    });
-
-    const connections = await json<{
-      connections: Array<{ id: string; name: string; config: Json }>;
-    }>(await request.get(`/api/companies/${seed.companyId}/tools/connections`));
-    expect(connections.connections).toHaveLength(1);
-    const connection = connections.connections[0]!;
-    const connectionId = connection.id;
-    await json(
-      await request.patch(`/api/tool-connections/${connectionId}`, {
-        data: {
-          config: {
-            ...connection.config,
-            url: provider.url,
-            sourceTemplateKey: "notion",
-          },
-        },
-      }),
-    );
-    await json(
-      await request.put(`/api/tool-connections/${connectionId}/installs`, {
-        data: {
-          installs: [{ targetType: "agent", targetId: holder.id }],
-        },
-      }),
-    );
-
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/permissions`);
-    const actionRow = page.locator("[data-action-id]").filter({ hasText: "List fixture pages" });
-    await actionRow.getByRole("button", { name: "Test", exact: true }).click();
-    await expect(
-      page.getByRole("heading", { name: "Test List fixture pages" }),
-    ).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Run", exact: true }).click();
-    await expect(page.getByText("Fixture page inventory")).toBeVisible({
-      timeout: 30_000,
-    });
-
-    const callsBeforeContinuation = provider.captures.filter(
-      (capture) => capture.method === "tools/call" && capture.toolName === "notion:list_pages",
-    ).length;
-
-    // Entry point two: a scripted agent requests Notion, then the same shared
-    // provider is reused from the task dialog and appears in the fresh run.
-    const scout = await createAgent(
-      request,
-      seed.companyId,
-      "Connection requester",
-    );
-    await json(
-      await request.patch(`/api/agents/${scout.id}`, {
-        data: {
-          adapterType: "process",
-          adapterConfig: {
-            command: process.execPath,
-            args: [
-              "--input-type=module",
-              "-e",
-              connectionAwareScript(connectionId),
-            ],
-          },
-          replaceAdapterConfig: true,
-        },
-      }),
-    );
-    const issue = await json<{ id: string; identifier: string }>(
-      await request.post(`/api/companies/${seed.companyId}/issues`, {
-        data: {
-          title: "Read our Notion pages",
-          status: "in_progress",
-          assigneeAgentId: scout.id,
-        },
-      }),
-    );
-    // Assigning an in-progress task is the production wake path. Waiting for
-    // that run avoids creating a second artificial request from an explicit
-    // heartbeat invocation.
-    const firstRun = await waitForAgentRun(request, seed.companyId, scout.id);
-
+    const requested = await requestNotionAccess(page, request, provider);
+    const { seed, holder, connection, scout, issue, requesterAccess } = requested;
     const taskUrl = `/${seed.prefix}/issues/${issue.identifier}`;
     await page.goto(taskUrl);
     await expect(
@@ -399,6 +487,7 @@ test("store setup and task connection intent share one fake provider through con
     await expect(page.getByText("Notion access granted")).toBeVisible({
       timeout: 30_000,
     });
+    expect(await requesterAccess()).toBe("allowed");
     await expect(page).toHaveURL(new RegExp(`${taskUrl}$`));
     await expect(
       page
@@ -409,38 +498,7 @@ test("store setup and task connection intent share one fake provider through con
       /\/authorize\?|authorizationUrl/,
     );
 
-    await expect
-      .poll(
-        async () => {
-          const runs = await json<Array<{ id: string; status: string }>>(
-            await request.get(
-              `/api/companies/${seed.companyId}/heartbeat-runs?agentId=${scout.id}&limit=10`,
-            ),
-          );
-          return runs.find((run) => run.id !== firstRun.id)?.status ?? null;
-        },
-        { timeout: 45_000 },
-      )
-      .toBe("succeeded");
-    await expect
-      .poll(() =>
-        provider.captures.filter(
-          (capture) =>
-            capture.method === "tools/call" &&
-            capture.toolName === "notion:list_pages",
-        ).length,
-      )
-      .toBe(callsBeforeContinuation + 1);
-    const completedIssue = await json<{ status: string }>(
-      await request.get(`/api/issues/${issue.id}`),
-    );
-    expect(completedIssue.status).toBe("done");
-    const finalRuns = await json<Array<{ id: string; status: string }>>(
-      await request.get(`/api/companies/${seed.companyId}/heartbeat-runs?agentId=${scout.id}&limit=10`),
-    );
-    expect(finalRuns).toHaveLength(2);
-    expect(finalRuns.every((run) => run.status === "succeeded")).toBe(true);
-
+    await expectContinuationDone(request, provider, requested);
     const interactions = await json<Array<{ kind: string; status: string }>>(
       await request.get(`/api/issues/${issue.id}/interactions`),
     );
@@ -463,6 +521,55 @@ test("store setup and task connection intent share one fake provider through con
       ),
     ).toBe(true);
     expect(holder.id).not.toBe(scout.id);
+  } finally {
+    await provider.close();
+  }
+});
+
+test("access granted outside the card retires the request and continues to a tool call", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  const provider = await startFakeProvider();
+  try {
+    const requested = await requestNotionAccess(page, request, provider);
+    const { seed, holder, connectionId, scout, issue, requesterAccess } = requested;
+    const connectionIntents = async () =>
+      (
+        await json<Array<{ kind: string; status: string; result?: { outcome?: string; connectionId?: string } | null }>>(
+          await request.get(`/api/issues/${issue.id}/interactions`),
+        )
+      ).filter((interaction) => interaction.kind === "connection_intent");
+    expect((await connectionIntents()).map((interaction) => interaction.status)).toEqual(["pending"]);
+
+    await json(
+      await request.put(`/api/tool-connections/${connectionId}/installs`, {
+        data: {
+          installs: [
+            { targetType: "agent", targetId: holder.id },
+            { targetType: "agent", targetId: scout.id },
+          ],
+        },
+      }),
+    );
+    expect(await requesterAccess()).toBe("allowed");
+
+    await expectContinuationDone(request, provider, requested);
+    const [retired] = await connectionIntents();
+    expect(retired).toMatchObject({ status: "expired", result: { outcome: "expired", connectionId } });
+
+    await page.waitForTimeout(15_000);
+    expect((await connectionIntents()).map((interaction) => interaction.status)).toEqual(["expired"]);
+    const runs = await json<Array<{ id: string; status: string }>>(
+      await request.get(`/api/companies/${seed.companyId}/heartbeat-runs?agentId=${scout.id}&limit=10`),
+    );
+    expect(runs).toHaveLength(2);
+    expect(
+      provider.captures.filter(
+        (capture) => capture.method === "tools/call" && capture.toolName === "notion:list_pages",
+      ).length,
+    ).toBe(requested.callsBeforeContinuation + 1);
   } finally {
     await provider.close();
   }

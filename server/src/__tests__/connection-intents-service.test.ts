@@ -40,6 +40,7 @@ import { materializeNativeInteractionResponses } from "../services/native-runtim
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -750,6 +751,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const service = connectionIntentService(db);
     await expect(service.request(claims, id)).rejects.toThrow("not found");
     await db.insert(connectionGrants).values({ companyId: claims.company_id, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, status: "active" });
+    await db.insert(toolPolicies).values({ companyId: claims.company_id, name: "Archive off", policyType: "block", selectors: { connectionId: connection!.id } });
     await db.insert(toolCatalogEntries).values({ companyId: claims.company_id, connectionId: connection!.id, toolName: "archive_read", name: "Archive read", description: "Read the unique heliotrope launch decision", versionHash: "fixture-v1", status: "active", entryKind: "tool" });
     expect((await service.search(claims, "heliotrope")).results).toEqual([expect.objectContaining({ service: id, source: "configured", state: "needs_user_action" })]);
     const requested = await service.request(claims, id);
@@ -999,6 +1001,55 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Explicit block", policyType: "block", selectors: { catalogEntryId: f.catalog[1].id } });
     await expect(f.service.complete(request.interactionId!, f.connection.id, "grant-user", { canManageOrganizationGrant: true })).rejects.toThrow("existing policy blocks");
     await expect(f.service.request({ ...f.claims, company_id: randomUUID() }, "composio", { connectionId: f.connection.id })).rejects.toThrow();
+  });
+
+  async function googleFixture() {
+    const [company] = await db.insert(companies).values({ name: "Google fixture", issuePrefix: `W${randomUUID().slice(0, 7)}` }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Mail agent", role: "general", adapterType: "process" }).returning();
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "grant-user", membershipRole: "owner", status: "active" });
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Read mail", status: "in_progress", assigneeAgentId: agent.id }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "running", responsibleUserId: "grant-user", contextSnapshot: { issueId: issue.id } }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "Google Workspace", type: "mcp_http", metadata: { sourceTemplateKey: "google-workspace" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: company.id, applicationId: application.id, uid: randomUUID(), name: "Google Workspace", transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", enabled: true, status: "active", healthStatus: "ok", config: { sourceTemplateKey: "google-workspace" } }).returning();
+    const oauth = (scopes: string[]) => ({ oauth: { scopes, scopeSource: "provider" as const } });
+    const [userGrant] = await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "user", subjectUserId: "grant-user", status: "active", providerTenant: oauth([]) }).returning();
+    await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "agent", subjectAgentId: agent.id, status: "active", providerTenant: oauth(["https://www.googleapis.com/auth/gmail.readonly"]) });
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connection.id, targetType: "agent", targetId: agent.id });
+    await db.insert(toolCatalogEntries).values({ companyId: company.id, connectionId: connection.id, toolName: "gmail__get_message", name: "gmail__get_message", riskLevel: "read", versionHash: "v1", entryKind: "tool", status: "active" });
+    const [profile] = await db.insert(toolProfiles).values({ companyId: company.id, name: "Mail reads", profileKey: "mail-reads", defaultAction: "allow", status: "active" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: company.id, profileId: profile.id, targetType: "agent", targetId: agent.id });
+    const service = connectionIntentService(db);
+    const agentClaims = { ...claims, sub: agent.id, company_id: company.id, run_id: run.id, responsible_user_id: "grant-user" };
+    return { company, agent, run, issue, connection, userGrant, oauth, service, agentClaims };
+  }
+
+  it("reports an installed Google connection ready only when the runtime grant covers the tool's scopes", async () => {
+    const { connection, userGrant, oauth, service, agentClaims } = await googleFixture();
+    const google = async () => (await service.search(agentClaims, "Google Workspace")).results.find(item => item.service === "google-workspace");
+    expect(await google()).toMatchObject({ connectionId: null });
+    expect((await google())?.state).not.toBe("ready");
+    expect(await service.request(agentClaims, "google-workspace", { toolNames: ["gmail__get_message"] })).toMatchObject({ state: expect.not.stringMatching(/^ready$/) });
+    await db.update(connectionGrants).set({ providerTenant: oauth(["https://www.googleapis.com/auth/gmail.readonly"]) }).where(eq(connectionGrants.id, userGrant.id));
+    expect(await google()).toMatchObject({ state: "ready", connectionId: connection.id });
+    expect(await service.request(agentClaims, "google-workspace", { toolNames: ["gmail__get_message"] })).toMatchObject({ state: "ready", connectionId: connection.id });
+  });
+
+  it.each([
+    ["company_default", false],
+    ["instruction", true],
+  ] as const)("reads Google scopes under the run's %s identity like the runtime", async (cause, ready) => {
+    const { company, run, issue, connection, userGrant, oauth, service, agentClaims } = await googleFixture();
+    await db.update(connectionGrants).set({ providerTenant: oauth(["https://www.googleapis.com/auth/gmail.readonly"]) }).where(eq(connectionGrants.id, userGrant.id));
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id, messageIds: [], responsibleUserId: "grant-user", cause });
+    const google = (await service.search(agentClaims, "Google Workspace")).results.find(item => item.service === "google-workspace");
+    const requested = await service.request(agentClaims, "google-workspace", { toolNames: ["gmail__get_message"] });
+    if (ready) {
+      expect(google).toMatchObject({ state: "ready", connectionId: connection.id });
+      expect(requested).toMatchObject({ state: "ready", connectionId: connection.id });
+    } else {
+      expect(google?.state).not.toBe("ready");
+      expect(requested.state).not.toBe("ready");
+    }
   });
 
   it("declines access without changing permissions and expires requests after reassignment", async () => {

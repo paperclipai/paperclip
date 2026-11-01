@@ -36,7 +36,7 @@ import { githubGuestBotConnectionForSession, githubBotToolsForSession } from "./
 import { githubChatReviewService } from "./chat-github-reviews.js";
 import { runIdentityContexts } from "@paperclipai/db";
 import { executeSpekoVoiceTool, spekoToolsForSession } from "./voice/speko-agent-tools.js";
-import { captureRunIdentity } from "./run-identity.js";
+import { captureRunIdentity, readRunIdentityContext, type RunIdentityContext } from "./run-identity.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
@@ -1646,7 +1646,7 @@ export function createToolGatewayService(
     companyId: string,
     connectionId: string,
   ): Promise<ToolGatewayDescriptor[]> {
-    return (await connectedMcpToolsForCompany(companyId)).filter(
+    return (await connectedMcpToolsForCompany(companyId, [connectionId])).filter(
       (tool) => tool.connectionId === connectionId,
     );
   }
@@ -2204,13 +2204,20 @@ export function createToolGatewayService(
       agentId: session.agentId,
       runId: session.runId,
     }, { readScope: "identity" });
+    return sessionWithIdentityContext(session, captured.context);
+  }
+
+  function sessionWithIdentityContext(
+    session: ToolGatewaySession,
+    context: RunIdentityContext | null,
+  ): ToolGatewaySession {
     return {
       ...session,
-      identityContextId: captured.context?.id,
+      identityContextId: context?.id,
       responsibleUserId:
-        captured.context?.cause === "company_default"
+        context?.cause === "company_default"
           ? null
-          : captured.context?.responsibleUserId,
+          : context?.responsibleUserId,
     };
   }
 
@@ -9589,6 +9596,42 @@ export function createToolGatewayService(
           ({ effectiveProfileIds: _effectiveProfileIds, ...tool }) => tool,
         ),
       };
+    },
+
+    async googleWorkspaceScopesForAgent(input: {
+      companyId: string;
+      connectionId: string;
+      agentId: string;
+      responsibleUserId: string | null;
+      heartbeatRunId?: string | null;
+      issueId?: string | null;
+      projectId?: string | null;
+    }) {
+      const [connection] = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+      ));
+      if (connection?.config.sourceTemplateKey !== "google-workspace") return null;
+      const session: ToolGatewaySession = {
+        id: "connection-readiness",
+        token: "connection-readiness",
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: input.heartbeatRunId ?? null,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        actorType: "agent",
+        actorId: input.agentId,
+        responsibleUserId: input.responsibleUserId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      const identity = input.heartbeatRunId
+        ? await readRunIdentityContext(db, { companyId: input.companyId, runId: input.heartbeatRunId, agentId: input.agentId })
+        : { settled: true as const, context: null };
+      if (!identity.settled) return [];
+      const identified = identity.context ? sessionWithIdentityContext(session, identity.context) : session;
+      try { return googleWorkspaceGrantedScopes(await resolveConnectionGrant(identified, connection, false)); }
+      catch { return []; }
     },
 
     async executeTestCall(input: ExecuteTestCallInput) {
