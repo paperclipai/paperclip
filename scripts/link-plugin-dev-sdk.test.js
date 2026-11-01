@@ -81,9 +81,31 @@ test("linkSdkInto replaces a symlink that points somewhere else", () => {
   const pkg = makePackage(join(workDir, "stale-link"));
   const scopeDir = join(pkg, "node_modules", "@paperclipai");
   mkdirSync(scopeDir, { recursive: true });
-  symlinkSync("../somewhere-else", join(scopeDir, "plugin-sdk"), "dir");
+  // Build the stale link the same way the script links on this platform. A directory
+  // symlink needs SeCreateSymbolicLinkPrivilege on Windows, which a normal developer
+  // shell does not hold, so this fixture would fail there rather than test anything.
+  const staleDir = join(pkg, "node_modules", "somewhere-else");
+  mkdirSync(staleDir, { recursive: true });
+  if (process.platform === "win32") {
+    symlinkSync(staleDir, join(scopeDir, "plugin-sdk"), "junction");
+  } else {
+    symlinkSync("../somewhere-else", join(scopeDir, "plugin-sdk"), "dir");
+  }
 
   assert.equal(linkSdkInto(pkg), true);
-  assert.notEqual(readlinkSync(join(scopeDir, "plugin-sdk")), "../somewhere-else");
+  const relinked = readlinkSync(join(scopeDir, "plugin-sdk"));
+  assert.notEqual(relinked, "../somewhere-else");
+  assert.notEqual(relinked, staleDir);
   assert.ok(existsSync(scopeDir));
+});
+
+test("linkSdkInto creates a link the module resolver can follow", () => {
+  // The link type differs by platform, so assert the property that matters instead:
+  // the SDK's own files are reachable through the link that was just created.
+  const pkg = makePackage(join(workDir, "resolvable"));
+
+  assert.equal(linkSdkInto(pkg), true);
+
+  const link = join(pkg, "node_modules", "@paperclipai", "plugin-sdk");
+  assert.ok(existsSync(join(link, "package.json")));
 });
