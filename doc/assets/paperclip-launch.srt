@@ -1,0 +1,31 @@
+1
+00:00:00,150 --> 00:00:02,800
+How do agents run budgets autonomously?
+
+2
+00:00:03,000 --> 00:00:05,500
+Paperclip Run autonomous AI organizations
+
+3
+00:00:05,700 --> 00:00:09,400
+Hire the team
+
+4
+00:00:09,500 --> 00:00:13,000
+A goal becomes an org chart.
+
+5
+00:00:13,200 --> 00:00:14,900
+Monthly budgets per agent
+
+6
+00:00:14,950 --> 00:00:17,000
+Hierarchies, roles, reporting lines
+
+7
+00:00:17,100 --> 00:00:19,000
+Install and manage agents now
+
+8
+00:00:19,000 --> 00:00:22,000
+paperclip.ing/install.sh
