@@ -1,10 +1,27 @@
 import { isDeepStrictEqual } from "node:util";
-import { markdownReplyContent } from "../../../ui/src/lib/markdown-reply-content.js";
+import { createRequire } from "node:module";
 import { applyCompanyPrefix } from "../../../ui/src/lib/company-routes.js";
-import { parseIssueReferenceFromHref } from "../../../ui/src/lib/issue-reference.js";
+import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../../../ui/src/lib/issue-reference.js";
 import { JourneyError } from "./types.js";
 
 type Row = Record<string, any>;
+const uiRequire = createRequire(new URL("../../../ui/package.json", import.meta.url));
+const [markdown, gfm, react] = await Promise.all([import(uiRequire.resolve("react-markdown")),
+  import(uiRequire.resolve("remark-gfm")), import(uiRequire.resolve("react"))]);
+const Markdown = markdown.default as (input: { children: string; remarkPlugins: unknown[] }) => unknown;
+const isValidElement = react.isValidElement as (node: unknown) => node is { type: unknown; props: { href?: unknown; children?: unknown } };
+function hireReplyLinks(body: string, issuePrefix: string): string[] {
+  const nodes: unknown[] = [Markdown({ children: body, remarkPlugins: [gfm.default, [remarkLinkIssueReferences, { knownPrefixes: [issuePrefix] }]] })];
+  const links: string[] = [];
+  while (nodes.length) {
+    const node = nodes.pop();
+    if (Array.isArray(node)) { nodes.push(...node); continue; }
+    if (!isValidElement(node) || node.type === "pre" || node.type === "code") continue;
+    if (node.type === "a" && typeof node.props.href === "string") links.push(node.props.href);
+    nodes.push(node.props.children);
+  }
+  return links;
+}
 export const HIRE_DELEGATE_JOURNEY = "hire-delegate-reuse" as const;
 export function hireDelegateNames(campaignId: string) {
   return { project: `Journey QA hire-delegate-reuse ${campaignId}`, hire: `Morgan Reviewer ${campaignId}`,
@@ -151,8 +168,9 @@ export function assertHireRuns(scope: HireScope, hiredId: string | undefined, ta
               || comment.authorAgentId !== scope.leadId || comment.authorUserId)) throw new JourneyError("failed", "hire_completion_reply_mismatch");
             const task = tasks.find(task => task.id === updates[0].id)!;
             if (!replies.some(comment => typeof comment.body === "string"
-              && markdownReplyContent(comment.body, [scope.issuePrefix])?.some(part => "href" in part
-                && hireResultLinkMatches(scope, task, part.href, true)))) completionRepliesReady = false;
+              && hireReplyLinks(comment.body, scope.issuePrefix).some(href => hireResultLinkMatches(scope, task, href, true)))) {
+              completionRepliesReady = false;
+            }
           }
           completedTasks.add(updates[0].id);
         }

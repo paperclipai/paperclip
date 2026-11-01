@@ -175,11 +175,12 @@ describe("deployment hiring qualification", () => {
     const changed = comments.map((comment, i) => i === index ? { ...comment, body: "Completed saved result" } : comment);
     expect(() => grade(runs, changed)).toThrow("hire_completion_reply_missing");
   });
-  it.each(["foreign", "code", "wrong-task", "earlier-handoff-only"])("rejects a %s completion link despite seven successful native runs", variant => {
+  it.each(["foreign", "code", "fenced-code", "wrong-task", "earlier-handoff-only"])("rejects a %s completion link despite seven successful native runs", variant => {
     const { f, requested, runs, comments, grade } = completionFixture();
     const changed = comments.map((comment, i) => ({ ...comment, body: variant === "foreign"
       ? `[TEST-${i + 1}](https://foreign.test/TEST/issues/TEST-${i + 1})`
       : variant === "code" ? `\`[saved result](/TEST/issues/TEST-${i + 1})\``
+        : variant === "fenced-code" ? `\`\`\`markdown\n[saved result](/TEST/issues/TEST-${i + 1})\n\`\`\``
         : variant === "wrong-task" ? "[other result](/TEST/issues/TEST-999)" : "Completed saved result" }));
     if (variant === "earlier-handoff-only") changed.push({ ...comments[0]!, createdByRunId: requested[1]!.id,
       body: `[first](/TEST/issues/${f.task.identifier}) and [second](/TEST/issues/TEST-2)` });
@@ -207,6 +208,19 @@ describe("deployment hiring qualification", () => {
     expect(() => grade(runs, comments.map((comment, i) => ({ ...comment, body: `Completed TEST-${i + 1}.` })))).not.toThrow();
     expect(() => grade(runs, comments.map((comment, i) => ({ ...comment,
       body: `Completed [saved result][task].\n\n[task]: /TEST/issues/TEST-${i + 1}` })))).not.toThrow();
+  });
+  it.each(["heading", "list", "table", "fence", "table-link"])("accepts callback task links in %s replies without grading unrelated Markdown", shape => {
+    const { runs, comments, grade } = completionFixture();
+    const changed = comments.map((comment, i) => {
+      const link = `[saved result](/TEST/issues/TEST-${i + 1})`;
+      const table = "| Check | Result |\n| --- | --- |\n| File | Saved |";
+      return { ...comment, body: shape === "heading" ? `## Completed\n\n${link}`
+        : shape === "list" ? `- Completed\n  - ${link}`
+          : shape === "table" ? `${link}\n\n${table}`
+            : shape === "fence" ? `\`\`\`markdown\n[not a link](/TEST/issues/TEST-999)\n\`\`\`\n\n${link}`
+              : `| Result |\n| --- |\n| ${link} |` };
+    });
+    expect(() => grade(runs, changed)).not.toThrow();
   });
   it("requires the saved document revision to come from the successful hired-agent work run", () => {
     const f = fixture(), body = "Reference: independent-marker";
