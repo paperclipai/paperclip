@@ -825,12 +825,6 @@ async function streamSshToLocalFile(input: {
       reject(error);
     };
     onAbort = () => fail(workspaceRestoreCancelledError());
-    input.signal?.addEventListener("abort", onAbort, { once: true });
-    if (input.signal?.aborted) {
-      onAbort();
-      return;
-    }
-
     if (input.progress) {
       input.progress.counter.on("error", fail);
       ssh.stdout?.pipe(input.progress.counter).pipe(sink);
@@ -854,6 +848,13 @@ async function streamSshToLocalFile(input: {
         resolve();
       });
     });
+    // Registered last so the already-aborted fast path still has every
+    // stream and child handler in place before it can fire.
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) {
+      onAbort();
+      return;
+    }
   }).finally(auth.cleanup);
 }
 
