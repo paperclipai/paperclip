@@ -122,7 +122,7 @@ const JSON_SECRET_FIELD_RE = new RegExp(
 // consumes the doubled escape sequences. An escaped quote inside the value does
 // not end the match early. The value ends at the next unescaped `\"`.
 const JSON_ESCAPED_SECRET_FIELD_RE = new RegExp(
-  String.raw`(\\"(?:${SECRET_NAME_PATTERN})\\"\s*:\s*\\")(?:\\\\\\\\|\\\\\\"|\\\\[\s\S]|[^\\"])*(\\")`,
+  String.raw`(\\"(?:${SECRET_NAME_PATTERN})\\"\s*:\s*\\")(?=((?:\\\\\\\\|\\\\\\"|\\\\[\s\S]|[^\\"])*))\2(\\")`,
   "gi",
 );
 
@@ -141,6 +141,6 @@ export function redactDiagnosticText(
   redactedValue = REDACTED_COMMAND_TEXT_VALUE,
 ): string {
   return redactCommandText(text, redactedValue)
-    .replace(JSON_ESCAPED_SECRET_FIELD_RE, `$1${redactedValue}$2`)
+    .replace(JSON_ESCAPED_SECRET_FIELD_RE, `$1${redactedValue}$3`)
     .replace(JSON_SECRET_FIELD_RE, `$1${redactedValue}$2`);
 }
