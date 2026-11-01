@@ -4360,13 +4360,24 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+export async function linkSkillDirectory(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err) {
+    const code = err && typeof err === "object" ? (err as NodeJS.ErrnoException).code : null;
+    if (process.platform === "win32" && (code === "EPERM" || code === "EACCES")) {
+      // Relative symlink sources resolve from the link's parent, not process.cwd().
+      await fs.symlink(path.resolve(path.dirname(target), source), target, "junction");
+      return;
+    }
+    throw err;
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (
-    linkSource,
-    linkTarget,
-  ) => fs.symlink(linkSource, linkTarget),
+  linkSkill: (source: string, target: string) => Promise<void> = linkSkillDirectory,
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
