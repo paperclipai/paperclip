@@ -1,18 +1,24 @@
 # Pi rich ACP runtime
 
-## Current source integration — 2026-10-19
+## Current profile identity
 
-The composed Claude source declares **Pi profile 27**
-(`sha256:b1b75a1ae3ac498eb07b95b96bebf4da86227b83d09276076dd5c222e3964dba`)
-and **Copilot profile 23**, still pending qualification
-(`sha256:6ca1e2c9efa23887ba6f08d89980c91d13114640ac8a1a79f00f27aa8cd39d63`).
-These identities bind the shared Claude effort and lifecycle changes plus
-master's OpenRouter attribution. Copilot's shared bridge binding also includes
-Claude-only essential tool metadata; its own tool catalog is unchanged. Provider executable closures, model/effort
-options and qualification boundaries are unchanged. Current package and source
-checks remain separate from retained provider execution results, which keep
-their literal profile/source identities. Earlier immutable fixtures remain
-historical; they are not accepted as the current source identity.
+Pi runs as **profile 37** on `pi-acp` 0.0.33 and
+`@earendil-works/pi-coding-agent` 1.0.0. Its `commandDigest` attests the
+upstream release: the package versions, the Node version and the complete
+distribution closure for each qualified platform. The closure includes the
+patched wrapper, the runtime helper and the Paperclip extension, so a change to
+those files changes the closure pins and the digest. Other Paperclip source does
+not. Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. Launch and recovery admission require the exact current profile
+and digest. Saved inputs with an earlier profile version still decode, so
+recovery can refuse them.
+
+## Profile chronology
+
+Until 2026-10-30, these digests hashed Paperclip source files, so each change
+to a bound file advanced the profile version. The dated sections below record
+that period; their profile versions and digests are not current.
 
 ## Historical source integration — 2026-10-12
 
@@ -311,7 +317,7 @@ progress but cannot become a final answer. Missing or conflicting boundaries
 fail closed. Loaded history has a separate display-only identity. Retry,
 compaction, extension and command notices retain bounded, redacted severity and
 metadata on `paperclip/pi_notice`; they are never assistant final content.
-The [v8 declaration](../../packages/paperclip-runner/test-fixtures/pi-acp/profile-v8-identity.json)
+The v8 declaration
 also pins the shared ACPX parser and Pi host projections. Previous sessions must
 be reopened. No paid profile-v8 qualification has run.
 
@@ -356,7 +362,7 @@ was aggregated into the final item. Three runs settled across these two cells,
 all owned processes exited, and five later cells did not launch. The native
 message attribution defect is repaired in v8; authenticated v8 qualification
 remains pending. The canonical
-[v7 declaration](../../packages/paperclip-runner/test-fixtures/pi-acp/profile-v7-identity.json)
+v7 declaration
 binds the exact wrapper, helper, extension and three target closures.
 
 Credential-free regressions run the pinned SDK with synthetic model streams to

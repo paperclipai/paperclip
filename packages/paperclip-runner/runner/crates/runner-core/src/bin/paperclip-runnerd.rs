@@ -671,10 +671,15 @@ mod tests {
             args.extend(options.into_iter().map(str::to_owned));
             assert!(metadata_with_provider_packs(&args).is_err());
         }
+        let missing_root = if cfg!(windows) {
+            r"C:\missing-provider-pack"
+        } else {
+            "/missing-provider-pack"
+        };
         let metadata = metadata_with_provider_packs(&[
             "--build-metadata".to_owned(),
             "--provider-pack-root".to_owned(),
-            "/missing-provider-pack".to_owned(),
+            missing_root.to_owned(),
         ])
         .unwrap();
         assert_eq!(metadata["binaryContractVersion"], 2);

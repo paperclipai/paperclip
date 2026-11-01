@@ -259,8 +259,10 @@ A card or section rendered on the main dashboard. Use this for at-a-glance metri
 
 An additional tab on a project, issue, agent, goal, or run detail page. Rendered when the user navigates to that entity's detail view. Receives `PluginDetailTabProps` with `context.companyId` set to the active company and `context.entityId` / `context.entityType` guaranteed to be non-null, so you can immediately scope data fetches to the relevant entity. Specify which entity types the tab applies to via the `entityTypes` array in the manifest slot declaration. Requires the `ui.detailTab.register` capability.
 
-Agent detail tabs can also appear in task side panels. Declare a mapping to a
-runtime activity independently of the plugin and slot identifiers:
+Agent detail tabs can also appear in task side panels. `taskSidePanel` makes the
+view available for manual selection with the running or assigned agent. Manual
+selection mounts the same component as the agent detail page, including while
+the task is idle. An optional activity mapping also opens it automatically:
 
 ```ts
 taskSidePanel: {
@@ -272,8 +274,8 @@ taskSidePanel: {
 Declare the exact availability path as a board-only GET API route with
 `companyResolution: { from: "agent", param: "entityId" }`. Core maps the declared
 namespace/activity pair to installed agent detail tabs. Runner knows no plugin
-or UI slot. Declarations without `activation` remain valid for agent detail pages
-and contribute no task panel. Activity is a reported fact, not an authorization grant.
+or UI slot. Declarations without `activation` support manual task-panel selection.
+Activity controls automatic opening and grants no access permission.
 
 #### Runtime activity recording
 
@@ -317,13 +319,16 @@ Core reads durable activity on mount/reconnect and uses the existing live stream
 The authorized run binding identifies company, task and agent; caller payloads
 cannot override them. Core replaces `:entityId` with the running agent ID, adds
 `runId` and `issueId`, and requires `{ available: true }`. History/live hints merge
-without losing earlier activity. Only matching current-task activity contributes.
+without losing earlier activity. Only matching current-task activity can open a
+panel automatically.
 Readiness and transient discovery failures get at most three attempts; authorization
 failures are not retried. No periodic readiness polling is added. Dismissal stays
 scoped to the current run. Only tab identity is stored in browser state; activity
-remains in the authorized run log. Missing/disabled plugins, failed history reads,
-unavailable views and access failures contribute no task tab. The plugin owns
-labels, content and controls. No private integration identifier belongs in Core.
+remains in the authorized run log. Failed history reads, unavailable views and
+access failures prevent automatic opening. Manual selection uses the viewer's
+own authorization and status handling. Missing or disabled plugins add no view.
+The plugin owns labels, content and controls. No private integration identifier
+belongs in Core.
 
 #### `taskDetailView`
 

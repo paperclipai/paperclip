@@ -101,6 +101,7 @@
     "agentmail": "^0.5.31",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.2",
+    "oxc-parser": "0.127.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3",
     "yaml": "^2.8.1",

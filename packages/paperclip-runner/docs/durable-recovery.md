@@ -70,15 +70,68 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
-## Source-bound profile history
+## Profile identity
 
-Copilot profile v68 binds the merged hot-upgrade and current master transport.
-Published v66 and the earlier hot-upgrade v67 identity remain byte-for-byte
-historical records. The distinct development v66 identity is retained under
-`copilot-profile-v66-hot-upgrade-candidate-historical-identity.json`; it does not
-replace the published v66 fixture. Decoding historical versions does not grant
-fresh-launch permission. Installation still requires the exact current profile,
-package and digest. These records do not establish hosted harness qualification.
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
+(`scripts/acpx-release-attestations.mjs`):
+
+| Kind | Providers | The digest is |
+| --- | --- | --- |
+| `installed-command` | Claude, Codex | the upstream package's launch command, hashed at installation |
+| `launcher` | Grok | the SHA-256 of the launcher shipped verbatim |
+| `closure` | Copilot, Pi, Kimi | upstream versions and the complete platform closure pins |
+| `declaration` | Cursor, Antigravity | a checked-in release declaration, as canonical JSON |
+
+`generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
+refuses a stale one, so a digest changes only with its upstream release. Every
+ACPX harness binds the shared ACPX layer the same way: saved inputs must match
+the current ACPX version, and the provider pack's `contractDigest` binds the
+Runner's ACPX patch with the other Runner contracts. Runner source changes
+change no provider digest.
+
+A profile version changes only to reset every saved session for that provider
+on purpose; an upstream release keeps it, and a new provider starts at 1. Saved
+inputs with any version from 1 through the current one decode, so they reach
+recovery. Launch and recovery admission require the exact current profile and
+digest, and refuse the rest. A profile identity does not establish hosted
+harness qualification. [`rules/acpx-profile-identity.mdc`](../../../rules/acpx-profile-identity.mdc)
+summarizes these practices for contributors.
+
+Qualified ACPX native executables use Runner's persistent digest cache. The cache
+stores a computed SHA-256 digest under a key made from device, inode, size,
+nanosecond modification time, and nanosecond change time. Each check compares
+that digest with the independently selected build-owned pin. A changed file
+identity, missing entry, or unusable cache causes a full descriptor read and
+hash. A hit reuses the earlier digest; metadata identity is not a fresh content
+hash. Claude, Codex, and Grok use the same native executable admission path.
+
+Cache entries live in the operating-system temporary directory under
+`paperclip-runner-<uid>/executable-digests-v1`, outside task workspaces such as
+`/home/agent`. Neither `HOME` nor the task working directory selects this path.
+Node's `os.tmpdir()` selects the root and honors the platform's absolute
+`TMPDIR`, `TMP`, or `TEMP` override. Hosts must keep that root outside task
+workspaces; a relative or unusable root disables caching. Temporary-directory
+eviction removes the optimization until a later full hash fills it again. The
+directory and files are private to that user. Writes use a temporary file and
+atomic rename, so later Runner or sidecar processes can reuse complete entries.
+Cache errors fall back to hashing. The cache stores no credentials or file paths.
+
+Every admission still opens the executable without following its final symlink,
+checks its regular-file type, bounds, execute permission, and before/after file
+identity, and retains the descriptor for launch. Package qualification and the
+preparation-to-launch identity check remain. The cache deliberately trusts the
+operating-system user: a process with that user's access can plant a digest for
+a chosen fingerprint. It is not authenticated with a secret or signature.
+An administrator-owned read-only Runner can therefore use a user-writable cache,
+but this provides weaker protection against that same user than hashing every
+executable on each admission. Removing the cache restores full hashing.
+
+Kimi retains released revision 17, which separates ordinary admission from
+pending revision 16. Its upstream-only release attestation replaces the earlier
+source-bound digest without another revision bump. Historical candidate and
+released records remain unchanged and readable; exact current digest admission
+refuses their old launch identities.
 
 ## External controller checkpoints
 

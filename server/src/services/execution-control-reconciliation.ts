@@ -196,7 +196,7 @@ export async function reconcileAbandonedExecutionControl(
           await notifyNativeEnvironmentSettlement(tx, { companyId: run.companyId, runId: run.id });
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, run);
-          await notifyExecutionRunWork(tx);
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
           const [updatedRun] = await tx
             .update(heartbeatRuns)
             .set({

@@ -1,4 +1,5 @@
 import { bindAcpxCandidateAdmission } from "../drivers/acpx/candidate-admission.js";
+import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../drivers/acpx/kimi-closure-pins.js";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../drivers/acpx/generated-profiles.js";
 import { canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
 import { acpxProfileActivity } from "../drivers/acpx/profile-activity.js";
@@ -15,6 +16,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
+import { createKimiMessageProjection } from "../drivers/acpx/kimi-message-boundary.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -561,6 +563,31 @@ describe("qualified ACPX runtime sidecar", () => {
       captureNormalizedInput: capture })).rejects.toThrow("cannot be encoded without changing its identity");
     expect(capture).not.toHaveBeenCalled(); expect(tools.size).toBe(0); expect(emitted).toEqual([]);
     expect(wire.writes).toEqual([]); expect(wire.sequence()).toBe(0);
+  });
+
+  it("preserves validated native assistant boundaries without exposing Kimi provenance metadata", () => {
+    const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+    const start = source.indexOf('  if (event.type === "text_delta") {', source.indexOf("function sanitizeRuntimeEvent"));
+    const end = source.indexOf('  if (event.type === "status") {', start);
+    const sanitize = new Function("boundedOptionalText", "stableProviderIdentity", `return event => {${source.slice(start, end)} return null;}`)(
+      (value: string) => value, (value: string) => `stable-${value}`,
+    );
+    const projection = createKimiMessageProjection<{ type: string; text: string; stream: string; messageId: string; meta: Record<string, string> }>();
+    const event = (kind: string, text = "", stream = "output") => ({ type: "text_delta", text, stream,
+      messageId: `kimi-message-${"a".repeat(64)}`,
+      meta: { origin: "kimi-native-assistant", source: "kimi-turn-step-v1", kind, secret: "PRIVATE_PROVENANCE" } });
+    const frames = [sanitize(projection.normalize(event("start"))),
+      sanitize(projection.normalize(event("delta", "Working."))),
+      sanitize(projection.normalize(event("delta", "Private reasoning", "thought"))),
+      sanitize(projection.normalize(event("end:tool_use")))];
+    expect(frames[0]).toMatchObject({ text: "", assistantMessageBoundary: { phase: "start" } });
+    expect(frames[1]).toMatchObject({ type: "text_delta", text: "Working." });
+    expect(frames[2]).toMatchObject({ type: "thinking" });
+    expect(frames[3]).toMatchObject({ text: "", assistantMessageBoundary: { phase: "end", stopReason: "toolUse" } });
+    expect(new Set(frames.map(frame => frame.messageId)).size).toBe(1);
+    expect(JSON.stringify(frames)).not.toContain("PRIVATE_PROVENANCE");
+    expect(JSON.stringify(frames)).not.toContain("kimi-native-assistant");
+    projection.settle();
   });
 
   it("passes only validated Pi native boundaries and history through the real text sanitizer", () => {
@@ -1258,17 +1285,56 @@ describe("qualified ACPX runtime sidecar", () => {
   });
 
   it.each([
-    ["cursor", "explicit-cursor-model"],
-    ["copilot", "explicit-copilot-model"],
-  ] as const)("initializes the declared %s profile with its current admission status", async (agent, model) => {
+    ["cursor", "explicit-cursor-model", "qualified"],
+    ["copilot", "explicit-copilot-model", "pending"],
+    ["kimi", "explicit-kimi-model", resolveQualifiedAcpxProfile("kimi", "explicit-kimi-model").qualificationStatus === "pending" ? "pending" : "qualified"],
+  ] as const)("initializes the declared %s profile with its current admission status", async (agent, model, qualification) => {
     const sidecar = startSidecar();
+    const profile = resolveQualifiedAcpxProfile(agent, model);
     sidecar.write(initializeRequest(1, agent, model));
     const frame = await sidecar.next((value) => value.id === 1);
+    expect(ACPX_CAPABILITY_PROFILES[agent].qualification).toBe(qualification);
+    if (agent === "kimi" && profile.qualificationStatus === "pending") {
+      expect(frame).toMatchObject({ id: 1, ok: false,
+        error: { message: expect.stringContaining("qualification is pending"), retryable: false } });
+      return;
+    }
     expect(frame).toMatchObject({ id: 1, ok: true });
     const result = frame.result as Record<string, unknown>;
-    expect(result.profile).toEqual(resolveQualifiedAcpxProfile(agent, model));
+    expect(result.profile).toEqual(profile);
     expect(result.profile).toMatchObject({ reportedModelId: model });
-    expect(ACPX_CAPABILITY_PROFILES[agent].qualification).toBe(agent === "cursor" ? "qualified" : "pending");
+  });
+
+  it.each([
+    ["darwin", "arm64"], ["linux", "x64"],
+  ] as const)("binds Kimi startup to its declared %s/%s host and session before provider launch", async (platform, architecture) => {
+    const sidecar = startSidecar(), model = "explicit-kimi-model";
+    const profile = resolveQualifiedAcpxProfile("kimi", model);
+    const request = initializeRequest(1, "kimi", model);
+    if (profile.qualificationStatus !== "pending") {
+      sidecar.write(request);
+      expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ ok: true, result: { profile } });
+      return;
+    }
+    const target = `${platform}-${architecture}` as "darwin-arm64" | "linux-x64";
+    const candidateAdmission = bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1",
+      companyId: "company-kimi-candidate", agent: "kimi", model, profileDigest: profile.commandDigest,
+      nativeClosureDigest: `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256[target]}`,
+      platform, architecture, expiresAt: Date.now() + 60_000,
+    }, { runId: "run-kimi-candidate", normalizedSessionId: "session-kimi-candidate" });
+    sidecar.write({ ...request, params: { ...request.params, candidateAdmission } });
+    const frame = await sidecar.next(value => value.id === 1);
+    if (process.platform !== platform || process.arch !== architecture) {
+      expect(frame).toMatchObject({ ok: false, error: { message: expect.stringContaining("candidate admission"), retryable: false } });
+      return;
+    }
+    expect(frame).toMatchObject({ ok: true, result: { profile } });
+    expect((frame.result as Record<string, unknown>).profile).toMatchObject({ reportedModelId: model });
+    sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: 2, command: "session.open", params: {
+      runtimeDirectory: "/unused", workingDirectory: "/unused", normalizedSessionId: "other-kimi-session", agent: "kimi", model,
+      candidateAdmission, permissionMode: "deny-all", permissionModePinned: true, providerPolicy: { readOnly: true }, systemInstructions: "", tools: [],
+    } });
+    expect(await sidecar.next(value => value.id === 2)).toMatchObject({ ok: false, error: { message: expect.stringContaining("candidate admission") } });
   });
 
   it("refuses pending Antigravity bootstrap before any native process opens", async () => {
@@ -1312,7 +1378,7 @@ describe("qualified ACPX runtime sidecar", () => {
       ok: false,
       error: {
         code: "acpx_sidecar_command_failed",
-        message: "ACPX agent must be claude, codex, grok, cursor, copilot, pi, or antigravity",
+        message: "ACPX agent must be claude, codex, grok, cursor, copilot, kimi, pi, or antigravity",
         retryable: false,
       },
     });
@@ -1338,7 +1404,7 @@ function initializeRequest(
   id: number,
   agent: string,
   model = "gpt-5.6-sol",
-): Record<string, unknown> {
+) {
   return {
     protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
     id,

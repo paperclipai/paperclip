@@ -52,6 +52,59 @@ async function ready(page: Page) {
   await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 10_000 });
 }
 
+async function coordinatorPreference(page: Page, waitForPreference = Promise.resolve()) {
+  await page.route("**/api/instance/settings/experimental", async route => {
+    const response = await route.fetch();
+    await route.fulfill({ json: { ...await response.json(), enableClassicTaskInterface: true } });
+  });
+  await page.route("**/api/workspace-preferences/me", async route => {
+    await waitForPreference;
+    const response = await route.fetch();
+    await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: true } });
+  });
+}
+
+test("a delayed Coordinator preference cannot expand a cold task through Classic settings", async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await coordinatorPreference(page, held);
+  const historyRequests: string[] = [];
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (/\/api\/issues\/[^/]+\/(comments|activity|runs)$/.test(url.pathname) &&
+      !["recent", "comment-inputs"].includes(url.searchParams.get("view") ?? "")) historyRequests.push(url.pathname + url.search);
+  });
+  try {
+    await page.goto(`/${fixture.prefix}/issues/${fixture.identifier}`);
+    await expect(page.getByTestId("issue-detail-header")).toContainText("Review the latest investigation");
+    expect(historyRequests).toEqual([]);
+    release();
+    await ready(page);
+    await expect(page.getByRole("button", { name: "More messages", exact: true })).toBeVisible();
+    expect(historyRequests).toEqual([]);
+    await page.getByRole("button", { name: "More messages", exact: true }).click();
+    await expect(page.getByText("Historical investigation message 0.", { exact: false }).first()).toBeAttached();
+    expect(historyRequests.length).toBeGreaterThan(0);
+  } finally { release(); }
+});
+
+test("Coordinator task rows use index reads and open a compact conversation", async ({ page }) => {
+  await coordinatorPreference(page);
+  const listReads: string[] = [];
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (/\/api\/companies\/[^/]+\/issues$/.test(url.pathname)) listReads.push(url.searchParams.get("view") ?? "full");
+  });
+  await page.goto(`/${fixture.prefix}/issues`);
+  const row = page.locator("[data-inbox-issue-link]", { hasText: "Review the latest investigation" }).first();
+  await expect(row).toBeVisible();
+  expect(listReads).toContain("index");
+  expect(listReads).not.toContain("full");
+  await row.click();
+  await ready(page);
+  await expect(page.getByRole("button", { name: "More messages", exact: true })).toBeVisible();
+});
+
 test("core rich cards reveal before duplicate reads and stay stable during slow enrichment", async ({ page }, info) => {
   await page.addInitScript(() => { window.__PAPERCLIP_ISSUE_DETAIL_PROFILE__ = true; });
   await page.addInitScript(() => {
@@ -181,4 +234,73 @@ test("late provider metadata keeps saved PR card geometry stable", async ({ page
     const after = await cards.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
     expect(after).toEqual(before);
   } finally { release(); }
+});
+
+test("the selected responder stays mounted through comment acknowledgement and legacy startup", async ({ page, request }, info) => {
+  const source = await (await request.get(`/api/issues/${fixture.id}`)).json();
+  const agentResponse = await request.post(`/api/companies/${source.companyId}/agents`, { data: {
+    name: "Startup responder", role: "engineer", adapterType: "process",
+    adapterConfig: { command: process.execPath, args: ["-e", "setTimeout(() => console.log('Fixture finished.'), 12000)"] },
+    runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+  } });
+  expect(agentResponse.ok(), await agentResponse.text()).toBeTruthy();
+  const agent = await agentResponse.json();
+  const issueResponse = await request.post(`/api/companies/${source.companyId}/issues`, { data: {
+    title: `Keep the selected responder visible ${Date.now()}`, status: "in_review", assigneeUserId: "local-board",
+    description: "This disposable process fixture verifies the send transition without a model provider.",
+  } });
+  expect(issueResponse.ok(), await issueResponse.text()).toBeTruthy();
+  const issue = await issueResponse.json();
+  // Repeated runs must not adopt the previous fixture through same-title dedup.
+  expect(issue).toMatchObject({ status: "in_review", assigneeUserId: "local-board", assigneeAgentId: null });
+  await coordinatorPreference(page);
+  await page.addInitScript(() => {
+    const frames: { visible: boolean; same: boolean }[] = [];
+    let first: Element | null = null;
+    Object.assign(window, { responderFrames: frames });
+    const sample = () => {
+      const identity = document.querySelector('[data-testid="task-chat-live-transcript"] [data-testid="task-chat-agent-identity"]');
+      first ??= identity;
+      if (first) frames.push({ visible: !!identity && identity.getBoundingClientRect().height > 0, same: first === identity });
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let holdRuntime = false;
+  await page.route(/\/api\/issues\/[^/]+\/(active-run|live-runs|runs)(\?|$)/, async route => {
+    if (holdRuntime && route.request().method() === "GET") await held;
+    await route.continue();
+  });
+  try {
+    await page.goto(`/${fixture.prefix}/issues/${issue.identifier}`);
+    await ready(page);
+    await page.getByTestId("task-chat-composer-assignee").click();
+    await page.locator(`[data-assignee-identity="agent:${agent.id}"]`).click();
+    await page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]').fill("Keep your identity visible through startup.");
+    holdRuntime = true;
+    const saved = page.waitForResponse(response => response.request().method() === "PATCH" &&
+      [issue.id, issue.identifier].some(ref => new URL(response.url()).pathname === `/api/issues/${ref}`));
+    await page.getByTestId("task-chat-composer-send").click();
+    expect((await saved).ok()).toBeTruthy();
+    const identity = page.getByTestId("task-chat-live-transcript").getByTestId("task-chat-agent-identity");
+    await expect(identity).toHaveText(agent.name);
+    await page.screenshot({ path: info.outputPath("startup.png") });
+    release();
+    await expect(page.getByTestId("task-chat-live-run-pill")).toBeVisible();
+    await expect(identity).toHaveText(agent.name);
+    await page.screenshot({ path: info.outputPath("running.png") });
+    const frames = await page.evaluate(() => (window as unknown as { responderFrames: { visible: boolean; same: boolean }[] }).responderFrames);
+    await fs.writeFile(info.outputPath("avatar-frames.json"), JSON.stringify(frames, null, 2));
+    expect(frames.length).toBeGreaterThan(2);
+    expect(frames.every(frame => frame.visible && frame.same), "The responder must remain visible in the same mounted identity").toBe(true);
+  } finally {
+    release();
+    const active = await request.get(`/api/issues/${issue.id}/active-run`);
+    if (active.ok()) {
+      const run = await active.json();
+      if (run?.id) await request.post(`/api/heartbeat-runs/${run.id}/cancel`);
+    }
+  }
 });

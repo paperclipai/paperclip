@@ -81,6 +81,17 @@ Independent SQL writers and additional processes need an explicit wake protocol;
 process-local notifications do not provide cross-replica delivery. Worker quiet
 alone is not evidence that the host or database actually suspended.
 
+## Native reply recovery
+
+Committed native replies use the shared delivery coordinator and its persisted
+retry deadlines. One pass checks at most four independent tasks at a time.
+Checks for the same company and task run in candidate order within the batch.
+Other scoped deadline workers remain serial unless their owner enables concurrency.
+Drain retains unstarted checks, and shutdown waits for every admitted check before
+releasing tracked work. Completed history creates no recurring discovery reads;
+new committed work reactivates the existing notification path. Pending reply
+obligations keep their existing sleep blockers.
+
 ## Scheduled routine wake protocol
 
 Historical failed ephemeral leases and terminal custom-image setup sessions can
@@ -100,6 +111,17 @@ also rejects an ambient API endpoint override when no endpoint was recorded.
 The manager permits at most two outstanding inspection RPCs across workers.
 Caller timeouts retain their slots until the actual worker reply or exit;
 timeouts cannot accumulate additional provider reads in later sweeps.
+
+If a failed ephemeral lease has no usable local inspection path, a managed
+Daytona instance can ask Cloud for a cleanup-only absence receipt. Cloud checks
+the stack's historical credential organization and reads the exact allocation
+with its manager credential. Only confirmed absence can produce a signed receipt
+bound to the stack, company, environment, lease, provider handle and nullable run.
+The separate cleanup type and audience cannot authorize run recovery. Older
+Cloud servers, unsupported providers, invalid signatures, changed organizations
+and failed reads leave the lease unresolved. Existing bounded cleanup batches
+and retry deadlines own these reads; no new idle polling is added. An explicit
+local provider observation is retained rather than replaced by this fallback.
 
 Host-owned verification metadata binds the company, environment, resource,
 provider handle, optional run, and exact row version. Concurrent resume,

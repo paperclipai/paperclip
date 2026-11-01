@@ -28,6 +28,14 @@ export const CONTRACTS = [
   ] } },
   // Reserved and forwarded runtime env keys are const lists in Rust.
   { id: "configured-environment", probes: [{ kind: "rust-consts", path: `${RUST}/configured_environment.rs` }] },
+  // The Runner's ACPX patch changes the wire behaviour every ACPX harness
+  // shares, so it binds the pack once for all providers. Other packages may pin
+  // other ACPX versions; only the Runner's own version is read, and it must exist.
+  { id: "acpx-patch", expand: { dirs: ["patches"], suffix: ".patch", required: true, aggregate: true, probes: [{ kind: "bytes" }],
+    include: readFile => {
+      const version = JSON.parse(readFile(`${R}/package.json`) ?? "{}").dependencies?.acpx;
+      return path => path === `patches/acpx@${version}.patch`;
+    } } },
 ];
 
 /** Every hand-registered file a probe reads. */
@@ -54,8 +62,10 @@ export function fingerprintContracts(readFile, listDir) {
       continue;
     }
     if (contract.expand) {
-      const { dirs, suffix, exclude, idPrefix, aggregate, probes } = contract.expand;
-      const candidates = dirs.flatMap(listDir).filter(p => p.endsWith(suffix) && !exclude?.test(p));
+      const { dirs, suffix, include, required, exclude, idPrefix, aggregate, probes } = contract.expand;
+      const included = include ? include(readFile) : () => true;
+      const candidates = dirs.flatMap(listDir).filter(p => p.endsWith(suffix) && included(p) && !exclude?.test(p));
+      if (required && candidates.length === 0) throw new Error(`Registered contract source is missing: ${contract.id}`);
       const testOnly = suffix === ".rs" ? rustTestOnlyFiles(candidates, readFile) : new Set();
       const sources = candidates.filter(p => !testOnly.has(p)).sort();
       // Env keys are often passed through `const NAME: &str = "KEY"` defined in
@@ -137,6 +147,7 @@ function probe(spec, readFile) {
 function probeUncached(spec, source) {
   switch (spec.kind) {
     case "json": return canonicalJson(JSON.parse(source), spec);
+    case "bytes": return [`${spec.path.split("/").pop()}:${digest(source)}`];
     case "rust-consts": return rustConsts(source);
     case "rust-serde": return rustSerde(source, spec.typeShapes ?? {});
     case "rust-json-keys": return rustJsonKeys(source);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -320,6 +320,7 @@ test("the real serialized shard partition is complete, non-overlapping and durat
 const chatSuitePath = "server/src/__tests__/chat-channels.integration.test.ts";
 const nativeRunnerSuitePath =
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+const usageDeliverySuitePath = "server/src/services/native-runtime/native-usage-delivery.integration.test.ts";
 const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
 const restartRecoverySuitePath =
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
@@ -363,7 +364,8 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(nativeRunnerSuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  assert.ok(!files.includes(usageDeliverySuitePath));
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, usageDeliverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -412,6 +414,7 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
     dotRunnerSuitePath,
     restartRecoverySuitePath,
+    usageDeliverySuitePath,
   ]);
 });
 
@@ -548,6 +551,136 @@ test("shared-database and unsharded chat runs retain one serial partition", () =
   }
   assert.deepEqual(dryRunJson(["--mode", "general", "--group", "general-chat"],
     { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards, [{ index: 0, count: 1 }]);
+});
+
+test("default chat isolation covers six partitions without dropping native suites", () => {
+  for (const args of [[], ["--mode", "general"]]) {
+    for (const workflow of ["PR", "Release", ""]) {
+      const env = { GITHUB_WORKFLOW: workflow, PAPERCLIP_TEST_DATABASE_URL: "" };
+      const plan = dryRunJson(args, env);
+      const full = dryRunJson(["--mode", "general", "--group", "general-server",
+        "--shard-index", "0", "--shard-count", "1"], env);
+      assert.deepEqual(plan.chatVitestShards, Array.from({ length: 6 }, (_, index) => ({ index, count: 6 })));
+      assert.ok(!plan.selectedGeneralServerSuites.includes(chatSuitePath));
+      assert.equal(new Set(plan.selectedGeneralServerSuites).size, plan.selectedGeneralServerSuites.length);
+      assert.deepEqual([...plan.selectedGeneralServerSuites, chatSuitePath].sort(), full.selectedGeneralServerSuites.sort());
+    }
+  }
+});
+
+test("default chat isolation leaves explicit groups and shared databases unchanged", () => {
+  for (const args of [[], ["--mode", "general"]]) {
+    const shared = dryRunJson(args, { PAPERCLIP_TEST_DATABASE_URL: "postgresql://shared/test", GITHUB_WORKFLOW: "PR" });
+    assert.equal(shared.chatVitestShards, null);
+    assert.equal(shared.selectedGeneralServerSuites, null);
+  }
+  const full = dryRunJson(["--mode", "general", "--group", "general-server",
+    "--shard-index", "0", "--shard-count", "1"], { PAPERCLIP_TEST_DATABASE_URL: "", GITHUB_WORKFLOW: "PR" });
+  assert.equal(full.chatVitestShards, null);
+  assert.ok(full.selectedGeneralServerSuites.includes(chatSuitePath));
+  assert.ok(full.selectedGeneralServerSuites.includes(nativeRunnerSuitePath));
+  assert.deepEqual(dryRunJson(["--mode", "general", "--group", "general-chat"],
+    { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards, [{ index: 0, count: 1 }]);
+  assert.equal(dryRunJson(["--mode", "serialized"], { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards, null);
+});
+
+function defaultLauncher({ shared = false, failureIndex = null } = {}) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "default-chat-launch-"));
+  const file = path.join(repoRoot, chatSuitePath);
+  const lines = readFileSync(file, "utf8").split("\n")
+    .flatMap((line, index) => /^\s*it\(/.test(line) ? [index + 1] : []).slice(0, 6);
+  assert.equal(lines.length, 6);
+  const cases = lines.map(line => ({ file, projectName: "@paperclipai/server",
+    name: `default launcher fixture ${line}`, location: { line } }));
+  const receipt = path.join(directory, "events.ndjson");
+  const active = path.join(directory, "active");
+  const fakePnpm = path.join(directory, "pnpm");
+  try {
+    writeFileSync(fakePnpm, `#!${process.execPath}
+      const fs = require('node:fs');
+      const args = process.argv.slice(2);
+      const tests = ${JSON.stringify(cases)};
+      const selected = args.flatMap(arg => {
+        const match = arg.match(/chat-channels\\.integration\\.test\\.ts:(\\d+)$/);
+        return match ? [Number(match[1])] : [];
+      });
+      if (args.includes('list')) {
+        const output = args.find(arg => arg.startsWith('--json=')).slice(7);
+        fs.writeFileSync(output, JSON.stringify(selected.length
+          ? tests.filter(test => selected.includes(test.location.line)) : tests));
+      } else {
+        const entry = { args, selected, home: process.env.PAPERCLIP_HOME,
+          config: process.env.PAPERCLIP_CONFIG, instance: process.env.PAPERCLIP_INSTANCE_ID,
+          tmpdir: process.env.TMPDIR };
+        const record = edge => fs.appendFileSync(${JSON.stringify(receipt)}, JSON.stringify({ ...entry, edge }) + '\\n');
+        record('begin');
+        if (fs.existsSync(${JSON.stringify(active)})) process.exit(91);
+        fs.writeFileSync(${JSON.stringify(active)}, 'running');
+        setTimeout(() => {
+          record('end');
+          fs.unlinkSync(${JSON.stringify(active)});
+          process.exit(selected.includes(${JSON.stringify(failureIndex === null ? null : lines[failureIndex])}) ? 7 : 0);
+        }, selected.length ? 200 : 0);
+      }
+    `);
+    chmodSync(fakePnpm, 0o755);
+    const result = spawnSync(process.execPath, [script, "--mode", "general"], {
+      cwd: repoRoot, encoding: "utf8", timeout: 30_000,
+      env: workflowEnv({ GITHUB_WORKFLOW: "PR", PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+        PAPERCLIP_TEST_DATABASE_URL: shared ? "postgresql://shared/test" : "", PAPERCLIP_CI_PROFILE: "false" }),
+    });
+    const events = existsSync(receipt) ? readFileSync(receipt, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+    return { result, events, lines };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("default chat isolation executes every partition sequentially before other groups", { skip: process.platform === "win32" }, () => {
+  const { result, events, lines } = defaultLauncher();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const chat = events.filter(event => event.selected.length > 0);
+  assert.deepEqual(chat.map(event => event.edge), Array.from({ length: 6 }, () => ["begin", "end"]).flat());
+  const starts = chat.filter(event => event.edge === "begin");
+  assert.deepEqual(starts.flatMap(event => event.selected).sort((a, b) => a - b), lines);
+  for (const event of starts) {
+    assert.ok(event.args.includes("--no-file-parallelism"));
+    assert.deepEqual(event.args.filter(arg => arg.startsWith("--maxWorkers")), ["--maxWorkers=1"]);
+  }
+  for (const field of ["home", "config", "instance", "tmpdir"]) {
+    assert.equal(new Set(starts.map(event => event[field])).size, 6, `${field} must be isolated per child`);
+  }
+  assert.equal(events.findIndex(event => event.selected.length === 0), 12);
+  const server = events[12];
+  assert.ok(server.args.includes("@paperclipai/server"));
+  const excluded = server.args.flatMap((arg, index) => arg === "--exclude" ? [server.args[index + 1]] : []);
+  assert.equal(excluded.filter(file => file === chatSuitePath.replace(/^server\//, "")).length, 1);
+  for (const file of [nativeRunnerSuitePath, usageDeliverySuitePath, dotRunnerSuitePath, restartRecoverySuitePath,
+    "server/src/services/native-runtime/plugin-runner-probe.test.ts"]) {
+    assert.ok(!excluded.includes(file.replace(/^server\//, "")), `default must retain ${file}`);
+  }
+});
+
+test("default chat isolation propagates failure without starting another partition or group", { skip: process.platform === "win32" }, () => {
+  const { result, events } = defaultLauncher({ failureIndex: 2 });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /failed \(7\)/);
+  assert.equal(events.length, 6);
+  assert.ok(events.every(event => event.selected.length === 1));
+  assert.deepEqual(events.map(event => event.edge), ["begin", "end", "begin", "end", "begin", "end"]);
+});
+
+test("default chat isolation keeps shared-database execution monolithic and serial", { skip: process.platform === "win32" }, () => {
+  const { result, events } = defaultLauncher({ shared: true });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(events.every(event => event.selected.length === 0));
+  assert.ok(events[0].args.includes("@paperclipai/server"));
+  assert.ok(events[0].args.includes("--no-file-parallelism"));
+  assert.deepEqual(events[0].args.filter(arg => arg.startsWith("--maxWorkers")), ["--maxWorkers=1"]);
+  const excluded = events[0].args.flatMap((arg, index) => arg === "--exclude" ? [events[0].args[index + 1]] : []);
+  assert.ok(!excluded.includes(chatSuitePath.replace(/^server\//, "")));
+  assert.ok(!excluded.includes(nativeRunnerSuitePath.replace(/^server\//, "")));
+  assert.deepEqual(events.map(event => event.edge), Array.from({ length: events.length / 2 }, () => ["begin", "end"]).flat());
 });
 
 

@@ -46,6 +46,7 @@ export const environmentRunnerLaunchRequirementsSchema = z.object({
     claudeEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
     opencodePermissionMode: z.enum(["allow", "ask", "deny"]).optional(),
     disableCodexWebSearch: z.literal(true).optional(),
+    disableCodexProjectInstructions: z.literal(true).optional(),
     managedProfile: z.record(z.string(), z.unknown()).optional(), agentCoreProfile: z.record(z.string(), z.unknown()).optional(),
   }).strict(),
   approvalPolicy: z.enum(["never", "on-request", "untrusted"]), readOnly: z.boolean(),

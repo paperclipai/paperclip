@@ -1,6 +1,6 @@
 import { QueryBuilder } from "drizzle-orm/pg-core";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
+import { heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
 import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
 
 export function nativeResponsePresentationCandidates(scope?: NativeResponsePresentationScope, after?: string, runId?: string) {
@@ -30,7 +30,24 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
       sql`${nativeRunResults.resultJson} #>> '{terminal,turnTerminalState}' = 'completed'`,
       or(
         and(eq(heartbeatRuns.status, "succeeded"),
-          sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
+          or(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
+            and(eq(statusDecisions.reasonCode, "conversation_turn_finished"),
+              eq(issues.conversationAgentId, heartbeatRuns.agentId), eq(issues.conversationUserId, heartbeatRuns.responsibleUserId),
+              eq(issues.status, "in_progress"), eq(issues.conversationState, "active"),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, heartbeatRuns.id)),
+              sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
+              sql`jsonb_typeof(${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration') = 'number'`,
+              sql`${heartbeatRuns.contextSnapshot}->>'conversationSessionGeneration' = ${issues.conversationSessionGeneration}::text`,
+              exists(db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+                eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId), eq(heartbeatRunEvents.runId, heartbeatRuns.id),
+                eq(heartbeatRunEvents.agentId, heartbeatRuns.agentId), eq(heartbeatRunEvents.eventType, "item.completed"),
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,runId}' = ${heartbeatRuns.id}::text`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,normalizedSessionId}' = ${heartbeatRuns.nativeSessionId}::text`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,turnId}' = ${nativeRunResults.turnId}`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}' ~ '[^[:space:]]'`,
+              ))))),
           sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'done'`,
           sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'done'`),
         and(sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'yielded'`,

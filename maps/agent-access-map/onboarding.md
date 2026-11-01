@@ -96,6 +96,10 @@ testing an existing agent; interactive account login additionally requires a
 board user and owner-bound session. An agent's right to hire is not login or
 instance-environment administration authority.
 
+First-agent onboarding limits the provider picker to Claude and Codex. Other
+providers remain available through normal agent creation; this UI choice does
+not change adapter APIs or hiring permissions.
+
 A name-only, held setup has no provider selection yet, so the wizard omits its
 runner choice until the provider is chosen. The existing board-only setup and
 saved-agent update permissions remain; normal runner compatibility validation

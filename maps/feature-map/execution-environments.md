@@ -142,6 +142,10 @@ uses the real Runner and a synthetic Codex provider through loopback PRP; TLS
 termination is replaced by the fixture. It does not qualify a live plugin provider.
 
 The plugin prepares execution-host resources and the provider descriptor. Core validates the result, then supplies task identity and PRP launch limits.
+For managed GitHub commands, verify the qualified executable remains canonical,
+controller-staged helper discovery survives task entry, and a task-supplied shell
+selector is rejected. A launch description or a healthy Runner alone is not proof
+of authenticated git/gh execution.
 
 ### Storybook verification
 

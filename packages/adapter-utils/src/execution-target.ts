@@ -735,23 +735,53 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   });
 }
 
+function executionTargetCheckUnavailable(message: string, cause?: unknown): Error {
+  return Object.assign(new Error(message, { cause }), { code: "adapter_execution_target_unavailable" });
+}
+
+/** Preserve target failures before an adapter translates them into a failed check. */
+export function isAdapterExecutionTargetUnavailableError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && error.code === "adapter_execution_target_unavailable";
+}
+
+async function runRemoteExecutionTargetCheck(
+  target: AdapterExecutionTarget,
+  description: string,
+  check: () => Promise<RunProcessResult>,
+): Promise<RunProcessResult> {
+  let result: RunProcessResult;
+  try {
+    result = await check();
+  } catch (error) {
+    throw executionTargetCheckUnavailable(`Could not complete ${description}`, error);
+  }
+  if (result.timedOut || result.signal || result.exitCode === null
+    || (target.kind === "remote" && target.transport === "ssh" && result.exitCode === 255)) {
+    throw executionTargetCheckUnavailable(`${result.timedOut ? "Timed out" : "Could not complete"} ${description}`);
+  }
+  return result;
+}
+
 async function probeSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
   env: Record<string, string>,
-): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
+): Promise<{ resolved: boolean; stderr: string }> {
   const runner = requireSandboxRunner(target);
   const probeScript = `command -v ${shellQuote(command)}`;
-  const result = await runner.execute({
-    command: "sh",
-    args: ["-c", probeScript],
-    cwd: target.remoteCwd,
-    env,
-    timeoutMs: target.timeoutMs ?? 15_000,
-  });
+  const result = await runRemoteExecutionTargetCheck(
+    target, `checking command "${command}" on sandbox target.`,
+    () => runner.execute({
+      command: "sh",
+      args: ["-c", probeScript],
+      cwd: target.remoteCwd,
+      env,
+      timeoutMs: target.timeoutMs ?? 15_000,
+    }),
+  );
   return {
-    resolved: !result.timedOut && (result.exitCode ?? 1) === 0,
-    timedOut: result.timedOut,
+    resolved: result.exitCode === 0,
     stderr: result.stderr.trim(),
   };
 }
@@ -772,15 +802,13 @@ async function ensureSandboxCommandResolvable(
   // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
   let probe = await probeSandboxCommandResolvable(command, target, env);
   if (probe.resolved) return;
-  if (probe.timedOut) {
-    throw new Error(`Timed out checking command "${command}" on sandbox target.`);
-  }
 
   // If the caller supplied an install command, attempt the install once via
   // the sandbox runner (which the sandbox provider wraps in a login shell)
   // and re-probe before reporting failure. This lets fresh sandbox leases
   // bring up the CLI before the resolvability gate, mirroring the test path.
   let installFailureDetail: string | null = null;
+  let installUnavailable: Error | null = null;
   if (installCommand) {
     const runner = requireSandboxRunner(target);
     const installTimeoutMs =
@@ -797,6 +825,9 @@ async function ensureSandboxCommandResolvable(
       });
       if (installResult.timedOut) {
         installFailureDetail = `install command timed out: ${installCommand}`;
+        installUnavailable = executionTargetCheckUnavailable("The runtime installation timed out.");
+      } else if (installResult.signal || installResult.exitCode === null) {
+        installUnavailable = executionTargetCheckUnavailable("The runtime installation did not complete.");
       } else if ((installResult.exitCode ?? 0) !== 0) {
         const tail = (text: string) =>
           text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-2).join(" | ").slice(0, 240);
@@ -805,12 +836,11 @@ async function ensureSandboxCommandResolvable(
       }
     } catch (err) {
       installFailureDetail = `install command threw: ${err instanceof Error ? err.message : String(err)}`;
+      installUnavailable = executionTargetCheckUnavailable("The runtime installation was unavailable.", err);
     }
     probe = await probeSandboxCommandResolvable(command, target, env);
     if (probe.resolved) return;
-    if (probe.timedOut) {
-      throw new Error(`Timed out checking command "${command}" on sandbox target.`);
-    }
+    if (installUnavailable) throw installUnavailable;
   }
 
   const probeStderr = probe.stderr.length > 0 ? ` probe stderr: ${probe.stderr}` : "";
@@ -1270,7 +1300,8 @@ export async function ensureAdapterExecutionTargetFile(
  * `mkdir -p` (when allowed) followed by a `[ -d ]` check so the result reflects
  * the directory state inside the environment, not on the Paperclip host.
  *
- * Throws an Error with a human-readable message on failure.
+ * Throws an Error with a human-readable message on failure. Temporary target
+ * failures carry a typed code so adapters can retain them as retryable checks.
  */
 export async function ensureAdapterExecutionTargetDirectory(
   runId: string,
@@ -1296,17 +1327,16 @@ export async function ensureAdapterExecutionTargetDirectory(
     ? `mkdir -p ${quoted} && [ -d ${quoted} ]`
     : `[ -d ${quoted} ]`;
 
-  const result = await runAdapterExecutionTargetShellCommand(runId, target, script, {
-    cwd: target.kind === "remote" ? target.remoteCwd : cwd,
-    env: options.env,
-    timeoutSec: options.timeoutSec ?? 15,
-    graceSec: options.graceSec ?? 5,
-    onLog: options.onLog,
-  });
-
-  if (result.timedOut) {
-    throw new Error(`Timed out checking working directory on remote target: "${cwd}"`);
-  }
+  const result = await runRemoteExecutionTargetCheck(
+    target, `checking working directory on remote target: "${cwd}"`,
+    () => runAdapterExecutionTargetShellCommand(runId, target, script, {
+      cwd: target.remoteCwd,
+      env: options.env,
+      timeoutSec: options.timeoutSec ?? 15,
+      graceSec: options.graceSec ?? 5,
+      onLog: options.onLog,
+    }),
+  );
   if ((result.exitCode ?? 1) !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
     if (createIfMissing) {

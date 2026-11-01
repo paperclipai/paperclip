@@ -18,7 +18,7 @@ import {
   AGENTCORE_QUALIFIED_MODEL,
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
-import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, type AcpxQualificationCandidate } from "./acpx-qualification.js";
+import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 import { compatibleCodexModel } from "./codex-model-fallback.js";
 
 export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.34" as const;
@@ -34,6 +34,7 @@ export const DEFAULT_ACPX_RUNNER_MODELS = {
   cursor: null,
   copilot: null,
   pi: null,
+  kimi: null,
 } as const;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
@@ -564,6 +565,15 @@ export function resolvePaperclipRunnerProviderProfile(
         throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_qualification_invalid", "Antigravity candidate admission requires the authorized company, exact model and runtime identity.");
       }
     }
+    if (pendingAcpxProfile.value === "kimi") {
+      try {
+        if (resolveKimiCandidateAdmission({ companyId: context.companyId, model }, process.env)) {
+          return { provider: "acpx", backend: "acpx_runtime", model, acpxAgent: "kimi" };
+        }
+      } catch {
+        throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_qualification_invalid", "Kimi candidate admission requires the authorized company, exact model, target and runtime identity.");
+      }
+    }
     // Qualification authority belongs to the isolated server operator. Never
     // read this allowlist from adapter config, credential refs, or run env.
     let qualification: AcpxQualificationCandidate | undefined;
@@ -577,10 +587,10 @@ export function resolvePaperclipRunnerProviderProfile(
     }
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting native Runner acceptance. Its profile is not enabled for production runs.`);
   }
-  if ((acpxAgent === "cursor" || acpxAgent === "pi") && !model) {
+  if ((acpxAgent === "cursor" || acpxAgent === "pi" || acpxAgent === "kimi") && !model) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "This ACPX agent requires an explicit model ID; there is no default model.");
   }
-  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi" && acpxAgent !== "kimi") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
       "Paperclip Runner ACPX requires a qualified agent profile.",

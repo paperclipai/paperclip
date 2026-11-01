@@ -5,13 +5,14 @@ import { constants } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
-import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, resourceLifecycleEvents, fileStorageDb, type Db } from "@paperclipai/db";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, type DirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
 import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-instruction-authorization.js";
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
+import { durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -60,11 +61,17 @@ export function agentFileTokenFromHash(h: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
-/** Call under the agent row lock. Import deployed revision heads once, then the
- * directory is authoritative. The adoption marker lives OUTSIDE agent files. */
+/** Call under the agent row lock. Restore shared authority first; legacy local
+ * adoption is allowed only on the server that actually owns the old directory. */
 export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
   if (agentInstructionsBundleMode(agent) === "external") throw unprocessable("External instructions must be migrated to managed storage first");
   const root = resolveManagedInstructionsRoot(agent);
+  if (await restoreDurableAgentFiles(tx, agent, root)) return root;
+  const storedRoot = agent.adapterConfig.instructionsRootPath;
+  if (durableAgentFilesEnabled() && typeof storedRoot === "string"
+    && (path.resolve(storedRoot) !== root || !await readInstructionBytes(root, deriveBundleState(agent).entryFile))) {
+    throw new HttpError(503, "Migrate managed agent files on their current server before replacing its filesystem", { code: "AGENT_FILES_MIGRATION_REQUIRED" });
+  }
   const markerRoot = path.join(path.dirname(root), "file-sync");
   const marker = "adopted.json";
   await assertInstructionPathSafe(root, deriveBundleState(agent).entryFile);
@@ -76,6 +83,7 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
   });
   if (adopted !== null) {
     if (JSON.parse(adopted).schema !== AGENT_FILES_CONTRACT) throw new Error("Unsupported agent file contract");
+    await persistDurableAgentFiles(tx, agent, root, true);
     return root;
   }
   const legacy = await tx.select({ entryFile: agentInstructionHeads.entryFile, contentBase64: agentInstructionRevisions.contentBase64 })
@@ -83,6 +91,7 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
     .where(and(eq(agentInstructionHeads.companyId, agent.companyId), eq(agentInstructionHeads.agentId, agent.id)));
   for (const entry of legacy) await materializeInstructionBytes(root, entry.entryFile, Buffer.from(entry.contentBase64, "base64"));
   await materializeInstructionBytes(markerRoot, marker, Buffer.from(JSON.stringify({ schema: AGENT_FILES_CONTRACT })));
+  await persistDurableAgentFiles(tx, agent, root, true);
   return root;
 }
 
@@ -178,6 +187,7 @@ export async function isAgentFileSaveRecorded(tx: Tx, agent: Agent, relative: st
 }
 
 export function agentFileStore(db: Db) {
+  db = fileStorageDb(db);
   async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
     fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor) => Promise<T>) {
     return db.transaction(async tx => {
@@ -185,7 +195,10 @@ export function agentFileStore(db: Db) {
       if (!agent) throw notFound("Agent not found");
       const bound = write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
       const root = await adoptAgentFiles(tx, agent);
-      return fn(tx, agent, root, bound);
+      if (write) await invalidateAgentFileProjection(root);
+      const result = await fn(tx, agent, root, bound);
+      if (write) await persistDurableAgentFiles(tx, agent, root);
+      return result;
     });
   }
   async function audit(tx: Tx, agent: Agent, actor: AuthorizationActor, details: Record<string, unknown>) {

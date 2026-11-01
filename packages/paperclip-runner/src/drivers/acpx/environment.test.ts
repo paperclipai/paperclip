@@ -6,6 +6,28 @@ afterEach(() => vi.unstubAllEnvs());
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
 
 describe("ACPX launch environment", () => {
+  it("rejects task shell selectors without a controller-owned helper projection", () => {
+    const selectors = { BASH_ENV: "/workspace/hook.sh", ZDOTDIR: "/workspace", GH_CONFIG_DIR: "/workspace/gh" };
+    expect(createSanitizedAcpxSpawnInput(selectors, "claude").env).toEqual({});
+    for (const [key, value] of Object.entries(selectors)) {
+      expect(configuredEnvironmentProjection({[key]: value})).not.toHaveProperty(key);
+      expect(() => createSanitizedAcpxSpawnInput({[key]:value, [CONFIGURED_ENVIRONMENT_KEYS]:JSON.stringify([key])}, "claude")).toThrow("configured environment");
+    }
+  });
+  it("keeps explicit Claude managed-command selectors without forwarding GitHub credentials", () => {
+    const helpers = { PATH: "/managed:/usr/bin", BASH_ENV: "/managed/.bashrc", ZDOTDIR: "/managed",
+      GH_CONFIG_DIR: "/managed", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/managed" };
+    const source = { ...helpers, GH_TOKEN: "host-secret", GITHUB_TOKEN: "host-secret",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "host-capability", NODE_OPTIONS: "--require=untrusted" };
+    expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual(helpers);
+    for (const [key, value] of Object.entries(helpers)) vi.stubEnv(key, value);
+    const ambient = createSanitizedAcpxSpawnInput(undefined, "claude").env;
+    const sibling = createSanitizedAcpxSpawnInput(source, "cursor").env;
+    for (const key of Object.keys(helpers).filter(key => key !== "PATH")) {
+      expect(ambient).not.toHaveProperty(key);
+      expect(sibling).not.toHaveProperty(key);
+    }
+  });
   it("does not inherit ambient prepared storage", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "/ambient/claude");
     vi.stubEnv("CLAUDE_CONFIG_DIR", "/ambient/claude");
@@ -22,9 +44,9 @@ describe("ACPX launch environment", () => {
     expect(launch.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBeUndefined();
     expect(environment.CLAUDE_CONFIG_DIR).toBe(configured);
   });
-  it("retains Runner notification discovery while denying task-supplied overrides", () => {
+  it.each(["claude", "kimi"] as const)("retains %s Runner notification discovery while denying task-supplied overrides", agent => {
     for (const key of ["PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER"]) {
-      expect(createSanitizedAcpxSpawnInput({ [key]: "/private/runner/context" }, "claude").env[key]).toBe("/private/runner/context");
+      expect(createSanitizedAcpxSpawnInput({ [key]: "/private/runner/context" }, agent).env[key]).toBe("/private/runner/context");
       expect(configuredEnvironmentProjection({ [key]: "/caller/override" })).not.toHaveProperty(key);
     }
   });
@@ -115,7 +137,9 @@ describe("ACPX launch environment", () => {
 
   it.each([
     ["pi", "OPENROUTER_API_KEY"], ["cursor", "CURSOR_API_KEY"],
-    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"],
+    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"],
+    ["kimi", "KIMI_API_KEY"],
+    ["antigravity", "GEMINI_API_KEY"],
   ] as const)("requires an explicit %s credential binding for %s", (agent, name) => {
     vi.stubEnv(name, "ambient-secret");
     expect(createSanitizedAcpxSpawnInput(undefined, agent).env[name]).toBeUndefined();
@@ -135,9 +159,33 @@ describe("ACPX launch environment", () => {
     expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key" });
   });
 
+  it("strips configured Kimi model redirects and home overrides while retaining selected task and MCP values", () => {
+    const overrides = {
+      KIMI_MODEL_NAME: "__kimi_env_model__", KIMI_MODEL_API_KEY: "unselected-model-key",
+      KIMI_MODEL_BASE_URL: "https://unselected.invalid/v1", KIMI_MODEL_PROVIDER_TYPE: "openai_legacy",
+      KIMI_MODEL_FUTURE_OVERRIDE: "cannot-bypass-the-prefix-check", KIMI_SECONDARY_MODEL: "other-model",
+      KIMI_CODE_HOME: "/unselected/home",
+    };
+    const source = { ...configuredEnvironmentProjection({ ...overrides, CUSTOM_SETTING: "allowed" }),
+      KIMI_API_KEY: "selected-code-key", PAPERCLIP_NATIVE_MCP_NAME: "assigned",
+      PAPERCLIP_NATIVE_MCP_URL: "https://assigned.example/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "controller-only" };
+    const binding = createAcpxCredentialBinding(source, "kimi", "session-1")!;
+    const sidecar = createAcpxSidecarHostEnvironment({ ...source, [ACPX_CREDENTIAL_BINDING_ENV]: binding }, "kimi", "session-1");
+    for (const environment of [sidecar, createSanitizedAcpxSpawnInput(source, "kimi").env,
+      createSanitizedAcpxSpawnInput(sidecar, "kimi").env]) {
+      for (const name of Object.keys(overrides)) expect(environment).not.toHaveProperty(name);
+      expect(environment).toMatchObject({ KIMI_API_KEY: "selected-code-key", CUSTOM_SETTING: "allowed",
+        PAPERCLIP_NATIVE_MCP_NAME: "assigned", PAPERCLIP_NATIVE_MCP_URL: "https://assigned.example/mcp" });
+      expect(JSON.parse(environment[CONFIGURED_ENVIRONMENT_KEYS]!)).toEqual(["CUSTOM_SETTING"]);
+    }
+    expect(createSanitizedAcpxSpawnInput(source, "kimi").env).not.toHaveProperty("PAPERCLIP_NATIVE_MCP_TOKEN");
+  });
+
   it.each([
     ["pi", "OPENROUTER_API_KEY"], ["cursor", "CURSOR_API_KEY"],
-    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"],
+    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"],
+    ["kimi", "KIMI_API_KEY"],
+    ["antigravity", "GEMINI_API_KEY"],
   ] as const)("admits only session-bound %s sidecar credentials for %s", (agent, name) => {
     const source = { [name]: "task-secret" };
     const binding = createAcpxCredentialBinding(source, agent, "session-1");

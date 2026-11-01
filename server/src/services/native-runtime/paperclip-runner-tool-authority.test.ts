@@ -120,7 +120,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(50);
+    expect(authority.definitions()).toHaveLength(51);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
     ]));
@@ -451,6 +451,41 @@ describe("PaperclipRunnerToolAuthority", () => {
       await db.update(heartbeatRuns).set({ contextSnapshot: originalRun!.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
       await db.update(issues).set({ executionPolicy: originalIssue!.executionPolicy }).where(eq(issues.id, issueId));
       await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
+  });
+
+  it("paginates complete native task inventories beyond one hundred results", async () => {
+    const ids = Array.from({ length: 205 }, () => randomUUID()).sort();
+    const foreignCompanyId = randomUUID();
+    const foreignId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign inventory", issuePrefix: "FINV" });
+    await db.insert(issues).values({ id: foreignId, companyId: foreignCompanyId, title: "synthetic-inventory-key foreign canary", status: "done" });
+    await db.insert(issues).values(ids.map((id, index) => ({
+      id, companyId, title: `Inventory pagination ${index}`,
+      description: "synthetic-inventory-key", status: index < 200 ? "done" : "blocked",
+    })));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const search = (arguments_: Record<string, unknown>) => authority.execute({
+      tool: "search_tasks", callId: randomUUID(), arguments: { query: "synthetic-inventory-key", ...arguments_ },
+    }) as Promise<{ tasks: Array<{ id: string }>; limit: number; returnedCount: number; hasMore: boolean; nextCursor: string | null }>;
+    try {
+      const first = await search({ limit: 200 });
+      expect(first.tasks).toHaveLength(200);
+      expect(JSON.stringify(first)).not.toContain(foreignId);
+      expect(first).toMatchObject({ limit: 200, returnedCount: 200, hasMore: true, nextCursor: ids[199] });
+      expect(first.tasks.map(task => task.id)).toEqual(ids.slice(0, 200));
+      const last = await search({ limit: 200, cursor: first.nextCursor });
+      expect(last.tasks.map(task => task.id)).toEqual(ids.slice(200));
+      expect(last).toMatchObject({ limit: 200, returnedCount: 5, hasMore: false, nextCursor: null });
+      expect(new Set([...first.tasks, ...last.tasks].map(task => task.id)).size).toBe(205);
+      expect(await search({ cursor: ids[204] })).toMatchObject({ tasks: [], limit: 50, returnedCount: 0, hasMore: false, nextCursor: null });
+      expect(await search({ statuses: ["blocked"], limit: 200 })).toMatchObject({ tasks: ids.slice(200).map(id => ({ id })), returnedCount: 5, hasMore: false });
+      expect(await search({})).toMatchObject({ limit: 50, returnedCount: 50, hasMore: true });
+      expect((await search({ limit: 200, cursor: ids[199]!.toUpperCase() })).tasks.map(task => task.id)).toEqual(ids.slice(200));
+      await expect(search({ cursor: "invalid" })).rejects.toThrow("paperclip_runner_tool_input_invalid");
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [...ids, foreignId]));
+      await db.delete(companies).where(eq(companies.id, foreignCompanyId));
     }
   });
 

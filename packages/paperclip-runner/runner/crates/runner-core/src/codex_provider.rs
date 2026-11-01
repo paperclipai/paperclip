@@ -1342,6 +1342,7 @@ impl CodexProvider {
         &mut self,
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         completion_contract: Option<(&str, &[String])>,
+        accounting: &mut Vec<(String, Value)>,
     ) -> Result<bool, LocalRunnerError> {
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let completion_contract =
@@ -1354,7 +1355,15 @@ impl CodexProvider {
         {
             return Ok(false);
         }
-        let blockers = self.warm_run_attachment_blockers(true)?;
+        let (tail, result) = self.drain_completed_turn_tail_for_warm_attachment();
+        accounting.extend(tail);
+        result?;
+        if !accounting.is_empty() {
+            return Err(LocalRunnerError::invalid(
+                "Codex warm run attachment requires pending accounting reconciliation",
+            ));
+        }
+        let blockers = self.warm_run_attachment_blockers()?;
         if !blockers.is_empty() {
             return Err(LocalRunnerError::invalid(
                 format!(
@@ -1375,49 +1384,53 @@ impl CodexProvider {
         Ok(true)
     }
 
-    fn drain_completed_turn_tail_for_warm_attachment(&mut self) -> Result<(), LocalRunnerError> {
-        let Some(completed_turn_id) = self
-            .completed_turn_authority
-            .as_ref()
-            .map(|authority| authority.provider_turn_id.clone())
-        else {
-            return Ok(());
-        };
-        if self.active_provider_turn_id.is_some() {
-            return Ok(());
-        }
-
-        // Readiness probes run over the PRP command channel while provider
-        // stdout is drained by runnerd's adjacent control-loop iteration. A
-        // final usage/warning/item frame can therefore land after the last
-        // successful probe but before run.attach executes. Close that race in
-        // the same critical section as authority rotation. Only bounded tail
-        // notifications for the already-settled turn may be discarded: a new
-        // turn, provider request, process exit, or mismatched turn remains a
-        // fail-closed attachment error.
-        let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
-        let mut quiet_since: Option<std::time::Instant> = None;
-        let mut drained = 0usize;
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(LocalRunnerError::invalid(
-                    "Codex warm run attachment tail did not become quiescent",
-                ));
+    pub(crate) fn drain_completed_turn_tail_for_warm_attachment(
+        &mut self,
+    ) -> (Vec<(String, Value)>, Result<(), LocalRunnerError>) {
+        let mut accounting = Vec::new();
+        let result = (|| {
+            let Some(completed_turn_id) = self
+                .completed_turn_authority
+                .as_ref()
+                .map(|authority| authority.provider_turn_id.clone())
+            else {
+                return Ok(());
+            };
+            if self.active_provider_turn_id.is_some() {
+                return Ok(());
             }
-            match self.poll()? {
-                Some(CodexProviderEvent::Notification { method, params }) => {
-                    quiet_since = None;
-                    drained = drained.saturating_add(1);
-                    if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
-                        return Err(LocalRunnerError::invalid(
-                            "Codex warm run attachment tail exceeded its bounded frame limit",
-                        ));
-                    }
-                    let names_other_turn = notification_turn_id(&params)
-                        .is_some_and(|turn_id| turn_id != completed_turn_id);
-                    let safe_tail_method = matches!(
-                        method.as_str(),
-                        "warning"
+
+            // Readiness probes run over the PRP command channel while provider
+            // stdout is drained by runnerd's adjacent control-loop iteration. A
+            // final usage/warning/item frame can therefore land after the last
+            // successful probe but before run.attach executes. Close that race in
+            // the same critical section as authority rotation. Only bounded tail
+            // notifications for the already-settled turn may be discarded: a new
+            // turn, provider request, process exit, or mismatched turn remains a
+            // fail-closed attachment error.
+            let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
+            let mut quiet_since: Option<std::time::Instant> = None;
+            let mut drained = 0usize;
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex warm run attachment tail did not become quiescent",
+                    ));
+                }
+                match self.poll()? {
+                    Some(CodexProviderEvent::Notification { method, params }) => {
+                        quiet_since = None;
+                        drained = drained.saturating_add(1);
+                        if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
+                            return Err(LocalRunnerError::invalid(
+                                "Codex warm run attachment tail exceeded its bounded frame limit",
+                            ));
+                        }
+                        let names_other_turn = notification_turn_id(&params)
+                            .is_some_and(|turn_id| turn_id != completed_turn_id);
+                        let safe_tail_method = matches!(
+                            method.as_str(),
+                            "warning"
                             | "configWarning"
                             | "remoteControl/status/changed"
                             | "mcpServer/startupStatus/updated"
@@ -1436,73 +1449,82 @@ impl CodexProvider {
                             | "thread/status/changed"
                             | "turn/diff/updated"
                             | "turn/plan/updated"
-                    );
-                    if names_other_turn || !safe_tail_method {
-                        return Err(LocalRunnerError::invalid(format!(
+                        );
+                        if names_other_turn || !safe_tail_method {
+                            return Err(LocalRunnerError::invalid(format!(
                             "Codex warm run attachment observed unsafe post-terminal provider method {}",
                             bounded_method(&method)
                         )));
-                    }
-                    if let Some(frame_id) = self.take_provider_trace_frame_id() {
-                        self.record_provider_trace_interpretation(
+                        }
+                        if matches!(
+                            method.as_str(),
+                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                        ) {
+                            accounting.push((method, params));
+                            continue;
+                        }
+                        if let Some(frame_id) = self.take_provider_trace_frame_id() {
+                            self.record_provider_trace_interpretation(
                             frame_id,
                             "codex.warm_attachment.completed_turn_tail",
                             "ignored",
                             Vec::new(),
                             "Provider emitted a bounded tail notification after the prior turn terminal and before run attachment",
                         );
+                        }
                     }
-                }
-                Some(CodexProviderEvent::ResourceLimit { .. }) => {
-                    return Err(LocalRunnerError::invalid("Codex descendant capacity requires reconciliation before fresh-session continuation"));
-                }
-                Some(CodexProviderEvent::ProtocolFailure { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex protocol integrity failed during warm attachment",
-                    ));
-                }
-                Some(CodexProviderEvent::DescendantNotification { .. }) => {
-                    // Child output cannot certify a quiescent root attachment.
-                    return Err(LocalRunnerError::invalid(
-                        "Codex descendant remains active during warm run attachment",
-                    ));
-                }
-                Some(CodexProviderEvent::ToolCall { .. })
-                | Some(CodexProviderEvent::RuntimeRequest { .. })
-                | Some(CodexProviderEvent::McpPermissionRequest { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex warm run attachment observed a post-terminal provider request",
-                    ));
-                }
-                Some(CodexProviderEvent::Exited { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex exited while quiescing for warm run attachment",
-                    ));
-                }
-                None => {
-                    let now = std::time::Instant::now();
-                    let quiet_start = quiet_since.get_or_insert(now);
-                    if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
-                        return Ok(());
+                    Some(CodexProviderEvent::ResourceLimit { .. }) => {
+                        return Err(LocalRunnerError::invalid("Codex descendant capacity requires reconciliation before fresh-session continuation"));
                     }
-                    std::thread::sleep(Duration::from_millis(1));
+                    Some(CodexProviderEvent::ProtocolFailure { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex protocol integrity failed during warm attachment",
+                        ));
+                    }
+                    Some(CodexProviderEvent::DescendantNotification { .. }) => {
+                        // Child output cannot certify a quiescent root attachment.
+                        return Err(LocalRunnerError::invalid(
+                            "Codex descendant remains active during warm run attachment",
+                        ));
+                    }
+                    Some(CodexProviderEvent::ToolCall { .. })
+                    | Some(CodexProviderEvent::RuntimeRequest { .. })
+                    | Some(CodexProviderEvent::McpPermissionRequest { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex warm run attachment observed a post-terminal provider request",
+                        ));
+                    }
+                    Some(CodexProviderEvent::Exited {
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                        ..
+                    }) if completion_reconciles_exit
+                        || (completed_turn_authoritative && self.process.stdout_drained()) =>
+                    {
+                        return Ok(())
+                    }
+                    Some(CodexProviderEvent::Exited { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex exited while quiescing for warm run attachment",
+                        ));
+                    }
+                    None => {
+                        let now = std::time::Instant::now();
+                        let quiet_start = quiet_since.get_or_insert(now);
+                        if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
+                            return Ok(());
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
                 }
             }
-        }
+        })();
+        (accounting, result)
     }
 
     pub(crate) fn warm_run_attachment_blockers(
         &mut self,
-        quiesce_completed_tail: bool,
     ) -> Result<Vec<&'static str>, LocalRunnerError> {
-        // Only an explicit attachment-readiness probe may consume the bounded,
-        // already-settled provider suffix. Ordinary checkpoint snapshots run
-        // immediately after a terminal frame while the provider can still be
-        // unwinding; turning those observations into quiescence barriers can
-        // quarantine an otherwise reusable runner before its next turn.
-        if quiesce_completed_tail {
-            self.drain_completed_turn_tail_for_warm_attachment()?;
-        }
         let mut blockers = Vec::new();
         if self.process.try_wait()?.is_some() {
             blockers.push("process_exited");
@@ -1517,7 +1539,18 @@ impl CodexProvider {
             blockers.push("ambiguous_turn_start");
         }
         if !self.pending_messages.is_empty() {
-            blockers.push("pending_messages");
+            blockers.push(
+                if self.pending_messages.iter().any(|message| {
+                    matches!(
+                        message.value.get("method").and_then(Value::as_str),
+                        Some("paperclip/resumeUsageSnapshot" | "thread/tokenUsage/updated")
+                    )
+                }) {
+                    "pending_accounting_reconciliation"
+                } else {
+                    "pending_messages"
+                },
+            );
         }
         if !self.deferred_ambiguous_messages.is_empty() {
             blockers.push("deferred_messages");
@@ -2919,13 +2952,11 @@ impl CodexProvider {
                 .and_then(Value::as_str);
             if notification_turn_id.is_some()
                 && notification_turn_id != self.active_provider_turn_id.as_deref()
-                && notification_turn_id
+                && (notification_turn_id
                     .is_some_and(|turn_id| self.settled_provider_turn_ids.contains(turn_id))
+                    || (self.active_provider_turn_id.is_none()
+                        && method == "thread/tokenUsage/updated"))
             {
-                self.notification_identity_diagnostics += 1;
-                if self.notification_identity_diagnostics > 32 {
-                    return Ok(None);
-                }
                 // Resume replays the cumulative usage of the last settled turn.
                 // Keep its identity and baseline, but never bill its `last`
                 // measurement to the newly attached run.
@@ -2940,6 +2971,10 @@ impl CodexProvider {
                             "total": params.pointer("/tokenUsage/total"),
                         }),
                     }));
+                }
+                self.notification_identity_diagnostics += 1;
+                if self.notification_identity_diagnostics > 32 {
+                    return Ok(None);
                 }
                 return Ok(Some(CodexProviderEvent::Notification {
                     method: "warning".to_owned(),
@@ -4392,9 +4427,58 @@ done
             });
         // poll() normalizes settled-turn usage to paperclip/resumeUsageSnapshot.
         // That accounting fact is not new work and must not force replacement.
-        let result = provider.drain_completed_turn_tail_for_warm_attachment();
+        let (accounting, result) = provider.drain_completed_turn_tail_for_warm_attachment();
         provider.shutdown().unwrap();
-        result.expect("historical usage must not break provider continuity");
+        result.expect("historical usage must remain available to its owner");
+        assert_eq!(accounting.len(), 1);
+        assert_eq!(accounting[0].1["total"]["inputTokens"], 120);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_warm_drain_retains_consumed_usage_before_unsafe_tail() {
+        for attach in [false, true] {
+            let mut provider = completion_tail_provider();
+            provider
+                .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
+                .unwrap();
+            provider.active_provider_turn_id = None;
+            for value in [
+                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"reader-tail-thread","turnId":"reader-tail-1","tokenUsage":{"total":{"inputTokens":120,"outputTokens":12}}}}),
+                json!({"method":"turn/started","params":{"threadId":"reader-tail-thread","turn":{"id":"unsafe-next-turn"}}}),
+            ] {
+                provider
+                    .pending_messages
+                    .push_back(BufferedProviderMessage {
+                        value,
+                        trace_frame_id: None,
+                    });
+            }
+            let (accounting, result) = if attach {
+                let mut accounting = Vec::new();
+                let tools = provider.authorized_tools.clone();
+                let contract = provider.completion_contract.clone();
+                let result = provider
+                    .attach_run_in_place(
+                        tools,
+                        contract.as_ref().map(|contract| {
+                            (
+                                contract.revision.as_str(),
+                                contract.criterion_ids.as_slice(),
+                            )
+                        }),
+                        &mut accounting,
+                    )
+                    .map(|_| ());
+                (accounting, result)
+            } else {
+                provider.drain_completed_turn_tail_for_warm_attachment()
+            };
+            provider.shutdown().unwrap();
+            assert!(result.is_err());
+            assert_eq!(accounting.len(), 1);
+            assert_eq!(accounting[0].1["total"]["inputTokens"], 120);
+        }
     }
 
     #[cfg(unix)]
@@ -4790,6 +4874,7 @@ done
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
     fn verified_opencode_proxy_executes_the_descriptor_safe_commonjs_bundle() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)

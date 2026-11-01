@@ -55,7 +55,14 @@ Policy: Company model discovery requires company access; account-backed discover
 also enforces its account/pool and target-agent rules. Instance adapter inventory
 and installation retain board/admin gates. Delegated managed
 AI-account login operations are enumerated under `model-accounts`; they do not
-grant raw host administration or execution-session reset.
+grant raw host administration or execution-session reset. On Cloud-managed
+instances, external adapter install, reinstall, reload, removal and override
+operations return `403` with `adapter_install_platform_managed`, including for
+instance admins. Built-in metadata remains available to board users. Startup
+and UI parser reads do not consume saved external registrations or package code.
+[Local fixture controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+and [route controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+cover this boundary; they do not establish live agent or provider qualification.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -69,6 +76,19 @@ Runner discovery exposes `supportedRunners` and `defaultRunner`; it describes
 qualified selection, not successful authentication or task execution. Native
 Claude retains existing account grants and company/responsible-user boundaries.
 Source: [adapter discovery](../../server/src/adapters/registry.ts).
+
+Kimi Code has a qualified native ACPX profile on Mac ARM64 and Linux x64. It
+requires an explicit model and a company-secret `KIMI_API_KEY` binding, and uses
+the global Code API. Ordinary selection, setup and Runtime Test require no
+candidate grant. Runtime Test queries the authenticated Code model catalog and
+sends no model prompt. Future pending profiles retain exact trusted startup
+admission; saved agent configuration and public requests cannot supply authority.
+Inactive setup drafts can precede model entry; Test and hire still require it.
+The native model route returns no suggestions and accepts typed identifiers.
+Managed Kimi account connections, ambient OAuth borrowing, and automatic legacy
+migration are outside this release. Source/control evidence only; see the
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md)
+for the separately recorded runtime and product results.
 
 Gaps: Raw instance adapter listing requires board, while company model discovery exists
 for eligible agents.

@@ -373,6 +373,14 @@ export function activityRoutes(db: Db) {
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const viewerUserId = req.actor.type === "board" ? getActorInfo(req).actorId : null;
+    if (req.query.runIds !== undefined) {
+      const parsed = z.array(z.string().uuid()).min(1).max(100).safeParse(
+        typeof req.query.runIds === "string" ? req.query.runIds.split(",") : null,
+      );
+      if (!parsed.success) throw badRequest("runIds must contain 1 to 100 UUIDs");
+      res.json(await svc.runsForIssue(issue.companyId, issue.id, viewerUserId, undefined, parsed.data));
+      return;
+    }
     const result = await (req.query.view === "recent"
       ? svc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2)
       : svc.runsForIssue(issue.companyId, issue.id, viewerUserId));

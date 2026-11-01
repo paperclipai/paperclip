@@ -1002,6 +1002,52 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "" } });
   });
 
+  it("keeps Kimi draft models unset through the public create route", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const originalCreate = mockAgentService.create.getMockImplementation()!;
+    mockAgentService.create.mockImplementation(async (...args) => ({ ...await originalCreate(...args), lifecycleHolds: ["setup"] }));
+    const app = await createApp();
+    const input = { name: "Kimi draft", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } };
+    const draft = await requestApp(app, base => request(base).post("/api/companies/company-1/agents")
+      .send({ ...input, setupId: "00000000-0000-4000-8000-000000000092" }));
+    expect(draft.status, JSON.stringify(draft.body)).toBe(201);
+    const saved = mockAgentService.create.mock.calls.at(-1)?.[1];
+    expect(saved).toMatchObject(input);
+    expect(saved.adapterConfig.model).toBeUndefined();
+    expect(mockAgentService.create.mock.calls.at(-1)?.[2]).toMatchObject({ setupOnly: true, runnerResolved: true });
+    mockAgentService.create.mockClear();
+    const active = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send(input));
+    expect(active.status).toBe(422);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["process", undefined, ""],
+    ["kimi_local", "kimi-for-coding", "kimi-for-coding"],
+    ["pi_local", "openrouter/anthropic/claude-sonnet-4.6", ""],
+  ] as const)("preserves Kimi model selection only from the same harness: %s", async (previousAdapterType, previousModel, expectedModel) => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: previousAdapterType,
+      adapterConfig: previousModel === undefined ? {} : { model: previousModel },
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] });
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: expectedModel } });
+  });
+
+  it("persists an explicit Kimi model through the public create route", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const input = { name: "Kimi", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: "kimi-for-coding" } };
+    const response = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send(input));
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject(input);
+  });
+
   it.each([{ thinking: "high", status: 200 }, { thinking: "medium", status: 422 }, { command: "custom-pi", status: 422 }])("validates saved Pi settings during direct adapter conversion: %j", async ({ status, ...settings }) => {
     const selection = await import("../services/agent-runner-selection.js");
     vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>

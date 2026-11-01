@@ -191,6 +191,7 @@ async function runReleaseDrain(
       await ports.transaction.cancelDeferredWake({
         companyId: run.companyId,
         wakeId: candidate.id,
+        agentId: candidate.agentId,
         reason: "Delegation closing note refers to completed child work",
         now: input.now,
       });
@@ -212,6 +213,7 @@ async function runReleaseDrain(
         await ports.transaction.cancelDeferredWake({
           companyId: run.companyId,
           wakeId: candidate.id,
+          agentId: candidate.agentId,
           reason: "Deferred task messages now belong to the current assignee",
           now: input.now,
         });
@@ -260,6 +262,7 @@ async function runReleaseDrain(
       await ports.transaction.cancelDeferredWake({
         companyId: run.companyId,
         wakeId: candidate.id,
+        agentId: candidate.agentId,
         reason: commentAction.selfAuthored
           ? "Deferred wake contained only comments authored by the finishing run"
           : "Queued messages were discarded before promotion",
@@ -288,7 +291,7 @@ async function runReleaseDrain(
     });
 
     if (wakeOutcome.kind === "fail_not_invokable") {
-      await ports.transaction.failDeferredWake({ companyId: run.companyId, wakeId: workingCandidate.id, now: input.now });
+      await ports.transaction.failDeferredWake({ companyId: run.companyId, wakeId: workingCandidate.id, agentId: workingCandidate.agentId, now: input.now });
       continue;
     }
 
@@ -300,7 +303,7 @@ async function runReleaseDrain(
     if (wakeOutcome.kind === "cancel_pause_hold") {
       await ports.transaction.cancelDeferredWake({
         companyId: run.companyId,
-        wakeId: workingCandidate.id,
+        wakeId: workingCandidate.id, agentId: workingCandidate.agentId,
         reason: "Deferred wake suppressed by active subtree pause hold",
         now: input.now,
       });
@@ -374,7 +377,7 @@ async function promoteDeferredWake(
   ) {
     await ports.transaction.cancelDeferredWake({
       companyId: run.companyId,
-      wakeId: workingCandidate.id,
+      wakeId: workingCandidate.id, agentId: workingCandidate.agentId,
       reason: "Deferred execution wake no longer applies to a terminal task",
       now: input.now,
     });
@@ -923,7 +926,8 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         mergedPayload,
         nextCoalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
         ...(manualUserWakeActorId ? { manualUserWakeActorId } : {}),
-        ...(input.durableReceipt
+        ...(input.durableReceipt || (input.requestedByActorType === "user" &&
+            readNonEmptyString(input.requestedByActorId) && readNonEmptyString(input.wakeCommentId))
           ? {
               coalescedReceipt: {
                 ...input.durableReceipt,
@@ -933,6 +937,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
                 reason: input.reason ?? null,
                 payload: {
                   ...(input.payload ?? {}),
+                  issueId: input.issueId,
                   coalescedIntoWakeupRequestId: existingDeferred.id,
                 },
                 requestedByActorType: input.requestedByActorType,

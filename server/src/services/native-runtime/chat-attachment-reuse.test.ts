@@ -73,7 +73,7 @@ describe("native same-conversation chat attachment reuse", () => {
   beforeAll(async () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CHAT_REUSE_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-chat-reuse-");
-    db = createDb(external ?? temporary!.connectionString);
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6 });
     const storageRoot = await mkdtemp(
       path.join(tmpdir(), "paperclip-chat-reuse-"),
     );

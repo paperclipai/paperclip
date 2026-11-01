@@ -107,8 +107,9 @@ runner/pack boundary change, and qualify the new pack before publishing it.
 Bumping a revision also retires every older image pack.
 The pack build also records a `contractDigest`, computed by
 `scripts/contracts/contract-fingerprints.mjs` from the JSON contracts under
-`protocol/` and `generated/` and from Rust serde shapes, payload keys, match
-literals and env keys, rather than from source bytes. An image pack is reused
+`protocol/` and `generated/`, from Rust serde shapes, payload keys, match
+literals and env keys, and from the Runner's ACPX patch, rather than from
+source bytes. An image pack is reused
 only when its digest equals the controller's bundled pack; comments and
 refactors leave it unchanged, so a mismatch means a contract changed and the
 controller uploads its bundled pack. Packs without a digest are not reused.

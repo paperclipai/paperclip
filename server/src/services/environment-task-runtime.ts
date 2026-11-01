@@ -1,8 +1,6 @@
-import { beginIdleTrackedWork } from "./task-admission.js";
-import { registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
-import { environmentService } from "./environments.js";
-import { createSandboxOrphanCleanupSpool, type DeferredOrphanCleanupRecord } from "./sandbox-orphan-cleanup-spool.js";
-import { logger } from "../middleware/logger.js";
+import { attachSandboxCreation, environmentService } from "./environments.js";
+import { createOwnedSandbox, recordSandboxCreationResource } from "./sandbox-creation-operations.js";
+import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { readWorkspaceProviderBinding } from "@paperclipai/shared";
 import { settlePluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
@@ -234,59 +232,38 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({runnerTaskExecutionStopped:true,
             runnerTaskSessionRetained:state.sessionStateAvailable === true})}::jsonb`,
         }).where(and(eq(environmentLeases.id, metadata.runnerTaskPreviousLeaseId), eq(environmentLeases.companyId, input.companyId)));
-        const fresh = await workers.call(plugin.id, "environmentAcquireLease", {driverKey:metadata.driverKey,
+        const replacementDriverKey = metadata.driverKey;
+        const fresh = await createOwnedSandbox(db, {
+          companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId,
+          issueId: lease.issueId, executionWorkspaceId: lease.executionWorkspaceId, provider: lease.provider!,
+          pluginId: plugin.id, driverKey: metadata.driverKey, config: {}, requestKey: taskId,
+          metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: plugin.pluginKey, driverKey: metadata.driverKey, runnerTaskLease: true },
+        }, identity => workers.call(plugin.id, "environmentAcquireLease", {driverKey:replacementDriverKey,
           companyId:input.companyId,environmentId:environment!.id,issueId:lease.issueId,config:driverConfig,
-          runId:run!.id,agentId:run!.agentId,adapterType:"paperclip_runner",
-          ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? {requestedExpiresAt:metadata.runnerTaskRequestedExpiresAt} : {})});
+          runId:identity.runId,creationOperationId:identity.id,agentId:run!.agentId,adapterType:"paperclip_runner",
+          ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? {requestedExpiresAt:metadata.runnerTaskRequestedExpiresAt} : {})}));
         if (!fresh.providerLeaseId || fresh.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
+        await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
+          environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId });
         const {runnerTaskIdentity:_identity,runnerTaskPriorIdentity:_prior,runnerTaskCredentialHandoff:_handoff,
           runnerTaskResumeFrom:_resume,runnerTaskPreviousLeaseId:_previous,...rest}=metadata;
         const replacementMetadata={...rest,providerMetadata:fresh.metadata ?? {},runnerTaskReused:false,runnerTaskDispatched:false,
           runnerTaskExecutionStopped:false,runnerTaskSessionRetained:false};
-        try {
+        {
           const expiresAt=fresh.expiresAt ? new Date(fresh.expiresAt) : null;
           const deadline=typeof metadata.runnerTaskRequestedExpiresAt === "string" ? Date.parse(metadata.runnerTaskRequestedExpiresAt) : null;
           if ((expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())) ||
               (deadline !== null && (!Number.isFinite(deadline) || !expiresAt || expiresAt.getTime() > deadline)))
             throw new Error("Plugin replacement task expiry is not bounded");
-          const replacement = await db.update(environmentLeases).set({providerLeaseId:fresh.providerLeaseId,expiresAt,
-            metadata:replacementMetadata,
+          await attachSandboxCreation(db, String(fresh.metadata!.creationOperationId), { companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId }, async tx => {
+            const [updated] = await tx.update(environmentLeases).set({providerLeaseId:fresh.providerLeaseId,expiresAt,
+            metadata:{...replacementMetadata,creationOperationId:fresh.metadata!.creationOperationId},
           }).where(and(eq(environmentLeases.id,lease.id),eq(environmentLeases.providerLeaseId,taskId),
             eq(environmentLeases.status,"active"))).returning({id:environmentLeases.id});
-          if (replacement.length !== 1) throw new Error("Plugin task replacement ownership changed");
-        } catch (error) {
-          try {
-            await workers.call(plugin.id,"environmentReleaseLease",{driverKey:metadata.driverKey,companyId:input.companyId,
-              environmentId:environment!.id,issueId:lease.issueId,config:driverConfig,providerLeaseId:fresh.providerLeaseId,
-              leaseMetadata:replacementMetadata});
-          } catch {
-            const orphan:DeferredOrphanCleanupRecord={companyId:input.companyId,environmentId:environment!.id,
-              executionWorkspaceId:lease.executionWorkspaceId,issueId:lease.issueId,heartbeatRunId:lease.heartbeatRunId,
-              provider:lease.provider!,providerLeaseId:fresh.providerLeaseId,metadata:replacementMetadata};
-            try {
-              await environmentService(db).insertPendingCleanupLease({...orphan,failureReason:"plugin_task_replacement_unowned"});
-            } catch {
-              // The existing orphan spool recovers cleanup even when the database is unavailable.
-              const spool = createSandboxOrphanCleanupSpool();
-              const persisted = await spool.append(orphan);
-              const finish = beginIdleTrackedWork();
-              let flushing: Promise<{ recovered: number; pending: number }> | null = null;
-              const unregister = registerDeferredEnvironmentCleanup(db, () => {
-                flushing ??= (async () => {
-                  await environmentService(db).insertPendingCleanupLease({...orphan,failureReason:"plugin_task_replacement_unowned"});
-                  await spool.remove(orphan);
-                  unregister();
-                  finish();
-                  return { recovered: 1, pending: 0 };
-                })().catch(error => { flushing = null; throw error; });
-                // Keep successful completion for a concurrent sweep that already
-                // captured this callback before it was unregistered.
-                return flushing;
-              });
-              logger.error({providerLeaseId:fresh.providerLeaseId,persisted},"Plugin replacement cleanup requires recovery");
-            }
-          }
-          throw error;
+            if (!updated) throw new Error("Plugin task replacement ownership changed");
+            return (await environmentService(tx).getLeaseById(updated.id))!;
+          });
+
         }
         return executeEnvironmentTask(db, workers, input);
       }

@@ -1,3 +1,4 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
@@ -543,6 +544,7 @@ async function removeConnection(
     const archived = await db.transaction(async (tx) => {
       if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, connection.companyId);
           if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
+      await notifyGitHubCredentialChange(tx, connection);
       await notifyToolConnectionHealth(tx, connection);
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))

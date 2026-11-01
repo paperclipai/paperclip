@@ -994,7 +994,8 @@ async function createSandbox(
   }
   // The SDK can create a sandbox and then throw while waiting for it to start.
   // Keep an attempt-specific provider name so that failure cannot lose ownership.
-  const attemptId = randomUUID();
+  const attemptId = "creationOperationId" in params && params.creationOperationId ? params.creationOperationId : randomUUID();
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(attemptId)) throw new Error("Invalid creation operation identity");
   const name = `paperclip-create-${attemptId}`;
   const labels = { ...buildSandboxLabels({
     companyId: params.companyId,
@@ -2779,6 +2780,12 @@ const plugin = definePlugin(trackDaytonaHooks({
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
+    const requestedCwd = params.requestedCwd;
+    if (requestedCwd !== undefined && (typeof requestedCwd !== "string" || requestedCwd.includes("\0")
+      || !path.posix.isAbsolute(requestedCwd) || path.posix.normalize(requestedCwd) !== requestedCwd
+      || params.leaseMetadata?.remoteCwd !== requestedCwd)) {
+      throw new Error("The requested directory does not match the recorded Daytona workspace directory.");
+    }
     if (params.leaseMetadata?.reuseLease === false) {
       const sentinel = isRecord(params.leaseMetadata.workspaceSentinel) ? params.leaseMetadata.workspaceSentinel : null;
       const intent = isRecord(params.leaseMetadata.nativeWorkspaceExportResume) ? params.leaseMetadata.nativeWorkspaceExportResume : null;
@@ -2876,7 +2883,7 @@ const plugin = definePlugin(trackDaytonaHooks({
               config,
               sandbox,
               shellCommand,
-              remoteCwd,
+              remoteCwd: requestedCwd ?? remoteCwd,
               resumedLease: true,
               resumedFromState,
               sandboxState: "started",
@@ -2987,6 +2994,32 @@ const plugin = definePlugin(trackDaytonaHooks({
     const config = parseDriverConfig(params.config);
     if (!config.apiUrl && (process.env.DAYTONA_API_URL?.trim() || process.env.DAYTONA_SERVER_URL?.trim())) {
       return { providerLeaseId: params.providerLeaseId, state: "unknown" };
+    }
+    if (params.creationOperation !== undefined) {
+      const { id: attemptId, runId } = params.creationOperation;
+      if (![attemptId, runId].every(value => typeof value === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value))) {
+        throw new Error("Invalid creation operation identity");
+      }
+      const name = `paperclip-create-${attemptId}`;
+      try {
+        const sandbox = await withLivenessTimeout("sandbox.creationLookup", 10_000, () => createDaytonaClient(config).get(name));
+        const labels = {
+          "paperclip-provider": "daytona", "paperclip-create-attempt": attemptId,
+          "paperclip-company-id": params.companyId, "paperclip-environment-id": params.environmentId,
+          "paperclip-run-id": runId,
+        };
+        if (sandbox.name !== name || Object.entries(labels).some(([key, value]) => sandbox.labels?.[key] !== value)) {
+          throw new Error("Creation operation ownership does not match");
+        }
+        return { providerLeaseId: name, state: "active", creationCleanup: {
+          providerLeaseId: name, observedProviderLeaseId: sandbox.id, companyId: params.companyId,
+          environmentId: params.environmentId, runId: labels["paperclip-run-id"], attemptId,
+          accountFingerprint: sandboxAccountDiscriminator(config), labels,
+        } };
+      } catch (error) {
+        if (error instanceof DaytonaNotFoundError) return { providerLeaseId: name, state: "unknown" };
+        throw error;
+      }
     }
     const proof = idleActivity.proof(providerActivityKey(params, config, params.providerLeaseId));
     // Read directly from the provider. The setup-status path and cached lease

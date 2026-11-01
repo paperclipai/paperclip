@@ -49,6 +49,7 @@ export const issueComments = pgTable(
   },
   (table) => ({
     clientRequestUq: unique("issue_comments_client_request_uq").on(table.issueId, table.authorUserId, table.clientRequestId),
+    agentClientRequestUq: unique("issue_comments_agent_client_request_uq").on(table.issueId, table.authorAgentId, table.clientRequestId),
     companyIdUq: unique("issue_comments_company_id_uq").on(table.companyId, table.id),
     issueIdx: index("issue_comments_issue_idx").on(table.issueId),
     reviewResponseReceiptIdx: index("issue_comments_review_response_receipt_idx").on(

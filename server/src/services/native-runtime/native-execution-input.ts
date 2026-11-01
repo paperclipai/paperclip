@@ -144,8 +144,8 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { p
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9 | NativeExecutionInputV10;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 {
-  if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask") {
-    throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, or ask");
+  if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask" && input.issue.workMode !== "skill_test") {
+    throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, ask, or skill_test");
   }
   const mode = resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
   const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(input.provider, input.acpxAgent, input.piThinkingLevel);

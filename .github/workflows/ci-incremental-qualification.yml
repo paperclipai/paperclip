@@ -7,6 +7,8 @@ on:
       - turbo.json
       - .github/ci-task-matrix.json
       - .github/scripts/ci-plan.mjs
+      - .github/scripts/ci-diff.mjs
+      - .github/scripts/ci-inputs.mjs
       - .github/scripts/tests/ci-plan.test.mjs
       - .github/actions/run-ci-task/**
       - .github/workflows/ci-routing.yml
@@ -22,6 +24,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  qualify_test_selection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+      - uses: ./.github/actions/setup-ci-dependencies
+      - name: Prove conservative graphs, exact partitions, manifests and failure fallbacks
+        run: node --test scripts/ci/test-selection*.test.mjs scripts/ci/vitest-impact-report.integration.test.mjs
+      - name: Qualify selection against the real Paperclip workspace
+        env:
+          NODE_ENV: test
+          VITEST: 'true'
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { planTasks } from './.github/scripts/ci-plan.mjs';
+          import { createTestSelection } from './scripts/ci/select-tests.mjs';
+          const config = JSON.parse(readFileSync('turbo.json', 'utf8'));
+          const lanes = JSON.parse(readFileSync('.github/ci-task-matrix.json', 'utf8'));
+          const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          for (const [file, project, related] of [
+            ['ui/src/pages/Inbox.tsx', '@paperclipai/ui', 'ui/src/pages/Inbox.test.tsx'],
+            ['server/src/middleware/auth.ts', '@paperclipai/server', 'server/src/__tests__/agent-auth-middleware.test.ts'],
+            ['server/src/storage/config.test.ts', '@paperclipai/server', 'server/src/storage/config.test.ts'],
+          ]) {
+            const selected = await createTestSelection(planTasks({ config, lanes, paths: [file, "doc/DEVELOPING.md", "doc/plans/2026-10-30-ci-proof.md"] }), head);
+            const graph = selected.graphs.find(graph => graph.project === project);
+            assert.ok(graph.related.includes(related));
+            assert.ok(graph.alwaysRun.length > 0, 'Filesystem contracts must remain covered');
+            assert.ok(graph.selected.length < graph.inventory.length, 'The real workspace must support narrowing');
+            console.log(file, JSON.stringify(selected.plan.testSelection.stats, null, 2));
+          }
+          NODE
+
   qualify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
