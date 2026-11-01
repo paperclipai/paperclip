@@ -6,8 +6,9 @@ import { and, eq } from "drizzle-orm";
 import { WebSocket } from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  authUsers, companies, companyMemberships, createDb, instanceUserRoles, type Db,
+  agentApiKeys, agents, authUsers, companies, companyMemberships, createDb, instanceUserRoles, type Db,
 } from "@paperclipai/db";
+import { hashToken } from "../lib/agent-records.js";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
@@ -218,6 +219,133 @@ describe("live events re-read the membership role while the socket stays open", 
       await expect.poll(() => sawMarker(adminClient.messages, after)).toBe(true);
     } finally {
       adminClient.socket.close();
+      server.close();
+    }
+  });
+
+  /**
+   * An agent key is a separate principal class: the socket's key branch
+   * authorizes the *agent*, and on `master` it reads no human membership role at
+   * all — `viewer` is not checked there either. For the staff roles that is
+   * consistent, because each of them carries company access anyway. It is not
+   * consistent with a deny-by-default `client`, because it leaves one way to
+   * hold a company event stream as a client: mint an unscoped key while staff,
+   * then be changed to `client` and keep using the key as a bearer token.
+   *
+   * The same barrier reasoning as the first test applies, for the same reason —
+   * see the note at the top of this file. The key socket is the only socket, so
+   * the barrier is a later event delivered to that socket after the role is
+   * restored.
+   */
+  it("stops delivering to an agent key whose responsible user is changed to client", async () => {
+    const responsible = randomUUID(), witness = randomUUID();
+    const companyId = await seedCompany("MIDSOCKC", [
+      { id: responsible, role: "operator" },
+      { id: witness, role: "operator" },
+    ]);
+
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Fixture agent", role: "engineer" });
+    // Unscoped (`scopeConfig: null`) on purpose: the upgrade path refuses a
+    // scoped key outright, so a scoped one would pass this test without the
+    // role check ever being reached.
+    const token = `pcp_${randomUUID().replace(/-/g, "")}`;
+    await db.insert(agentApiKeys).values({
+      id: randomUUID(), agentId, companyId, name: "Fixture key",
+      keyHash: hashToken(token), responsibleUserId: responsible, scopeConfig: null,
+    });
+
+    const server = createServer();
+    setupLiveEventsWebSocketServer(server, db, {
+      deploymentMode: "authenticated",
+      // Only the witness board socket uses this; the key socket carries a token
+      // and never reaches the session path.
+      resolveSessionFromHeaders: async headers => {
+        const userId = headers.get("x-fixture-user");
+        return userId ? ({ user: { id: userId } } as never) : null;
+      },
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${port}/api/companies/${companyId}/events/ws?token=${token}`,
+    );
+    const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
+    // A staff socket that stays staff throughout. It is *not* a barrier for the
+    // key socket — see the note at the top of this file — it is only how the
+    // test confirms each publish actually fanned out before the role is put
+    // back, so the key socket's own serial drain has reached those events.
+    const witnessClient = connect(port, companyId, witness);
+    try {
+      await Promise.all([once(socket, "open"), once(witnessClient.socket, "open")]);
+
+      // Receives while the responsible user is staff, which proves the key
+      // socket is genuinely subscribed before anything is denied.
+      const before = publishMarker(companyId);
+      await expect.poll(() => sawMarker(messages, before)).toBe(true);
+
+      await setRole(companyId, responsible, "client");
+      const denied = publishMarker(companyId);
+      await expect.poll(() => sawMarker(witnessClient.messages, denied), { timeout: 10_000 }).toBe(true);
+      const deniedAgain = publishMarker(companyId);
+      await expect.poll(() => sawMarker(witnessClient.messages, deniedAgain), { timeout: 10_000 }).toBe(true);
+
+      // Restore and wait for the key socket itself to deliver a later event.
+      // That is the barrier: because the socket drains serially in publish
+      // order, receiving `restored` proves both denied events were already
+      // authorized on this socket and were not merely in flight. It also proves
+      // the deny tracks the current role rather than latching the socket shut.
+      await setRole(companyId, responsible, "operator");
+      const restored = publishMarker(companyId);
+      await expect.poll(() => sawMarker(messages, restored), { timeout: 10_000 }).toBe(true);
+
+      expect(sawMarker(messages, denied)).toBe(false);
+      expect(sawMarker(messages, deniedAgain)).toBe(false);
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      socket.close();
+      witnessClient.socket.close();
+      server.close();
+    }
+  });
+
+  /**
+   * Guards the narrowing above: a key with no responsible user has no human
+   * role to read, so it must keep behaving exactly as it does on `master`.
+   * Without this, "deny when the responsible user is a client" could quietly
+   * become "deny every key whose responsible user row is missing".
+   */
+  it("keeps delivering to an agent key that names no responsible user", async () => {
+    const companyId = await seedCompany("MIDSOCKD", [{ id: randomUUID(), role: "operator" }]);
+
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Unattributed agent", role: "engineer" });
+    const token = `pcp_${randomUUID().replace(/-/g, "")}`;
+    await db.insert(agentApiKeys).values({
+      id: randomUUID(), agentId, companyId, name: "Unattributed key",
+      keyHash: hashToken(token), responsibleUserId: null, scopeConfig: null,
+    });
+
+    const server = createServer();
+    setupLiveEventsWebSocketServer(server, db, { deploymentMode: "authenticated" });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${port}/api/companies/${companyId}/events/ws?token=${token}`,
+    );
+    const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
+    try {
+      await once(socket, "open");
+      const marker = publishMarker(companyId);
+      await expect.poll(() => sawMarker(messages, marker)).toBe(true);
+    } finally {
+      socket.close();
       server.close();
     }
   });
