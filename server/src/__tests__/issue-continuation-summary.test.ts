@@ -7,6 +7,64 @@ import {
 } from "../services/issue-continuation-summary.js";
 
 describe("issue continuation summaries", () => {
+  it("resumes executor work after an issue leaves review across repeated summaries", () => {
+    const input = {
+      issue: {
+        id: "issue-1", identifier: "TEST-1", title: "Resume implementation",
+        description: null, status: "in_review", priority: "medium",
+      },
+      run: { id: "run-1", status: "succeeded", error: null },
+      agent: { id: "agent-1", name: "Agent", adapterType: "claude_local" },
+    };
+    let body = buildContinuationSummaryMarkdown(input);
+    expect(continuationSummaryParksExecutor(body)).toBe(true);
+    body = buildContinuationSummaryMarkdown({ ...input, previousSummaryBody: body });
+    expect(continuationSummaryParksExecutor(body)).toBe(true);
+
+    for (let revision = 0; revision < 2; revision++) {
+      body = buildContinuationSummaryMarkdown({
+        ...input,
+        issue: { ...input.issue, status: "in_progress" },
+        previousSummaryBody: body,
+      });
+      expect(extractContinuationSummaryNextAction(body)).toBe(
+        "Resume implementation from the acceptance criteria, latest comments, and this summary.",
+      );
+      expect(continuationSummaryParksExecutor(body)).toBe(false);
+    }
+  });
+
+  it.each([
+    "Wait for board approval before continuing.",
+    "Waiting for human feedback.",
+  ])("does not carry forward a parking next action: %s", (nextAction) => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1", identifier: "TEST-1", title: "Resume implementation",
+        description: null, status: "in_progress", priority: "medium",
+      },
+      run: { id: "run-1", status: "succeeded", error: null },
+      agent: { id: "agent-1", name: "Agent", adapterType: "claude_local" },
+      previousSummaryBody: `## Next Action\n\n- ${nextAction}`,
+    });
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+
+  it("preserves a runnable next action from the previous summary", () => {
+    const nextAction = "Check the implementation against the acceptance criteria.";
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1", identifier: "TEST-1", title: "Resume implementation",
+        description: null, status: "in_progress", priority: "medium",
+      },
+      run: { id: "run-1", status: "succeeded", error: null },
+      agent: { id: "agent-1", name: "Agent", adapterType: "claude_local" },
+      previousSummaryBody: `## Next Action\n\n- ${nextAction}`,
+    });
+    expect(extractContinuationSummaryNextAction(body)).toBe(nextAction);
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+
   it("builds bounded issue-local handoff context with required sections", () => {
     const body = buildContinuationSummaryMarkdown({
       issue: {
