@@ -745,6 +745,11 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(storedLease?.environmentId).toBe(environmentId);
   });
 
+  it("returns null from getLeaseById for an id that is not a uuid", async () => {
+    await expect(svc.getLeaseById("")).resolves.toBeNull();
+    await expect(svc.getLeaseById("lease-1")).resolves.toBeNull();
+  });
+
   it("allows delete with an active ephemeral lease", async () => {
     const companyId = randomUUID();
     const environmentId = randomUUID();
