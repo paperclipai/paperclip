@@ -396,6 +396,7 @@
   /* Connection banner offset: clear the notch/status bar under viewport-fit=cover. */
   --connection-banner-top: calc(0.5rem + env(safe-area-inset-top, 0px));
   --mobile-entity-picker-visual-viewport-height: 100dvh;
+  --mobile-entity-picker-visual-viewport-offset-top: 0px;
   --mobile-entity-picker-backdrop: color-mix(in oklab, var(--foreground) 50%, transparent);
 
   /* Deliberate scroll distances (CSS pixels) and shared nav/composer motion. */
@@ -3459,10 +3460,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 
   [data-mobile-entity-picker] {
     position: fixed !important;
-    inset:
-      max(calc(var(--spacing) * 4), env(safe-area-inset-top))
-      calc(var(--spacing) * 4)
-      auto !important;
+    top: calc(
+      var(--mobile-entity-picker-visual-viewport-offset-top, 0px)
+      + max(calc(var(--spacing) * 4), env(safe-area-inset-top))
+    ) !important;
+    right: calc(var(--spacing) * 4);
+    bottom: auto;
+    left: calc(var(--spacing) * 4);
     width: auto !important;
     max-width: none !important;
     height: calc(
