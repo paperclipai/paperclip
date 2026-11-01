@@ -63,6 +63,17 @@ vi.mock("./components/OnboardingWizardVariant", () => ({
 // Sentinel pages so we can assert *which* route resolved.
 vi.mock("./pages/Cases", () => ({ Cases: () => <div>CASES_LIST_PAGE</div> }));
 vi.mock("./pages/CaseDetail", () => ({ CaseDetail: () => <div>CASE_DETAIL_PAGE</div> }));
+vi.mock("./pages/Approvals", async () => {
+  const { useLocation } = await import("react-router-dom");
+  return { Approvals: () => { const location = useLocation(); return <div>APPROVALS_LIST_PAGE {location.pathname}{location.search}{location.hash}</div>; } };
+});
+vi.mock("./pages/ApprovalDetail", async () => {
+  const { useLocation, useParams } = await import("react-router-dom");
+  return { ApprovalDetail: () => {
+    const location = useLocation();
+    return <div>APPROVAL_DETAIL_PAGE {useParams().approvalId} {location.pathname}{location.search}{location.hash}</div>;
+  } };
+});
 
 // Cloud access is unrelated to the route-table regression. Let it fall through
 // synchronously so this test does not poll its three query transitions.
@@ -115,7 +126,7 @@ async function waitForRoute(container: HTMLElement, text: string) {
   await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
-describe("App Cases routing (PAP-13002)", () => {
+describe("App unprefixed board routing", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
@@ -127,6 +138,25 @@ describe("App Cases routing (PAP-13002)", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it.each([
+    ["/approvals", "/PAP/approvals/pending"],
+    ["/approvals/pending", "/PAP/approvals/pending"],
+    ["/approvals/all", "/PAP/approvals/all"],
+    ["/approvals?source=chat#history", "/PAP/approvals/pending?source=chat#history"],
+    ["/PAP/approvals?source=chat#history", "/PAP/approvals/pending?source=chat#history"],
+  ])("opens approval list %s at its exact selected-company destination", async (path, expected) => {
+    const root = await renderAppAt(container, path);
+    try { await vi.waitFor(() => expect(container.textContent).toBe(`APPROVALS_LIST_PAGE ${expected}`)); }
+    finally { flushSync(() => root.unmount()); }
+  });
+
+  it.each(["", "/PAP"])("opens an approval detail link with prefix %s and preserves its query and fragment", async prefix => {
+    const id = "8d6360a2-22ef-48dc-a811-2a073b9ec000";
+    const root = await renderAppAt(container, `${prefix}/approvals/${id}?source=chat#history`);
+    try { await waitForRoute(container, `APPROVAL_DETAIL_PAGE ${id} /PAP/approvals/${id}?source=chat#history`); }
+    finally { flushSync(() => root.unmount()); }
   });
 
   it("redirects unprefixed /cases to the company-prefixed list page", async () => {

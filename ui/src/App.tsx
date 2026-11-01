@@ -369,7 +369,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="artifacts" element={<Artifacts />} />
-      <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
+      <Route path="approvals" element={<ApprovalsRootRedirect />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
@@ -458,6 +458,11 @@ function AppsConnectEntryRoute({
   return canEnterAppsConnect(searchParams, { chatConnectorsEnabled, githubReviewBotsEnabled })
     ? <AppsConnect credentialSource={credentialSource} />
     : <Navigate to="/apps" replace />;
+}
+
+function ApprovalsRootRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/approvals/pending${location.search}${location.hash}`} replace />;
 }
 
 function InboxRootRedirect() {
@@ -809,6 +814,10 @@ export function App() {
           <Route path="instance/settings" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
+          <Route path="approvals" element={<UnprefixedBoardRedirect />} />
+          <Route path="approvals/pending" element={<UnprefixedBoardRedirect />} />
+          <Route path="approvals/all" element={<UnprefixedBoardRedirect />} />
+          <Route path="approvals/:approvalId" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="tasks" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
