@@ -485,7 +485,9 @@ Cancelled runs retain `resultJson.cancellation`: a closed `source` label
 the initiator, reason, and recording time. Recorded stop intent survives adapter
 completion. `controller_lease` means the host stopped its own legacy adapter
 after it lost the durable controller lease; the reason names a closed cause
-(`renewal_rejected`, `renewal_deadline`, or `renewal_error`).
+(`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
+retries a failed renewal until the lease deadline, so `renewal_error` means the
+attempts still failed with an error when the deadline passed.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
@@ -500,10 +502,11 @@ A lease loss also records `resultJson.controllerLeaseLoss`, including a loss
 during setup that fails the run before adapter dispatch. It holds the closed
 cause and the watchdog timings in milliseconds: `sinceRenewalMs` (since the
 last successful renewal), `renewalPendingMs` (age of a renewal query still in
-flight, or `null`), `deadlineLateMs` (how late the deadline callback ran, for
-`renewal_deadline` only), and `renewalCount`. A long `renewalPendingMs` points
-at a stalled database query; a long `deadlineLateMs` points at a blocked event
-loop. Failure reports carry these bounded numbers and the cause label only.
+flight, or `null`), `deadlineLateMs` (how late the deadline callback ran, when
+the lease deadline ended the run, otherwise `null`), and `renewalCount`. A long
+`renewalPendingMs` points at a stalled database query; a long `deadlineLateMs`
+points at a blocked event loop. Failure reports carry these bounded numbers and
+the cause label only.
 Historical ambiguous cancellations stay `unknown` and do not authorize replay.
 
 Provider tool-definition validation failures use
