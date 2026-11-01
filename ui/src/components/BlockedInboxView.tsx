@@ -43,6 +43,7 @@ interface BlockedInboxViewProps {
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
+  showResponsibleColumn: boolean;
   presentation?: IssueRowPresentation;
 }
 
@@ -65,6 +66,7 @@ export function BlockedInboxView({
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
+  showResponsibleColumn,
   presentation = "legacy",
 }: BlockedInboxViewProps) {
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
@@ -230,6 +232,7 @@ export function BlockedInboxView({
               showStatusColumn={showStatusColumn}
               showIdentifierColumn={showIdentifierColumn}
               showUpdatedColumn={showUpdatedColumn}
+              showResponsibleColumn={showResponsibleColumn}
               presentation={presentation}
             />
           ))
@@ -260,6 +263,7 @@ export function BlockedInboxView({
                         showStatusColumn={showStatusColumn}
                         showIdentifierColumn={showIdentifierColumn}
                         showUpdatedColumn={showUpdatedColumn}
+                        showResponsibleColumn={showResponsibleColumn}
                         presentation={presentation}
                       />
                     ))}
@@ -285,6 +289,7 @@ interface BlockedInboxRowProps {
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
+  showResponsibleColumn: boolean;
   presentation: IssueRowPresentation;
 }
 
@@ -315,6 +320,7 @@ function BlockedInboxRow({
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
+  showResponsibleColumn,
   presentation,
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
@@ -336,7 +342,7 @@ function BlockedInboxRow({
           className="max-w-full"
         />
       </span>
-      {ownerName ? (
+      {!showResponsibleColumn ? null : ownerName ? (
         <span className="hidden w-(--sz-150px) min-w-0 items-center text-muted-foreground sm:inline-flex">
           {isAgent ? <AgentIdentity agent={agents?.find((agent) => agent.id === row.attention.owner.agentId) ?? { id: row.attention.owner.agentId ?? undefined, name: ownerName }} size="xs" className="max-w-full" /> : <Identity name={ownerName} size="xs" className="max-w-full" />}
         </span>
@@ -354,7 +360,7 @@ function BlockedInboxRow({
   const mobileMeta = (
     <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
       {presentation === "legacy" && <span data-testid="blocked-row-age-mobile">{stoppedAge}</span>}
-      {ownerName ? (
+      {showResponsibleColumn && ownerName ? (
         <>
           {presentation === "legacy" && <span aria-hidden="true">·</span>}
           <span

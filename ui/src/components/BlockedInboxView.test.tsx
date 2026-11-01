@@ -134,6 +134,7 @@ const blockedViewProps = {
   showStatusColumn: true,
   showIdentifierColumn: true,
   showUpdatedColumn: true,
+  showResponsibleColumn: true,
 };
 
 async function waitFor(predicate: () => boolean, attempts = 30): Promise<void> {
@@ -305,6 +306,28 @@ describe("BlockedInboxView", () => {
     const row = container.querySelector("a")?.parentElement;
     expect(row?.className).toContain("border-b");
     expect(row?.textContent).toContain("PAP-41");
+
+    act(() => root.unmount());
+  });
+
+  it("hides the owner when the Responsible column is turned off", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-hidden-owner",
+        "PAP-42",
+        "Owner column hidden",
+        attention({ owner: { type: "board", agentId: null, userId: null, label: "Board" } }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} presentation="task" showResponsibleColumn={false} />,
+      container,
+    );
+    await waitFor(() => container.textContent?.includes("Owner column hidden") === true);
+
+    expect(container.querySelector("a")?.parentElement?.textContent).not.toContain("Board");
+    expect(container.querySelector('[data-testid="blocked-row-owner-mobile"]')).toBeNull();
 
     act(() => root.unmount());
   });
