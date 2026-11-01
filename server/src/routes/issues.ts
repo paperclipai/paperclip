@@ -17069,6 +17069,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const result = await runQueuedCommentMutation(() =>
         queuedCommentQueue.discardQueuedComment({

@@ -100,7 +100,7 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
       ...baseFacts,
       actorType: "user",
       actorId: "user-1",
-      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1" }],
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1", authorAgentId: null }],
     });
 
     expect(queue.entries[0]?.canEdit).toBe(true);
@@ -112,7 +112,7 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
       ...baseFacts,
       actorType: "user",
       actorId: "user-1",
-      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-2" }],
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-2", authorAgentId: null }],
     });
 
     expect(queue.entries[0]?.canEdit).toBe(false);
@@ -124,11 +124,23 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
       ...baseFacts,
       actorType: "agent",
       actorId: "user-1",
-      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1" }],
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1", authorAgentId: null }],
     });
 
     expect(queue.entries[0]?.canEdit).toBe(false);
     expect(queue.entries[0]?.canDiscard).toBe(false);
+  });
+
+  it("grants discard (not edit) to a user for an agent-authored queued comment", () => {
+    const queue = buildQueuedCommentQueueSnapshot({
+      ...baseFacts,
+      actorType: "user",
+      actorId: "user-1",
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: null, authorAgentId: "agent-1" }],
+    });
+
+    expect(queue.entries[0]?.canEdit).toBe(false);
+    expect(queue.entries[0]?.canDiscard).toBe(true);
   });
 });
 
