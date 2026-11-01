@@ -3206,6 +3206,9 @@ export function createPluginWorkerHandle(
     if (status === "running" || status === "starting" || startInFlight) {
       return Promise.reject(new Error(`Worker for plugin "${pluginId}" is already ${startInFlight ? "starting" : status}`));
     }
+    if (stopInFlight || status === "stopping") {
+      return Promise.reject(new Error(`Worker for plugin "${pluginId}" is stopping`));
+    }
     if (!isStartAdmitted()) {
       return Promise.reject(new Error(`Worker starts for plugin "${pluginId}" are revoked`));
     }
@@ -3639,10 +3642,11 @@ export function createPluginWorkerHandle(
     },
 
     async restart() {
+      const joinedStop = stopInFlight !== null;
       const stopping = stopInternal();
       const requests = stopRequests;
       await stopping;
-      if (stopRequests !== requests) {
+      if (joinedStop || stopRequests !== requests) {
         throw new Error(`Worker restart for plugin "${pluginId}" was superseded by a stop`);
       }
       await startInternal();
@@ -3995,10 +3999,13 @@ export function createPluginWorkerManager(
 
     async stopAll(): Promise<void> {
       log.info({ count: workers.size }, "stopping all plugin workers");
-      const promises = Array.from(workers.values()).map(async (handle) => {
+      const failures: unknown[] = [];
+      const promises = Array.from(workers.entries()).map(async ([pluginId, handle]) => {
         try {
           await handle.stop();
+          if (workers.get(pluginId) === handle) workers.delete(pluginId);
         } catch (err) {
+          failures.push(err);
           log.error(
             {
               pluginId: handle.pluginId,
@@ -4009,7 +4016,9 @@ export function createPluginWorkerManager(
         }
       });
       await Promise.all(promises);
-      workers.clear();
+      if (failures.length > 0) {
+        throw new AggregateError(failures, "Failed to stop plugin workers");
+      }
     },
 
     diagnostics(): WorkerDiagnostics[] {

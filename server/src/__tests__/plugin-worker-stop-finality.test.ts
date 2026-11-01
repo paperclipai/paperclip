@@ -192,6 +192,26 @@ describe("plugin worker stop finality", () => {
     expect(gate.spawned()).toBe(1);
   });
 
+  it("a restart that joins a stop already in progress does not start", async () => {
+    const gate = await createGate();
+    closeGate = gate.close;
+    manager = createPluginWorkerManager();
+    const handle = await manager.startWorker("gated.plugin", startOptions(gate.socketPath, "shutdown"));
+
+    const stopping = manager.stopWorker("gated.plugin");
+    await gate.next("shutdown-received");
+    const restarting = handle.restart().then(() => "resolved", () => "rejected");
+    const starting = handle.start().then(() => "resolved", () => "rejected");
+    gate.release("shutdown");
+    await stopping;
+
+    expect(await restarting).toBe("rejected");
+    expect(await starting).toBe("rejected");
+    expect(handle.status).toBe("stopped");
+    expect(manager.getWorker("gated.plugin")).toBeUndefined();
+    expect(gate.spawned()).toBe(1);
+  });
+
   it("N7e: normal crash recovery still restarts the worker", async () => {
     const { gate, handle } = await startThenCrash("");
     expect(handle.status).toBe("backoff");
@@ -295,7 +315,7 @@ describe("plugin worker stop finality", () => {
     expect(gate.spawned()).toBe(1);
   });
 
-  it("N13: a worker that survives SIGKILL keeps its registration and cannot be called", async () => {
+  async function startUnkillable() {
     const gate = await createGate();
     closeGate = gate.close;
     manager = createPluginWorkerManager();
@@ -309,23 +329,47 @@ describe("plugin worker stop finality", () => {
       return signal === "SIGKILL" ? true : realKill.call(this, signal);
     });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const releaseChild = async (workers: PluginWorkerManager) => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      const exited = nextEvent(handle, "exit");
+      process.kill(pid, "SIGKILL");
+      await exited;
+      await workers.stopWorker("gated.plugin");
+      expect(workers.getWorker("gated.plugin")).toBeUndefined();
+    };
+    return { gate, handle, manager, releaseChild };
+  }
 
-    const stopping = manager.stopWorker("gated.plugin").then(() => null, (err: unknown) => err);
+  it("N13: a worker that survives SIGKILL keeps its registration and cannot be called", async () => {
+    const { gate, handle, manager: workers, releaseChild } = await startUnkillable();
+
+    const stopping = workers.stopWorker("gated.plugin").then(() => null, (err: unknown) => err);
     await gate.next("shutdown-received");
     await vi.advanceTimersByTimeAsync(20_000);
     const failure = await stopping;
 
     expect((failure as Error | null)?.name).toBe("PluginWorkerStopError");
-    expect(manager.getWorker("gated.plugin")).toBe(handle);
-    expect(manager.isRunning("gated.plugin")).toBe(false);
+    expect(workers.getWorker("gated.plugin")).toBe(handle);
+    expect(workers.isRunning("gated.plugin")).toBe(false);
     await expect(handle.call("getData", {} as never)).rejects.toThrow();
+    await expect(handle.start()).rejects.toThrow();
 
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-    const exited = nextEvent(handle, "exit");
-    process.kill(pid, "SIGKILL");
-    await exited;
-    await manager.stopWorker("gated.plugin");
-    expect(manager.getWorker("gated.plugin")).toBeUndefined();
+    await releaseChild(workers);
+  });
+
+  it("N13: stopAll reports a worker that survives SIGKILL and keeps its registration", async () => {
+    const { gate, handle, manager: workers, releaseChild } = await startUnkillable();
+
+    const stopping = workers.stopAll().then(() => null, (err: unknown) => err);
+    await gate.next("shutdown-received");
+    await vi.advanceTimersByTimeAsync(20_000);
+    const failure = await stopping;
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors.map((err: Error) => err.name)).toEqual(["PluginWorkerStopError"]);
+    expect(workers.getWorker("gated.plugin")).toBe(handle);
+
+    await releaseChild(workers);
   });
 });
