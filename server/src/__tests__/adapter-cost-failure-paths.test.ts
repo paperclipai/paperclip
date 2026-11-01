@@ -72,6 +72,7 @@ describe("CLI adapter accounting on timeout", () => {
       // Local process logging catches callback failures. Finalization must
       // independently enforce receipt durability despite that contract.
       await options.onLog("stdout", stdout).catch(() => {});
+      await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
       return { exitCode: 0, signal: null, timedOut: false, stdout, stderr: "", pid: 123, startedAt: new Date().toISOString() };
     });
     const onUsage = vi.fn();
@@ -92,6 +93,7 @@ describe("CLI adapter accounting on timeout", () => {
         processResult.mockImplementationOnce(async (_run, _target, _command, _args, options) => {
           const failedOutput = JSON.stringify({ type }) + "\n";
           await options.onLog("stdout", failedOutput);
+          await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
           return { exitCode: 1, signal: null, timedOut: false, stdout: failedOutput, stderr: "", pid: 123, startedAt: new Date().toISOString() };
         });
         const failed = await execute({ ...context, config: { ...context.config, model: "gpt-6-astra" } });
@@ -121,6 +123,7 @@ describe("CLI adapter accounting on timeout", () => {
         processResult.mockImplementationOnce(async (_run, _target, _command, _args, options) => {
           const output = JSON.stringify({ type: "step_finish", part });
           await options.onLog("stdout", output);
+          await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
           return { exitCode: timedOut ? null : 0, signal: timedOut ? "SIGTERM" : null, timedOut, stdout: output, stderr: "", pid: 123, startedAt: new Date().toISOString() };
         });
         onUsage.mockClear();
@@ -138,6 +141,7 @@ describe("CLI adapter accounting on timeout", () => {
         processResult.mockImplementationOnce(async (_run, _target, _command, _args, options) => {
           const output = JSON.stringify({ type }) + "\n";
           await options.onLog("stdout", output);
+          await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
           return { exitCode: timedOut ? null : 0, signal: timedOut ? "SIGTERM" : null, timedOut, stdout: output, stderr: "", pid: 123, startedAt: new Date().toISOString() };
         });
         const missing = await execute({ ...context, config: { ...context.config, model: "gpt-5.6-sol" } });
@@ -148,6 +152,7 @@ describe("CLI adapter accounting on timeout", () => {
         processResult.mockImplementationOnce(async (_run, _target, _command, _args, options) => {
           const output = JSON.stringify({ type: "result", ...(explicitPrice ? { total_cost_usd: 0 } : { usage: { input_tokens: 0, output_tokens: 0 } }) }) + "\n";
           await options.onLog("stdout", output);
+          await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
           return { exitCode: 0, signal: null, timedOut: false, stdout: output, stderr: "", pid: 123, startedAt: new Date().toISOString() };
         });
         const reported = await execute(context);
@@ -160,6 +165,7 @@ describe("CLI adapter accounting on timeout", () => {
     if (["claude", "pi", "opencode"].includes(fixture.name)) {
       processResult.mockImplementationOnce(async (_run, _target, _command, _args, options) => {
         await options.onLog("stdout", stdout).catch(() => {});
+        await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
         return { exitCode: 1, signal: null, timedOut: false, stdout, stderr: "process failed", pid: 123, startedAt: new Date().toISOString() };
       });
       expect((await execute(context)).usageComplete).toBe(false);
@@ -176,6 +182,7 @@ describe("CLI adapter accounting on timeout", () => {
       processResult.mockImplementation(async (_run, _target, _command, _args, options) => {
         const output = mixed.map(item => JSON.stringify(item)).join("\n");
         await options.onLog("stdout", output).catch(() => {});
+        await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
         return { exitCode: 0, signal: null, timedOut: false, stdout: output, stderr: "", pid: 123, startedAt: new Date().toISOString() };
       });
       await execute(context);
