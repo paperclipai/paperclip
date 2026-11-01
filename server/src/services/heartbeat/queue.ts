@@ -85,6 +85,7 @@ import {
   gte,
   inArray,
   isNull,
+  like,
   lt,
   lte,
   ne,
@@ -2152,11 +2153,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
-        sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
-          WHERE live_issue_run.company_id = ${issues.companyId}
-            AND (live_issue_run.context_snapshot->>'issueId' = ${issues.id}::text
-              OR live_issue_run.native_issue_id = ${issues.id})
-            AND live_issue_run.status IN ('queued', 'running', 'scheduled_retry'))`,
+        or(
+          sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
+            WHERE live_issue_run.company_id = ${issues.companyId}
+              AND (live_issue_run.context_snapshot->>'issueId' = ${issues.id}::text
+                OR live_issue_run.native_issue_id = ${issues.id})
+              AND live_issue_run.status IN ('queued', 'running', 'scheduled_retry'))`,
+          // A stale-addressee redelivery receipt is re-admitted through
+          // ordinary wake admission below, which coalesces its comments into
+          // a live run itself. Waiting for the queued run to leave first
+          // would strand the comments the receipt saved.
+          like(agentWakeupRequests.idempotencyKey, "stale-addressee-requeue:%"),
+        ),
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const releasedNativeSources = new Set<string>();

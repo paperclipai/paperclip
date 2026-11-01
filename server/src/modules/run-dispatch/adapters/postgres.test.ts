@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   approvals,
   budgetIncidents,
   budgetPolicies,
@@ -19,6 +20,7 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
@@ -27,13 +29,16 @@ import {
   issues,
   nativeRunFinalizations,
   projects,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { createPostgresRunDispatchAdapter } from "./postgres.js";
+import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
+import { createPostgresRunDispatchAdapter, requeueAdoptedCommentsForAssignee } from "./postgres.js";
+import type { Db } from "@paperclipai/db";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { reserveRunBudget } from "../../../services/budget-reservations.js";
@@ -84,6 +89,8 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -1323,6 +1330,48 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
       });
+    });
+
+    it("registers deferred-receipt work when requeueing adopted comments", async () => {
+      // The shared helper serves the staleness gate and both claim-time
+      // cancellation branches. Only the gate transaction also signals through
+      // notifyExecutionRunWork, so invoking the helper directly proves its own
+      // registration: without it no deferred-receipt hint would settle.
+      const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId });
+      const commentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorUserId: "local-board",
+        authorType: "user",
+        body: "Please also confirm the rollout plan.",
+      });
+      const runId = randomUUID();
+      const hints: Array<Record<string, unknown>> = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, (event, values) => {
+        if (event === "settled") for (const value of values ?? []) hints.push(JSON.parse(value));
+      });
+      try {
+        await db.transaction(async (tx) => {
+          await requeueAdoptedCommentsForAssignee(tx as unknown as Db, {
+            companyId,
+            issueId,
+            runId,
+            source: "heartbeat",
+            triggerDetail: null,
+            adoptedCommentIds: [commentId],
+          });
+        });
+      } finally {
+        unsubscribe();
+      }
+      const [receipt] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, `stale-addressee-requeue:${runId}`));
+      expect(receipt).toMatchObject({ status: "deferred_issue_execution", agentId: assigneeAgentId });
+      expect(hints).toEqual([{ companyId }]);
     });
 
     it(

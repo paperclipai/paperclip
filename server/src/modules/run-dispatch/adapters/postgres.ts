@@ -112,6 +112,9 @@ export async function requeueAdoptedCommentsForAssignee(
     .where(and(eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
       inArray(issueComments.id, commentIds)))
     .orderBy(desc(issueComments.createdAt)).limit(1);
+  // Wake the deferred worker on commit; otherwise the receipt waits for the
+  // 30s reconstruction sweep. One registration covers all three callers.
+  await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
   await tx.insert(agentWakeupRequests).values({
     companyId: input.companyId,
     agentId: issue.assigneeAgentId,
