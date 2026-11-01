@@ -365,6 +365,16 @@ describe("adapter routes", () => {
       },
     });
 
+    const t3codeAdapter = res.body.find((a: any) => a.type === "t3code_local");
+    expect(t3codeAdapter).toBeDefined();
+    expect(t3codeAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: false,
+      supportsLocalAgentJwt: false,
+      requiresMaterializedRuntimeSkills: false,
+      supportsAcp: false,
+    });
+
     const hermesLocal = res.body.find((a: any) => a.type === "hermes_local");
     expect(hermesLocal).toBeDefined();
     expect(hermesLocal.source).toBe("builtin");

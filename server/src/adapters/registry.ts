@@ -135,6 +135,15 @@ import {
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
+import {
+  execute as t3codeExecute,
+  testEnvironment as t3codeTestEnvironment,
+  sessionCodec as t3codeSessionCodec,
+} from "@paperclipai/adapter-t3code-local/server";
+import {
+  agentConfigurationDoc as t3codeAgentConfigurationDoc,
+  models as t3codeModels,
+} from "@paperclipai/adapter-t3code-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -964,6 +973,21 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const t3codeLocalAdapter: ServerAdapterModule = {
+  type: "t3code_local",
+  runtimeToolDelivery: "invocation_context",
+  execute: t3codeExecute,
+  testEnvironment: t3codeTestEnvironment,
+  sessionCodec: t3codeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("t3code_local") ?? undefined,
+  models: t3codeModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: t3codeAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -983,6 +1007,7 @@ function registerBuiltInAdapters() {
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    t3codeLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,

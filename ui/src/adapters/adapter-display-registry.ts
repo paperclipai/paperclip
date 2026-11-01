@@ -127,6 +127,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Pi harness",
     icon: Terminal,
   },
+  t3code_local: {
+    label: "T3 Code",
+    description: "Threads on your local T3 Code server",
+    icon: Code,
+  },
   cursor: {
     label: "Cursor",
     description: "Cursor CLI harness",

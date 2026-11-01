@@ -85,6 +85,7 @@ describe("built-in runtime connection tool delivery", () => {
     ["opencode_local", "environment"],
     ["paperclip_runner", "environment"],
     ["pi_local", "environment"],
+    ["t3code_local", "invocation_context"],
     ["process", "environment"],
     ["http", "invocation_context"],
   ] as const);
