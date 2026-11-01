@@ -115,12 +115,12 @@ describe("durable agent file authority", () => {
     expect(await migrateAgentFiles(db, { companyId, apply: true, writersStopped: true })).toMatchObject({ pageReady: true });
     await replaceFilesystem();
     objects.readDelayMs = 25;
-    expect(await store().read(companyId, agentId, "nested/file-39.bin", actor())).toEqual(contents);
+    expect((await store().read(companyId, agentId, "nested/file-39.bin", actor()))?.equals(contents)).toBe(true);
     expect(objects.peakReads).toBeGreaterThan(1);
     expect(objects.peakReads).toBeLessThanOrEqual(8);
     expect(objects.activeReads).toBe(0);
     for (let index = 0; index < 40; index++) {
-      expect(await fs.readFile(path.join(root, `nested/file-${index}.bin`))).toEqual(contents);
+      expect((await fs.readFile(path.join(root, `nested/file-${index}.bin`))).equals(contents)).toBe(true);
     }
 
     // A corrupt replacement must preserve the old projection and await every
@@ -130,9 +130,9 @@ describe("durable agent file authority", () => {
     await expect(store().read(companyId, agentId, "nested/file-39.bin", actor())).rejects.toThrow(/committed (size|digest)/);
     expect(objects.activeReads).toBe(0);
     expect((await fs.readdir(path.dirname(root))).filter(name => name.startsWith(".agent-files-"))).toEqual([]);
-    expect(await fs.readFile(path.join(root, "nested/file-39.bin"))).toEqual(contents);
+    expect((await fs.readFile(path.join(root, "nested/file-39.bin"))).equals(contents)).toBe(true);
     objects.corruptReads = false;
-    expect(await store().read(companyId, agentId, "nested/file-39.bin", actor())).toEqual(contents);
+    expect((await store().read(companyId, agentId, "nested/file-39.bin", actor()))?.equals(contents)).toBe(true);
   });
 
   it("does not promote a rejected first save through subsequent local adoption", async () => {
