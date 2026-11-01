@@ -1891,10 +1891,11 @@ export function parseStatusFilter(
     : typeof input === "string"
       ? [input]
       : [];
-  return entries
+  const statuses = entries
     .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
     .map((status) => status.trim())
     .filter(Boolean);
+  return [...new Set(statuses)];
 }
 
 export interface IssueFilters {
