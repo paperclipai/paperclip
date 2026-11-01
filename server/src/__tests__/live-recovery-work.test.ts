@@ -399,6 +399,39 @@ describe("residual recovery production matrix", () => {
     await heartbeat.cancelRun(run.id, "Operator cancelled the controller renewal fixture");
     await quiet();
   });
+  it("schedules the pid-metadata grace deadline through the live worker so an abandoned local run is reaped once the window ends", async () => {
+    const f = await fixture();
+    // A sessioned local adapter on a legacy run is the tracked-local-child path
+    // that owns the metadata grace window.
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, f.agent.id));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const graceMs = 20 * 60_000;
+    // Older than the 5-min staleness threshold but still inside the 20-min
+    // metadata grace: exactly the state a local run is in just after spawn, before
+    // its PID is persisted. Keep the window short so the fake clock runs fast.
+    const startedAt = new Date(Date.now() - 19 * 60_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", runtimeMode: "legacy", contextSnapshot: { issueId: f.issue.id },
+      processPid: null, processGroupId: null, startedAt, updatedAt: startedAt }).returning();
+    const admitted = () => !draining && !standby;
+    await heartbeat.registerResidualRecoveryWork(coordinator, admitted).ready;
+    // Inside the grace window the run must stay running AND be scheduled for a
+    // re-check at exactly grace expiry. Before the fix the grace branch skipped
+    // scope.onDeferredDeadline, so registerLiveRecoveryWork returned no deadline
+    // and the run was dropped from scheduled recovery — nothing ever re-checked it.
+    const graceDeadline = startedAt.getTime() + graceMs;
+    expect((await getRun(run.id)).status).toBe("running");
+    expect(deadlines.get("active-execution-recovery")!()).toBe(graceDeadline);
+    // Still protected right up to the scheduled deadline.
+    await advance(graceDeadline - Date.now() - 1);
+    expect((await getRun(run.id)).status).toBe("running");
+    // The scheduled re-check fires at grace expiry and reaps the abandoned run.
+    await advance(2);
+    await vi.waitFor(async () => expect((await getRun(run.id)).status).toBe("failed"));
+    expect((await getRun(run.id)).errorCode).toBe("process_lost");
+    await quiet();
+  });
   it("recovers orphan active leases after restart, including a deleted heartbeat reference, without starving behind 100 guarded rows", async () => {
     const f = await fixture(), foreign = await fixture(), resource = randomUUID(), old = new Date(Date.now() - 6 * 60_000);
     await db.insert(environmentLeases).values({ companyId: foreign.companyId, status: "retained", provider: "fixture", providerLeaseId: resource, updatedAt: old });
