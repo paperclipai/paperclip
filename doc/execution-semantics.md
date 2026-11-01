@@ -79,6 +79,13 @@ another agent still require the outgoing execution to stop before ownership chan
 
 Paperclip issue statuses are not just UI labels. They imply different expectations about ownership and execution.
 
+A running native owner reports its own task status through `paperclip_finish` or
+`paperclip_block`. Both ordinary task updates and recovery-action resolution reject
+direct self-status changes before they can release that run's task-tool access.
+Recovery resolution can still record an outcome without changing the status.
+Board recovery, legacy agents, and the existing conversation and handoff paths
+retain their normal permission and lifecycle checks.
+
 ### `backlog`
 
 The issue is not ready for active work.

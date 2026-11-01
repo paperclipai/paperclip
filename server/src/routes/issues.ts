@@ -10196,6 +10196,7 @@ export function issueRoutes(
         }
 
         if (sourceStatusChanged) {
+          await assertNativeRunKeepsOwnExecutionLock(req, lockedIssue, sourceIssueStatus);
           const safeHandBack =
             outcome === "restored" &&
             sourceIssueStatus === "todo" &&
@@ -13874,11 +13875,12 @@ export function issueRoutes(
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
     issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    requestedStatus: unknown = req.body.status,
   ) {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
-    if (req.body.status === undefined || req.body.status === issue.status) return;
+    if (requestedStatus === undefined || requestedStatus === issue.status) return;
     if (isConversation(issue)) return;
     const keepsAssignment =
       (req.body.assigneeAgentId === undefined || req.body.assigneeAgentId === issue.assigneeAgentId) &&
@@ -13899,7 +13901,7 @@ export function issueRoutes(
       "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
         "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
-      { code: "native_run_status_reported_by_finish", requestedStatus: req.body.status },
+      { code: "native_run_status_reported_by_finish", requestedStatus },
     );
   }
 
