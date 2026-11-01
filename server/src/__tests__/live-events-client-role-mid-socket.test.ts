@@ -26,8 +26,16 @@ import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
  * stops reading the role.
  *
  * On proving a negative. Asserting that a socket did *not* receive an event
- * needs a barrier, or the assertion only proves the test looked too early.
- * The barrier here is same-socket ordering, and only that:
+ * needs some barrier, or the assertion only proves the test looked too early.
+ * This file has had two wrong answers to that, so the reasoning is recorded
+ * here in full. Please read it before you change the shape of these tests.
+ *
+ * What is **not** a barrier is another socket. Each connection gets its own
+ * delivery object and its own fire-and-forget `drain()` loop, each awaiting its
+ * own database reads. A staff socket receiving an event says nothing about
+ * where the demoted socket's loop has got to.
+ *
+ * Same-socket ordering *is* a real property:
  *
  *   - `publishLiveEvent` emits on a synchronous `EventEmitter`, and each
  *     subscriber's listener calls `delivery.enqueue` synchronously, so one
@@ -36,16 +44,32 @@ import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
  *     `draining` guard, pulls with `queued.shift()`, and awaits `authorize`
  *     for one item before it takes the next.
  *
- * So on a single socket, delivery of a later event proves every earlier event
- * on that socket has already been authorized and either sent or dropped. The
- * tests below therefore assert the denials only *after* the same socket has
- * received a later event.
+ * But it cannot be used the way an earlier version of this file used it. That
+ * version restored the role and waited for the demoted socket to deliver a
+ * *later* event, then asserted the earlier events were absent. Same-socket
+ * ordering does prove those earlier events were already authorized. It does not
+ * prove what the role was when they were authorized. `authorize` reads the role
+ * at the moment it runs, so if the socket's loop reaches them after the role is
+ * restored, it delivers them — which is correct behavior, and the assertion
+ * fails on a working deny. That is a random failure, and it is the reason the
+ * role is no longer restored before the negative assertion.
  *
- * What is **not** a barrier is another socket. Each connection gets its own
- * delivery object and its own fire-and-forget `drain()` loop, each awaiting its
- * own database reads. The staff socket receiving an event says nothing about
- * where the demoted socket's loop has got to, so a deny that was broken but
- * merely slower would satisfy a cross-socket check. Do not reintroduce one.
+ * There is no in-band barrier available while the member is a client, because
+ * the deny drops *every* event for that socket and `live-event-delivery.ts`
+ * emits nothing on a drop: `authorize` returns null and the item is discarded
+ * silently. So the negative below is bounded by two things together:
+ *
+ *   1. a staff witness socket that confirms each publication really did fan out
+ *      (so the demoted socket's queue has certainly received it), and
+ *   2. a short settle window after that, which is generous next to the single
+ *      indexed membership read that `authorize` performs.
+ *
+ * This is weaker than an ordering proof and it is deliberately the weaker of
+ * two bad options: it can only ever fail to catch a deny that is broken *and*
+ * slower than the settle window, whereas the ordering version failed at random
+ * on a deny that worked. The role is restored only *after* the negative has
+ * been asserted, purely to check that the deny is not a latch. That last step
+ * makes no negative assertion, so nothing races with it.
  */
 describe("live events re-read the membership role while the socket stays open", () => {
   let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
@@ -109,6 +133,16 @@ describe("live events re-read the membership role while the socket stays open", 
     return messages.some(message => message.payload.agentId === agentId);
   }
 
+  /**
+   * The settle window described at the top of this file. It runs only after a
+   * witness socket has confirmed the publication fanned out, so all that is
+   * left for the denied socket is one indexed membership read inside
+   * `authorize`. A second is far longer than that read, and the cost of the
+   * window is bounded: it is paid twice in this file.
+   */
+  const SETTLE_MS = 1_000;
+  const settle = () => new Promise(resolve => setTimeout(resolve, SETTLE_MS));
+
   it("stops delivering to a staff member who is changed to client mid-stream", async () => {
     const staff = randomUUID(), demoted = randomUUID();
     const companyId = await seedCompany("MIDSOCKA", [
@@ -146,34 +180,28 @@ describe("live events re-read the membership role while the socket stays open", 
 
       await setRole(companyId, demoted, "client");
 
-      // Publish twice while the member is a client. The staff socket confirms
-      // each publish did fan out, which is all another socket can establish --
-      // see the note on barriers at the top of this file. The demoted socket is
-      // not asserted on yet, because nothing has yet proved its delivery loop
-      // has reached these two events.
+      // Publish twice while the member is a client, and confirm each
+      // publication on the staff socket. That establishes the events really did
+      // fan out, so the demoted socket's queue has received them.
       const after = publishMarker(companyId);
       await expect.poll(() => sawMarker(staffClient.messages, after), { timeout: 10_000 }).toBe(true);
       const again = publishMarker(companyId);
       await expect.poll(() => sawMarker(staffClient.messages, again), { timeout: 10_000 }).toBe(true);
 
-      // Restore the role and wait for the demoted socket itself to deliver a
-      // later event. This is the barrier. Because that socket drains serially
-      // in publish order, receiving `restored` proves `after` and `again` have
-      // already been authorized on this socket and were not merely in flight.
-      // It also proves the deny tracks the current role instead of latching the
-      // connection shut for good.
+      // Assert the denials while the member is still a client. The role is not
+      // restored first, on purpose -- see the note at the top of this file.
+      // Two denials, so a deny that dropped only the first event still fails.
+      await settle();
+      expect(sawMarker(demotedClient.messages, after)).toBe(false);
+      expect(sawMarker(demotedClient.messages, again)).toBe(false);
+      expect(demotedClient.socket.readyState).toBe(WebSocket.OPEN);
+
+      // Only now restore the role, to show the deny tracks the current role
+      // instead of latching the connection shut. This step asserts a positive,
+      // so nothing here can race.
       await setRole(companyId, demoted, "operator");
       const restored = publishMarker(companyId);
       await expect.poll(() => sawMarker(demotedClient.messages, restored), { timeout: 10_000 }).toBe(true);
-
-      // Now the denials are decisions rather than a race. Two of them, so a
-      // deny that dropped only the first event would still fail here.
-      expect(sawMarker(demotedClient.messages, after)).toBe(false);
-      expect(sawMarker(demotedClient.messages, again)).toBe(false);
-
-      // The events were denied, not the connection: the socket stayed open and
-      // subscribed throughout, which the delivery of `restored` just proved.
-      expect(demotedClient.socket.readyState).toBe(WebSocket.OPEN);
     } finally {
       staffClient.socket.close();
       demotedClient.socket.close();
@@ -232,10 +260,8 @@ describe("live events re-read the membership role while the socket stays open", 
    * hold a company event stream as a client: mint an unscoped key while staff,
    * then be changed to `client` and keep using the key as a bearer token.
    *
-   * The same barrier reasoning as the first test applies, for the same reason —
-   * see the note at the top of this file. The key socket is the only socket, so
-   * the barrier is a later event delivered to that socket after the role is
-   * restored.
+   * This case bounds its negative the same way as the first one, and for the
+   * same reason -- see the note at the top of this file.
    */
   it("stops delivering to an agent key whose responsible user is changed to client", async () => {
     const responsible = randomUUID(), witness = randomUUID();
@@ -275,9 +301,9 @@ describe("live events re-read the membership role while the socket stays open", 
     const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
     socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
     // A staff socket that stays staff throughout. It is *not* a barrier for the
-    // key socket — see the note at the top of this file — it is only how the
-    // test confirms each publish actually fanned out before the role is put
-    // back, so the key socket's own serial drain has reached those events.
+    // key socket -- see the note at the top of this file -- it is only how the
+    // test confirms each publication really fanned out, so the key socket's
+    // queue has certainly received it before the settle window starts.
     const witnessClient = connect(port, companyId, witness);
     try {
       await Promise.all([once(socket, "open"), once(witnessClient.socket, "open")]);
@@ -293,18 +319,18 @@ describe("live events re-read the membership role while the socket stays open", 
       const deniedAgain = publishMarker(companyId);
       await expect.poll(() => sawMarker(witnessClient.messages, deniedAgain), { timeout: 10_000 }).toBe(true);
 
-      // Restore and wait for the key socket itself to deliver a later event.
-      // That is the barrier: because the socket drains serially in publish
-      // order, receiving `restored` proves both denied events were already
-      // authorized on this socket and were not merely in flight. It also proves
-      // the deny tracks the current role rather than latching the socket shut.
-      await setRole(companyId, responsible, "operator");
-      const restored = publishMarker(companyId);
-      await expect.poll(() => sawMarker(messages, restored), { timeout: 10_000 }).toBe(true);
-
+      // Assert the denials while the responsible user is still a client, before
+      // the role is restored -- see the note at the top of this file.
+      await settle();
       expect(sawMarker(messages, denied)).toBe(false);
       expect(sawMarker(messages, deniedAgain)).toBe(false);
       expect(socket.readyState).toBe(WebSocket.OPEN);
+
+      // Restore the role to show the key's stream resumes, so the deny is not a
+      // latch. A positive assertion, so nothing here can race.
+      await setRole(companyId, responsible, "operator");
+      const restored = publishMarker(companyId);
+      await expect.poll(() => sawMarker(messages, restored), { timeout: 10_000 }).toBe(true);
     } finally {
       socket.close();
       witnessClient.socket.close();
