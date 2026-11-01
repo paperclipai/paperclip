@@ -14,6 +14,7 @@ import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-wor
 import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { registerIssueRecoveryWork } from "../services/recovery/work.js";
+import { ISSUE_TERMINAL_MIN_RUN_AGE_MS } from "../services/recovery/service.js";
 import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
 import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -513,7 +514,10 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     const lease = new Date(Date.now() + 5_000);
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
       runtimeMode: "legacy", controllerBootId: randomUUID(), controllerLeaseExpiresAt: lease,
-      contextSnapshot: { issueId: source.id }, processPid: 2_000_000_000, startedAt: new Date() }).returning();
+      // A run that outlived its controller is an orphan, so it is older than the
+      // issue-terminal grace period (a fresh one is a hand-off and only dies "interrupted").
+      contextSnapshot: { issueId: source.id }, processPid: 2_000_000_000,
+      startedAt: new Date(Date.now() - ISSUE_TERMINAL_MIN_RUN_AGE_MS - 5_000) }).returning();
     await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, source.id));
     await start();
     await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(lease.getTime()), { timeout: 3_000 });
