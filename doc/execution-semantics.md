@@ -10,6 +10,16 @@ This document explains how Paperclip interprets issue assignment, issue status, 
 
 ## 1. Core Model
 
+Project execution placement uses `executionWorkspacePolicy.environmentId`
+independently of checkout isolation or file-source selection. The task's project
+overrides the agent and instance defaults; an explicit low-trust task sandbox
+and instance execution restrictions still take precedence. External personal
+assistant controllers keep their existing environment selection. Resource
+configuration remains on the selected environment. Missing, inactive and
+unauthorized selections fail through normal environment admission. Selection
+changes do not resize existing provider resources or rewrite admitted execution
+inputs. See the [operator guide](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#project-execution-environment).
+
 Paperclip separates four concepts that are easy to blur together:
 
 1. structure: parent/sub-issue relationships

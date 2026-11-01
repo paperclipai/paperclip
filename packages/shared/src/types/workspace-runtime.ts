@@ -176,6 +176,7 @@ export interface ProjectExecutionWorkspacePolicy {
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
   allowIssueOverride?: boolean;
   defaultProjectWorkspaceId?: string | null;
+  /** Task project execution default. Applies even when checkout isolation is disabled. */
   environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;

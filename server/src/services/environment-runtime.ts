@@ -1113,6 +1113,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         heartbeatRunId: input.heartbeatRunId,
         leasePolicy: "ephemeral",
         provider: "local",
+        assertCompanyBinding: input.assertCompanyBinding,
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
@@ -1187,6 +1188,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         heartbeatRunId: input.heartbeatRunId,
         leasePolicy: "ephemeral",
         provider: "ssh",
+        assertCompanyBinding: input.assertCompanyBinding,
         providerLeaseId: `ssh://${parsed.config.username}@${parsed.config.host}:${parsed.config.port}${remoteCwd}`,
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),

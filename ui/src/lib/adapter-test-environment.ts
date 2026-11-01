@@ -23,10 +23,10 @@ export class ManagedSandboxUnavailableForTestError extends Error {
  * Which environment should an adapter "Test" probe?
  *
  * The resolution mirrors the server run-time resolution
- * (`resolveExecutionWorkspaceEnvironmentId`) across all three tiers: the
+ * (`resolveExecutionWorkspaceEnvironmentId`) for an agent without a task/project: the
  * agent's own environment wins, otherwise the instance default, otherwise the
- * instance local-default environment. The server always resolves a run to one
- * of these three tiers, so the Test must probe the same target. Without the
+ * instance local-default environment. A task's project can override these defaults;
+ * this agent-level probe has no project context. Without the
  * local-default tier the Test would send no environment id and probe the
  * Paperclip host, even though a real run resolves to the local-default
  * environment. The two paths must match, so a Test result reflects a real run.

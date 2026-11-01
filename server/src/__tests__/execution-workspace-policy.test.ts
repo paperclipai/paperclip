@@ -23,6 +23,13 @@ import {
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
+  it.each(["project-env", null])("round-trips project environment %s independently of checkout isolation", environmentId => {
+    expect(parseProjectExecutionWorkspacePolicy({ enabled: false, environmentId })).toEqual({ enabled: false, environmentId });
+  });
+
+  it("ignores malformed project environment values", () => {
+    expect(parseProjectExecutionWorkspacePolicy({ enabled: true, environmentId: { id: "invalid" } })).toEqual({ enabled: true });
+  });
   it("ignores operator-owned homeMode in stored task overrides while retaining task settings", () => {
     expect(parseIssueAssigneeAdapterOverrides({ adapterConfig: { homeMode: "preconfigured", model: "task-model" } }))
       .toEqual({ adapterConfig: { model: "task-model" }, useProjectWorkspace: null });
@@ -547,6 +554,39 @@ describe("execution workspace policy helpers", () => {
     });
     expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, true)).toEqual(parsedSettings);
     expect(selectEnvironmentExecutionWorkspaceSettings({ mode: "isolated_workspace" }, false)).toBeNull();
+  });
+
+  it("prefers the task project's environment over agent and instance defaults", () => {
+    const input = {
+      projectEnvironmentId: "project-env",
+      agentDefaultEnvironmentId: "agent-env",
+      instanceDefaultEnvironmentId: "instance-env",
+      localDefaultEnvironmentId: "local-env",
+    };
+    expect(resolveExecutionWorkspaceEnvironmentId(input)).toEqual({ environmentId: "project-env", source: "project" });
+  });
+
+  it("preserves an explicit low-trust sandbox ahead of the project environment", () => {
+    const input = {
+      lowTrustIssueEnvironmentId: "restricted-env",
+      projectEnvironmentId: "project-env",
+      agentDefaultEnvironmentId: "agent-env",
+      instanceDefaultEnvironmentId: null,
+      localDefaultEnvironmentId: "local-env",
+    };
+    expect(resolveExecutionWorkspaceEnvironmentId(input)).toEqual({ environmentId: "restricted-env", source: "issue" });
+  });
+
+  it("redirects a project's local selection under managed-sandbox-only", () => {
+    const input = {
+      projectEnvironmentId: "local-env",
+      agentDefaultEnvironmentId: "agent-env",
+      instanceDefaultEnvironmentId: null,
+      localDefaultEnvironmentId: "local-env",
+      managedSandboxOnly: true,
+      managedSandboxEnvironmentId: "managed-env",
+    };
+    expect(resolveExecutionWorkspaceEnvironmentId(input)).toEqual({ environmentId: "managed-env", source: "managed" });
   });
 
   it("prefers the agent default environment", () => {

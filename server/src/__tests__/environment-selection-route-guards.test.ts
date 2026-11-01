@@ -26,6 +26,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listBoundCompanyIds: vi.fn(),
 }));
 
 const mockCompanyService = vi.hoisted(() => ({
@@ -63,10 +64,10 @@ vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(),
     decide: vi.fn(async (input: { action: string }) => ({
-      allowed: ["project:read", "issue:read"].includes(input.action),
+      allowed: ["project:read", "project:write_workspace", "tasks:assign", "issue:read"].includes(input.action),
       action: input.action,
-      reason: ["project:read", "issue:read"].includes(input.action) ? "allow_explicit_grant" : "deny_missing_grant",
-      explanation: ["project:read", "issue:read"].includes(input.action) ? "Allowed by test default." : "Missing permission.",
+      reason: ["project:read", "project:write_workspace", "tasks:assign", "issue:read"].includes(input.action) ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: ["project:read", "project:write_workspace", "tasks:assign", "issue:read"].includes(input.action) ? "Allowed by test default." : "Missing permission.",
     })),
     hasPermission: vi.fn(),
   }),
@@ -200,6 +201,7 @@ describe("execution environment route guards", () => {
       id: "company-1",
     });
     mockEnvironmentService.getById.mockReset();
+    mockEnvironmentService.listBoundCompanyIds.mockReset().mockResolvedValue([]);
     mockIssueReferenceService.deleteDocumentSource.mockClear();
     mockIssueReferenceService.diffIssueReferenceSummary.mockClear();
     mockIssueReferenceService.emptySummary.mockClear();
@@ -236,7 +238,7 @@ describe("execution environment route guards", () => {
         },
       });
 
-    expect(res.status).not.toBe(422);
+    expect(res.status).toBe(201);
     expect(mockProjectService.create).toHaveBeenCalled();
   });
 
@@ -271,7 +273,7 @@ describe("execution environment route guards", () => {
         },
       });
 
-    expect(res.status).not.toBe(422);
+    expect(res.status).toBe(200);
     expect(mockProjectService.update).toHaveBeenCalled();
   });
 

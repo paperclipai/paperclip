@@ -7,15 +7,22 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
+  companyMemberships,
+  authUsers,
   createDb,
   environmentLeases,
   environments,
+  issues,
+  projects,
+  projectWorkspaces,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { projectService } from "../services/projects.js";
+import { environmentService } from "../services/environments.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -165,6 +172,62 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       driver: "local",
       leaseId: leases[0]?.id,
     });
+  });
+
+  it.each([{ enabled: false, otherSource: false }, { enabled: true, otherSource: false }, { enabled: false, otherSource: true }])(
+    "dispatches through the task project's saved environment (checkout policy=$enabled, other project source=$otherSource)", async ({ enabled, otherSource }) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const tempDir = await mkdtemp(join(tmpdir(), "paperclip-project-environment-"));
+    const output = join(tempDir, "selected-environment.txt");
+    await db.insert(companies).values({ id: companyId, name: "Project environment", issuePrefix: "ENV",
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Test operator", email: "environment@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    const selected = await environmentService(db).ensureLocalEnvironment(companyId);
+    await db.update(environments).set({ envVars: { PROJECT_ENVIRONMENT_MARKER: { type: "plain", value: "project-computer" } } })
+      .where(eq(environments.id, selected.id));
+    const [fallback] = await db.insert(environments).values({ name: "Unavailable agent computer", driver: "sandbox", status: "archived",
+      config: { provider: "daytona", image: "test/unused" } }).returning();
+    const [project] = await db.insert(projects).values({ companyId, name: "Project without a codebase" }).returning();
+    await projectService(db).update(project.id, { executionWorkspacePolicy: { enabled, environmentId: selected.id } });
+    expect((await projectService(db).getById(project.id))?.executionWorkspacePolicy).toMatchObject({ enabled, environmentId: selected.id });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Project agent", status: "idle", adapterType: "process",
+      defaultEnvironmentId: fallback.id,
+      adapterConfig: { command: process.execPath, args: ["-e",
+        `require('node:fs').writeFileSync(${JSON.stringify(output)}, process.env.PROJECT_ENVIRONMENT_MARKER ?? 'wrong-environment')`] } });
+    let sourceWorkspaceId: string | undefined;
+    if (otherSource) {
+      const [sourceProject] = await db.insert(projects).values({ companyId, name: "Different source project",
+        executionWorkspacePolicy: { enabled: false, environmentId: fallback.id } }).returning();
+      const [source] = await db.insert(projectWorkspaces).values({ companyId, projectId: sourceProject.id, name: "Source files",
+        cwd: tempDir, sourceType: "non_git_path", isPrimary: true }).returning();
+      sourceWorkspaceId = source.id;
+    }
+    const [issue] = await db.insert(issues).values({ companyId, projectId: project.id, projectWorkspaceId: sourceWorkspaceId, title: "Use the project computer",
+      status: "todo", assigneeAgentId: agentId }).returning();
+
+    const queued = await heartbeat.invoke(agentId, "on_demand", { issueId: issue.id }, "manual");
+    const finished = await waitForRunToFinish(heartbeat, queued!.id, 15_000);
+    expect(finished?.status).toBe("succeeded");
+    expect(await readFile(output, "utf8")).toBe("project-computer");
+    const leases = await waitForRunLeasesToRelease(db, queued!.id);
+    expect(leases).toHaveLength(1);
+    expect(leases[0]).toMatchObject({ environmentId: selected.id, status: "released" });
+    expect(finished?.contextSnapshot?.paperclipEnvironment).toMatchObject({ id: selected.id, name: selected.name });
+    await heartbeat.drainActiveRunExecutions();
+
+    // Clearing restores the agent's choice and preserves its inactive-target error.
+    await projectService(db).update(project.id, { executionWorkspacePolicy: { enabled, environmentId: null } });
+    expect((await projectService(db).getById(project.id))?.executionWorkspacePolicy?.environmentId).toBeNull();
+    const [nextIssue] = await db.insert(issues).values({ companyId, projectId: project.id, projectWorkspaceId: sourceWorkspaceId,
+      title: "Inherit the agent computer", status: "todo", assigneeAgentId: agentId }).returning();
+    const next = await heartbeat.invoke(agentId, "on_demand", { issueId: nextIssue.id }, "manual");
+    expect(next!.id).not.toBe(queued!.id);
+    const nextFinished = await waitForRunToFinish(heartbeat, next!.id, 15_000);
+    expect(nextFinished?.status, JSON.stringify({ error: nextFinished?.error, retryReason: nextFinished?.scheduledRetryReason })).not.toBe("succeeded");
+    expect(nextFinished?.error).toContain("Unavailable agent computer");
+    expect(await readFile(output, "utf8")).toBe("project-computer");
   });
 
   it("injects run-scoped Paperclip env into process agents", async () => {

@@ -685,6 +685,14 @@ Operational policy:
 
 ## 7.16 Current Implementation Addenda
 
+Project execution environment defaults use the existing
+`executionWorkspacePolicy.environmentId`, independently of checkout isolation.
+The task's project overrides agent and instance defaults even when its files
+come from another project. Explicit low-trust task placement and instance
+execution restrictions remain stronger. Environment configuration owns provider
+resource sizes; a project stores only the reference. See the
+[execution environment guide](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#project-execution-environment).
+
 The current implementation includes additional V1-control-plane tables beyond the original February snapshot:
 
 - Issue structure and review: `issue_relations` for blockers, `labels`/`issue_labels`, `issue_thread_interactions`, `issue_approvals`, `issue_execution_decisions`, `issue_work_products`, `issue_inbox_archives`, `issue_read_states`, and issue reference mention indexes.

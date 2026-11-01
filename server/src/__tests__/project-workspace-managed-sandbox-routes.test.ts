@@ -30,6 +30,7 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listBoundCompanyIds: vi.fn(),
 }));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getExperimental: vi.fn(),
@@ -108,7 +109,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actorOverrides: Record<string, unknown> = {}) {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -123,6 +124,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -216,6 +218,103 @@ describe("project workspace host-path floor", () => {
     mockProjectService.listWorkspaces.mockResolvedValue([buildWorkspace()]);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     setManagedSandboxOnly(false);
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
+  });
+
+  it("accepts a Daytona project environment without enabling checkout isolation", async () => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    setManagedSandboxOnly(true);
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, driver: "sandbox", status: "active", config: { provider: "daytona", disk: 30 } });
+    mockProjectService.update.mockResolvedValue(buildProject({ executionWorkspacePolicy: { enabled: false, environmentId } }));
+    const app = await createApp();
+    const res = await request(app).patch("/api/projects/project-1").send({ executionWorkspacePolicy: { enabled: false, environmentId } });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.update).toHaveBeenCalledWith("project-1", { executionWorkspacePolicy: { enabled: false, environmentId } });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "project.updated" }));
+  });
+
+  it.each(["missing", "archived", "fake"])("rejects a %s project environment before saving", async state => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockEnvironmentService.getById.mockResolvedValue(state === "missing" ? null : {
+      id: environmentId, driver: "sandbox", status: state === "archived" ? "archived" : "active", config: { provider: "fake" },
+    });
+    const app = await createApp();
+    const res = await request(app).patch("/api/projects/project-1").send({ executionWorkspacePolicy: { enabled: false, environmentId } });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+  });
+
+  it("clears a project environment without requiring the old target to exist", async () => {
+    mockProjectService.update.mockResolvedValue(buildProject({ executionWorkspacePolicy: { enabled: false, environmentId: null } }));
+    const app = await createApp();
+    const res = await request(app).patch("/api/projects/project-1").send({ executionWorkspacePolicy: { enabled: false, environmentId: null } });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
+  });
+
+  it("allows unrelated policy edits while the unchanged environment is archived", async () => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockProjectService.getById.mockResolvedValue(buildProject({ executionWorkspacePolicy: { enabled: true, environmentId, sharedWorkspaceConcurrency: "auto" } }));
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, driver: "sandbox", status: "archived", config: { provider: "daytona" } });
+    const executionWorkspacePolicy = { enabled: true, environmentId, sharedWorkspaceConcurrency: "serialize" };
+    mockProjectService.update.mockResolvedValue(buildProject({ executionWorkspacePolicy }));
+    const app = await createApp();
+    const res = await request(app).patch("/api/projects/project-1").send({ executionWorkspacePolicy });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.update).toHaveBeenCalledWith("project-1", { executionWorkspacePolicy });
+    expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
+  });
+
+  it("requires workspace-write authority to change a project environment", async () => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockAccessService.decide.mockImplementation(async input => ({ allowed: input.action !== "project:write_workspace", explanation: "Workspace write permission required." }));
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, driver: "sandbox", status: "active", config: { provider: "daytona" } });
+    const app = await createApp();
+    await request(app).patch("/api/projects/project-1").send({ executionWorkspacePolicy: { enabled: false, environmentId } }).expect(403);
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { enabled: false }, { enabled: false, environmentId: null }])("requires write authority when policy replacement clears an environment (%j)", async executionWorkspacePolicy => {
+    mockProjectService.getById.mockResolvedValue(buildProject({ executionWorkspacePolicy: { enabled: false, environmentId: "11111111-1111-4111-8111-111111111111" } }));
+    mockAccessService.decide.mockImplementation(async input => ({ allowed: input.action !== "project:write_workspace", explanation: "Workspace write permission required." }));
+    const app = await createApp();
+    await request(app).patch("/api/projects/project-1").send({ executionWorkspacePolicy }).expect(403);
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a project environment bound only to another company", async () => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, driver: "sandbox", status: "active", config: { provider: "daytona" } });
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["other-company"]);
+    const app = await createApp();
+    await request(app).patch("/api/projects/project-1").send({ executionWorkspacePolicy: { enabled: false, environmentId } }).expect(403);
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+  });
+
+  it("requires write authority to create a project with an environment", async () => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockAccessService.decide.mockImplementation(async input => ({ allowed: !["project:write_workspace", "tasks:assign"].includes(input.action), explanation: "Workspace write permission required." }));
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, driver: "sandbox", status: "active", config: { provider: "daytona" } });
+    const app = await createApp();
+    await request(app).post("/api/companies/company-1/projects").send({ name: "Project", executionWorkspacePolicy: { enabled: false, environmentId } }).expect(403);
+    expect(mockProjectService.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { source: "local_implicit", isInstanceAdmin: false },
+    { source: "cloud_tenant", isInstanceAdmin: true },
+  ])("creates a project with an environment using real authorization (%j)", async actorOverrides => {
+    const { accessService } = await vi.importActual<typeof import("../services/access.js")>("../services/access.js");
+    // These administrator paths do not query the database. Keep the real
+    // authorization dispatch so missing creation-time context cannot be mocked away.
+    const access = accessService({} as Parameters<typeof accessService>[0]);
+    mockAccessService.decide.mockImplementation(access.decide);
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, driver: "sandbox", status: "active", config: { provider: "daytona" } });
+    const app = await createApp(actorOverrides);
+    const res = await request(app).post("/api/companies/company-1/projects").send({ name: "Project", executionWorkspacePolicy: { enabled: false, environmentId } });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockProjectService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ executionWorkspacePolicy: { enabled: false, environmentId } }));
   });
 
   it("creates a project workspace with a cwd when the policy is off", async () => {

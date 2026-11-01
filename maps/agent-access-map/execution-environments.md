@@ -173,6 +173,20 @@ remaining operations before qualifying the whole capability.
 Gaps: Choosing among permitted targets differs from creating/configuring host targets;
 test authorized and denied selection.
 
+Project environment defaults use `executionWorkspacePolicy.environmentId`.
+Changing or clearing the choice requires `project:write_workspace`
+(`tasks:assign` authority), including a whole-policy replacement. Project
+creation with a selected target checks `tasks:assign` directly because no
+project exists yet. This adds no environment-management
+permission. Task project placement overrides agent and instance defaults even
+without isolated checkouts. Low-trust and instance restrictions still govern
+execution. Save and run admission check company bindings; lease creation checks
+them again under the environment row lock. Native recovery uses its owned
+admitted lease rather than a changed project default.
+Source coverage includes the project selection resolver and assembled heartbeat
+tests; live agent assignment permissions require their own permitted/denied
+identity evidence.
+
 Scoped plugin execution update: `paperclip_runner` supports a saved plugin
 environment through the server-selected lease and the SDK `environmentTask` RPC.
 This is an execution path, not a new agent-callable management endpoint. Host

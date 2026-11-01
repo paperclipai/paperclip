@@ -265,7 +265,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
   });
-  const { data: environments } = useQuery({
+  const { data: environments, isError: environmentsError } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
     queryFn: () => environmentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && environmentsEnabled,
@@ -285,7 +285,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   // Absent/unset round-trips as "auto" — we only write a value once the user picks one.
   const executionWorkspaceSharedConcurrency: SharedWorkspaceConcurrency =
     executionWorkspacePolicy?.sharedWorkspaceConcurrency ?? "auto";
-  const executionWorkspaceEnvironmentId = executionWorkspacePolicy?.environmentId ?? "";
+  const executionWorkspaceEnvironmentId = storedExecutionWorkspacePolicy?.environmentId ?? "";
   const executionWorkspaceStrategy = executionWorkspacePolicy?.workspaceStrategy ?? {
     type: "git_worktree",
     baseRef: "",
@@ -304,12 +304,17 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
     environments ?? [],
     managedSandboxOnly,
   ).filter((environment) => {
+    if (environment.status !== "active") return false;
     if (environment.driver === "local" || environment.driver === "ssh") return true;
     if (environment.driver !== "sandbox") return false;
     const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
     return provider !== null && provider !== "fake";
   });
-  const showExecutionWorkspaceEnvironmentControl = environmentsEnabled && runSelectableEnvironments.length > 1;
+  const showExecutionWorkspaceEnvironmentControl = environmentsEnabled &&
+    (runSelectableEnvironments.length > 0 || executionWorkspaceEnvironmentId !== "");
+  const projectEnvironmentMissing = executionWorkspaceEnvironmentId !== "" &&
+    !runSelectableEnvironments.some((environment) => environment.id === executionWorkspaceEnvironmentId);
+  const projectEnvironmentUnavailable = environments !== undefined && projectEnvironmentMissing;
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
@@ -732,6 +737,47 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
           )}
         </div>}
 
+        {showExecutionWorkspaceEnvironmentControl ? (
+          <div className="py-1.5 space-y-2">
+            <label className="flex items-center gap-2 text-sm font-medium" htmlFor="project-environment">
+              Environment
+              <SaveIndicator state={fieldState("execution_workspace_environment")} />
+            </label>
+            <select
+              id="project-environment"
+              aria-label="Project environment"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              disabled={(!onUpdate && !onFieldUpdate) || (environments === undefined && !environmentsError)}
+              value={executionWorkspaceEnvironmentId}
+              onChange={(event) => commitField("execution_workspace_environment", {
+                executionWorkspacePolicy: {
+                  enabled: executionWorkspacesEnabled,
+                  ...storedExecutionWorkspacePolicy,
+                  environmentId: event.target.value || null,
+                },
+              })}
+            >
+              <option value="">Inherit agent / instance default</option>
+              {runSelectableEnvironments.map((environment) => (
+                <option key={environment.id} value={environment.id}>
+                  {environmentDisplayLabel(environment)}
+                </option>
+              ))}
+              {projectEnvironmentMissing ? (
+                <option value={executionWorkspaceEnvironmentId} disabled>{projectEnvironmentUnavailable ? "Unavailable environment" : "Saved environment"}</option>
+              ) : null}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Tasks in this project use this environment ahead of agent and instance defaults.
+              Explicit trust restrictions still apply. Existing runs keep their current environment.
+            </p>
+            {projectEnvironmentUnavailable ? (
+              <p role="alert" className="text-xs text-destructive">Choose an available environment or inherit the default.</p>
+            ) : null}
+            {environmentsError ? <p role="alert" className="text-xs text-destructive">Failed to load environments.</p> : null}
+          </div>
+        ) : null}
+
         {providerConfiguration ? (
           <div className="py-1.5 space-y-2">
             <label className="flex items-center gap-2 text-sm font-medium" htmlFor="workspace-storage-provider">
@@ -900,34 +946,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                         <div className="text-xs text-muted-foreground">
                           Host-managed implementation: <span className="text-foreground">Git worktree</span>
                         </div>
-                        {showExecutionWorkspaceEnvironmentControl ? (
-                          <div>
-                            <div className="mb-1 flex items-center gap-1.5">
-                              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <span>Environment</span>
-                                <SaveIndicator state={fieldState("execution_workspace_environment")} />
-                              </label>
-                            </div>
-                            <select
-                              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                              value={executionWorkspaceEnvironmentId}
-                              onChange={(e) =>
-                                commitField(
-                                  "execution_workspace_environment",
-                                  updateExecutionWorkspacePolicy({
-                                    environmentId: e.target.value || null,
-                                  })!,
-                                )}
-                            >
-                              <option value="">No environment</option>
-                              {runSelectableEnvironments.map((environment) => (
-                                <option key={environment.id} value={environment.id}>
-                                  {environmentDisplayLabel(environment)}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        ) : null}
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
