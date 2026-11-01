@@ -753,12 +753,49 @@ export function directoryMergeConflicts(baseline: DirectorySnapshot, source: Dir
   return [...conflicts].sort();
 }
 
+export const PROTECTED_CHILDREN_ERROR_CODE = "workspace_restore_protected_children";
+
+async function assertNoProtectedChildren(
+  targetDir: string,
+  relative: string,
+  protectedPatterns: readonly string[],
+): Promise<void> {
+  const pending = [relative];
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    const entries = await fs.readdir(path.join(targetDir, current), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const child = path.posix.join(current, entry.name);
+      if (shouldExcludePath(child, protectedPatterns)) {
+        throw Object.assign(
+          new Error(`Cannot replace ${relative}: it holds ${child}, which a restore never removes.`),
+          { code: PROTECTED_CHILDREN_ERROR_CODE },
+        );
+      }
+      if (entry.isDirectory()) pending.push(child);
+    }
+  }
+}
+
+async function assertNoProtectedReplacements(
+  targetDir: string,
+  baseline: DirectorySnapshot,
+  source: DirectorySnapshot,
+  protectedPatterns: readonly string[],
+): Promise<void> {
+  for (const [relative, entry] of orderedEntries(source)) {
+    if (entry.kind === "dir" || entriesMatch(baseline.entries.get(relative), entry)) continue;
+    const local = await fs.lstat(path.join(targetDir, relative)).catch(() => null);
+    if (local?.isDirectory()) await assertNoProtectedChildren(targetDir, relative, protectedPatterns);
+  }
+}
+
 export async function mergeDirectoryWithBaseline(input: {
   baseline: DirectorySnapshot;
   sourceDir: string;
   targetDir: string;
   conflictPolicy?: "reject";
   workspaceSnapshotIsolation?: "worker";
+  protectedPatterns?: readonly string[];
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
   /** Caller holds the target's writer lock and validated an immutable sparse
@@ -770,6 +807,9 @@ export async function mergeDirectoryWithBaseline(input: {
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+      if (input.protectedPatterns?.length) {
+        await assertNoProtectedReplacements(canonicalTargetDir, input.baseline, source, input.protectedPatterns);
+      }
       await input.beforeApply?.();
       if (!input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
         await input.afterApply?.();

@@ -1487,6 +1487,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
+  nestedWorktreeDirs?: readonly string[];
   workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
@@ -1536,6 +1537,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       syncWorkspace: input.syncWorkspace,
       workspaceFileMode: input.workspaceFileMode,
       workspaceExclude: input.workspaceExclude,
+      nestedWorktreeDirs: input.nestedWorktreeDirs,
       assets: input.assets,
       additionalSources: input.additionalSources,
       onProgress: input.onProgress,
