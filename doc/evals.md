@@ -52,7 +52,12 @@ using ordinary production instructions, real browser messages and independent
 state/provenance checks. A separately selected native OpenCode/DeepSeek1017
 backlog cell measures TestOps integration acceptance with the same oracle and
 original bounds. Its source registration is not an AWS or TestOps pass. The
-broader YAML catalog remains planning inventory.
+[full-catalog TestOps lane](../tests/runner-e2e/CHAT-FEATURES.md#full-catalog-in-testops)
+maps all 244 YAML scenarios into a separate candidate-scoped plan. Its app and
+fixtures use a preserved immutable catalog revision; trusted workflow helpers run
+from master. Registration, known gaps and private prerequisites remain distinct
+from measured results. This lane does not qualify the current master app or reset
+earlier campaign accounting.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
 extends the existing native restart oracle to a 300-second controller outage
