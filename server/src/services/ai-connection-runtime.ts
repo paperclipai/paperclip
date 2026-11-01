@@ -140,10 +140,21 @@ while :; do
   for relative in "$@"; do
     file="$directory/$relative"
     if test -f "$file"; then
-      grep -Eq "$pattern" "$file"
-      result=$?
-      if test "$result" -eq 0; then exit 42; fi
-      if test "$result" -ne 1; then exit 43; fi
+      if test "$relative" = ".codex/config.toml"; then
+        awk -v pattern="$pattern" '
+          /^[[:space:]]*#/ { next }
+          $0 ~ pattern { found=1 }
+          END { if (found) exit 42 }
+        ' "$file"
+        result=$?
+        if test "$result" -eq 42; then exit 42; fi
+        if test "$result" -ne 0; then exit 43; fi
+      else
+        grep -Eq "$pattern" "$file"
+        result=$?
+        if test "$result" -eq 0; then exit 42; fi
+        if test "$result" -ne 1; then exit 43; fi
+      fi
     fi
   done
   parent=$(dirname "$directory")
@@ -176,9 +187,12 @@ done`,
     for (const relative of files) {
       try {
         const content = await readFile(path.join(directory, relative), "utf8");
+        const inspected = relative === ".codex/config.toml"
+          ? content.split(/\r?\n/).filter(line => !/^\s*#/.test(line)).join("\n")
+          : content;
         if (
           /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
-            content,
+            inspected,
           )
         ) {
           throw unprocessable(
