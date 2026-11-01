@@ -23,13 +23,13 @@ export function getConfigSchema(): AdapterConfigSchema {
       {
         key: "provider",
         label: "Provider",
-        type: "select",
+        type: "combobox",
         default: "auto",
         options: VALID_PROVIDERS.map((provider) => ({
           value: provider,
           label: providerLabel(provider),
         })),
-        hint: "Usually auto. Set this only when Hermes cannot infer the provider from the model or ~/.hermes/config.yaml.",
+        hint: "Usually auto. Set this only when Hermes cannot infer the provider from the model or ~/.hermes/config.yaml. Accepts any Hermes provider id, including custom:<name>.",
       },
       {
         key: "timeoutSec",
