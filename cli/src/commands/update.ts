@@ -16,7 +16,7 @@ import { packageVersion } from "../version.js";
 
 const execFileAsync = promisify(execFile);
 export type InstallMode = "managed" | "global-npm" | "npx" | "source" | "unknown";
-export type UpdateOptions = { canary?: boolean; latest?: boolean; version?: string; rollback?: boolean; check?: boolean; dryRun?: boolean; json?: boolean; yes?: boolean; backup?: boolean };
+export type UpdateOptions = { latest?: boolean; beta?: boolean; nightly?: boolean; canary?: boolean; version?: string; rollback?: boolean; check?: boolean; dryRun?: boolean; json?: boolean; yes?: boolean; backup?: boolean };
 type Dependencies = { executablePath: string; runCommand: CommandRunner; backup: () => Promise<void>; confirm: (message: string) => Promise<boolean>; now: () => Date; paths: InstallStorePaths; restartActiveService: (expectedVersion: string) => Promise<boolean>; hasInstanceData: () => boolean };
 
 const DATABASE_UNREACHABLE_CODES = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"]);
@@ -114,14 +114,16 @@ export function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-export function resolveUpdateRequest(manifest: InstallManifest | null, options: Pick<UpdateOptions, "canary" | "latest" | "version">): { spec: string; channel: InstallChannel; explicit: boolean } {
-  const selected = Number(Boolean(options.canary)) + Number(Boolean(options.latest)) + Number(Boolean(options.version));
-  if (selected > 1) throw new Error("Choose only one of --latest, --canary, or --version.");
+export function resolveUpdateRequest(manifest: InstallManifest | null, options: Pick<UpdateOptions, "latest" | "beta" | "nightly" | "canary" | "version">): { spec: string; channel: InstallChannel; explicit: boolean } {
+  const selected = Number(Boolean(options.latest)) + Number(Boolean(options.beta)) + Number(Boolean(options.nightly)) + Number(Boolean(options.canary)) + Number(Boolean(options.version));
+  if (selected > 1) throw new Error("Choose only one of --latest, --beta, --nightly, --canary, or --version.");
   if (options.version) return { spec: options.version.trim(), channel: "pinned", explicit: true };
-  if (options.canary) return { spec: "canary", channel: "canary", explicit: true };
   if (options.latest) return { spec: "latest", channel: "latest", explicit: true };
+  if (options.beta) return { spec: "beta", channel: "beta", explicit: true };
+  if (options.nightly) return { spec: "nightly", channel: "nightly", explicit: true };
+  if (options.canary) return { spec: "canary", channel: "canary", explicit: true };
   if (manifest?.channel === "pinned") return { spec: manifest.version, channel: "pinned", explicit: false };
-  const channel = manifest?.channel === "canary" ? "canary" : "latest";
+  const channel = manifest?.channel ?? "latest";
   return { spec: channel, channel, explicit: false };
 }
 
