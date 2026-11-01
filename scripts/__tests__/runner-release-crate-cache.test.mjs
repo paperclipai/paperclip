@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { CACHED_PATHS, HASHED_INPUTS, REQUIRED, RUNNER_PACKAGE, computeScope, markCurrent } from "../runner-release-crate-cache.mjs";
+import { RESTORED_VARIABLE, planRunnerBinaryBuild, releaseBinaryPath } from "../../packages/paperclip-runner/scripts/build-runner-binary.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const script = path.join(repoRoot, "scripts/runner-release-crate-cache.mjs");
@@ -329,9 +330,12 @@ test("isolated Docker Rust stages preserve the layout of embedded schema and ide
 test("every PR reader restores the crate after the dependency cache and marks it before building", () => {
   for (const [name, buildCommand] of READERS) {
     const body = job(prWorkflow, name);
-    const positions = [RUST_RESTORE_STEP, KEY_STEP, RESTORE_STEP, MARK_STEP].map((stepName) => body.indexOf(`      - name: ${stepName}\n`));
+    // Build restores the crate first and skips the dependency restore on a
+    // mark; the next test holds that exception to its exact shape.
+    const order = name === "build" ? [KEY_STEP, RESTORE_STEP, MARK_STEP, RUST_RESTORE_STEP] : [RUST_RESTORE_STEP, KEY_STEP, RESTORE_STEP, MARK_STEP];
+    const positions = order.map((stepName) => body.indexOf(`      - name: ${stepName}\n`));
     assert.ok(positions.every((position) => position >= 0), `${name}: a crate cache step is missing`);
-    assert.deepEqual([...positions].sort((a, b) => a - b), positions, `${name}: the crate steps must follow the dependency restore in order`);
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions, `${name}: the crate and dependency restores must run in order`);
     const build = body.indexOf(buildCommand);
     assert.ok(build > positions.at(-1), `${name}: the crate must be marked before ${buildCommand}`);
 
@@ -352,6 +356,43 @@ test("every PR reader restores the crate after the dependency cache and marks it
   const total = prWorkflow.match(/- name: Restore the Runner release crate \(read only\)\n/g)?.length ?? 0;
   assert.equal(total, READERS.length);
   assert.doesNotMatch(prWorkflow, /actions\/cache\/save@/);
+});
+
+test("the Build job skips the dependency restore and cargo only when the crate was marked", () => {
+  const body = job(prWorkflow, "build");
+  const mark = step(body, MARK_STEP);
+  assert.match(mark, /id: runner_release_crate_mark\n/);
+  // The mark step runs only on a hit and writes `marked=false` for a
+  // discarded partial restore, so a miss leaves the output empty, and both
+  // of those keep the dependency restore and cargo exactly as before.
+  const rust = step(body, RUST_RESTORE_STEP);
+  assert.match(rust, /\n        if: \$\{\{ steps\.runner_release_crate_mark\.outputs\.marked != 'true' \}\}\n        uses: Swatinem\/rust-cache@/);
+  const build = step(body, "Build");
+  assert.match(build, new RegExp(`env:\\n          ${RESTORED_VARIABLE}: \\$\\{\\{ steps\\.runner_release_crate_mark\\.outputs\\.marked == 'true' && '1' \\|\\| '0' \\}\\}\\n        run: pnpm build\\n`));
+  // No other job may reuse the binary without cargo: they keep the dependency
+  // restore, which cargo needs to accept the restored crate.
+  for (const [name] of READERS.filter(([name]) => name !== "build")) {
+    assert.ok(!job(prWorkflow, name).includes(RESTORED_VARIABLE), `${name} must not skip cargo`);
+  }
+  assert.equal(prWorkflow.split(`${RESTORED_VARIABLE}:`).length - 1, 1, "only the Build step may set the variable");
+  assert.ok(!releaseWorkflow.includes(RESTORED_VARIABLE), "the cache writer must always build with cargo");
+});
+
+test("build:binary runs its cargo command unless the Build job vouches for a restored binary", () => {
+  const packageRoot = "/checkout/packages/paperclip-runner";
+  const binary = releaseBinaryPath(packageRoot, "linux");
+  assert.equal(binary, `${packageRoot}/runner/target/release/paperclip-runnerd`);
+  assert.equal(releaseBinaryPath(packageRoot, "win32"), path.join(packageRoot, "runner/target/release/paperclip-runnerd.exe"));
+  // It is the uplifted binary the crate cache restores and the stage step copies.
+  assert.ok(CACHED_PATHS.includes(`${RELEASE_DIR}/paperclip-runnerd`));
+  const present = (file) => file === binary;
+  const absent = () => false;
+  assert.deepEqual(planRunnerBinaryBuild({ packageRoot, env: {}, exists: present, platform: "linux" }), { action: "build" });
+  assert.deepEqual(planRunnerBinaryBuild({ packageRoot, env: { [RESTORED_VARIABLE]: "0" }, exists: present, platform: "linux" }), { action: "build" });
+  assert.deepEqual(planRunnerBinaryBuild({ packageRoot, env: { [RESTORED_VARIABLE]: "1" }, exists: present, platform: "linux" }), { action: "reuse", binary });
+  const missing = planRunnerBinaryBuild({ packageRoot, env: { [RESTORED_VARIABLE]: "1" }, exists: absent, platform: "linux" });
+  assert.equal(missing.action, "build", "a missing binary must fall back to cargo, never fail or stage nothing");
+  assert.match(missing.warning, /is missing; building it/);
 });
 
 test("the Verify Paperclip Runner job restores the crate only in the lanes that build it", () => {
@@ -406,7 +447,7 @@ test("only the master Rust lane writes the crate, after a lookup, with the reade
   assert.match(build, /working-directory: packages\/paperclip-runner\n/);
   assert.match(build, /set -euo pipefail\n\s+cargo clean --release --manifest-path runner\/Cargo\.toml -p paperclip-runner-core\n\s+pnpm build:binary\n/);
   const runnerScripts = JSON.parse(readFileSync(path.join(repoRoot, RUNNER_PACKAGE, "package.json"), "utf8")).scripts;
-  assert.match(runnerScripts["build:binary"], /^cargo build --release --manifest-path runner\/Cargo\.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && /);
+  assert.match(runnerScripts["build:binary"], /^node scripts\/build-runner-binary\.mjs cargo build --release --manifest-path runner\/Cargo\.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && /);
 
   const save = step(body, SAVE_STEP);
   assert.match(save, /uses: actions\/cache\/save@/);
@@ -504,10 +545,12 @@ test("mark-current makes every restored artifact newer than the checkout and lea
     assert.ok(statSync(checkout).mtimeMs === checkedOutAt, "sources are never touched");
 
     // The CLI prints the same result as one line of JSON for the job log.
-    const printed = JSON.parse(execFileSync(process.execPath, [script, "mark-current"], { encoding: "utf8", env: { ...process.env, GITHUB_WORKSPACE: root } }));
+    const output = path.join(root, "github-output");
+    const printed = JSON.parse(execFileSync(process.execPath, [script, "mark-current"], { encoding: "utf8", env: { ...process.env, GITHUB_WORKSPACE: root, GITHUB_OUTPUT: output } }));
     assert.equal(printed.schema, "paperclip.runner-release-crate.v1");
     assert.equal(printed.action, "marked");
     assert.equal(printed.files, 14);
+    assert.equal(readFileSync(output, "utf8"), "marked=true\n", "the Build job reads the mark from the step output");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -586,10 +629,12 @@ test("mark-current discards a restore that lacks any file cargo needs for either
   // Nothing restored at all is reported the same way and exits cleanly.
   const empty = mkdtempSync(path.join(os.tmpdir(), "runner-release-crate-empty-"));
   try {
-    const printed = JSON.parse(execFileSync(process.execPath, [script, "mark-current"], { encoding: "utf8", env: { ...process.env, GITHUB_WORKSPACE: empty } }));
+    const output = path.join(empty, "github-output");
+    const printed = JSON.parse(execFileSync(process.execPath, [script, "mark-current"], { encoding: "utf8", env: { ...process.env, GITHUB_WORKSPACE: empty, GITHUB_OUTPUT: output } }));
     assert.equal(printed.action, "discarded");
     assert.equal(printed.reason, "incomplete: the lib fingerprint hash is missing");
     assert.equal(printed.removed, 0);
+    assert.equal(readFileSync(output, "utf8"), "marked=false\n", "a discarded restore must not let the Build job skip cargo");
   } finally {
     rmSync(empty, { recursive: true, force: true });
   }
