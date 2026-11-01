@@ -48,6 +48,46 @@ export function completedAgentUnblockRequest(issue: string): string {
             AND ${finishedIdleRun('unblock_target')}))`;
 }
 
+// A blocked write authored by the named unblock owner itself needs no wake:
+// the author already knows. The notification helper records blockedOwnerNotifiedAt
+// without enqueueing one, so this proof keys on the durable activity entry for
+// that exact transition instead of a wake receipt. An agent may only name itself
+// as unblock owner, so a matching self-authored entry exists exactly for the
+// transitions where the wake was suppressed. The descriptor binding is a
+// fingerprint, not the raw text: activity details pass through secret and
+// username redaction before storage, while the issue row keeps the original.
+// When the write came from a run, that run must be finished so a still-live
+// author cannot certify its own in-flight work as passive; a run-less write
+// (agent key without run context) has no execution in flight to wait for.
+export function selfAcknowledgedAgentUnblockRequest(issue: string): string {
+  return `${issue}.blocked_transition_at IS NOT NULL
+    AND ${issue}.blocked_owner_notified_at >= ${issue}.blocked_transition_at
+    AND jsonb_typeof(${issue}.unblock_descriptor) = 'object'
+    AND ${issue}.unblock_descriptor = jsonb_build_object('owner', ${issue}.unblock_descriptor->'owner',
+      'action', ${issue}.unblock_descriptor->'action')
+    AND jsonb_typeof(${issue}.unblock_descriptor->'owner') = 'object'
+    AND ${issue}.unblock_descriptor->'owner' = jsonb_build_object('agentId', ${issue}.unblock_descriptor->'owner'->'agentId')
+    AND jsonb_typeof(${issue}.unblock_descriptor->'owner'->'agentId') = 'string'
+    AND jsonb_typeof(${issue}.unblock_descriptor->'action') = 'string'
+    AND length(trim(${issue}.unblock_descriptor->>'action')) > 0
+    AND EXISTS (SELECT 1 FROM activity_log self_block
+      LEFT JOIN heartbeat_runs self_block_run ON self_block_run.id = self_block.run_id
+        AND self_block_run.company_id = ${issue}.company_id
+      WHERE self_block.company_id = ${issue}.company_id
+        AND self_block.entity_type = 'issue' AND self_block.entity_id = ${issue}.id::text
+        AND self_block.action = 'issue.updated' AND self_block.actor_type = 'agent'
+        AND self_block.agent_id::text = ${issue}.unblock_descriptor->'owner'->>'agentId'
+        AND (self_block.run_id IS NULL OR (self_block_run.agent_id = self_block.agent_id
+          AND ${finishedIdleRun('self_block_run')}))
+        AND self_block.details->>'status' = 'blocked'
+        AND self_block.details->>'blockedTransitionAt'
+          = to_char(${issue}.blocked_transition_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        AND self_block.details->>'unblockDescriptorFingerprint'
+          = md5((${issue}.unblock_descriptor->'owner'->>'agentId') || chr(10)
+            || (${issue}.unblock_descriptor->>'action'))
+        AND self_block.created_at >= ${issue}.blocked_transition_at - INTERVAL '5 seconds')`;
+}
+
 export function connectionDeliveryWaitingForResponse(delivery: string): string {
   return `EXISTS (SELECT 1 FROM issue_thread_interactions waiting_delivery
     JOIN issues waiting_issue ON waiting_issue.id = waiting_delivery.issue_id

@@ -4,7 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { AGENT_STATUSES, issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import type { ScheduledWake } from "./idle-scheduled-work.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./recovery/onboarding-first-task-wait.js";
-import { completedAgentUnblockRequest, responseDrivenIssueWait } from "./idle-work-proof.js";
+import { completedAgentUnblockRequest, responseDrivenIssueWait, selfAcknowledgedAgentUnblockRequest } from "./idle-work-proof.js";
 
 const processGeneration = randomUUID();
 const limit = 10_000;
@@ -37,7 +37,7 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
       a.status AS agent_status, a.updated_at AS agent_updated,
       (i.assignee_agent_id IS NULL OR a.id IS NOT NULL) AS scoped,
       (${sql.raw(responseDrivenIssueWait('i'))}) AS response_driven_wait,
-      (${sql.raw(completedAgentUnblockRequest('i'))}) AS unblock_request_finished,
+      ((${sql.raw(completedAgentUnblockRequest('i'))}) OR (${sql.raw(selfAcknowledgedAgentUnblockRequest('i'))})) AS unblock_request_finished,
       (SELECT jsonb_agg(jsonb_build_array(w.id, w.updated_at, w.kind, w.status, w.source_run_id,
           w.effective_resolver_policy, w.continuation_policy, w.addressee_agent_id, w.addressee_user_id) ORDER BY w.id)
         FROM issue_thread_interactions w WHERE w.issue_id = i.id AND w.status = 'pending') AS response_wait_generation,
