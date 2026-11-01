@@ -204,12 +204,12 @@ function titleCase(slug: string): string {
 }
 
 function encodeTeamFilePath(filePath: string): string {
-  return filePath.split("/").map(encodeURIComponent).join("%7E");
+  return btoa(encodeURIComponent(filePath)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 function decodeTeamFilePath(encoded: string | undefined): string | null {
   if (!encoded) return null;
-  return encoded.split("%7E").map(decodeURIComponent).join("/");
+  return decodeURIComponent(atob(encoded.replaceAll("-", "+").replaceAll("_", "/")));
 }
 
 type ParsedRoute = { catalogRef: string | null; filePath: string | null };
@@ -675,6 +675,7 @@ export function TeamDetailPane({
   onInstall,
   canInstall,
   fileContent,
+  fileError,
   installed,
 }: {
   team: CatalogTeam;
@@ -683,6 +684,7 @@ export function TeamDetailPane({
   onInstall: () => void;
   canInstall: boolean;
   fileContent: string | null;
+  fileError?: Error | null;
   installed?: InstalledCatalogTeam | null;
 }) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -844,7 +846,11 @@ export function TeamDetailPane({
                 </button>
               </div>
               <div className="max-h-96 overflow-auto p-3">
-                {fileContent === null ? (
+                {fileError ? (
+                  <div role="alert" className="text-sm text-destructive">
+                    Failed to load file: {fileError.message}
+                  </div>
+                ) : fileContent === null ? (
                   <Skeleton className="h-32 w-full" />
                 ) : selectedPath.endsWith(".md") ? (
                   <div className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
@@ -2594,6 +2600,7 @@ export function TeamCatalog() {
                 onInstall={() => setInstallOpen(true)}
                 canInstall={canInstall}
                 fileContent={fileQuery.data?.content ?? null}
+                fileError={fileQuery.error}
                 installed={installedById.get(selectedTeam.id) ?? null}
               />
             ) : (
