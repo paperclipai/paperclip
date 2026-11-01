@@ -25,7 +25,7 @@ describe("createAppPluginDevWatcher", () => {
     const createWatcher = vi.fn(() => watcher);
 
     expect(createAppPluginDevWatcher("vite-dev", lifecycle, resolvePackagePath, createWatcher)).toBe(watcher);
-    expect(createWatcher).toHaveBeenCalledWith(lifecycle, resolvePackagePath);
+    expect(createWatcher).toHaveBeenCalledWith(lifecycle, resolvePackagePath, undefined, {});
     expect(createAppPluginDevWatcher("static", lifecycle, resolvePackagePath, createWatcher)).toBeNull();
     expect(createWatcher).toHaveBeenCalledTimes(1);
   });
@@ -37,6 +37,6 @@ describe("createAppPluginDevWatcher", () => {
     const createWatcher = vi.fn(() => watcher);
 
     expect(createAppPluginDevWatcher("static", lifecycle, resolvePackagePath, createWatcher)).toBe(watcher);
-    expect(createWatcher).toHaveBeenCalledWith(lifecycle, resolvePackagePath);
+    expect(createWatcher).toHaveBeenCalledWith(lifecycle, resolvePackagePath, undefined, {});
   });
 });

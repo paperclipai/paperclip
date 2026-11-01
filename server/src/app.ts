@@ -238,10 +238,11 @@ export function createAppPluginDevWatcher(
   lifecycle: Parameters<typeof createPluginDevWatcher>[0],
   resolvePluginPackagePath: NonNullable<Parameters<typeof createPluginDevWatcher>[1]>,
   createWatcher: typeof createPluginDevWatcher = createPluginDevWatcher,
+  options: Parameters<typeof createPluginDevWatcher>[3] = {},
 ): ReturnType<typeof createPluginDevWatcher> | null {
   const optedIn = process.env.PAPERCLIP_PLUGIN_DEV_WATCH === "1";
   if (!optedIn && (process.env.NODE_ENV === "production" || uiMode !== "vite-dev")) return null;
-  return createWatcher(lifecycle, resolvePluginPackagePath);
+  return createWatcher(lifecycle, resolvePluginPackagePath, undefined, options);
 }
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
 const VITE_DEV_ASSET_PREFIXES = [
