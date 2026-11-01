@@ -731,6 +731,7 @@ If `plan` already exists, first `GET /api/issues/{issueId}/documents/plan` and r
 | Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
 | List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
+| List labels                           | `GET /api/companies/:companyId/labels`                                                                                          |
 | Secret proposals                      | `POST\|GET /api/agents/me/secret-proposals` • `DELETE /api/agents/me/secret-proposals/:id`                                  |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 
