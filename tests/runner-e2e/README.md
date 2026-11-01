@@ -96,6 +96,38 @@ PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_REGION=us-east-1 \
 pnpm test:e2e:runner -- --id remote-workspace-storage.runner-codex.daytona.recover-controller --max-automatic-retries 0
 ```
 
+The separate explicit-only `rolling-web-deployment` suite uses the same synthetic
+projectless workflow, four-admission budget, thirty-minute limit, and independent
+run/file oracles. Its supervisor starts an independent empty-home server, waits
+for `/api/ready`, moves ingress, sends SIGTERM to the predecessor, and deletes
+that predecessor's whole home and build. Cleanup makes read-only cache directories
+removable only after shutdown, without following dependency symlinks. Continuous ordinary task reads and
+comment saves must have zero failures, and every accepted save must be read back
+exactly once. Probe tasks live in a separate disposable company, so they cannot
+block the business workflow's all-tasks-done oracle or consume its agent budget.
+Forced process cleanup fails graceful qualification even if the
+successor recovers the execution. The read-only observer shares the controllers'
+disposable encryption key. It repeats replacement after completion before the retained-session
+follow-up. The five-minute outage suites are unchanged.
+
+```sh
+pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+This source lane requires a complete server/UI build and disposable S3 and
+Postgres. Each controller has an independent compiled build and cache; shared
+workspace dependencies mean it is not released-container or Railway evidence.
+The read-only recovery observer captures the live predecessor's identity just
+before handoff, then requires a new controller generation, authenticated Runner
+attachment, and new canonical events for the original execution. No fixture
+modifies leases, checkpoints, provider identity, or completed work.
+
+Before paid execution, set `PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG` and the
+loopback `PAPERCLIP_TEST_DATABASE_URL`, then run
+`tests/runner-e2e/controller-replacement-smoke.ts` through the existing tsx loader.
+It exercises the actual supervisor and two replacements without an agent and
+explicitly records `activeAgentContinuityQualified: false`.
+
 Optional `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT` and
 `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_FORCE_PATH_STYLE=true` select a test S3
 endpoint. Each attempt has a distinct `runner-e2e/<instance-id>/` prefix. The
@@ -3274,3 +3306,28 @@ The shared report navigation links the dated, immutable catalog snapshot.
 Deploying this generator does not rewrite existing published history HTML.
 Activating the link on an existing page requires a separately reviewed,
 conditional navigation-only update. The metadata command publishes nothing.
+### Control-plane rolling deployment smoke
+
+`rolling-deployment-smoke.ts` runs actual source servers A/B/C behind a local
+HTTP/WebSocket proxy with no request retries. It requires disposable loopback
+PostgreSQL and S3-compatible storage, and creates/deletes an owned database and
+bucket per attempt. Each server has a separate home and temporary directory.
+Private JSON configuration files must be mode 600 and must not be committed:
+
+- Database configuration: `{ "url": "<local PostgreSQL admin URL>" }`.
+- Storage configuration: `{ "endpoint": "<local S3 endpoint>", "accessKeyId": "<key>", "secretAccessKey": "<secret>" }`.
+
+```sh
+PAPERCLIP_ROLLING_TEST_DATABASE_CONFIG=/private/tmp/rolling-database.json \
+PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG=/private/tmp/rolling-storage.json \
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/rolling-deployment-smoke.ts
+```
+
+The receipt records source/patch/lockfile identity, individual assertions, timing
+and cleanup. It exercises continuous task reads/writes, concurrent file edits,
+stale-write conflict, an admitted file save during SIGTERM, S3 failure with both
+transfer connections held, and complete deletion of both earlier server homes.
+It uses `local_trusted` authentication and no model provider. Its result does not
+qualify browser reconnects, active-agent continuity, distinct packaged releases
+or Railway. Keep failed receipts alongside successful attempts; the private
+server logs and config files may contain credentials and are not shareable evidence.

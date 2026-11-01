@@ -14,6 +14,7 @@ import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageService } from "../storage/types.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "./task-admission.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { notifyRemoteWorkspaceSnapshots, registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 
@@ -243,9 +244,19 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     const owner = service(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
     const worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, owner, () => {});
     try {
-      await vi.waitFor(async () => expect((await storage.headObject(parent.companyId, parent.keys[0]!)).exists).toBe(false),
-        { timeout: 4000, interval: 40 });
-      expect(await owner.nextDeadlineAt()).toBeNull();
+      await vi.waitFor(async () => {
+        for (const key of parent.keys) expect((await storage.headObject(parent.companyId, key)).exists).toBe(false);
+        const snapshots = await db.select().from(executionWorkspaceSnapshots)
+          .where(eq(executionWorkspaceSnapshots.companyId, parent.companyId));
+        expect(snapshots).toHaveLength(2);
+        expect(snapshots).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: parent.row.id, status: "deleted", deleteAfter: null }),
+          expect.objectContaining({ id: "20000000-0000-4000-8000-000000000001", status: "deleted", deleteAfter: null }),
+        ]));
+        expect(await owner.nextDeadlineAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 4000, interval: 40 });
     } finally { await worker.stop(); await coordinator.stop(); }
   });
   it("pins an unfinished upload and an active recovery hold", async () => {

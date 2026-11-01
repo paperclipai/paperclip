@@ -1,6 +1,7 @@
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
 import { adoptAgentFiles, agentFileToken, isAgentFileSaveRecorded } from "./agent-file-store.js";
+import { invalidateAgentFileProjection, persistDurableAgentFiles } from "./agent-file-durability.js";
 import { and, desc, eq, getTableColumns, lt, or, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -9,6 +10,7 @@ import {
   pluginManagedResources,
   agentInstructionHeads as heads,
   agentInstructionRevisions as revisions,
+  fileStorageDb,
   type Db,
 } from "@paperclipai/db";
 import type {
@@ -81,6 +83,7 @@ function headOwner(target: InstructionTarget, entryFile: string) {
 }
 
 export function agentInstructionRevisionService(db: Db) {
+  db = fileStorageDb(db);
   async function lockTarget(
     tx: Tx,
     target: InstructionTarget,
@@ -292,7 +295,9 @@ export function agentInstructionRevisionService(db: Db) {
           },
         );
       }
+      await invalidateAgentFileProjection(state.root);
       await materializeInstructionBytes(state.root, state.entryFile, candidate);
+      await persistDurableAgentFiles(tx, state.agent, state.root);
       const row = currentRow(input, input.entryFile, candidate, bound);
       await recordSave(row);
       await bindEntry();

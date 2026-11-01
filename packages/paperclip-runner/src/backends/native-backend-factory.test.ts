@@ -360,6 +360,36 @@ describe("native backend factory", () => {
     await session.close({ reason: "test complete" });
   });
 
+  it("recovers with admitted instructions after the old bundle is removed", async () => {
+    const input = preparedExecution(execution());
+    if (!("runtimeContext" in input)) throw new Error("fixture requires runtime context");
+    const retainedSystemInstructions = composeNativeSystemInstructions(input.runtimeContext, "Keep assigned instructions.");
+    const original = await createNativeSessionBackend(input, {
+      codexTransportFactory: () => new FakeCodexTransport(),
+      environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    }).openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", agentId: "agent", issueId: "issue" },
+      workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller replacement" });
+    rmSync(input.runtimeContext.instructions.bundle.rootPath, { recursive: true });
+    const transport = new FakeCodexTransport();
+    transport.readResponse = { thread: { id: transport.threadId, sessionId: transport.providerSessionId, cwd: WORKSPACE, turns: [] } };
+    const factory = vi.fn(() => transport);
+    expect(() => createNativeSessionBackend(input, { codexTransportFactory: factory })).toThrow();
+    expect(factory).not.toHaveBeenCalled();
+    const backend = createNativeSessionBackend(input, {
+      retainedSystemInstructions, codexTransportFactory: factory,
+      workingDirectoryAuthority: "remote_runner", environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+    const recovered = await backend.recoverSession!({ ...snapshot, activeTurnId: null }, { signal: new AbortController().signal });
+    expect(recovered).toMatchObject({ recovered: true });
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ baseInstructions: retainedSystemInstructions }));
+    expect(transport.calls.some(call => call.method === "thread/start" || call.method === "turn/start")).toBe(false);
+    if (recovered.recovered) await recovered.session.close({ reason: "test complete" });
+  });
+
   describe("runner-prepared launch working directory", () => {
     // The transport reports the prepared directory; it exists only on the VM.
     class PreparedLaunchTransport extends FakeCodexTransport {

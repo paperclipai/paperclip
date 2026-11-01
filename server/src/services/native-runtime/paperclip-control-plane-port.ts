@@ -568,6 +568,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         nativePhaseUpdatedAt: new Date(),
         resultJson: {
           ...record(run.resultJson),
+          // Publish the accepted contract with its durable receipt. Recovery
+          // may settle this run without the original adapter ever returning.
+          nativeTerminal: value.terminal,
           prpTurnTerminalState: value.terminal.turnTerminalState,
           prpRunTerminalState: value.terminal.runTerminalState,
           prpReportedWorkDisposition: value.terminal.reportedWorkDisposition,

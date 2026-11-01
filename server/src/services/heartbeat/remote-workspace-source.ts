@@ -1,5 +1,5 @@
-import { asc, and, eq } from "drizzle-orm";
-import { projectWorkspaces, type Db } from "@paperclipai/db";
+import { asc, and, eq, isNull, notExists } from "drizzle-orm";
+import { projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import type { TaskWorkspaceIntent } from "@paperclipai/shared";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
 import { managedProjectCheckoutName, projectRepositoryIdentity } from "../managed-project-checkout-name.js";
@@ -77,7 +77,8 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
         onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId },
       issues: issueService(db), projects: projectService(db), access: authorizationService(db),
     }) : { additional: [], warnings: [], failures: [] };
-    if (referenced.additional.length > 0) {
+    const sourceLess = referenced.additional.filter(({ project }) => Array.isArray(project.workspaces) && project.workspaces.length === 0);
+    if (referenced.additional.length > sourceLess.length) {
       if (!isMultiProjectWorkspaceSyncRemoteEnabled()) throw new WorkspaceValidationFailure(
         "Referenced remote workspace access is disabled.", { reason: "remote_referenced_workspace_disabled" });
       // Native sandbox providers currently run with external sandbox authority.
@@ -87,7 +88,10 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
     }
     return { authority: "remote", source: { ...base, ...(extra.length ? { repositories: extra } : { repositories: undefined }) },
       projectId: anchorProjectId, projectWorkspaceId: sourceId,
-      warnings: referenced.warnings, referencedProjectFailures: referenced.failures };
+      warnings: [...referenced.warnings, ...sourceLess.map(({ projectId }) =>
+        `Referenced project ${projectId} has no configured workspace source; no project folder was attached.`)],
+      referencedProjectFailures: [...referenced.failures, ...sourceLess.map(({ projectId }) =>
+        ({ projectId, reason: "resolution" as const }))] };
   };
   const existing = readRemoteWorkspaceAuthority(input.existingWorkspace?.metadata);
   if (existing) return withReferences(existing.source, input.existingWorkspace!.projectId,
@@ -109,7 +113,20 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
     eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, input.companyId),
   )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)).limit(1) : [];
   if (!source) {
-    if (sourceId || projectId) throw new WorkspaceValidationFailure(
+    let implicitTaskDirectory = false;
+    if (projectId && !sourceId && !input.selection && !selected.workspace
+      && selected.task.executionWorkspaceId == null && selected.task.projectWorkspaceId == null
+      && selected.task.workspaceSelection == null && selected.task.workspacePendingSelection == null
+      && input.ref == null && input.branchName == null && input.branchMode !== "existing") {
+      const [metadataProject] = await db.select({ id: projects.id }).from(projects).where(and(
+        eq(projects.id, projectId), eq(projects.companyId, input.companyId), isNull(projects.executionWorkspacePolicy),
+        notExists(db.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.projectId, projects.id), eq(projectWorkspaces.companyId, input.companyId),
+        ))),
+      )).limit(1);
+      implicitTaskDirectory = Boolean(metadataProject);
+    }
+    if (sourceId || projectId && !implicitTaskDirectory) throw new WorkspaceValidationFailure(
       "The selected project has no repository source for a remote workspace.",
       { reason: "remote_workspace_source_unavailable" });
     return withReferences({ kind: "empty" }, null, null);

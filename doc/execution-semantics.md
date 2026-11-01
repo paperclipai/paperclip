@@ -79,6 +79,13 @@ another agent still require the outgoing execution to stop before ownership chan
 
 Paperclip issue statuses are not just UI labels. They imply different expectations about ownership and execution.
 
+A running native owner reports its own task status through `paperclip_finish` or
+`paperclip_block`. Both ordinary task updates and recovery-action resolution reject
+direct self-status changes before they can release that run's task-tool access.
+Recovery resolution can still record an outcome without changing the status.
+Board recovery, legacy agents, and the existing conversation and handoff paths
+retain their normal permission and lifecycle checks.
+
 ### `backlog`
 
 The issue is not ready for active work.
@@ -1342,6 +1349,33 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+A delegated-task completion callback can finish native execution before its
+accepted final reply is saved. The completion outbox must retain that callback's
+queued target and attempt while the existing presentation selector finds pending
+work for the same company, conversation, run and agent. The hold lasts at most
+five existing one-minute delivery leases, measured from that run's original
+`finishedAt`. Repeated sweeps cannot restart or extend this five-minute window.
+It wakes the presentation owner and waits until the later of its current delivery
+lease or the recorded native retry deadline, capped by that fixed window.
+The selector only defers a new execution attempt; the presentation owner still
+enforces all reply, session, actor and digest checks. A saved reply acknowledges
+the outbox once and permits normal conversation settlement. If publication keeps
+declining or cannot finish within the window, the existing retry, exhaustion and
+daily-limit checks resume. Retry takes the same child-task-first lock held by
+reply insertion and acknowledgment. Reply authority reloads the delivery after
+acquiring that lock. Retry checks that the locked task is still Done. It then
+matches the delivery's recorded completion-event version, pending state, target,
+attempt and exact lease. Deferral uses that same exact claim fence, so a stalled
+old hold cannot shorten or replace a newer claim's lease.
+Reassigning a Done task can change its current task version without invalidating
+that completion event; a real status change keeps its existing supersession. A delivered reply,
+newer target or newer claim prevents that retry. Wake admission runs only after
+the winning retry transaction commits and releases its locks. The original
+accepted result and child work remain unchanged. Failed or cancelled execution,
+missing accepted output and superseded
+handoffs retain their existing retry or supersession paths. Daily limits do not
+need to admit another model run to save an already accepted answer.
+
 Native execution success can precede its durable presentation decision. GitHub
 response maintenance without a confirmed current-run reply holds that request
 until the native phase is committed and a valid presentation decision exists.
@@ -1607,10 +1641,29 @@ Retained-file recovery has a separate, source-bound maintenance path. It uses
 the existing physical copyback lock and durable controller receipt. It verifies
 the exact stopped allocation and immutable workspace descriptor, resumes only
 that allocation for export, preserves newer host edits through the normal merge,
-and obtains a fresh stop receipt. An interrupted legacy run does not need an
-accepted native result. A successful `workspace_recovery` operation and matching
+and obtains a fresh stop receipt. The owned file-recovery path can request the
+exact recorded directory through the driver-only `requestedCwd` resume field.
+Daytona requires that field to equal the recorded lease directory and verifies
+the allocation sentinel at its recorded path. It returns the requested directory
+without creating a folder. Ordinary resume omits the field and returns the
+allocation root for normal workspace preparation. Recovery still requires the
+reopened allocation and directory to match the recorded source exactly.
+An interrupted legacy run does not need an accepted native result. A successful
+`workspace_recovery` operation and matching
 recovery record prove persistence; adapter output or a user repair note cannot.
 The failed run and unknown external effects remain historical facts.
+Cancelled native work can owe files after an audited run-only Stop from the
+agent lifecycle, without a board actor. The preservation worker admits that
+exact acknowledged receipt only when the coordinator is terminal, has no
+accepted result or owner, and the run's controller lease is not live. While a
+controller is live, the worker waits for its actual lease expiry, including a
+renewal observed when preservation rechecks the locked run. Once eligible, it
+records the bound prepared workspace and allocation as file recovery work. An existing
+resolved execution watchdog does not discharge that file obligation. This does
+not grant board Stop or continuation authority, change the cancelled result,
+or prove physical termination. Normal recovery stops and retains the same
+allocation, saves its files, and obtains a fresh stop receipt before cleanup
+can apply the original destroy disposition. It starts no provider turn.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
@@ -2549,6 +2602,15 @@ replaces conflicting scope; clarification alone does not approve execution. A
 wake from a server-verified human card response references that entry in
 `humanResponses`, whose answer is already present in the current request context.
 Agent/tool outcomes and generated summaries are not promoted to human direction.
+
+Standing agent chats, identified by both conversation agent and user IDs through
+the shared conversation predicate, complete the current response stage. Each pending request
+keeps its criterion identity and source, with instructions to address it within
+that stage. Authorized chat actions require verified results. Delegation requires
+a verified handoff and a reply; the worker's task remains separate. An unavailable
+action requires a truthful limitation and supported handoff. Ordinary task
+contracts still require the requested work itself, and an admitted run retains
+its saved contract during recovery.
 
 These are model instructions, not additional execution or permission gates.
 Contracts reference the existing brief and answers instead of copying them again.

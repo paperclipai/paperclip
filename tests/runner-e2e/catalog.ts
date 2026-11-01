@@ -1,3 +1,4 @@
+import { ROLLING_WEB_DEPLOYMENT_SUITE } from "./controller-rolling-deployment.js";
 import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
@@ -1169,8 +1170,7 @@ const daytonaControllerOutageEnvironment: EnvironmentFixture = {
   },
 };
 
-export const runnerSuites: readonly RunnerSuiteFixture[] = [
-  {
+const remoteWorkspaceStorageSuite: RunnerSuiteFixture = {
     id: REMOTE_WORKSPACE_STORAGE_SUITE, label: "Remote workspace storage and controller replacement", manualOnly: true,
     description: "Keep synthetic files and local Git work in the sandbox, commit saved versions to object storage, and preserve the original active execution through controller replacement.",
     groups: [], profiles: [(() => {
@@ -1196,6 +1196,16 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       postControllerReplyFormat: "one-plain-text-line-marker-space-actual-command-output",
       grading: "same-active-execution-committed-snapshots-browser-files-and-post-controller-native-continuation",
       source: "projectless-synthetic-files-and-model-created-git", authentication: "api-key", stagingQualification: false },
+  };
+
+export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  remoteWorkspaceStorageSuite,
+  { ...remoteWorkspaceStorageSuite, id: ROLLING_WEB_DEPLOYMENT_SUITE, label: "Rolling control-plane web deployment",
+    description: "Overlap independent ephemeral web servers while a remote execution stays active; keep ordinary reads, saves, files and a later native continuation working.",
+    definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 1, controllerDowntimeMs: 0,
+      replacement: "ready-before-traffic-switch-sigterm-delete-entire-home",
+      upgradeReadiness: "active-remote-workspace-recoverable-before-handoff",
+      grading: "same-active-execution-ordinary-reads-saves-and-second-empty-home-continuation" },
   },
   {
     id: "daytona-restart-continuity", label: "Daytona warm controller outage continuity", manualOnly: true,

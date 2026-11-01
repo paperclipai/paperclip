@@ -4,13 +4,20 @@ import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSes
 
 async function openDocumentAuthoring({ page }: JourneyContext) {
   const create = page.getByRole("button", { name: "New document", exact: true });
-  if (await create.isVisible()) return;
   const properties = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).first();
-  if (await properties.isVisible()) await properties.click();
   const artifacts = page.getByRole("tab", { name: /^Artifacts/ }).first();
+  const addTab = page.getByRole("button", { name: "Open a new tab", exact: true });
+  const panelReady = async () => await create.isVisible() || await artifacts.isVisible() || await addTab.isVisible();
+  await expect.poll(async () => await properties.isVisible() || await panelReady()).toBe(true);
+  if (await create.isVisible()) return;
+  if (await properties.isVisible()) {
+    await properties.click();
+    await expect.poll(panelReady).toBe(true);
+    if (await create.isVisible()) return;
+  }
   if (await artifacts.isVisible()) await artifacts.click();
   else {
-    await page.getByRole("button", { name: "Open a new tab", exact: true }).click();
+    await addTab.click();
     await page.getByRole("option", { name: /^Artifacts/ }).click();
   }
   await expect(create).toBeVisible();
