@@ -213,6 +213,7 @@ export type ReleaseRecoveryReviewParticipantFacts = {
   applies: boolean;
   /** True when the finishing run was itself a review-participant-recovery retry. */
   isExecutionReviewParticipantRecoveryRun: boolean;
+  hasPendingWakeInteraction: boolean;
 };
 
 export type ReleaseRecoveryImmediateFacts = {
@@ -384,7 +385,8 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
       facts.suppressImmediateRecovery ||
       shared.hasExistingExecutionPath ||
       shared.hasPersistedMonitor ||
-      shared.suppressedByPauseHold
+      shared.suppressedByPauseHold ||
+      reviewParticipant.hasPendingWakeInteraction
     ) {
       return { kind: "released" };
     }
