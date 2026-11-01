@@ -50,7 +50,7 @@ export async function hasUnsettledLocalInstructionCopies(db: Db): Promise<boolea
     eq(copies.location, "local"), notInArray(copies.state, ["saved", "unchanged", "resolved", "superseded"]),
     not(and(eq(copies.state, "unavailable"), isNotNull(copies.processStoppedAt),
       sql`coalesce(${copies.receipt}->>'schema', '') = 'paperclip.agent-files.v1'`,
-      sql`coalesce(${copies.receipt}->>'cleanupPending', '') = 'false'`)),
+      sql`coalesce(${copies.receipt}->>'cleanupPending', '') = 'false'`)!),
   )).limit(1)).length > 0;
 }
 
