@@ -439,6 +439,7 @@ export interface PluginPerformActionActorContext {
   runId: string | null;
   /** Company id authorized by the host bridge for this action, when applicable. */
   companyId: string | null;
+  authenticationSource: string | null;
 }
 
 export interface PluginPerformActionContext {
