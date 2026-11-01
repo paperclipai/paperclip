@@ -116,6 +116,29 @@ function sourceSlugForConnection(
   return source && getAppStoreDefinition(source) ? source : `connection:${connection.id}`;
 }
 
+// An AI intent names the provider it needs, while a custom gateway connection
+// carries its transport's catalog slug (a local Messages/Responses proxy stores
+// "local"). Comparing catalog slugs can therefore never match for a gateway, so
+// the provider is the only identity an AI intent can be resolved against.
+function aiProviderForConnection(connection: ToolConnection): string | null {
+  const ai = connection.config?.ai;
+  if (!ai || typeof ai !== "object" || Array.isArray(ai)) return null;
+  const provider = (ai as { provider?: unknown }).provider;
+  return typeof provider === "string" && provider.length > 0 ? provider : null;
+}
+
+function connectionMatchesIntent(
+  connection: ToolConnection,
+  payload: { purpose?: "ai" | "channel"; serviceSlug: string },
+  applications: ReadonlyMap<string, ToolApplication>,
+) {
+  if (payload.purpose === "ai") {
+    return connection.connectionPurpose === "ai"
+      && aiProviderForConnection(connection) === payload.serviceSlug;
+  }
+  return sourceSlugForConnection(connection, applications) === payload.serviceSlug;
+}
+
 
 function availableToolConnectionMethods(
   app: (typeof CONNECTABLE_APP_DEFINITIONS)[number],
@@ -1007,7 +1030,7 @@ export function connectionIntentService(db: Db) {
       ? (await access.listConnectionGrants(selectedAiAccount.id, loaded.issue.companyId)).grants.find(grant => grant.id === selectedAiAccount.grantId)
       : undefined;
     const matchingConnections = inventory.connections.filter((connection) =>
-      sourceSlugForConnection(connection, inventory.applicationsById) === app.slug
+      connectionMatchesIntent(connection, payload, inventory.applicationsById)
       && connection.status === "active"
       && connection.enabled
     );
@@ -1107,10 +1130,11 @@ export function connectionIntentService(db: Db) {
         selectedConnection.applicationId,
         loaded.issue.companyId,
       );
-      if (sourceSlugForConnection(
+      if (!connectionMatchesIntent(
         selectedConnection,
+        payload,
         new Map([[selectedApplication.id, selectedApplication]]),
-      ) !== payload.serviceSlug) {
+      )) {
         throw notFound("Connection does not match this intent");
       }
       if (selectedConnection.status !== "active" || !selectedConnection.enabled || isToolConnectionAttentionHealth(selectedConnection.healthStatus)) {

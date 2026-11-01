@@ -1003,6 +1003,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsed,
       stdout: proc.stdout,
       stderr: proc.stderr,
+      // A structured max-turns stop is authoritative: the run spent its turn
+      // budget, so an auth phrase echoed in the transcript is the agent's own
+      // tool output, not the provider asking for a login.
+      maxTurnsExhausted: isClaudeMaxTurnsResult(parsed),
     });
     const errorMeta =
       loginMeta.loginUrl != null

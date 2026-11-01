@@ -116,6 +116,34 @@ describe("detectClaudeLoginRequired", () => {
     ).toBe(false);
   });
 
+  it("keeps a max-turns run off the login lane when its transcript quotes an auth failure", () => {
+    // The agent hit an upstream 401 from its own tool output. The CLI's
+    // structured result says the run stopped at its turn budget, so the auth
+    // phrase belongs to the agent's work, not to a provider login request.
+    const parsed = {
+      is_error: true,
+      subtype: "error_max_turns",
+      errors: ["Reached maximum number of turns (60)"],
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"GET /v1/messages -> HTTP/1.1 401 Unauthorized (authentication required)"}]}}',
+        stderr: "",
+        maxTurnsExhausted: true,
+      }).requiresLogin,
+    ).toBe(false);
+    // Without the structured stop the same transcript still asks for a login.
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, subtype: "error_max_turns" },
+        stdout: '{"type":"assistant","message":{"content":[{"type":"text","text":"authentication required"}]}}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
   it("keeps a transient failure with an assistant token phrase on the transient lane", () => {
     // The run fails on a 503 transient error. The token phrase appears only in
     // the raw stdout assistant event, not the parsed result, so the run stays
