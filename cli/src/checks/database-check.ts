@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
+import { localeCheck } from "./locale-check.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
 function isInsideOsTmpDir(targetPath: string): boolean {
@@ -44,6 +45,17 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
   }
 
   if (config.database.mode === "embedded-postgres") {
+    const locale = localeCheck();
+    if (locale.status === "fail") {
+      return {
+        name: "Database",
+        status: "fail",
+        message: locale.message,
+        canRepair: false,
+        repairHint: locale.repairHint,
+      };
+    }
+
     const dataDir = resolveRuntimeLikePath(config.database.embeddedPostgresDataDir, configPath);
 
     // A worktree-mode instance whose data dir lives under the OS temp dir is a red
