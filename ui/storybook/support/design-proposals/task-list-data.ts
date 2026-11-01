@@ -1,6 +1,7 @@
 import type { Issue } from "@paperclipai/shared";
 import type { TaskListItem } from "@/components/TaskList";
 import type { TaskListColumnId } from "@/lib/task-list";
+import { connectedUser } from "../../fixtures/publicMcp";
 import { createIssue, storybookAgentMap, storybookExecutionWorkspaces, storybookIssueLabels } from "../../fixtures/paperclipData";
 
 export const longTitle = "Document connector recovery behavior when an expired credential interrupts an active task and requires a human to reconnect the account";
@@ -59,6 +60,8 @@ export function columnData(issue: Issue, owner: string) {
     parent: treeTasks.find(candidate => candidate.id === issue.parentId),
     creator: rowIssue.createdByAgentId ? agent.name : "Scott",
     assignee: rowIssue.assigneeAgentId ? agent.name : rowIssue.assigneeUserId ? "Design" : null,
+    assigneeAgent: rowIssue.assigneeAgentId ? agent : null,
+    assigneeUserAvatarUrl: rowIssue.assigneeUserId && issue.id === healthTask.id ? connectedUser.image : null,
   };
 }
 
@@ -79,5 +82,5 @@ export function sortValue(issue: Issue, column: TaskListColumnId) {
 
 export const reviewTaskItems: TaskListItem[] = treeTasks.map(issue => {
   const data = columnData(issue, ownerFor(issue));
-  return { issue: data.issue, createdBy: data.creator, assignee: data.assignee, unread: issue === connectorParent || issue === healthTask };
+  return { issue: data.issue, createdBy: data.creator, assignee: data.assignee, assigneeAgent: data.assigneeAgent, assigneeUserAvatarUrl: data.assigneeUserAvatarUrl, unread: issue === connectorParent || issue === healthTask };
 });
