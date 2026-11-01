@@ -239,7 +239,9 @@ export async function verifyPilotUpload(api, selection, context, exported, { now
         || !Number.isSafeInteger(value.contentLength) || value.contentLength <= 0 || value.contentLength > 12 * 1024 * 1024
         || value.contentType !== 'application/json')) reject('export_mismatch');
   }
-  const deadline = now() + 120_000;
+  const metadataReadAllowance = context.catalog === 'full' && selected.length > 3
+    ? (2 + Math.ceil(selected.length / 100) + 2 * Math.ceil(selected.length / 4)) * 2000 : 0;
+  const deadline = now() + 120_000 + metadataReadAllowance;
   const get = route => {
     const remaining = deadline - now(); if (remaining < 1) reject('upload_unverified');
     return api(route, 'GET', undefined, Math.min(30_000, remaining));

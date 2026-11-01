@@ -127,6 +127,33 @@ test('full server readback verifies every result across three complete pages', a
   assert.ok(f.calls.includes('/api/testresult?launchId=12&page=2&size=100'));
 });
 
+test('a full ready snapshot fits its read budget while a late snapshot still fails closed', async t => {
+  async function replay(latency) {
+    let clock = 0, outcome; const pending = [], f = api();
+    const verification = verifyPilotUpload(route => new Promise((resolve, reject) => {
+      pending.push({ at: clock + latency, complete: () => { f.get(route).then(resolve, reject); } });
+    }), selection, context, exported, { now: () => clock });
+    verification.then(value => { outcome = { value }; }, error => { outcome = { error }; });
+    for (let tick = 0; tick < 600 && !outcome; tick++) {
+      await new Promise(resolve => setImmediate(resolve));
+      if (outcome) break;
+      assert.ok(pending.length > 0, 'the controlled response chain must make progress');
+      clock = Math.min(...pending.map(row => row.at));
+      const ready = pending.filter(row => row.at <= clock);
+      for (const row of ready) { pending.splice(pending.indexOf(row), 1); row.complete(); }
+    }
+    assert.ok(outcome, 'bounded controlled snapshot replay must settle');
+    return { ...outcome, clock };
+  }
+  const ready = await replay(1000);
+  assert.ifError(ready.error);
+  assert.equal(ready.value.verification, 'VERIFIED'); assert.equal(ready.value.results.length, 244);
+  assert.ok(ready.clock > 120_000);
+  const late = await replay(3000);
+  assert.match(late.error?.message ?? '', /upload_unverified/);
+  t.diagnostic(JSON.stringify({ fixtureOnly: true, selectedCases: 244, readyElapsedMs: ready.clock, lateElapsedMs: late.clock }));
+});
+
 test('an incomplete last page and a wrong registered selector cannot qualify a full catalog run', async () => {
   const missing = api({ '/api/testresult?launchId=12&page=2&size=100': { content: [], totalElements: 244, totalPages: 3, number: 2 } });
   await assert.rejects(verifyPilotUpload(missing.get, selection, context, exported), /result_page/);
