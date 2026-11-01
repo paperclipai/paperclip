@@ -64,7 +64,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     const [cleared] = await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: now })
       .where(and(eq(nativeRunFinalizations.runId, coordinator.runId),
         eq(nativeRunFinalizations.leaseOwner, coordinator.leaseOwner!),
-        eq(nativeRunFinalizations.leaseExpiresAt, coordinator.leaseExpiresAt!),
+        sql`date_trunc('milliseconds', ${nativeRunFinalizations.leaseExpiresAt}) = ${coordinator.leaseExpiresAt!}`,
         eq(nativeRunFinalizations.controllerGeneration, coordinator.controllerGeneration),
         eq(nativeRunFinalizations.phase, coordinator.phase), isNull(nativeRunFinalizations.resultId)))
       .returning({ runId: nativeRunFinalizations.runId });
