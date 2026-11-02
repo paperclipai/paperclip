@@ -9,6 +9,9 @@ import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { authorizationService } from "./authorization.js";
 import { taskWorkspaceProjectRequirements } from "./task-workspace-access.js";
+import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { redactCurrentUserText } from "../log-redaction.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -81,8 +84,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
 }
 
 /** Batch list reads rather than doing seven queries per row. Keep run logs and
- * large result bodies out of this projection; only authentication evidence is
- * needed for the typed reconnect action. */
+ * large result bodies out of this projection. */
 export async function taskInterruptionPresentations(db: Db, companyId: string, input: ProjectionIssue[]) {
   const selected = input.filter(issue => issue.companyId === companyId);
   const result = new Map<string, TaskInterruptionPresentation | null>();
@@ -190,6 +192,20 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         runId: run.id, runStatus, intentId: presentation.intentId,
         agentAdapter: run.agentAdapter ?? "unknown" });
     }
+  }
+  const disclosures = [...result.values()].flatMap(presentation => presentation?.providerFailure && presentation.observedRunId
+    ? [{ id: presentation.observedRunId, providerFailure: presentation.providerFailure, presentation }] : []);
+  if (disclosures.length) {
+    const [safe, settings] = await Promise.all([
+      createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.map(({ id, providerFailure }) => ({ id, providerFailure }))),
+      instanceSettingsService(db).getGeneral(),
+    ]);
+    disclosures.forEach(({ presentation }, index) => {
+      const failure = readProviderFailure(safe[index]?.providerFailure);
+      if (failure) presentation.providerFailure = { ...failure,
+        message: redactCurrentUserText(failure.message, { enabled: settings.censorUsernameInLogs }) };
+      else delete presentation.providerFailure;
+    });
   }
   return result;
 }

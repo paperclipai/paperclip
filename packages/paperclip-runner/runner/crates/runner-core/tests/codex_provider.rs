@@ -234,6 +234,7 @@ fn failed_provider_startup_is_persistently_fenced_before_another_process_can_res
         .execute(&command("open", 2, "session.open", json!({})))
         .unwrap_err();
     assert!(failure.to_string().contains("no rollout found"));
+    assert_eq!(failure.provider_failure().unwrap()["provider"], "openai");
     let persisted: Value =
         serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
             .unwrap();

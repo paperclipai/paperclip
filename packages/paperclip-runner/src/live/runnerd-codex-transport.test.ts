@@ -9791,7 +9791,7 @@ it("retains the authenticated command failure without implicitly logging its str
 it("keeps a provider explanation in the command receipt and out of implicit error logging", async () => {
   const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "unknown", message: "Private provider explanation.", retryability: "unknown" };
-  const result = { result: { code: "command_execution_failed", message: "closed failure", providerFailure } };
+  const result = { result: { code: "command_execution_failed", message: `RPC failed: ${providerFailure.message}`, providerFailure } };
   let failure: unknown;
   try {
     await waitForRunnerCommand({ type: "session.open", deadline: Date.now() + 1000, abortOnClose: true,

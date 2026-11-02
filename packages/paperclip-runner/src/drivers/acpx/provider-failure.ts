@@ -1,5 +1,6 @@
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createProviderFailure } from "../provider-failure.js";
+import { boundedSidecarValue } from "./sidecar-protocol.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -37,4 +38,15 @@ export function acpxProviderFailure(error: unknown, agent: string, phase: Provid
   return createProviderFailure({ provider: agent === "claude" ? "anthropic" : agent === "codex" ? "openai" : agent,
     phase, message, httpStatus: status, providerCode: code, requestId: data.request_id,
     category: typeof code === "string" ? categories[code] : undefined, environment });
+}
+
+export function acpxTerminalResult(result: unknown, agent: string, environment: NodeJS.ProcessEnv = {}): Record<string, unknown> {
+  const raw = record(result);
+  const providerFailure = raw.status === "failed" ? acpxProviderFailure(raw.error, agent, "turn", environment, true) : null;
+  const terminal = boundedSidecarValue(result);
+  if (providerFailure) {
+    terminal.status = "failed";
+    terminal.error = { ...record(terminal.error), providerFailure };
+  }
+  return terminal;
 }

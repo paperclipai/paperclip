@@ -1,3 +1,4 @@
+import { readProviderFailure } from "../contracts/provider-failure.generated.js";
 import { confirmAntigravityProbeNativeRetirement } from "../drivers/acpx/antigravity-probe-retirement.js";
 import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../drivers/acpx/grok-web-search.js";
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
@@ -8078,7 +8079,10 @@ export async function waitForRunnerCommand(input: {
     const command = input.command();
     if (command?.status === "completed") return;
     if (command !== undefined && command.status !== "pending") {
-      const error = new Error(`PRP command ${input.type} ${command.status}: ${JSON.stringify(command.result,
+      const detail = record(record(command.result).result);
+      const reportedResult = readProviderFailure(detail.providerFailure)
+        ? { ...record(command.result), result: { code: detail.code, message: "Provider request failed" } } : command.result;
+      const error = new Error(`PRP command ${input.type} ${command.status}: ${JSON.stringify(reportedResult,
         (key, value) => key === "providerFailure" ? undefined : value)}`) as RunnerCommandFailure;
       Object.defineProperty(error, "runnerCommandResult", { value: structuredClone(command.result), enumerable: false });
       throw error;

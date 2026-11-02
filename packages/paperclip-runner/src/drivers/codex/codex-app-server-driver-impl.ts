@@ -359,7 +359,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (input.signal?.aborted) input.signal.throwIfAborted();
-      if (error instanceof CodexRpcError && !this.#options.driverIdentity) {
+      if (error instanceof CodexRpcError && (this.#options.driverIdentity?.kind ?? DRIVER_KIND) === DRIVER_KIND) {
         const providerFailure = codexProviderFailure(error, "startup", this.#options.environment);
         if (providerFailure) Object.defineProperty(error, "providerFailure", { value: providerFailure, enumerable: false });
       }

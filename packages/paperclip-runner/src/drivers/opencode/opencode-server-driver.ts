@@ -1950,9 +1950,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       this.#settlePendingRuntimeRequestsForTurn(turnId);
       this.#emit(
         "turn.failed",
-        { status: "failed", error: bounded({ ...providerError,
+        { status: "failed", error: { ...bounded(providerError),
           providerFailure: openCodeProviderFailure(providerError, this.#model.split("/")[0]!,
-            Object.fromEntries(this.#runtime.sensitiveValues.map((value, index) => [`TOKEN_${index}`, value]))) ?? undefined }) },
+            Object.fromEntries(this.#runtime.sensitiveValues.map((value, index) => [`TOKEN_${index}`, value]))) ?? undefined } },
         { turnId },
       );
       this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));

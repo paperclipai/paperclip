@@ -2,7 +2,7 @@
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
-import { acpxProviderFailure } from "../drivers/acpx/provider-failure.js";
+import { acpxProviderFailure, acpxTerminalResult } from "../drivers/acpx/provider-failure.js";
 import { providerFailureFromError } from "../drivers/provider-failure.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
@@ -716,12 +716,7 @@ async function pumpTurn(
       // not replace the provider's authoritative completed/cancelled result.
       diagnostic("acpx_terminal_usage_unavailable", safeMessage(error));
     }
-    terminal = boundedSidecarValue(result);
-    if (result.status === "failed" && openParams) {
-      const failure = record(terminal.error);
-      const providerFailure = acpxProviderFailure(failure, openParams.agent, "turn", process.env, true);
-      if (providerFailure) terminal.error = { ...failure, providerFailure };
-    }
+    terminal = openParams ? acpxTerminalResult(result, openParams.agent, process.env) : boundedSidecarValue(result);
   } catch (error) {
     terminal = {
       status: "failed",

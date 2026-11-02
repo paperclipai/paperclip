@@ -115,6 +115,17 @@ class WarmAttachTransport extends FakeCodexTransport {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it.each(["codex_app_server", "acpx_runtime"])("keeps startup provider evidence for the selected %s driver", async kind => {
+    const transport = new FakeCodexTransport();
+    transport.rejectMethods.set("thread/start", new CodexRpcError(JSON.stringify({ error: {
+      code: "insufficient_quota", message: "The provider allowance is exhausted." }, status: 429 }), -32603));
+    const driver = makeDriver([transport], { driverIdentity: { kind, displayName: "Fixture", version: "1" } });
+    const error = await driver.openSession({ runId: "startup-cause", normalizedSessionId: "startup-cause", workingDirectory: WORKSPACE }).catch(error => error);
+    if (kind === "codex_app_server") expect(error.providerFailure).toMatchObject({ provider: "openai", phase: "startup",
+      category: "quota_exhausted", message: "The provider allowance is exhausted.", httpStatus: 429 });
+    else expect(error.providerFailure).toBeUndefined();
+  });
+
   it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
     const transport = new WarmAttachTransport();
     const driver = makeDriver([transport]);

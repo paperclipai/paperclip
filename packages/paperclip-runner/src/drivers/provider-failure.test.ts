@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
-import { acpxProviderFailure } from "./acpx/provider-failure.js";
+import { acpxProviderFailure, acpxTerminalResult } from "./acpx/provider-failure.js";
 import { codexProviderFailure } from "./codex/provider-failure.js";
 import { openCodeProviderFailure } from "./opencode/provider-failure.js";
 import { createProviderFailure, providerFailureFromError } from "./provider-failure.js";
@@ -20,6 +20,13 @@ describe("provider failure boundary", () => {
     const failure = acpxProviderFailure({ ...acp, data: { details: "Unrecognized upstream failure 🚀" } }, "kimi", "turn");
     expect(failure).toMatchObject({ provider: "kimi", category: "unknown", message: "Unrecognized upstream failure 🚀", retryability: "unknown" });
     expect(acpxProviderFailure(new Error("internal runtime failure"), "claude", "startup")).toBeNull();
+  });
+
+  it("keeps the ACPX terminal cause when the raw result exceeds its payload limit", () => {
+    const terminal = acpxTerminalResult({ status: "failed", error: { ...acp,
+      data: { ...acp.data, responseBody: "private-body".repeat(7000) } } }, "claude");
+    expect(terminal).toMatchObject({ status: "failed", omitted: true, error: { providerFailure: { message, httpStatus: 429 } } });
+    expect(JSON.stringify(terminal)).not.toContain("private-body");
   });
 
   it("distinguishes structured OpenAI quota failures from rate limits", () => {

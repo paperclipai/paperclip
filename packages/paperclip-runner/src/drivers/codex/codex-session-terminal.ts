@@ -167,14 +167,12 @@ export function mapTerminalTurn(
     state.turnStarted = false;
     const providerFailure = status === "failed" ? readProviderFailure(record(turn.error).providerFailure)
       ?? (state.driverKind === "codex_app_server" ? codexProviderFailure(turn.error, "turn", state.diagnosticEnvironment) : null) : null;
-    state.emit(
-      eventType,
-      boundedPayload({
-        status,
-        error: providerFailure ? { ...record(turn.error), providerFailure } : turn.error ?? null,
-      }),
-      { turnId },
-    );
+    const payload = boundedPayload({ status, error: turn.error ?? null });
+    if (providerFailure) {
+      payload.status = status;
+      payload.error = { ...record(payload.error), providerFailure };
+    }
+    state.emit(eventType, payload, { turnId });
     finalize(state, status);
     if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
         !state.dispositionOnlyRecoveryConsumed) {

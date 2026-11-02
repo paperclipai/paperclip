@@ -1453,6 +1453,8 @@ process boundary. Startup command receipts and failed turns retain the same
 contract through Runner, persistence, and restart finalization. The task's current
 interruption and the historical run detail show this explanation, including when
 its category is unknown. Later cleanup errors do not erase the saved cause.
+Task read projections reapply registered run-secret and current-user redaction
+before returning provider text to detail or list views.
 The category and retryability describe provider evidence; they do not grant
 retry authority, prove stopped execution, or change the existing recovery budget.
 An HTTP 429 alone does not establish a quota reset time or a safe retry.

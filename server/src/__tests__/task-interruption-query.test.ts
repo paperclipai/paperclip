@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
-import { taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
+import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { captureInterruptionQuery, seedInterruptionFixture } from "./helpers/task-interruption-fixture.js";
 
@@ -14,6 +15,26 @@ describe("task interruption latest run query", () => {
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("interruption-query-"); db = createDb(database.connectionString); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
+
+  it("redacts registered run secrets from both task detail and list provider explanations", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = `private-runtime-value-${randomUUID()}`;
+      const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+        category: "unknown", message: `Provider rejected runtime value ${secret}.`, retryability: "unknown" };
+      await db.update(heartbeatRuns).set({ resultJson: { providerFailure } }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      const list = await taskInterruptionPresentations(db, f.companyId, f.input);
+      const detail = await taskInterruptionPresentation(db, f.input[0]!);
+      for (const presentation of [list.get(f.input[0]!.id), detail]) {
+        expect(presentation?.providerFailure?.message).toContain("Provider rejected runtime value");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]?.resultJson).toEqual({ providerFailure });
+    } finally { vi.unstubAllEnvs(); }
+  });
 
   it("does not inspect unrelated company history for a small issue page", async () => {
     const f = await seedInterruptionFixture(db, { selected: 2, history: 3, unrelated: 1500, payloadBytes: 4096 });
