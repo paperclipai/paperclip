@@ -218,7 +218,7 @@ export async function setupLiveFixtures(input: {
           : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
           || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
-          : ["stock-harness", "task-workspaces", "case-handoffs", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage"].includes(execution.suite.id) ? 1_000 : 0,
+          : ["stock-harness", "task-workspaces", "case-handoffs", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id) ? 1_000 : 0,
       });
       await input.onCompanyCreated?.(company.id);
       return company;
@@ -413,7 +413,7 @@ export async function setupLiveFixtures(input: {
           setupProbe.defaultRunner = selected.defaultRunner;
         }
       }
-      if (["stock-harness", "native-connection-guidance", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage"].includes(execution.suite.id)
+      if (["stock-harness", "native-connection-guidance", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id)
         || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
         agent.budgetMonthlyCents = 1_000;
       }

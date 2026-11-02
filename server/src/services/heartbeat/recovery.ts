@@ -1,4 +1,5 @@
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "../native-runtime/native-controller-recovery.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
@@ -1011,6 +1012,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (disposition.kind === "awaiting_evidence" && disposition.retryAt) {
           scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");
         }
+        // No ownership decision was made for a locked row. Writing an event
+        // would wait on that same row and defeat the non-blocking startup scan.
+        if (disposition.kind === "awaiting_evidence" && disposition.reason === "recovery_rows_busy") continue;
         const run = await getRun(disposition.runId);
         if (run) {
           const isClaim =
@@ -1159,9 +1163,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           processPid: run.processPid,
           processStartedAt: run.processStartedAt?.toISOString() ?? null,
         });
-        await db
-          .update(nativeRunFinalizations)
-          .set({
+        await db.transaction(async tx => {
+          await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
+          await tx.update(nativeRunFinalizations).set({
             leaseExpiresAt: now,
             recoveryState: "awaiting_runner_reattach",
             recoveryHistory: sql`(
@@ -1188,6 +1192,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               isNull(nativeRunFinalizations.resultId),
             ),
           );
+        });
         await appendRunEvent(run, {
           eventType: "native.recovery.transition",
           stream: "system",

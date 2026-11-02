@@ -33,7 +33,7 @@ import { AgentStatusBadge } from "./StatusBadge";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import { agentRouteRef } from "../lib/utils";
+import { agentRouteRef, cn } from "../lib/utils";
 import { pendingAgentSetupChoice } from "../lib/agent-setup-choice";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useDialogActions } from "../context/DialogContext";
@@ -174,6 +174,8 @@ export function AgentActionButtons({
   onTerminateSuccess,
   pauseConfirm,
   hideTerminate = false,
+  workActionsInMenu = false,
+  menuItems = [],
   children,
   className,
 }: {
@@ -199,6 +201,10 @@ export function AgentActionButtons({
   pauseConfirm?: { title: string; description: ReactNode };
   /** Hide the Terminate action (e.g. built-in agents are undeletable). */
   hideTerminate?: boolean;
+  /** Put Run now, Pause/Resume and Clear error in the overflow menu, leaving Assign task (or Finish setup, while setup is pending) as the one button. */
+  workActionsInMenu?: boolean;
+  /** Extra overflow items shown after the work actions when `workActionsInMenu` is on. */
+  menuItems?: ReadonlyArray<{ label: string; icon: typeof Plus; onSelect: () => void; disabled?: boolean }>;
   /**
    * Optional inline error reporter. When provided it is used instead of a toast
    * for action failures (preserves the detail page's inline error banner). When
@@ -363,6 +369,179 @@ export function AgentActionButtons({
       ? (runtimeConfig.debug as Record<string, unknown>)
       : null;
   const persistentProviderTrace = runtimeDebug?.providerTrace === "raw";
+
+  const finishSetup = () => {
+    if (!confirmNavigationStart(agentActionStartedDirtyRef)) return;
+    navigate(`/agents/new?${new URLSearchParams({
+      name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
+      runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
+      ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
+      ...pendingAgentSetupChoice(agent),
+    })}`);
+  };
+  const pauseDialog = pauseConfirm ? (
+    <AlertDialog open={pauseConfirmOpen} onOpenChange={setPauseConfirmOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{pauseConfirm.title}</AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div>{pauseConfirm.description}</div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => agentAction.mutate("pause")}>
+            Pause anyway
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  ) : null;
+
+  if (workActionsInMenu) {
+    const item = "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50";
+    const icon = "size-4 shrink-0 text-muted-foreground";
+    const select = (action: () => void) => () => {
+      setMoreOpen(false);
+      action();
+    };
+    return (
+      <div className={className ?? "flex shrink-0 items-center gap-2"}>
+        {persistentProviderTrace ? (
+          <span
+            className="hidden items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary lg:inline-flex"
+            title="Exact provider traffic will be captured for future runs and retained for up to 24 hours."
+          >
+            <Bug className="h-3.5 w-3.5" />
+            Raw tracing on
+          </span>
+        ) : null}
+        {children}
+        <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="icon" aria-label={`Open actions for ${agent.name}`}>
+              <MoreHorizontal className="size-4" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-52 p-1" align="end">
+            {needsSetup ? (
+              <button
+                type="button"
+                className={item}
+                disabled={assignAndRunDisabled}
+                title={workActionsDisabled ? workActionsDisabledReason : undefined}
+                onClick={select(() => openNewIssue({ assigneeAgentId: agent.id }))}
+              >
+                <Plus className={icon} />
+                {assignLabel}
+              </button>
+            ) : showRun ? (
+              <button
+                type="button"
+                className={item}
+                disabled={assignAndRunDisabled}
+                title={workActionsDisabled ? workActionsDisabledReason : undefined}
+                onClick={select(() => {
+                  if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+                  agentAction.mutate("invoke");
+                })}
+              >
+                <Play className={icon} />
+                {runLabel}
+              </button>
+            ) : null}
+            {needsSetup ? null : isError ? (
+              <button
+                type="button"
+                className={cn(item, "text-destructive")}
+                disabled={clearErrorDisabled}
+                aria-label="Clear error and return agent to idle"
+                onClick={select(() => agentAction.mutate("clear_error"))}
+              >
+                <CheckCircle2 className={cn(icon, "text-destructive")} />
+                Clear error
+              </button>
+            ) : isPaused ? (
+              <button type="button" className={item} disabled={pauseResumeDisabled} onClick={select(() => agentAction.mutate("resume"))}>
+                <Play className={icon} />
+                Resume
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={item}
+                disabled={pauseResumeDisabled}
+                onClick={select(() => (pauseConfirm ? setPauseConfirmOpen(true) : agentAction.mutate("pause")))}
+              >
+                <Pause className={icon} />
+                Pause
+              </button>
+            )}
+            <div role="separator" className="-mx-1 my-1 h-px bg-border" />
+            {menuItems.map(({ label, icon: Icon, onSelect, disabled: itemDisabled }) => (
+              <button key={label} type="button" className={item} disabled={itemDisabled} onClick={select(onSelect)}>
+                <Icon className={icon} />
+                {label}
+              </button>
+            ))}
+            <button type="button" className={item} disabled={duplicateAgent.isPending} onClick={handleDuplicateAgent}>
+              {duplicateAgent.isPending ? <Loader2 className={cn(icon, "animate-spin")} /> : <Copy className={icon} />}
+              Duplicate agent
+            </button>
+            <button
+              type="button"
+              className={item}
+              onClick={select(() => {
+                void copyTextToClipboard(agent.id).catch(() => {
+                  pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+                });
+              })}
+            >
+              <Copy className={icon} />
+              Copy agent ID
+            </button>
+            <button type="button" className={item} onClick={select(() => resetTaskSession.mutate())}>
+              <RotateCcw className={icon} />
+              Reset sessions
+            </button>
+            {hideTerminate ? null : (
+              <>
+                <div role="separator" className="-mx-1 my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  className={cn(item, "text-destructive")}
+                  onClick={select(() => {
+                    if (onTerminateSuccess && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+                    agentAction.mutate("terminate");
+                  })}
+                >
+                  <Trash2 className={cn(icon, "text-destructive")} />
+                  Terminate
+                </button>
+              </>
+            )}
+          </PopoverContent>
+        </Popover>
+        {needsSetup ? (
+          <Button size={size} disabled={disabled} onClick={finishSetup}>
+            <Play className="size-4" />
+            Finish setup
+          </Button>
+        ) : (
+          <Button
+            size={size}
+            onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
+            disabled={assignAndRunDisabled}
+            title={workActionsDisabled ? workActionsDisabledReason : undefined}
+          >
+            <Plus className="size-4" />
+            {assignLabel}
+          </Button>
+        )}
+        {pauseDialog}
+      </div>
+    );
+  }
 
   return (
     <div className={className ?? "flex items-center gap-1 sm:gap-2 shrink-0"}>

@@ -391,7 +391,7 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 vi.mock("../realtime/live-events-ws.js", () => ({
-  setupLiveEventsWebSocketServer: vi.fn(),
+  setupLiveEventsWebSocketServer: vi.fn(() => ({ clients: new Set(), close: vi.fn() })),
 }));
 
 vi.mock("../services/attention-retention.js", async importOriginal => ({
@@ -537,7 +537,8 @@ vi.mock("../services/connection-intent-delivery.js", () => ({
   })),
 }));
 
-vi.mock("../services/question-response-delivery.js", () => ({
+vi.mock("../services/question-response-delivery.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/question-response-delivery.js")>(),
   questionResponseDeliveryService: vi.fn(() => ({
     hasPending: vi.fn(async () => false),
     sweepPending: vi.fn(async () => ({

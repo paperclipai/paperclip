@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { agents, authUsers, companies, createDb, executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import { buildProjectMentionHref } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { projectService } from "../projects.js";
 import { toExecutionWorkspace } from "../execution-workspaces.js";
 import { resolveRemoteWorkspaceSource } from "./remote-workspace-source.js";
 
@@ -11,13 +15,16 @@ const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("remote referenced project sources", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
+  let home: string;
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("remote-project-reference-");
     db = createDb(database.connectionString);
+    home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-task-anchor-")));
+    vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE", "true");
   }, 60_000);
-  afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); });
+  afterAll(async () => { await db?.$client.end(); await database?.cleanup(); if (home) await rm(home, { recursive: true, force: true }); vi.unstubAllEnvs(); });
 
   async function fixture(repository: boolean) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -37,6 +44,75 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       nativeIssueId: issueId, runtimeMode: "native", status: "running" });
     return { companyId, agentId, issueId, runId, projectId };
   }
+
+  async function assignedTask(repository = false) {
+    const f = await fixture(repository);
+    await db.update(issues).set({ projectId: f.projectId, conversationAgentId: null,
+      conversationUserId: null, conversationState: null }).where(eq(issues.id, f.issueId));
+    return f;
+  }
+
+  it("gives an ordinary metadata-project task its private empty source without adopting the facade folder", async () => {
+    const f = await assignedTask();
+    const project = (await projectService(db).getById(f.projectId))!;
+    expect(project.workspaces).toEqual([]);
+    expect(project.codebase).toMatchObject({ workspaceId: null, repoUrl: null, localFolder: null, origin: "managed_checkout" });
+    expect(project.codebase.managedFolder.startsWith(`${home}${path.sep}`)).toBe(true);
+    await mkdir(project.codebase.managedFolder, { recursive: true });
+    const sentinel = path.join(project.codebase.managedFolder, "unselected-project-files.txt");
+    await writeFile(sentinel, "Preserve this unselected managed folder.");
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: f.projectId, projectWorkspaceId: null });
+    expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" }, projectId: null, projectWorkspaceId: null });
+    expect(result.authority === "remote" && result.source.repositories).toBeUndefined();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.projectId).toBe(f.projectId);
+    expect(await readFile(sentinel, "utf8")).toBe("Preserve this unselected managed folder.");
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
+  });
+
+  it("retains a configured anchor repository instead of substituting private scratch", async () => {
+    const f = await assignedTask(true);
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: f.projectId, projectWorkspaceId: null });
+    expect(result).toMatchObject({ authority: "remote", projectId: f.projectId,
+      source: { kind: "git", repoUrl: "https://example.test/team/repository.git" } });
+    expect(result.authority === "remote" && result.projectWorkspaceId).toBeTruthy();
+  });
+
+  it("does not replace a configured anchor without a repository URL", async () => {
+    const f = await assignedTask();
+    await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId, name: "Required source" });
+    await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: f.projectId, projectWorkspaceId: null })).rejects.toMatchObject({
+      resultJson: { reason: "remote_workspace_source_unavailable" },
+    });
+  });
+
+  it.each(["missing-source", "unknown-selection", "required-policy", "required-git", "explicit-cwd"])("does not turn %s into metadata-project scratch", async kind => {
+    const f = await assignedTask();
+    const input: Parameters<typeof resolveRemoteWorkspaceSource>[1] = { ...f, responsibleUserId: null,
+      projectId: f.projectId, projectWorkspaceId: null };
+    if (kind === "missing-source" || kind === "unknown-selection") {
+      const selection = { version: 1 as const, source: "explicit" as const, selection: kind === "missing-source"
+        ? { kind: "configured_source", projectWorkspaceId: randomUUID() } : { kind: "unknown" } };
+      await db.update(issues).set({ workspaceSelection: selection as never }).where(eq(issues.id, f.issueId));
+      input.selection = selection as never;
+    } else if (kind === "required-policy") {
+      await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, defaultProjectWorkspaceId: randomUUID() } }).where(eq(projects.id, f.projectId));
+    } else if (kind === "required-git") input.branchName = "required-task-branch";
+    else input.configuredCwd = home;
+    await expect(resolveRemoteWorkspaceSource(db, input)).rejects.toThrow();
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
+  });
+
+  it("does not use a foreign organizational project as private scratch authority", async () => {
+    const f = await assignedTask(), foreignCompanyId = randomUUID(), foreignProjectId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign owner", issuePrefix: foreignCompanyId.slice(0, 8) });
+    await db.insert(projects).values({ id: foreignProjectId, companyId: foreignCompanyId, name: "Foreign project" });
+    await db.update(issues).set({ projectId: foreignProjectId }).where(eq(issues.id, f.issueId));
+    await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: foreignProjectId, projectWorkspaceId: null })).rejects.toThrow();
+  });
 
   it.each(["true", "false"])("keeps a metadata-only project mention without a folder when the remote-source flag is %s", async (remoteEnabled) => {
     const f = await fixture(false);

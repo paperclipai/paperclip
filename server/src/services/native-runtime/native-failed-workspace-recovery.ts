@@ -11,7 +11,7 @@ import { logActivity } from "../activity-log.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
-import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
+import { hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
@@ -54,7 +54,8 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       eq(heartbeatRuns.id, selected.id), eq(heartbeatRuns.companyId, selected.companyId),
     )).for("update");
     if (!run || run.runtimeMode !== "native" || (!options.allowPreterminal && run.status !== "failed")) return;
-    if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeStopIntent(run))) return;
+    if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeRunStopReceipt(run)
+      || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt.getTime() > Date.now())) return;
     const currentReference = workspaceRecoveryReference(run.runnerProfileJson);
     if (!currentReference || currentReference.state !== "prepared"
       || (claim?.kind === "reattach_remote_runner" && (claim.remote.kind === "plugin_task" || claim.remote.providerLeaseId !== currentReference.providerLeaseId
@@ -166,7 +167,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
   for (const candidate of candidates) {
     cancelledWorkspaceCursors.set(db, candidate.runId);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.runId));
-    if (run && hasAcknowledgedNativeStopIntent(run)) {
+    if (run && hasAcknowledgedNativeRunStopReceipt(run)) {
       try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true }); }
       catch (error) {
         if (error instanceof NativeWorkspaceFinalizationBusyError) continue;
@@ -192,7 +193,7 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
   type Entry = { id: string; companyId: string; dueAt: number };
   type Candidate = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId"
     | "runtimeMode" | "driverKind" | "status" | "resultJson" | "runnerProfileJson">;
-  const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeStopIntent(run)
+  const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeRunStopReceipt(run)
     && workspaceRecoveryReference(run.runnerProfileJson)?.state === "prepared"
     && !hasRequiredWorkspaceRecovery(run.resultJson) && !nativeRunHasNoWorkspaceAccess(run);
   const scopeCondition = (scope?: CancelledWorkspacePreservationScope) => scope ? and(
@@ -219,6 +220,8 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
       .where(and(pendingCancelledWorkspace(), scopeCondition({ companyId: entry.companyId, runId: entry.id })));
     if (!run || !eligible(run)) return null;
     if (!canRun() || signal?.aborted) throw new Error("Cancelled workspace preservation stopped");
+    const controllerDeadline = run.controllerLeaseExpiresAt?.getTime();
+    if (controllerDeadline && controllerDeadline > Date.now()) return { ...entry, dueAt: controllerDeadline };
     const [finalization] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
       eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
@@ -234,7 +237,9 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
     if (source) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
     const [current] = await db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
-    return current && current.status === "cancelled" && eligible(current) ? { ...entry, dueAt: Date.now() + 30_000 } : null;
+    const currentControllerDeadline = current?.controllerLeaseExpiresAt?.getTime();
+    return current && current.status === "cancelled" && eligible(current) ? { ...entry,
+      dueAt: currentControllerDeadline && currentControllerDeadline > Date.now() ? currentControllerDeadline : Date.now() + 30_000 } : null;
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.cancelledWorkspacePreservation, batchSize: 5,

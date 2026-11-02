@@ -180,6 +180,7 @@ export const agentsApi = {
       rootPath?: string | null;
       entryFile?: string;
       clearLegacyPromptTemplate?: boolean;
+      requireExistingEntry?: boolean;
     },
     companyId?: string,
   ) => api.patch<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle"), data),

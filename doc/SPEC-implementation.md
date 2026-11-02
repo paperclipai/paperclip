@@ -2593,6 +2593,11 @@ publication receipts, binding checks, and lifecycle locks remain authoritative.
 
 A task's organizational project and filesystem workspace are independent. New tasks that need a filesystem and have no selected/configured workspace get a company/task directory, not the agent home. Plain tasks need neither Git nor a project. Existing bindings and admitted roots remain authoritative; changing project does not move files. Explicit workspace selections apply at a subsequent normal admission after prior execution and persistence obligations settle.
 
+The remote default also uses a task-owned empty source for an authorized project
+with no configured workspaces or explicit workspace policy. Its derived managed
+folder is not an admitted source. Existing bindings, explicit source selections,
+and required Git or folder settings do not become empty-source fallbacks.
+
 Chat connection and destination settings may supply project/workspace defaults. Destination fields override connection fields; omitted values inherit and null clears the inherited choice. Resolve and authorize these defaults once for a new conversation, then retain the resulting task intent. Existing conversations do not change when settings change. Trust confinement still takes precedence.
 
 Agents inspect/select workspaces and request contained repository preparation through ordinary authorized APIs. Repository preparation is idempotent and may require the next admission; it never claims a host-only clone is available in an already-running remote session. Simultaneous tasks may still explicitly share one physical local/SSH folder. Remote sharing requires actual placement and coherent persistence capability.
