@@ -56,6 +56,27 @@ describe("precompressedUiAssets", () => {
     expect(ranged.headers["content-encoding"]).toBeUndefined();
   });
 
+  it("follows the client's quality values and uses brotli only to break ties", async () => {
+    const preferred = await request(app()).get("/assets/index-abc.js").set("Accept-Encoding", "gzip;q=1, br;q=0.1");
+    expect(preferred.headers["content-encoding"]).toBe("gzip");
+    expect(preferred.text).toBe("FROM-GZ");
+    const tied = await request(app()).get("/assets/index-abc.js").set("Accept-Encoding", "gzip, deflate, br");
+    expect(tied.headers["content-encoding"]).toBe("br");
+  });
+
+  it("answers conditional rechecks of a compressed copy with 304", async () => {
+    const first = await request(app()).get("/assets/index-abc.js").set("Accept-Encoding", "br");
+    expect(first.headers["etag"]).toBeTruthy();
+    expect(first.headers["last-modified"]).toBeTruthy();
+    const byTag = await request(app()).get("/assets/index-abc.js").set("Accept-Encoding", "br").set("If-None-Match", first.headers["etag"]);
+    expect(byTag.status).toBe(304);
+    const byDate = await request(app()).get("/assets/index-abc.js").set("Accept-Encoding", "br").set("If-Modified-Since", first.headers["last-modified"]);
+    expect(byDate.status).toBe(304);
+    const head = await request(app()).head("/assets/index-abc.js").set("Accept-Encoding", "br");
+    expect(head.status).toBe(200);
+    expect(head.headers["content-encoding"]).toBe("br");
+  });
+
   it("leaves assets without a precompressed copy to dynamic compression", async () => {
     const res = await request(app()).get("/assets/plain-def.js").set("Accept-Encoding", "br");
     expect(res.status).toBe(200);

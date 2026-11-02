@@ -2,12 +2,13 @@ import express, { type Response } from "express";
 import request from "supertest";
 import { request as httpRequest, type Server } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
 import { staticUiFiles } from "../middleware/static-ui.js";
+import { precompressedUiAssets } from "../middleware/static-ui-compression.js";
 import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 
 function deferred() {
@@ -36,10 +37,10 @@ async function close(listener: Server) {
   await new Promise<void>(resolve => listener.close(() => resolve()));
 }
 
-async function abortDownload(listener: Server, url: string) {
+async function abortDownload(listener: Server, url: string, headers: Record<string, string> = {}) {
   const address = listener.address() as { port: number };
   await new Promise<void>((resolve, reject) => {
-    const client = httpRequest({ host: "127.0.0.1", port: address.port, path: url }, res => {
+    const client = httpRequest({ host: "127.0.0.1", port: address.port, path: url, headers }, res => {
       if (res.statusCode !== 200) {
         res.resume();
         reject(new Error(`Unexpected static response: ${res.statusCode}`));
@@ -72,6 +73,25 @@ describe("static UI idle completion", () => {
       expect(idleWorkSnapshot().active).toBe(before);
       startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
       await request(app).get("/ui/hello.txt").expect(503);
+    } finally {
+      await close(listener);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("releases an aborted precompressed asset download", async () => {
+    const root = await files(), before = idleWorkSnapshot().active, ended = deferred();
+    await rename(path.join(root, "large.bin"), path.join(root, "large.js.br"));
+    const app = express();
+    app.use(idleAdmissionMiddleware);
+    app.use((_req, res, next) => { res.once("close", ended.resolve); next(); });
+    app.use("/assets", precompressedUiAssets(root));
+    trackIdleRequestHandlers(app);
+    const listener = await listen(app);
+    try {
+      await abortDownload(listener, "/assets/large.js", { "Accept-Encoding": "br" });
+      await ended.promise;
+      expect(idleWorkSnapshot().active).toBe(before);
     } finally {
       await close(listener);
       await rm(root, { recursive: true, force: true });
