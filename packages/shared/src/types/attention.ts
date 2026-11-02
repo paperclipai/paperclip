@@ -258,6 +258,21 @@ export interface AttentionItem {
    * kind, whose decisions are not governed by a resolver policy.
    */
   resolverAudience?: AttentionResolverAudience | null;
+  /**
+   * Present only when attention delegates are configured, the item is returned with
+   * `includeDismissed=true`, and a delegate decision currently covers it.
+   */
+  delegateDecision?: AttentionDelegateDecision | null;
+}
+
+/** A decision recorded by an attention delegate (or a board user) on one attention occurrence. */
+export interface AttentionDelegateDecision {
+  verb: string;
+  reason: string | null;
+  holdUntil: string | null;
+  decidedByType: string;
+  decidedById: string;
+  decidedAt: string;
 }
 
 export interface AttentionFeed {

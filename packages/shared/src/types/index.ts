@@ -54,6 +54,7 @@ export type {
   AttentionProjectRef,
   AttentionQueueRef,
   AttentionResolverAudience,
+  AttentionDelegateDecision,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
