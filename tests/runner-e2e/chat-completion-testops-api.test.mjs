@@ -92,6 +92,24 @@ test('registration keeps an existing exact assignment without assigning it twice
   assert.equal(f.calls.filter(row => row.route.endsWith('/assign')).length, 0);
 });
 
+for (const bucket of [{ job: null, testCasesCount: 3 }, { testCasesCount: 3 }]) {
+  test(`registration binds an explicit unassigned bucket (${Object.hasOwn(bucket, 'job') ? 'null' : 'omitted'} job)`, async () => {
+    const f = mutationApi({ assignments: [bucket] }), markers = []; let observed;
+    await completePilotRegistration(f.api, prepared, official, context, 999, async stage => markers.push(stage), async value => { observed = value; });
+    assert.deepEqual(markers, ['bind_owned_job', 'assign_plan']);
+    assert.equal(f.calls.filter(row => row.route.endsWith('/assign')).length, 1);
+    assert.deepEqual(observed.assignments, [{ kind: 'unassigned', jobId: null, testCasesCount: 3 }]);
+  });
+}
+
+for (const bucket of [{ job: null, testCasesCount: 2 }, { job: null, testCasesCount: 3, otherJobId: 99 }]) {
+  test('registration rejects incomplete or unknown unassigned bucket data without writes', async () => {
+    const f = mutationApi({ assignments: [bucket] });
+    await assert.rejects(completePilotRegistration(f.api, prepared, official, context, 999, async () => assert.fail('no mutation marker')));
+    assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+  });
+}
+
 test('bootstrap retains a closed observation before rejecting an unknown parameter shape', async () => {
   const f = mutationApi({ parameters: [{ id: 34, name: 'PRIVATE_NAME', defaultValue: 'PRIVATE_DEFAULT', value: 'PRIVATE_VALUE' }] });
   let observed;
