@@ -177,6 +177,30 @@ Their repeated scans were absent from the combined capture. Residual work
 included pending projection, row conversion, and garbage collection.
 Profile capture time was excluded from the timing samples above.
 
+The committed harness is in `server/scripts/profile-tool-projection/`.
+Use Node 24.22.2, install workspace dependencies, and run these commands from
+the repository root in a disposable worktree. The compile step writes local
+`dist/` output. It is not the full application build. The Git history must
+contain the baseline and pending-fix commits named above.
+
+```sh
+pnpm install --frozen-lockfile
+node server/scripts/profile-tool-projection/compile.mjs
+node --expose-gc --import ./server/scripts/profile-tool-projection/register.mjs server/scripts/profile-tool-projection/benchmark.mjs --output-dir /tmp/paperclip-tool-projection --repeat 5
+node --expose-gc --import ./server/scripts/profile-tool-projection/register.mjs server/scripts/profile-tool-projection/responsiveness.mjs --output-dir /tmp/paperclip-tool-projection
+```
+
+The compile step writes the baseline and pending-only owner modules beside
+the current compiled modules. A build manifest records the current Git HEAD
+and the SHA-256 hashes of the four current owner source files. The benchmark
+records this manifest, validates complete output equality, then measures
+`profiles` and `attention` separately for `baseline`, `pending`, and `combined`.
+It writes `measurements.json` and six separate `.cpuprofile` files to the
+output directory. The HTTP probe writes `responsiveness.json` there. Keep
+CPU profiles private because they contain local source paths. Rebuild and
+rerun if the owner files change. Serialize these commands with other heavy
+builds and benchmarks on the same host.
+
 A separate process also sent simple HTTP requests every 20 ms while each
 real service operation ran. The local liveness handler shared the service's
 Node event loop. There was at most one outstanding probe request. Across
