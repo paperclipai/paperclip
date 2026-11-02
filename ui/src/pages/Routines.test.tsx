@@ -1093,7 +1093,7 @@ describe("Routines page", () => {
       await flush();
     });
     const link = Array.from(container.querySelectorAll("a")).find(anchor => anchor.textContent === "View all tasks");
-    expect(link?.getAttribute("href")).toBe("/issues?view=all&originKind=routine_execution");
+    expect(link?.getAttribute("href")).toBe("/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc");
     expect(container.textContent).not.toContain("View all runs");
     await act(() => root.unmount());
     queryClient.clear();

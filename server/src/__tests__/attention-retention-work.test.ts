@@ -58,8 +58,10 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner", status: "active" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Origin", role: "engineer", status: "active" });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
-    vi.setSystemTime(new Date("2026-11-01T12:00:00Z"));
+    // Ordinary issue creation uses database timestamp defaults. Start the fake
+    // clock there too; a fixed calendar date eventually trails those deadlines.
+    const [clock] = await db.execute<{ now: string }>(sql`select (extract(epoch from clock_timestamp()) * 1000)::text as now`);
+    vi.useFakeTimers({ now: Number(clock.now), toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
     await coordinator?.stop(); coordinator = undefined;
@@ -161,7 +163,10 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(issueRelations).where(and(eq(issueRelations.issueId, child.id),
       eq(issueRelations.relatedIssueId, parent.id)))).toHaveLength(1);
     await settle(); expect(coordinator!.nextWakeAt()).not.toBeNull();
-    await vi.advanceTimersByTimeAsync(delay + 2000); await archived("review", child.id); await quiet();
+    // SQL assigns updatedAt using the database clock, independently of the fake
+    // scheduler clock. Cross the saved deadline rather than a fixed duration.
+    await vi.advanceTimersByTimeAsync(Math.max(0, child.updatedAt.getTime() + delay - Date.now()) + 2000);
+    await archived("review", child.id); await quiet();
     expect(await db.select().from(decisionArchiveNotificationOutbox).where(eq(decisionArchiveNotificationOutbox.sourceId, child.id))).toHaveLength(1);
   });
 

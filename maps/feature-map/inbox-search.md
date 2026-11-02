@@ -91,13 +91,22 @@ Cold-open verification: load Mine with the task-index response delayed while
 approvals/runs resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
-100-row index, with parent/run context by ID; sidebar badges use the count endpoint.
+100-row index. Missing parents use the same index projection for their captions;
+parents already in the index are reused. Failed-run tasks still load rich row
+context by ID, including when they are also parents or already indexed, so resolved
+interruptions stay hidden. The initial reveal waits for both context sources.
+Sidebar badges use the count endpoint.
 Coordinator desktop and mobile navigation share `/attention/summary` for the
 outstanding count. Needs You owns its complete feed; Tasks → Needs attention
 owns a compact complete task-ID index. Navigation reuses either page response. Coordinator keeps the optimized Inbox even when
 the instance Streamlined UI setting is off. The loopback browser checks in
 [collection startup](../../tests/perf/collections/startup.spec.ts) exercise these
 reads and the initial task row budget. They do not establish deployed latency.
+Collection startup selects the addressed active organization before starting
+company reads. Shared controls load separately from task detail. A painted
+collection or task-link intent starts a low-priority code fetch; direct task URLs keep
+early module preload. The collection
+browser cases cover a remembered different organization and failed speculation.
 The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
 barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.

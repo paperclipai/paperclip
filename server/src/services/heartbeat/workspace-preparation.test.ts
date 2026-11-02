@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, nativeRunFinalizations, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, nativeRunFinalizations, plugins, projects, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -42,6 +42,7 @@ import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@open
 import { selectHeartbeatEnvironment } from "./environment-selection.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { projectService } from "../projects.js";
 
 const execFile = promisify(execFileCallback);
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_PREPARATION_TEST_DATABASE_URL");
@@ -51,7 +52,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   let home: string;
-  const persistenceKeys = ["DATABASE_URL", "PAPERCLIP_STORAGE_PROVIDER", "PAPERCLIP_SECRETS_MASTER_KEY", "PAPERCLIP_SECRETS_MASTER_KEY_FILE"];
+  const persistenceKeys = ["PAPERCLIP_EPHEMERAL_SERVER", "DATABASE_URL", "PAPERCLIP_STORAGE_PROVIDER", "PAPERCLIP_SECRETS_MASTER_KEY", "PAPERCLIP_SECRETS_MASTER_KEY_FILE"];
   let persistenceBefore = new Map<string, string | undefined>();
   const configureRemotePersistence = () => Object.assign(process.env, { DATABASE_URL: database.connectionString,
     PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_SECRETS_MASTER_KEY: "remote-workspace-preparation-fixture" });
@@ -169,14 +170,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it.each([
-    { kind: "empty", repoUrl: null, branchMode: null, fresh: false },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: null, fresh: false },
-    { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git", branchMode: null, fresh: false },
-    { kind: "git", repoUrl: "git@github.com:example/remote.git", branchMode: null, fresh: false },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "existing", fresh: false },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: false },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: true },
-  ] as const)("reserves a $kind remote workspace ($repoUrl, branch: $branchMode, fresh: $fresh) without materializing a controller checkout", async ({ kind, repoUrl, branchMode, fresh }) => {
+    { kind: "empty", repoUrl: null, branchMode: null, fresh: false, strategyChange: false, ephemeral: true },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: null, fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git", branchMode: null, fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "git@github.com:example/remote.git", branchMode: null, fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "existing", fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: true, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: true, strategyChange: true },
+  ] as const)("reserves a $kind remote workspace ($repoUrl, branch: $branchMode, fresh: $fresh, strategy change: $strategyChange) without materializing a controller checkout", async (scenario) => {
+    const { kind, repoUrl, branchMode, fresh, strategyChange } = scenario;
     const { input, source, issue, envOrchestrator } = await fixture();
     const [savedEnvironment] = await db.insert(environments).values({ name: `Remote ${randomUUID()}`,
       driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
@@ -192,7 +195,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (branchMode) {
       input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
       input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
-      input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree", baseRef: "main",
+      input.config.mergedConfig = strategyChange ? { workspaceStrategy: { type: "project_primary" } } : { workspaceStrategy: { type: "git_worktree", baseRef: "main",
         ...(branchMode === "existing" ? { existingBranch: "feature/diverged" } : { branchTemplate: "test-{{issue.identifier}}" }) } };
     }
     if (kind === "git") {
@@ -226,10 +229,13 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       throw new Error("reached remote acquisition");
     });
     const configured = { DATABASE_URL: database.connectionString, PAPERCLIP_STORAGE_PROVIDER: "s3",
-      PAPERCLIP_SECRETS_MASTER_KEY: "remote-workspace-preparation-fixture" };
+      PAPERCLIP_SECRETS_MASTER_KEY: "remote-workspace-preparation-fixture",
+      PAPERCLIP_EPHEMERAL_SERVER: "ephemeral" in scenario ? "true" : "false" };
     const previous = new Map(Object.keys(configured).map(key => [key, process.env[key]]));
     Object.assign(process.env, configured);
     try {
+      // Fresh runs are still marked legacy until the runtime selector owns promotion.
+      expect(input.run.runtimeMode).toBe("legacy");
       await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached remote acquisition");
       expect(resolve).not.toHaveBeenCalled();
       expect(repositoryPreparation).not.toHaveBeenCalled();
@@ -238,9 +244,44 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       expect(workspace.mode).toBe(branchMode ? "isolated_workspace" : "shared_workspace");
       expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: { kind }, writerRunId: input.run.id });
       if (branchMode) expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: {
-        ref: "main", branchMode, branchName: branchMode === "existing" ? "feature/diverged" : "test-WSP-1",
+        ref: "main", branchMode,
+        ...(strategyChange ? {} : { branchName: branchMode === "existing" ? "feature/diverged" : "test-WSP-1" }),
       } });
       await expect(access(workspace.cwd!)).rejects.toThrow();
+      if ((fresh || strategyChange) && branchMode === "create") {
+        expect(workspace.strategyType).toBe("git_worktree");
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+          .where(eq(heartbeatRuns.id, input.run.id));
+        const [saved] = await db.update(executionWorkspaces).set({ metadata: {
+          ...workspace.metadata,
+          remoteWorkspace: { ...workspace.metadata!.remoteWorkspace as object, writerRunId: null, dirty: false },
+        } }).where(eq(executionWorkspaces.id, workspace.id)).returning();
+        const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId,
+          agentId: input.agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
+        input.run = nextRun;
+        input.task.freshWorkspace = null;
+        input.task.issueRef = { ...input.task.issueRef!, executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" };
+        input.reuse.existingExecutionWorkspace = toExecutionWorkspace(saved);
+        input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(saved);
+        input.reuse.requestedShouldReuseExisting = true;
+        input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
+          issueExecutionWorkspaceId: saved.id, issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: "active",
+        });
+        if (strategyChange) input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree" } };
+        await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached remote acquisition");
+        const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, nextRun.id));
+        const freshness = operations.filter(operation => operation.phase === "workspace_config_freshness");
+        if (strategyChange) {
+          expect(freshness).toHaveLength(1);
+          expect(freshness[0].metadata).toMatchObject({ action: "replace", changedCategories: ["strategy"] });
+        } else expect(freshness).toEqual([]);
+        const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, saved.id));
+        expect(retained.id).toBe(workspace.id);
+        expect(retained.metadata?.configFingerprint).toMatchObject({
+          workspaceHash: (saved.metadata?.configFingerprint as { workspaceHash: string }).workspaceHash,
+        });
+        expect(retained.metadata?.remoteWorkspace).toMatchObject({ writerRunId: nextRun.id });
+      }
     } finally {
       for (const [key, value] of previous) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
@@ -267,7 +308,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
   });
 
-  it("auto-enrollment leaves a configured local folder on the host authority", async () => {
+  it.each([false, true])("configured local folders retain host authority only on durable servers (ephemeral=%s)", async ephemeral => {
     const { input, envOrchestrator } = await fixture();
     input.agent.adapterType = "paperclip_runner";
     input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
@@ -276,8 +317,11 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
     configureRemotePersistence();
     const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun").mockRejectedValue(new Error("local folder retained"));
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("local folder retained");
-    expect(resolve).toHaveBeenCalledOnce();
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = String(ephemeral);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(ephemeral
+      ? "Volume-free servers require warm Paperclip Runner execution with remote workspace storage." : "local folder retained");
+    if (ephemeral) expect(resolve).not.toHaveBeenCalled();
+    else expect(resolve).toHaveBeenCalledOnce();
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
     expect(acquire).not.toHaveBeenCalled();
   });
@@ -508,6 +552,42 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     });
     expect(resolve).not.toHaveBeenCalled();
     expect(acquire).not.toHaveBeenCalled();
+    expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+  });
+
+  it("reserves private remote task files for an organizational project without a configured source", async () => {
+    const { input, issue, source, envOrchestrator } = await fixture();
+    await db.update(issues).set({ projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    await db.delete(projectWorkspaces).where(eq(projectWorkspaces.projectId, issue.projectId!));
+    input.task.issueRef = await readIssue(issue.id);
+    const project = (await projectService(db).getById(issue.projectId!))!;
+    expect(project.workspaces).toEqual([]);
+    expect(project.codebase).toMatchObject({ workspaceId: null, repoUrl: null, localFolder: null, origin: "managed_checkout" });
+    await mkdir(project.codebase.managedFolder, { recursive: true });
+    const sentinel = join(project.codebase.managedFolder, "unselected-project-files.txt");
+    await writeFile(sentinel, "Unselected project files\n");
+    configureRemotePersistence();
+    input.agent.adapterType = "paperclip_runner";
+    input.policy.requestedExecutionWorkspaceMode = "agent_default";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    const resolveHost = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockImplementation(async args => {
+      expect(args.persistedExecutionWorkspace).toMatchObject({ companyId: issue.companyId, sourceIssueId: issue.id,
+        projectId: null, projectWorkspaceId: null, providerType: "cloud_sandbox", repoUrl: null,
+        metadata: { remoteWorkspace: { source: { kind: "empty" }, writerRunId: input.run.id } } });
+      throw new Error("private task workspace reached acquisition");
+    });
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("private task workspace reached acquisition");
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(resolveHost).not.toHaveBeenCalled();
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issue.id));
+    expect(workspace).toMatchObject({ companyId: issue.companyId, sourceIssueId: issue.id,
+      projectId: null, projectWorkspaceId: null, providerType: "cloud_sandbox", repoUrl: null });
+    expect(workspace.cwd).toBe(`/workspaces/${workspace.id}`);
+    expect((await readIssue(issue.id))).toMatchObject({ projectId: issue.projectId, executionWorkspaceId: workspace.id });
+    await expect(access(workspace.cwd!)).rejects.toThrow();
+    expect(await readFile(sentinel, "utf8")).toBe("Unselected project files\n");
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
   });
 

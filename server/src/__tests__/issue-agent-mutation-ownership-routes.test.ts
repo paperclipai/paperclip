@@ -3025,6 +3025,43 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledTimes(1);
     });
 
+    it.each(["in_review", "done"])("rejects recovery resolution changing its own task to %s", async status => {
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        ownerAgentId,
+        evidence: { runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      });
+
+      const app = createApp(runActor());
+      const res = await request(app).post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: status });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: status });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+
+      const edit = await request(app).patch(`/api/issues/${issueId}`).send({ title: "Continue authorized work" });
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+    });
+
+    it.each(["native", "legacy", "board"])("preserves permitted %s recovery resolution", async kind => {
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({ id: recoveryActionId, ownerAgentId });
+      if (kind === "legacy") mockHeartbeatService.getRun.mockResolvedValue({ ...nativeRun, runtimeMode: "legacy" });
+      if (kind === "native") mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "in_review", executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+      }));
+
+      const res = await request(createApp(kind === "board" ? boardActor() : runActor()))
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(kind === "native" ? 0 : 1);
+    });
+
     it.each([
       ["a legacy run", { runtimeMode: "legacy" }, {}],
       ["a native run that no longer owns execution", {}, { executionRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", checkoutRunId: null }],

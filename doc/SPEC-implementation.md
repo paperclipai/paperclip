@@ -423,6 +423,7 @@ retain their titles and default to no generation request.
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- Task reads additionally expose read-only `displayStatus`: the lifecycle status, or `monitoring` for an agent-owned scheduled ordinary monitor wait with no active execution, locks, review participant or active recovery action. Board collection/search `displayStatus` filters and counts use the same projection before pagination. This field is not persisted and cannot authorize a status transition; existing `status` filters retain their lifecycle semantics.
 - `priority` enum: `critical | high | medium | low`
 - `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
@@ -1586,7 +1587,11 @@ The current app also exposes V1-supporting surfaces for:
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
   bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations. Workspace reads
-  derive `deliveryState` as `merged_via_pr | merged_by_ancestry | unmerged | unknown`; terminal issue trees with a
+  return stored metadata without storage inspection; explicit readiness derives `deliveryState` as
+  `merged_via_pr | merged_by_ancestry | unmerged | unknown`. For providers without ancestry inspection,
+  automatic cleanup proves the finalized HEAD reached its captured destination through GitHub ancestry
+  or an exact-head merged PR, including squash merges. Recorded PR work products are optional hints.
+  Fresh storage, recoverability, and lifecycle checks remain mandatory. Terminal issue trees with a
   merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
   through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
   Before that, terminal isolated worktrees are compacted: ignored, untracked dependency, build, and cache directories
@@ -2593,6 +2598,11 @@ publication receipts, binding checks, and lifecycle locks remain authoritative.
 
 A task's organizational project and filesystem workspace are independent. New tasks that need a filesystem and have no selected/configured workspace get a company/task directory, not the agent home. Plain tasks need neither Git nor a project. Existing bindings and admitted roots remain authoritative; changing project does not move files. Explicit workspace selections apply at a subsequent normal admission after prior execution and persistence obligations settle.
 
+The remote default also uses a task-owned empty source for an authorized project
+with no configured workspaces or explicit workspace policy. Its derived managed
+folder is not an admitted source. Existing bindings, explicit source selections,
+and required Git or folder settings do not become empty-source fallbacks.
+
 Chat connection and destination settings may supply project/workspace defaults. Destination fields override connection fields; omitted values inherit and null clears the inherited choice. Resolve and authorize these defaults once for a new conversation, then retain the resulting task intent. Existing conversations do not change when settings change. Trust confinement still takes precedence.
 
 Agents inspect/select workspaces and request contained repository preparation through ordinary authorized APIs. Repository preparation is idempotent and may require the next admission; it never claims a host-only clone is available in an already-running remote session. Simultaneous tasks may still explicitly share one physical local/SSH folder. Remote sharing requires actual placement and coherent persistence capability.
@@ -2635,6 +2645,13 @@ unsupported in V1 and must fail before local filesystem work. Agent tasks remain
 the supported command path. Disabling new enrollment preserves existing authority
 and recovery. An enrolled workspace whose persistence prerequisites are lost
 must fail admission rather than fall back to a controller checkout.
+
+A reference to an authorized project with no configured workspace source does
+not attach a folder. It adds a resolution warning and preserves the task's
+workspace. A configured cross-project source remains subject to the read-only
+folder restriction. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
+sources; a source-less project reference needs no folder and stays metadata-only
+when that switch is off.
 
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new
@@ -2696,9 +2713,16 @@ its upstream authors; operators can pause updates to review changes manually.
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
 when other automatic tasks are hidden. The routines list's **View all tasks**
-link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+link opens `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` with that checkbox
 selected. The URL retains the selection across reloads and task navigation.
-Search and pagination apply the routine origin filter on the server.
+Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
+saved collection sorting, and the routines link opens newest-created tasks first.
+Shared sort links retain their order across task interfaces. Workflow sorting
+requests the existing authorized dependency-edge projection. Search and board
+queries keep their existing server order. Blocked-attention lists reject
+`sortField=created` with `422` because they use their own activity order.
+Search and pagination apply the routine origin filter on the server. Creation-time
+sorting also runs before pagination, with task ID as a stable tie-breaker.
 
 Tasks and project collections default to hiding agent/system-created tasks and
 provide a saved **Show agent-created tasks** filter. Classify creation using

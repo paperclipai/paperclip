@@ -15,7 +15,7 @@ const sha = /^[a-f0-9]{40}$/;
 const pngMagic = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 export interface TestOpsChatBinding { runId: string; attempt: string; workflowSha: string; targetSha: string }
 
-function publicBilling(value: NonNullable<RunnerE2EResult["billing"]>) {
+export function publicBilling(value: NonNullable<RunnerE2EResult["billing"]>) {
   const pick = (source: object, keys: string[]) => Object.fromEntries(keys.filter(key => Object.hasOwn(source, key)).map(key => [key, (source as Record<string, unknown>)[key]]));
   const numeric = (source: object, keys: string[]) => {
     const selected = pick(source, keys);

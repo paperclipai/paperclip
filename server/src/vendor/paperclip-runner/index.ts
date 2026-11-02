@@ -95,6 +95,7 @@ export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
+export const inspectRetainedRunInstructions = runner.inspectRetainedRunInstructions;
 export const inspectStagedRunAttachmentHeader = runner.inspectStagedRunAttachmentHeader;
 export type StagedRunAttachment = import("@paperclipai/paperclip-runner").StagedRunAttachment;
 export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
@@ -137,6 +138,7 @@ export const createRunnerdCodexTransport: (
 export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
 export const runnerBinaryTarget = runner.runnerBinaryTarget;
+export const coldAdmissionTimeoutMs = runner.coldAdmissionTimeoutMs;
 export const executeNativeSession = runner.executeNativeSession;
 export const applyNativeSessionGoalControl =
   runner.applyNativeSessionGoalControl;

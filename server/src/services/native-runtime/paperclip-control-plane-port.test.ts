@@ -733,6 +733,10 @@ describe("PaperclipControlPlanePort conformance", () => {
       .where(eq(nativeRunFinalizations.runId, identity.runId))).resolves.toEqual([
       expect.objectContaining({ phase: "committed" }),
     ]);
+    // Completion and restart reconciliation must retain the contract even if
+    // the originating heartbeat never returns from its adapter completion.
+    const [completedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(completedRun.resultJson?.nativeTerminal).toEqual(CONTROL_PLANE_CONFORMANCE_TERMINAL);
     await expect(db.select().from(issues).where(eq(issues.id, identity.issueId))).resolves.toEqual([
       expect.objectContaining({ status: "in_progress", statusVersion: 1 }),
     ]);

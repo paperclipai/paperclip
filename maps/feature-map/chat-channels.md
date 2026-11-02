@@ -278,6 +278,14 @@ After successful admission, reload and verify that the prior skipped receipt doe
 not strand a later real provider reply or tree resume. Provider fixtures support
 this behavior; live fixed-source runtime and destination proof remain separate.
 
+Also complete an older review successfully while a newer authorized PR event
+remains deferred. Use Retry and verify that the existing saved-input receipt
+starts exactly one new turn, repeated clicks share that turn, and the older
+accepted result remains unchanged. Revoke the connection or change the source
+binding before dispatch and verify no run starts. Keep prior cleanup pending,
+then settle it and verify the same receipt resumes once. These database-backed
+provider fixtures do not establish live GitHub publication at the fixed revision.
+
 Also defer Retry behind cleanup, queue an independent board message, then
 complete cleanup. Verify one run receives the exact GitHub batch and the board
 message enters its own turn. For an older mixed batch rejected before provider
@@ -290,3 +298,12 @@ refusal effective. Check the restoration audit and unchanged failed-run history.
 Endpoint activity hides private-task events while retaining a next-page cursor across private-only windows, so older readable history stays reachable. Actual-JWT fixtures verify this separately from live provider delivery.
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+GitHub finding category contract (2026-10-31): manual and automatic review
+instructions list the repository policy categories. `begin_review` returns the
+assessment snapshot's `findingCategories`; later settings do not change that
+snapshot. Submit an unknown category and confirm rejection before publication,
+then submit a listed custom category and inspect the saved assessment and
+processed publication. The channel integration fixture covers real PostgreSQL
+and the service path with simulated GitHub HTTP; live model behavior remains
+unverified.

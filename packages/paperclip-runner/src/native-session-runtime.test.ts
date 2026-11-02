@@ -2395,6 +2395,42 @@ describe("executeNativeSession recovery", () => {
     expect(openRun).not.toHaveBeenCalled();
   });
 
+  it.each(["synchronous failure", "expired deadline"].flatMap(scenario => [false, true].map(retained => ({ scenario, retained }))))("cleans up startup cancellation after $scenario (retained: $retained)", async ({ scenario, retained }) => {
+    const abort = new AbortController();
+    const remove = vi.spyOn(abort.signal, "removeEventListener");
+    const failure = new Error("synchronous backend failure");
+    const openSession = vi.fn((): Promise<NativeSession> => { throw failure; });
+    const attachRun = vi.fn((): Promise<void> => { throw failure; });
+    const openRun = vi.fn(async () => undefined);
+    const capabilities = { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: `startup-${scenario}`, version: "1", capabilities }; },
+      openSession,
+    };
+    const existingSession: NativeSession = {
+      identity: () => ({ ...identity, runId: "prior-run" }), async capabilities() { return capabilities; }, attachRun,
+      async *events() {}, async startTurn() { throw new Error("unexpected turn"); }, async result() { return null; },
+      async snapshot() { throw new Error("unexpected snapshot"); }, async close() {},
+    };
+    const port: ControlPlanePort = {
+      openRun,
+      async appendEvent() { throw new Error("unexpected event"); },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({ input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      ...(retained ? { existingSession } : {}),
+      startup: { deadlineAtMs: Date.now() + (scenario === "expired deadline" ? -1 : 60_000), signal: abort.signal },
+    })).rejects.toThrow(scenario === "expired deadline" ? retained ? "native_execution_startup_expired" : "native session bootstrap timed out after 0ms" : failure.message);
+    expect(openSession).toHaveBeenCalledTimes(!retained && scenario !== "expired deadline" ? 1 : 0);
+    expect(attachRun).toHaveBeenCalledTimes(retained && scenario !== "expired deadline" ? 1 : 0);
+    expect(openRun).not.toHaveBeenCalled();
+    if (scenario === "synchronous failure") expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    abort.abort(new Error("after completion"));
+    await Promise.resolve();
+  });
+
   it("retains late bootstrap cleanup through the next admission", async () => {
     vi.useFakeTimers();
     let releaseClose = () => {};

@@ -95,9 +95,14 @@ test("Inbox click reveals once after reordered initial responses; refresh retain
 });
 
 test("reading anchor survives late media, composer resizing, older history and browser Back", async ({ page }) => {
+  await page.route("**/api/workspace-preferences/me", async route => {
+    const response = await route.fetch();
+    await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: false } });
+  });
   await installMeasurements(page);
   await page.goto(`/${prefix}/issues/${issue.identifier}`);
   await ready(page);
+  await expect(page.getByRole("button", { name: "Hide properties", exact: true })).toBeVisible();
   const scroller = page.getByTestId("task-chat-scroller");
   await page.getByRole("button", { name: "More messages", exact: true }).click();
   await expect(page.getByText("Historical message 10", { exact: true })).toBeAttached();
@@ -134,6 +139,9 @@ test("reading anchor survives late media, composer resizing, older history and b
   await expect.poll(async () => Math.abs(await offset() - anchor.top)).toBeLessThanOrEqual(2);
 
   await page.getByRole("link", { name: "Tasks", exact: true }).first().click();
+  await page.waitForURL(`**/${prefix}/issues`);
+  await expect(page.getByRole("main").getByRole("textbox", { name: "Search tasks", exact: true })).toBeEditable();
+  await expect(page.getByTestId("task-chat-thread")).toHaveCount(0);
   await page.goBack();
   await ready(page);
   await expect.poll(async () => Math.abs(await offset() - anchor.top)).toBeLessThanOrEqual(2);

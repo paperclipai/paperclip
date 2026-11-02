@@ -7,12 +7,13 @@ import { fileURLToPath } from "node:url";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
+import { activityLog, agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers, fileStorageDb } from "@paperclipai/db";
 import { agentHarnessType, paperclipRunnerProfileForHarness, agentRunner, syncRoutineVariablesWithTemplate, type AgentRunnerChoice } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { adoptAgentFiles, agentFilePath, fileHash, readAgentFile, snapshotAgentFiles } from "./agent-file-store.js";
+import { invalidateAgentFileProjection, persistDurableAgentFiles } from "./agent-file-durability.js";
 import { assertInstructionPathSafe, instructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
 import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -994,7 +995,7 @@ export function builtInAgentService(db: Db) {
       // Persist only the pending operation's baseline hashes before touching
       // files. If a write or DB commit fails, the next reconciliation can accept
       // already-applied bytes and retry. This is not instruction revision history.
-      const prepared = await db.transaction(async (tx) => {
+      const prepared = await fileStorageDb(db).transaction(async (tx) => {
         const [current] = await tx.select().from(agents).where(and(eq(agents.companyId, agent.companyId), eq(agents.id, agent.id))).for("update");
         if (!current) throw notFound("Built-in agent not found");
         if (agentInstructionsBundleMode(current) !== "managed") return false;
@@ -1024,7 +1025,7 @@ export function builtInAgentService(db: Db) {
         } else {
           const previousFiles: Record<string, string | null> = {};
           for (const file of previousPaths) {
-            try { previousFiles[file] = (await instructionsSvc.readFile(current, file)).content; }
+            try { previousFiles[file] = (await readAgentFile(root, agentFilePath(file)))?.toString("utf8") ?? null; }
             catch { previousFiles[file] = null; }
           }
           if (stockHash(previousFiles) !== latest.stockHash) return false;
@@ -1044,7 +1045,7 @@ export function builtInAgentService(db: Db) {
         return true;
       });
       if (!prepared) return currentState;
-      return db.transaction(async (tx) => {
+      return fileStorageDb(db).transaction(async (tx) => {
         const [current] = await tx.select().from(agents).where(and(eq(agents.companyId, agent.companyId), eq(agents.id, agent.id))).for("update");
         if (!current) throw notFound("Built-in agent not found");
         if (agentInstructionsBundleMode(current) !== "managed") return currentState;
@@ -1061,10 +1062,12 @@ export function builtInAgentService(db: Db) {
           const nextHash = incoming[file] ? fileHash(incoming[file]) : null;
           if (hash !== baseHash && hash !== nextHash) return currentState;
         }
+        await invalidateAgentFileProjection(root);
         for (const [file, bytes] of Object.entries(incoming)) await materializeInstructionBytes(root, file, bytes);
         for (const file of Object.keys(pending.baseHashes)) {
           if (!(file in incoming)) await fs.rm(await assertInstructionPathSafe(root, file), { force: true });
         }
+        await persistDurableAgentFiles(tx, current, root);
         await upsertManagedResourceBinding({ companyId: agent.companyId, bundleKey: definition.key,
           resourceKind: "instructions", resourceKey: "AGENTS.md", resourceId: agent.id,
           stockVersion: bundle.stockVersion, stockHash: stock,

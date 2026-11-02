@@ -96,6 +96,38 @@ PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_REGION=us-east-1 \
 pnpm test:e2e:runner -- --id remote-workspace-storage.runner-codex.daytona.recover-controller --max-automatic-retries 0
 ```
 
+The separate explicit-only `rolling-web-deployment` suite uses the same synthetic
+projectless workflow, four-admission budget, thirty-minute limit, and independent
+run/file oracles. Its supervisor starts an independent empty-home server, waits
+for `/api/ready`, moves ingress, sends SIGTERM to the predecessor, and deletes
+that predecessor's whole home and build. Cleanup makes read-only cache directories
+removable only after shutdown, without following dependency symlinks. Continuous ordinary task reads and
+comment saves must have zero failures, and every accepted save must be read back
+exactly once. Probe tasks live in a separate disposable company, so they cannot
+block the business workflow's all-tasks-done oracle or consume its agent budget.
+Forced process cleanup fails graceful qualification even if the
+successor recovers the execution. The read-only observer shares the controllers'
+disposable encryption key. It repeats replacement after completion before the retained-session
+follow-up. The five-minute outage suites are unchanged.
+
+```sh
+pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+This source lane requires a complete server/UI build and disposable S3 and
+Postgres. Each controller has an independent compiled build and cache; shared
+workspace dependencies mean it is not released-container or Railway evidence.
+The read-only recovery observer captures the live predecessor's identity just
+before handoff, then requires a new controller generation, authenticated Runner
+attachment, and new canonical events for the original execution. No fixture
+modifies leases, checkpoints, provider identity, or completed work.
+
+Before paid execution, set `PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG` and the
+loopback `PAPERCLIP_TEST_DATABASE_URL`, then run
+`tests/runner-e2e/controller-replacement-smoke.ts` through the existing tsx loader.
+It exercises the actual supervisor and two replacements without an agent and
+explicitly records `activeAgentContinuityQualified: false`.
+
 Optional `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT` and
 `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_FORCE_PATH_STYLE=true` select a test S3
 endpoint. Each attempt has a distinct `runner-e2e/<instance-id>/` prefix. The
@@ -639,6 +671,31 @@ or `--offline` to require cached data. Offline mode supports reports and assets
 already visited; it reports uncached artifacts explicitly. The preview contains
 only published evidence, not private Playwright traces or videos.
 
+## Verified API artifact transfer
+
+The explicit-only `api-artifact-transfer` suite has one native Codex Daytona
+cell: `api-artifact-transfer.runner-codex.daytona.verified-artifact-copy`.
+It seeds a 388131-byte synthetic description containing Unicode and escaped
+characters. The agent must read the source through the authenticated API,
+install its saved response with `download_artifact`, and deliver the unchanged
+file. The oracle uses the persisted, redacted API and installation receipts, then
+independently downloads both the stored source and delivered attachment through
+the authorized public API. The server audit must identify that exact asset as an
+API capture from the tested company, agent and run. Their bytes, hashes, source
+ID and full content must agree. An uploaded substitute cannot satisfy provenance.
+A missing tool, incomplete receipt, copied substitute or one-byte loss fails.
+The browser must show the same downloadable attachment after reloading.
+
+This is one attempt, one native run and a ten-minute attempt deadline. Existing
+fixture ownership, credential isolation, usage reporting and cleanup apply.
+Use the protected Runner Full-Stack E2E workflow with this exact ID and the
+candidate branch. Its existing governed credentials and immutable image provide
+the live transport; local oracle tests and catalog registration are separate
+from a completed live pass. It is excluded from `--all`.
+
+Private evidence retains the normal run transcript. The added structured proof
+contains identities, counts and hashes; it does not publish the full API body.
+
 ## Credentials
 
 Copy `.env.runner-e2e.example` to `.env.runner-e2e.local` and fill only the
@@ -790,8 +847,16 @@ and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
 Runner Codex additionally proves stable native session, provider session,
 runner instance, PID, and process-start identity. The ordinary warm cell uses
 managed instructions and edits AGENT_HOME on every turn: a growing memory file,
-an unchanged 8 MiB binary, and a deletion. Public API reads independently verify
-the canonical bytes after every turn. Native checkpoint receipts must show only
+an unchanged 8 MiB binary, and a deletion. The temporary file contains exactly
+the nine ASCII bytes `temporary` without a trailing newline, so its transfer
+count is explicit in the prompt. Public API reads independently verify
+the canonical bytes after every turn. Save receipts come from the latest
+`instruction_save` event in the complete, paginated run log. Missing receipts,
+later failed saves, or events from another run fail the check; a successful run
+summary cannot replace this evidence. Definition version 5 preserves earlier
+results under their original receipt lookup. Review actions target the actual
+interaction card by its test ID and interaction ID, so the request navigation
+button cannot make the locator ambiguous. Native checkpoint receipts must show only
 the changed memory file transferred on turns 2 and 3; the PID oracle remains strict.
 The journal stress cell retains fixed external instructions as a control. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
@@ -1042,6 +1107,13 @@ pnpm test:e2e:runner:models:update
 ```
 
 ## Daytona image
+
+The image builder retains only its stripped Runner executable and portable
+provider pack. The dependency install and pack build share one layer so the
+workspace and package store can be removed before export. Source-provenance
+changes can repeat the dependency install; this bounds retained builder disk
+at the cost of install-cache granularity. The build reports workspace and pack
+sizes, and final runtime and CLI checks still execute in the published image.
 
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
@@ -3274,3 +3346,28 @@ The shared report navigation links the dated, immutable catalog snapshot.
 Deploying this generator does not rewrite existing published history HTML.
 Activating the link on an existing page requires a separately reviewed,
 conditional navigation-only update. The metadata command publishes nothing.
+### Control-plane rolling deployment smoke
+
+`rolling-deployment-smoke.ts` runs actual source servers A/B/C behind a local
+HTTP/WebSocket proxy with no request retries. It requires disposable loopback
+PostgreSQL and S3-compatible storage, and creates/deletes an owned database and
+bucket per attempt. Each server has a separate home and temporary directory.
+Private JSON configuration files must be mode 600 and must not be committed:
+
+- Database configuration: `{ "url": "<local PostgreSQL admin URL>" }`.
+- Storage configuration: `{ "endpoint": "<local S3 endpoint>", "accessKeyId": "<key>", "secretAccessKey": "<secret>" }`.
+
+```sh
+PAPERCLIP_ROLLING_TEST_DATABASE_CONFIG=/private/tmp/rolling-database.json \
+PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG=/private/tmp/rolling-storage.json \
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/rolling-deployment-smoke.ts
+```
+
+The receipt records source/patch/lockfile identity, individual assertions, timing
+and cleanup. It exercises continuous task reads/writes, concurrent file edits,
+stale-write conflict, an admitted file save during SIGTERM, S3 failure with both
+transfer connections held, and complete deletion of both earlier server homes.
+It uses `local_trusted` authentication and no model provider. Its result does not
+qualify browser reconnects, active-agent continuity, distinct packaged releases
+or Railway. Keep failed receipts alongside successful attempts; the private
+server logs and config files may contain credentials and are not shareable evidence.

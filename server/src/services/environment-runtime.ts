@@ -541,6 +541,10 @@ export interface EnvironmentDriverLeaseInput {
   failureReason?: string;
 }
 
+export interface EnvironmentDriverResumeInput extends EnvironmentDriverLeaseInput {
+  requestedCwd?: string;
+}
+
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
   workspace: {
     localPath?: string;
@@ -612,7 +616,7 @@ export interface EnvironmentRuntimeDriver {
   inspectLeaseResource?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<PluginEnvironmentLeaseObservation | undefined>;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
   releaseRunLease(input: EnvironmentDriverReleaseInput): Promise<EnvironmentLease | null>;
-  resumeRunLease?(input: EnvironmentDriverLeaseInput): Promise<PluginEnvironmentLease | EnvironmentLease | null>;
+  resumeRunLease?(input: EnvironmentDriverResumeInput): Promise<PluginEnvironmentLease | EnvironmentLease | null>;
   destroyRunLease?(input: EnvironmentDriverLeaseInput): Promise<EnvironmentLease | null>;
   realizeWorkspace?(input: EnvironmentDriverRealizeWorkspaceInput): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   execute?(input: EnvironmentDriverExecuteInput): Promise<PluginEnvironmentExecuteResult>;
@@ -2577,6 +2581,7 @@ function createSandboxEnvironmentDriver(
         driverKey: providerKey, companyId: input.lease.companyId, environmentId: input.environment.id,
         issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
+        ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
       }, Math.min(resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000, 60_000));
       if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
         throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");
@@ -3377,7 +3382,7 @@ function createPluginEnvironmentDriver(
     async releaseRunLease(input) {
       await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
       const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true);
+        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
       const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
       await workerManager.call(plugin.id, "environmentReleaseLease", {
         driverKey,
@@ -3413,13 +3418,14 @@ function createPluginEnvironmentDriver(
         },
         providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
+        ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
       });
     },
 
     async destroyRunLease(input) {
       await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"destroy"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
       const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true);
+        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
       const { pluginKey, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
       await destroyPluginEnvironmentLease({
         db,
@@ -3456,7 +3462,7 @@ function createPluginEnvironmentDriver(
 
     async retryPendingSandboxTeardown(input) {
       const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true);
+        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
       const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
       const environmentId = input.environment?.id ?? readString(input.lease.metadata?.environmentId);
       if (!environmentId) throw new Error("Plugin lease cleanup has no saved environment identity");
@@ -3772,7 +3778,7 @@ export function environmentRuntimeService(
     },
 
     /** Dispatch plugin-provided Runner execution, including resource preparation and task lifecycle. */
-    async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation }) {
+    async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation; executionContext?: unknown }) {
       if (!options.pluginWorkerManager) throw new Error("Plugin-provided Runner execution worker manager unavailable");
       return executeEnvironmentTask(db, options.pluginWorkerManager, input);
     },
@@ -4305,13 +4311,14 @@ export function environmentRuntimeService(
       source: WorkspaceRecoverySourceIdentity; leaseId: string; environmentId: string;
       ownership: NativeWorkspaceFinalizationOwnership;
     }): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
-      const { lease, environment } = await ownedWorkspaceRecoveryLease(db, { ...input.source,
+      const { lease, environment, remoteCwd } = await ownedWorkspaceRecoveryLease(db, { ...input.source,
         leaseId: input.leaseId, environmentId: input.environmentId, ownership: input.ownership });
       const driver = requireDriverKey(getLeaseDriverKey(lease, environment as Environment));
       if (!driver.resumeRunLease) throw new Error(`Environment driver "${driver.driver}" does not support lease resume.`);
       // Maintenance reopens the protected source only to preserve its files.
       // Ordinary resume and destructive cleanup keep their existing fences.
-      return await driver.resumeRunLease({ environment: environment as Environment, lease: lease as EnvironmentLease });
+      return await driver.resumeRunLease({ environment: environment as Environment, lease: lease as EnvironmentLease,
+        requestedCwd: remoteCwd });
     },
 
     async destroyRunLease(input: EnvironmentDriverLeaseInput): Promise<EnvironmentLease | null> {

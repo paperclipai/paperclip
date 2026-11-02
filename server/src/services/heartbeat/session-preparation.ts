@@ -5,6 +5,7 @@ import { getServerAdapter } from "../../adapters/index.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { aiConnectionSessionCompatibilityInputs, managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import { createNativeSessionHandoffLoader } from "../native-runtime/native-session-handoff.js";
+import { agentInstructionsService } from "../agent-instructions.js";
 import {
   describeSessionResetReason, shouldResetTaskSessionForWake, isCanonicalSessionIdForAdapter,
   normalizeResumeParamsForAdapter, normalizeSessionParams, requiresCanonicalSessionIds,
@@ -87,6 +88,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       agentIdentityKeyId: agentIdentity?.keyId,
       adapterType: agent.adapterType,
       effectiveAdapterConfig: runtimeConfig,
+      managedInstructions: await agentInstructionsService(db).getManagedEntryFingerprint({ ...agent, adapterConfig: runtimeConfig }),
       managedAiHome: managedAiRuntime?.home,
       agentRuntimeConfig: agent.runtimeConfig,
       issueOverrides: issueAssigneeOverrides,

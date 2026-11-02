@@ -181,76 +181,106 @@ backlog is 5/5 and delegation is 5/6. The local
 `results/chat-feature-recheck/verification.md` records the follow-up evidence;
 its standard dashboard is explicitly scoped to the latest campaign.
 
-## TestOps-backed AWS backlog cell
+## Retired TestOps plans
 
-The dedicated `Chat feature TestOps` workflow accepts only the shipped default
-branch and the fixed OpenCode backlog cell. `evaluate` is the default operation
-and requires TestOps' `ALLURE_JOB_RUN_ID`. A protected reporting job verifies the
-project, singleton plan, assigned public workflow, selected case and current
-GitHub run before any build or provider access. The evaluated process receives
-no TestOps token. It retains the original one-query, one-work-run, 120-second
-turn, 420-second attempt, 300-second settled-state and zero-retry limits.
+The one-case **Chat feature evals** plan and three-case
+**Chat completion pilot — OpenCode 1017** plan are retired. Their scenarios are
+included in the [full catalog](#full-catalog-in-testops). Use that plan or select
+cases from it; do not recreate the smoke or pilot plans.
 
-Two metadata operations prepare that route. `bootstrap` registers the actual
-public CI job through pinned `allurectl` with an empty results directory and
-reconciles only the dedicated case and singleton plan. It produces no passing
-test result. After the registered job and protected case/plan/job identifiers
-are verified, `launch-plan` sends one TestOps plan-run request and exits.
-The TestOps job then dispatches `evaluate`; an operator must not dispatch a
-second evaluation manually. Missing or ambiguous registration and selection
-metadata stops before inference.
+The former `chat-feature-testops.yml` and `chat-completion-testops.yml` workflows
+are removed. Their bootstrap functions reject registration before any API call
+or mutation marker. Shared transport, evidence, export and verification helpers
+remain for the full-catalog workflow and retained historical evidence. Retiring a
+plan does not delete its cases, results, launches or private evidence.
 
-The workflow reuses the existing AWS fleet and strict private evidence storage.
-Its shipped-main authority is separate from manual candidate approval. Original
-logs, provider records and failure evidence remain private. The reporting adapter
-exports only a source/run-bound normalized result, JUnit and screenshots already
-marked by the owned fixture screenshot producer with matching file hashes.
-A separate protected reporting job converts that projection to the exact TestOps
-case. Failed grades and cleanup failures remain failed.
+Retained launch helpers encode TestOps name filters as Base64 of UTF-8 JSON in
+`search`. Plain name text returns HTTP 400. Their nonce and once-only guards
+remain unchanged; this transport contract does not restore the retired plans.
 
-Reporting setup uses the master-only `runner-e2e-testops-reporting` environment,
-with the existing reporting token delivered through the reviewed sealed-box
-bootstrap. `CHAT_TESTOPS_CASE_ID`, `CHAT_TESTOPS_PLAN_ID` and
-`CHAT_TESTOPS_JOB_ID` must name the observed dedicated mapping; the numeric
-`CHAT_TESTOPS_GITHUB_WORKFLOW_ID` supports TestOps' registered workflow URL.
-No arbitrary source, model, case, retry or budget input is accepted.
+## Full catalog in TestOps
 
-The initial `launch-plan` administrator operation also requires a protected
-`CHAT_TESTOPS_LAUNCH_RUN_NUMBER`. After registration, the trusted operator creates
-this variable once with the reviewed next workflow run number and reads it back.
-The launcher compares GitHub's actual run number, attempt, workflow, source and
-actors before any TestOps mutation. A later dispatch or replay cannot reuse that
-approved number. Missing or uncertain metadata stops; an uncertain request needs
-reconciliation rather than a new send. The nonce and launch search provide
-additional evidence. Normal TestOps **Run** uses `evaluate` and is independent of
-this one-time administrator fence. The launch nonce is protected configuration,
-not a dispatch input. Job parameter IDs are opaque. The launcher preserves the
-API's exact ID/value pair for `refs/heads/master` and uses the fixed workflow's
-`evaluate` default. An operation parameter is used only when the protected
-`CHAT_TESTOPS_OPERATION_PARAMETER_ID` matches a returned ID with a `bootstrap`
-or `evaluate` value; the launcher then sets it to `evaluate`. Other values,
-duplicate IDs and conflicting configuration are rejected. No relationship to
-global environment-variable IDs or names is inferred.
+The [Chat catalog TestOps workflow](../../.github/workflows/chat-catalog-testops.yml)
+registers all 244 scenarios from the 35 YAML areas in a separate
+**Chat feature catalog — OpenCode 1017 (candidate)** plan. Its source-derived
+manifest is `chat-full-catalog-testops-manifest.json`. This is the active chat
+plan. The former backlog and three-case pilot plans are retired; their cases
+and measured history are preserved.
+Legacy aliases reuse existing TestOps case identities without renaming them.
 
-`CHAT_TESTOPS_INTEGRATION_ID` names the reviewed existing project GitHub
-integration. The launcher verifies its project, type and enabled state, then binds
-only the newly registered public job to it. It never changes integration settings
-or credentials. Since the job response does not expose that association, only the
-real TestOps-to-GitHub dispatch can qualify it.
+The catalog contains 236 Agent Chat routes, five browser boundaries, one external
+assistant route and two Slack routes. An execution mapping is not a passing
+measurement. Five implementations declare incomplete coverage. Six routes do not
+produce the generic final PNG required by the unchanged evidence owner. Eighteen
+declare additional credentials and 37 declare external inputs. These groups
+overlap. Exact requirements and limitations appear in each case's preconditions.
+A declared credential does not establish whether its runtime reference exists.
 
-After `allurectl watch` finishes, the same protected reporter checks the actual
-TestOps job-run, launch, selected case, result source/status and attachment
-metadata. Processing reads are bounded to 12 polls, five-second gaps and a
-120-second processing deadline. Unknown or missing results remain unverified.
-The check downloads no attachment content and claims no server-side attachment
-byte hash. Its closed receipt is retained separately. An upload success alone
-is not a passing feature result, and verifying an original failure cannot turn
-that failure into a pass.
+This lane runs the app and fixtures from candidate
+`3b66c3c144360ddf32714a0742fd774b8ceafb16`. Its app and domain definitions are
+unchanged from `de0941835cc8f0d01c982574ee258e110babdbeb`; the successor adds only
+finite TestOps host admission. Trusted selection, evidence transfer and publishing
+use the workflow's immutable master revision. Each result records both revisions.
+A pass qualifies that candidate measurement, not the current master app. Other
+lanes sharing a case retain their own sources. This integration does not merge
+the broad catalog branch or its core fixes, reset earlier campaign ordinals, or
+change the previous 196-of-244 acceptance gate.
 
-Build and worker installs use the existing reviewed report-lock policy. Only its
-committed input or output lock is accepted; its authenticated correction is the
-only allowed normalization. Dependency manifests, patch inputs and policy must
-remain unchanged. Installs are frozen with lifecycle scripts disabled. The
-credential-free build rechecks that boundary before packaging, and the worker
-matches the source/lock receipt before installing. Arbitrary resolver drift is
-rejected before provider access.
+Native execution uses OpenCode and
+`openrouter/deepseek/deepseek-v4.1-flash-1017` on the existing AWS fleet. Each case
+keeps its original query, oracle, run counts, clocks, budgets and zero automatic
+retries. Browser boundaries and the external assistant retain their original
+surfaces and may have zero native work runs. The external companion keeps its own
+declared provider requirement. Setup inference and unpriced usage are not free.
+
+Initial setup uses the existing reporting environment:
+
+1. Dispatch reviewed master with `operation=bootstrap`. It reconciles the exact
+   244 cases and the dedicated plan, then registers and binds its own GitHub job.
+   Missing cases use one marked POST each. Existing cases retain their identities
+   and history. Alias conflicts, foreign selections and uncertain writes stop
+   setup. It makes no model call or synthetic test result.
+2. Read the registration receipt. Store its compact `binding` JSON as
+   `CHAT_FULL_CATALOG_TESTOPS_BINDING`. It contains observed plan, job, integration
+   and case IDs plus registered full names, and fits one GitHub environment
+   variable. The job must retain its observed single `Branch/defaultValue`
+   definition for `refs/heads/master`.
+3. Use normal TestOps **Run** for the full plan or a selected subset. The service's
+   actual expected case list controls execution. Do not manually dispatch another
+   evaluation after an uncertain request. Initial route verification uses a small
+   selection and does not qualify all 244 cases.
+
+Each worker executes one case. Selections of up to three cases allow two cases
+at once. Larger selections allow eight independent cases and one external-input
+case at once. External-input cases remain serial because they can share QA
+resources. A full run can take hours. Its elapsed time depends on setup and fleet
+capacity; the declared case clocks are not a completion-time guarantee.
+
+Each finished worker starts its own protected reader and safe exporter. A
+separate reporting job uploads that case and verifies its result and two JSON
+attachments while other workers continue. The reader has only an exact-key AWS
+session. The worker has only its declared model keys. Only the uploader has the
+TestOps key. The existing eight-cell private authority limit is unchanged.
+
+The exporter freezes each UUID-bearing Allure bundle once. An uncertain upload
+response triggers readback, never an automatic resend. The final job verifies
+complete selected-case coverage and the original statuses without uploading the
+results again. Failed originals and failed cleanup remain failed beside passed
+results. Missing originals cannot become fabricated measurements or a
+full-selection pass. Backend ingestion does not guarantee that an open TestOps
+page refreshes without user action.
+
+The caller and reusable case workflow must both be admitted at their exact
+`refs/heads/master` paths in the existing runner group. Called jobs use their own
+protected environments; the caller passes empty named secret placeholders and
+never inherits or forwards actual model or reporting keys. Streaming runs use
+the fixed `chat-catalog-testops-streaming-v1` serialization group. Runs started
+before this change retain their original batch-reporting flow.
+
+Raw evidence and final PNGs remain in protected storage. Public GitHub artifacts
+and TestOps attachments contain only allowlisted provenance, checks, accounting
+and private-evidence receipts. Raw conversations, screenshots, provider sessions
+and credentials do not enter the public artifact path. Additional credentials
+reach only cases that declare them. External inputs use the existing selected-case
+private-input owner, disposable-resource checks and oracle commitments.
+Unconfigured inputs remain setup blockers.

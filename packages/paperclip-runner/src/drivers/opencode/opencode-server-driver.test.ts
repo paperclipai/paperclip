@@ -2750,6 +2750,10 @@ describe("OpenCodeServerDriver", () => {
         id: "prt_oversized", messageID: "msg_oversized", sessionID, type: "tool", callID: "call_oversized", tool: "bash",
         state: { status: "completed", input: { command: "pnpm test" }, output, title: "pnpm test", metadata: { exit: 1, output }, time: { start: 1, end: 2 } },
       } } });
+      send({ type: "message.part.updated", properties: { part: {
+        id: "prt_final", messageID: "msg_oversized", sessionID, type: "text",
+        text: "The suite completed: one test failed; 812 passed.", time: { start: 3, end: 4 },
+      } } });
       send({ type: "session.idle", properties: { sessionID } });
       const observed = await events;
       expect(observed.at(-1)?.eventType).toBe("turn.completed");

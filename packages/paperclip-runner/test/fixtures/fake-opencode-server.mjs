@@ -169,8 +169,9 @@ function parsedPromptText(promptBody) {
   }
 }
 
-async function mcpRequest(method, params) {
+async function mcpRequest(method, params, signal) {
   const response = await fetch(mcp.url, {
+    signal,
     method: "POST",
     headers: {
       ...mcp.headers,
@@ -214,7 +215,7 @@ async function callFirstPaperclipTool() {
   );
 }
 
-async function callTerminalTool(promptBody) {
+async function callTerminalTool(promptBody, signal) {
   const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
   const monitored = String(prompt.message ?? "").includes("monitor-default");
@@ -272,7 +273,7 @@ async function callTerminalTool(promptBody) {
   const call = () => mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,
-  });
+  }, signal);
   const first = await call();
   if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
     const outcomes = [first];
@@ -476,8 +477,31 @@ const server = createServer(async (request, response) => {
         }
       }
       setTimeout(async () => {
-        await callFirstPaperclipTool();
         const parsedPrompt = parsedPromptText(promptPayload);
+        const backlogTool = String(parsedPrompt.message ?? "").match(/stream-backlog-(discovery|completion)/)?.[1];
+        if (backlogTool) {
+          const messageID = "message-stream-backlog";
+          const partID = "part-stream-backlog";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: { id: partID, messageID, sessionID: session.id, type: "text", text: "" } } });
+          for (let i = 0; i < 800; i++) emit({ type: "message.part.delta", properties: {
+            sessionID: session.id, messageID, partID, field: "text", delta: "Streaming progress. ",
+          } });
+          let receipt;
+          try {
+            const result = backlogTool === "completion"
+              ? await callTerminalTool(promptPayload, AbortSignal.timeout(5000))
+              : await mcpRequest("tools/call", { name: "paperclip_search_assigned_tools", arguments: {} }, AbortSignal.timeout(5000));
+            receipt = { acknowledged: result.result?.isError !== true && !!result.result, result };
+          } catch (error) {
+            receipt = { acknowledged: false, timedOut: error.name === "TimeoutError" };
+          }
+          await writeFile(join(process.cwd(), "fake-stream-backlog-receipt.json"), JSON.stringify(receipt));
+          if (backlogTool === "discovery" && receipt.acknowledged) await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        await callFirstPaperclipTool();
         if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
           const result = await new Promise(resolve => {
             execFile("gh", ["api", "user"], { timeout: 5000 }, (error, stdout, stderr) => {

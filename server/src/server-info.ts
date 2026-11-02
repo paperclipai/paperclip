@@ -172,6 +172,11 @@ const GIT_INFO_CACHE_TTL_MS = 3000;
 const processStartedAt = new Date().toISOString();
 let gitInfoCache: { value: ServerGitInfo; expiresAt: number } | null = null;
 
+// Lifecycle identity must not run the synchronous Git probes used by diagnostics.
+export function getServerProcessStartedAt(): string {
+  return processStartedAt;
+}
+
 export function getServerInfoSnapshot(
   opts: {
     now?: number;

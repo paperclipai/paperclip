@@ -152,15 +152,20 @@ describeDatabase("remote workspace ordinary file routes", () => {
     });
     const runtime = { execute, syncOut } as unknown as Pick<EnvironmentRuntimeService, "execute" | "syncOut">;
     const remoteFiles = createRemoteWorkspaceFiles(db, { environmentRuntime: runtime });
+    const app = filesApp(ids.company, remoteFiles);
+    return { root, ids, authority, execute, syncOut, remoteFiles, app, beforeCopy: (callback: () => Promise<void>) => { beforeCopy = callback; } };
+  }
+
+  function filesApp(companyId: string, remoteFiles: ReturnType<typeof createRemoteWorkspaceFiles>) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      req.actor = { type: "board", userId: "local-board", companyIds: [ids.company], source: "local_implicit", isInstanceAdmin: true } as Request["actor"];
+      req.actor = { type: "board", userId: "local-board", companyIds: [companyId], source: "local_implicit", isInstanceAdmin: true } as Request["actor"];
       next();
     });
     app.use("/api", fileResourceRoutes(db, { remoteFiles }));
     app.use(errorHandler);
-    return { root, ids, authority, execute, syncOut, remoteFiles, app, beforeCopy: (callback: () => Promise<void>) => { beforeCopy = callback; } };
+    return app;
   }
 
   it("lists, resolves, previews, and downloads live bytes without a controller checkout", async () => {
@@ -323,7 +328,7 @@ describeDatabase("remote workspace ordinary file routes", () => {
       { workspace: "execution", path: "docs/result.md" })).rejects.toMatchObject({ status: 422, details: { code: "file_changed" } });
   });
 
-  async function savedFileFixture() {
+  async function savedFileFixture(keepLocation = false) {
     const f = await fixture(), storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-budget-"));
     directories.push(storageRoot);
     const storage = createStorageService(createLocalDiskStorageProvider(path.join(storageRoot, "objects")));
@@ -335,10 +340,112 @@ describeDatabase("remote workspace ordinary file routes", () => {
     const saved = await uploadWorkspaceSnapshot({ db, storage, companyId: f.ids.company, workspaceId: f.ids.workspace,
       snapshotId: snapshot.id, archivePath, manifestDigest: archive.manifestDigest });
     await db.update(executionWorkspaceSnapshots).set({ status: "committed" }).where(eq(executionWorkspaceSnapshots.id, snapshot.id));
-    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, location: null, snapshotId: snapshot.id } } })
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, location: keepLocation ? f.authority.location : null, snapshotId: snapshot.id } } })
       .where(eq(executionWorkspaces.id, f.ids.workspace));
     return { ...f, storage, saved, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: snapshot.id } };
   }
+
+  it("serves committed saved bytes through ordinary routes while the live allocation is unavailable", async () => {
+    const f = await savedFileFixture(true);
+    f.execute.mockRejectedValue(new Error("synthetic live allocation unavailable"));
+    const load = createSavedWorkspaceLoader(db, f.storage), closed: Promise<void>[] = [];
+    const loadSavedWorkspace = vi.fn(async (input: Parameters<typeof load>[0]) => {
+      const saved = await load(input);
+      let finish!: () => void, fail!: (error: unknown) => void;
+      closed.push(new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; }));
+      return { ...saved, cleanup: async () => {
+        try { await saved.cleanup(); finish(); } catch (error) { fail(error); throw error; }
+      } };
+    });
+    const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace, environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+    const app = filesApp(f.ids.company, remoteFiles), base = `/api/issues/${f.ids.issue}/file-resources`;
+    const preview = await request(app).get(`${base}/content`).query({ workspace: "execution", path: "docs/result.md" }).expect(200);
+    expect(preview.body).toMatchObject({ content: { data: "Remote useful result\n" }, resource: { source: { kind: "saved", snapshotId: f.saved.id } } });
+    const listed = await request(app).get(`${base}/list`).query({ workspace: "execution", path: "docs" }).expect(200);
+    expect(listed.body).toMatchObject({ workspace: { source: { kind: "saved", snapshotId: f.saved.id } } });
+    const resolved = await request(app).get(`${base}/resolve`).query({ workspace: "execution", path: "docs/result.md" }).expect(200);
+    expect(resolved.body).toMatchObject({ source: { kind: "saved", snapshotId: f.saved.id }, capabilities: { preview: true, download: true } });
+    const download = await request(app).get(`${base}/content`).query({ workspace: "execution", path: "docs/result.md", download: true }).expect(200);
+    expect(download.text).toBe("Remote useful result\n");
+    expect(f.execute).not.toHaveBeenCalled(); expect(f.syncOut).not.toHaveBeenCalled();
+    expect(loadSavedWorkspace).toHaveBeenCalledTimes(4);
+    // A streamed response can finish at the client before its server finally block.
+    await Promise.all(closed);
+    for (const loaded of loadSavedWorkspace.mock.results) await expect(fs.stat((await loaded.value).root)).rejects.toMatchObject({ code: "ENOENT" });
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.ids.workspace));
+    expect(workspace!.metadata?.remoteWorkspace).toMatchObject({ location: f.authority.location, dirty: false, writerRunId: null });
+  });
+
+  it.each(["dirty", "writer"] as const)("keeps %s work on the live path and never substitutes its older save", async state => {
+    const f = await savedFileFixture(true);
+    let writerRunId: string | null = null;
+    if (state === "writer") {
+      const [agent] = await db.insert(agents).values({ companyId: f.ids.company, name: "Current workspace writer" }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.ids.company, agentId: agent!.id, status: "running" }).returning();
+      writerRunId = run!.id;
+    }
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, snapshotId: f.saved.id, dirty: state === "dirty", writerRunId } } })
+      .where(eq(executionWorkspaces.id, f.ids.workspace));
+    await fs.writeFile(path.join(f.root, "docs", "result.md"), "Unsaved live result\n");
+    const loadSavedWorkspace = vi.fn(createSavedWorkspaceLoader(db, f.storage));
+    const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace, environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+    const app = filesApp(f.ids.company, remoteFiles), route = `/api/issues/${f.ids.issue}/file-resources/content`;
+    const current = await request(app).get(route).query({ workspace: "execution", path: "docs/result.md" }).expect(200);
+    expect(current.body).toMatchObject({ resource: { source: { kind: "live" } }, content: { data: "Unsaved live result\n" } });
+    f.execute.mockRejectedValueOnce(new Error("synthetic live allocation unavailable"));
+    const unavailable = await request(app).get(route).query({ workspace: "execution", path: "docs/result.md" }).expect(422);
+    expect(unavailable.body).not.toHaveProperty("content"); expect(loadSavedWorkspace).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("preserves the optional saved-loader boundary with a recorded location=%s", async keepLocation => {
+    const f = await savedFileFixture(keepLocation);
+    const remoteFiles = createRemoteWorkspaceFiles(db, { environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+    const response = await request(filesApp(f.ids.company, remoteFiles)).get(`/api/issues/${f.ids.issue}/file-resources/content`)
+      .query({ workspace: "execution", path: "docs/result.md" }).expect(keepLocation ? 200 : 422);
+    if (keepLocation) {
+      expect(response.body).toMatchObject({ resource: { source: { kind: "live" } }, content: { data: "Remote useful result\n" } });
+      expect(f.execute).toHaveBeenCalled();
+    } else {
+      expect(response.body).not.toHaveProperty("content"); expect(f.execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["company", "workspace", "uncommitted"] as const)("rejects a saved snapshot with an invalid %s binding before object retrieval", async invalid => {
+    const f = await savedFileFixture(true);
+    if (invalid === "company") {
+      const [other] = await db.insert(companies).values({ name: "Other saved-file company" }).returning();
+      await db.update(executionWorkspaceSnapshots).set({ companyId: other!.id }).where(eq(executionWorkspaceSnapshots.id, f.saved.id));
+    } else if (invalid === "workspace") {
+      const [other] = await db.insert(executionWorkspaces).values({ companyId: f.ids.company, mode: "isolated_workspace",
+        strategyType: "project_primary", providerType: "cloud_sandbox", name: "Other saved-file workspace" }).returning();
+      await db.update(executionWorkspaceSnapshots).set({ executionWorkspaceId: other!.id }).where(eq(executionWorkspaceSnapshots.id, f.saved.id));
+    } else await db.update(executionWorkspaceSnapshots).set({ status: "uploaded" }).where(eq(executionWorkspaceSnapshots.id, f.saved.id));
+    const getObject = vi.spyOn(f.storage, "getObject");
+    const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace: createSavedWorkspaceLoader(db, f.storage),
+      environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+    const response = await request(filesApp(f.ids.company, remoteFiles)).get(`/api/issues/${f.ids.issue}/file-resources/content`)
+      .query({ workspace: "execution", path: "docs/result.md" });
+    expect(response.status).toBeGreaterThanOrEqual(400); expect(response.body).not.toHaveProperty("content");
+    expect(getObject).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled(); expect(f.syncOut).not.toHaveBeenCalled();
+    getObject.mockRestore();
+  });
+
+  it("fences a saved read if a new writer claims the workspace during extraction and removes its scratch files", async () => {
+    const f = await savedFileFixture(true), load = createSavedWorkspaceLoader(db, f.storage);
+    let savedRoot: string | undefined;
+    const loadSavedWorkspace = async (input: Parameters<typeof load>[0]) => {
+      const saved = await load(input); savedRoot = saved.root;
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, snapshotId: f.saved.id, dirty: true, epoch: 2 } } })
+        .where(eq(executionWorkspaces.id, f.ids.workspace));
+      return saved;
+    };
+    const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace, environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+    const response = await request(filesApp(f.ids.company, remoteFiles)).get(`/api/issues/${f.ids.issue}/file-resources/content`)
+      .query({ workspace: "execution", path: "docs/result.md" }).expect(422);
+    expect(response.body.details.code).toBe("workspace_changed"); expect(response.body).not.toHaveProperty("content");
+    expect(savedRoot).toBeDefined(); await expect(fs.stat(savedRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.execute).not.toHaveBeenCalled(); expect(f.syncOut).not.toHaveBeenCalled();
+  });
 
   it("shares fail-fast saved Files admission across loader instances until owned cleanup completes", async () => {
     const f = await savedFileFixture(), availableBytes = async () => 8n * 1024n ** 3n;
@@ -625,7 +732,7 @@ describeDatabase("remote workspace ordinary file routes", () => {
   });
 
   it.each(["confirmed_stop", "unknown_stop", "dirty", "foreign_receipt"])(
-    "uses saved bytes only for a clean workspace with an exact stopped receipt (%s)", async state => {
+    "uses clean saved authority independently of an allocation's stop receipt (%s)", async state => {
       const f = await fixture();
       const snapshotId = randomUUID();
       const agentId = randomUUID();
@@ -650,7 +757,7 @@ describeDatabase("remote workspace ordinary file routes", () => {
       const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace });
       const content = workspaceFileResourceService(db, undefined, { remoteFiles }).readContent(f.ids.issue,
         { workspace: "execution", path: "docs/result.md" });
-      if (state === "confirmed_stop") {
+      if (state !== "dirty") {
         await expect(content).resolves.toMatchObject({ content: { data: "Saved stopped result\n" },
           resource: { source: { kind: "saved", snapshotId, savedAt: "2026-10-30T12:00:00.000Z" } } });
         expect(loadSavedWorkspace).toHaveBeenCalledWith({ companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId });

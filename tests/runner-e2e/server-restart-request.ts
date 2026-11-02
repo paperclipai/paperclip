@@ -1,3 +1,4 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { readFile } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
 import { parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "../../packages/paperclip-runner/src/drivers/acpx/candidate-admission.js";
@@ -17,6 +18,7 @@ export interface RestartRequest {
   discardControllerCache?: boolean;
   crashAfterResult?: FinalizationCrashBinding;
   controllerOutage?: ControllerOutage;
+  rollingDeployment?: true;
   recoveryBinding?: RecoveryBinding;
 }
 
@@ -87,22 +89,29 @@ export async function readRestartRequest(restartRequestPath: string, executionId
     || Number(controllerDowntimeMs) < 0 || Number(controllerDowntimeMs) > 300_000)) {
     throw new Error("Controller downtime must be an integer between zero and five minutes");
   }
+  const rollingDeployment = (value as { rollingDeployment?: unknown }).rollingDeployment;
+  if (rollingDeployment !== undefined && (rollingDeployment !== true || executionIds.length !== 1
+    || !executionIds.every(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isRollingWebDeployment(execution); }))) {
+    throw new Error("Rolling deployment requires its explicit isolated cell");
+  }
   const discardControllerCache = (value as { discardControllerCache?: unknown }).discardControllerCache === true;
   if (discardControllerCache && !executionIds.some(id => {
     const execution = runnerMatrix.find(row => row.id === id);
-    return execution !== undefined && controllerOutageForExecution(execution, {}) !== undefined;
+    return execution !== undefined && (controllerOutageForExecution(execution, {}) !== undefined || isRollingWebDeployment(execution));
   })) throw new Error("Controller cache replacement requires an explicit remote controller-outage cell");
   const crashAfterResult = (value as { crashAfterResult?: unknown }).crashAfterResult;
   const controllerOutage = (value as { controllerOutage?: unknown }).controllerOutage;
   const recoveryBinding = (value as { recoveryBinding?: unknown }).recoveryBinding;
-  if (recoveryBinding !== undefined && controllerOutage === undefined) throw new Error("Recovery observation requires a controller outage");
+  if (recoveryBinding !== undefined && controllerOutage === undefined && !rollingDeployment) throw new Error("Recovery observation requires a controller outage");
+  if (rollingDeployment && (!discardControllerCache || controllerOutage !== undefined || controllerDowntimeMs !== undefined
+    || preserveRunner !== undefined || crashAfterResult !== undefined)) throw new Error("Rolling deployment cannot combine an outage or another fault");
   if (controllerOutage !== undefined && (!discardControllerCache || preserveRunner !== undefined || crashAfterResult !== undefined)) {
     throw new Error("Controller outage requires the explicit remote cache-replacement cell without another crash boundary");
   }
   if (crashAfterResult !== undefined && (preserveRunner !== undefined || discardControllerCache)) {
     throw new Error("A finalization crash cannot preserve a running provider or discard its controller cache");
   }
-  return { requestId, discardControllerCache, ...(kimiCandidateAdmission ? { kimiCandidateAdmission } : {}), ...(controllerDowntimeMs === undefined ? {} : { controllerDowntimeMs: Number(controllerDowntimeMs) }),
+  return { requestId, discardControllerCache, ...(rollingDeployment ? { rollingDeployment: true as const } : {}), ...(kimiCandidateAdmission ? { kimiCandidateAdmission } : {}), ...(controllerDowntimeMs === undefined ? {} : { controllerDowntimeMs: Number(controllerDowntimeMs) }),
     ...(recoveryBinding === undefined ? {} : { recoveryBinding: parseRecoveryBinding(recoveryBinding) }),
     ...(controllerOutage === undefined ? {} : { controllerOutage: parseControllerOutage(controllerOutage) }),
     ...(preserveRunner === undefined ? {} : { preserveRunner: parseRestartRunnerIdentity(preserveRunner) }),

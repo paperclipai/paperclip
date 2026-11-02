@@ -320,6 +320,27 @@ export async function closeCheckpointDb(db: Db, timeoutSeconds: number): Promise
   await checkpointDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
 }
 
+// Managed file publication holds an agent lock while transferring bytes. A
+// stalled object store must not consume request or controller-renewal capacity.
+const fileStorageDbFactories = new WeakMap<object, () => Db>();
+const fileStorageDbs = new WeakMap<object, Db>();
+const closedFileStorageOwners = new WeakSet<object>();
+export function fileStorageDb(db: Db): Db {
+  const existing = fileStorageDbs.get(db);
+  if (existing) return existing;
+  const factory = fileStorageDbFactories.get(db);
+  if (!factory) return db; // Preserve the caller's transaction/savepoint.
+  if (closedFileStorageOwners.has(db)) throw new Error("file_storage_pool_closed");
+  const created = factory();
+  fileStorageDbs.set(db, created);
+  fileStorageDbs.set(created, created);
+  return created;
+}
+export async function closeFileStorageDb(db: Db, timeoutSeconds: number): Promise<void> {
+  closedFileStorageOwners.add(db);
+  await fileStorageDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return createDbClient(url, resolved);
@@ -344,6 +365,9 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
+  }, db));
+  fileStorageDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 2, applicationName: "paperclip-file-storage",
   }, db));
   return db;
 }

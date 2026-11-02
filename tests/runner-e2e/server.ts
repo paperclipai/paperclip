@@ -1,3 +1,5 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
+import { superviseRollingDeployment } from "./rolling-deployment-supervisor.js";
 import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
 import { prepareControllerDatabase } from "./controller-database.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, assertServingArtifact, upgradeArtifactKey, type ServingArtifact } from "./upgrade-artifacts.js";
@@ -450,6 +452,12 @@ async function supervise() {
     // The wrapper owns this sibling process. Killing the serving child must
     // leave Postgres available to the stopped-controller observer and successor.
     controllerDatabase = await prepareControllerDatabase(configPath, temporaryRoot);
+  }
+  if (executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isRollingWebDeployment(execution); })) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Rolling source qualification cannot claim installed-artifact evidence");
+    await superviseRollingDeployment({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
   }
   const initial = await startServer();
   if (upgradeArtifacts) await waitForHealth(initial);
