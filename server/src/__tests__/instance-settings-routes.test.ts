@@ -1132,6 +1132,28 @@ describe("instance settings routes", () => {
       expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
     });
 
+    it("collects fixed-key diagnostics only through the privileged safety report", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockReadIdleSleepSafety.mockResolvedValue({ version: 1, backgroundWork: "present",
+        diagnostics: { version: 1, complete: true, checks: [{ reason: "agent_api_keys", state: "present" }] } });
+      await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepDiagnostics=1").expect(200);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      const response = await request(createApp(adminActor))
+        .get("/api/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&ownerId=fixture-owner").expect(200);
+      expect(response.body.idleSleepSafety.diagnostics.checks).toEqual([{ reason: "agent_api_keys", state: "present" }]);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+        "fixture-owner", expect.any(Function), undefined, undefined, false, false, { collectDiagnostics: true });
+      mockReadIdleSleepSafety.mockClear();
+      for (const actor of [nonAdminActor, { type: "agent", agentId: "agent-1", companyId: "company-1", source: "api_key" }]) {
+        await request(createApp(actor))
+          .get("/api/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&ownerId=fixture-owner").expect(403);
+      }
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      await request(createApp(adminActor))
+        .get("/api/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&scheduledWake=2&ownerId=fixture-owner").expect(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+    });
+
     it.each(["1", "2"])("reserves scheduling capability %s for verified Cloud control callers", async version => {
       mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
       for (const source of ["session", "cloud_tenant", "local_implicit"]) {

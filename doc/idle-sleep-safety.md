@@ -5,6 +5,22 @@ instance-wide `idleSleepSafety` report for instance administrators and signed
 Cloud control callers. Ordinary task drains keep their existing behavior.
 Company members and agents cannot read this report.
 
+Instance administrators and signed Cloud control callers may add
+`idleSleepDiagnostics=1` to an owned safety request for fixed-key blocker
+diagnostics. This explicit one-shot read evaluates all current predicates in
+the same bounded snapshot, and can reconnect/wake the database. Do not poll it
+during a suspension observation window. The normal report and its early local
+and plugin short circuits are unchanged when the option is absent.
+
+The optional `diagnostics` field reports `none`, `present`, `unknown`, or
+`not_checked` per reason. `complete` describes applicable read-inspection
+coverage, never stop authorization. Diagnostics do not initiate backup dumps
+or unsafe plugin RPCs. Skipped checkpoints remain `not_checked`; unknown or
+skipped checks never grant a safety `none`. A changed hold or tracked-work
+generation invalidates the observation. Only fixed keys and states are
+returned, with no tenant records or error details. See the
+[complete reason and traffic inventory](plans/2026-11-02-sleep-blocker-inventory.md).
+
 ## Hosting protocol
 
 1. Hold external admission at the hosting layer. Queue user requests for wake or
@@ -452,8 +468,9 @@ the same termination and run checks above. Missing cleanup evidence,
 `cleanup_pending`, and live login flows
 remain blockers. A finished coalesced wake is history only when its exact
 company/agent's linked run has finished without retry or accounting debt.
-Image-setup history still blocks: promotion can succeed before teardown is
-confirmed, so a terminal label does not prove that its provider resource is gone.
+Image-setup history requires a known terminal state, finish timestamp, cleared
+connection secret and exact host-owned resource cleanup verification. Promotion
+can succeed before teardown is confirmed, so a terminal label alone still blocks.
 
 Completed question-answer deliveries permit sleep only after acknowledgement
 and completion of their exact target run in the same company, without retry or
