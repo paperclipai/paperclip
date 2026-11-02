@@ -170,6 +170,11 @@ Automated: AppsConnect's generic MCP cases cover probe-driven auth, private or
 unreachable endpoints, preregistered clients, secret-backed headers, and unsafe
 authorization URLs. These are component/API mocks, not remote provider proof.
 
+[OAuth protocol](../../server/src/__tests__/tool-access-oauth-protocol.integration.test.ts)
+uses PostgreSQL and a local HTTP provider to cover authorization-code-only DCR,
+activation without refresh tokens, expiry recovery, and refresh-token rotation.
+This fixture does not establish compatibility with a deployed provider.
+
 [Catalog publication](../../server/src/__tests__/tool-catalog-publication.test.ts)
 uses PostgreSQL and a controlled MCP response to check bounded writes, repeated
 page entries, preserved action choices, rollback, and concurrent publication.

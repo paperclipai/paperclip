@@ -35,7 +35,12 @@ describe("tool OAuth over local HTTP", () => {
     if (keyDir) await rm(keyDir, { recursive: true, force: true });
   });
 
-  it.each(["none", "client_secret_basic"] as const)("registers, exchanges, and activates a %s client through the routes", async (authMethod) => {
+  it.each([
+    { authMethod: "none", refresh: true, advertiseGrants: true },
+    { authMethod: "client_secret_basic", refresh: true, advertiseGrants: true },
+    { authMethod: "none", refresh: false, advertiseGrants: true },
+    { authMethod: "none", refresh: false, advertiseGrants: false },
+  ] as const)("registers, exchanges, and activates a client through the routes: %j", async ({ authMethod, refresh, advertiseGrants }) => {
     const userId = `oauth-user-${randomUUID()}`;
     const [company] = await db.insert(companies).values({
       name: "OAuth protocol fixture", issuePrefix: `O${randomUUID().slice(0, 5)}`,
@@ -66,26 +71,33 @@ describe("tool OAuth over local HTTP", () => {
           token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
           code_challenge_methods_supported: ["S256"],
           token_endpoint_auth_methods_supported: [authMethod],
-          scopes_supported: ["tools.read", "offline_access"],
-          grant_types_supported: ["authorization_code", "refresh_token"],
+          scopes_supported: refresh ? ["tools.read", "offline_access"] : ["tools.read"],
+          ...(advertiseGrants ? { grant_types_supported: refresh
+            ? ["authorization_code", "refresh_token"] : ["authorization_code"] } : {}),
         });
       }
       if (path === "/register") {
-        return json({ ...JSON.parse(body), client_id: "fixture-client",
+        const metadata = JSON.parse(body);
+        expect(metadata.grant_types).toEqual(refresh || !advertiseGrants
+          ? ["authorization_code", "refresh_token"] : ["authorization_code"]);
+        return json({ ...metadata, client_id: "fixture-client",
+          grant_types: refresh ? metadata.grant_types : ["authorization_code"],
           ...(authMethod === "client_secret_basic" ? { client_secret: "fixture-secret" } : {}),
         });
       }
       if (path === "/token") {
         const refreshing = new URLSearchParams(body).get("grant_type") === "refresh_token";
         if (refreshing) {
+          expect(refresh).toBe(true);
           if (new URLSearchParams(body).get("refresh_token") !== currentRefreshToken) {
             return json({ error: "invalid_grant" }, 400);
           }
           currentAccessToken = "fixture-access-rotated";
           currentRefreshToken = "fixture-refresh-rotated";
         }
-        return json({ access_token: currentAccessToken, refresh_token: currentRefreshToken,
-          expires_in: 3600, token_type: "Bearer", scope: "tools.read offline_access" });
+        return json({ access_token: currentAccessToken,
+          ...(refresh ? { refresh_token: currentRefreshToken } : {}),
+          expires_in: 3600, token_type: "Bearer", scope: refresh ? "tools.read offline_access" : "tools.read" });
       }
       if (path === "/mcp") {
         if (req.headers.authorization !== `Bearer ${currentAccessToken}`) {
@@ -137,7 +149,10 @@ describe("tool OAuth over local HTTP", () => {
       expect(connection).toMatchObject({ companyId: company.id, status: "active", enabled: true, ownership: "dcr" });
       expect(connection.config.oauth).toMatchObject({ clientId: "fixture-client", clientTokenEndpointAuthMethod: authMethod, clientIssuer: origin });
       expect(JSON.stringify(connection.config)).not.toMatch(/fixture-(access|refresh|secret)/);
-      expect(connection.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(expect.arrayContaining(["oauth.access_token", "oauth.refresh_token"]));
+      expect(connection.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(expect.arrayContaining([
+        "oauth.access_token", ...(refresh ? ["oauth.refresh_token"] : []),
+      ]));
+      if (!refresh) expect(connection.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.refresh_token");
       expect(await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection.id)))
         .toEqual([expect.objectContaining({ toolName: "read_fixture", status: "active", reviewedByUserId: userId })]);
       const tokenCall = calls.find((call) => call.path === "/token")!;
@@ -155,14 +170,25 @@ describe("tool OAuth over local HTTP", () => {
       const consentedAt = grant.providerTenant?.oauth?.consentedAt;
       expect(consentedAt).toEqual(expect.any(String));
       expect(Number.isFinite(Date.parse(consentedAt!))).toBe(true);
+      const options = { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const, paperclipCloudConnector: null };
+      const first = toolAccessService(db, options);
+      if (!refresh) await first.checkHealth(connection.id, { actorType: "user", actorId: userId });
       await db.update(connectionGrants).set({ providerTenant: {
         ...grant.providerTenant,
         oauth: { ...grant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
       } }).where(eq(connectionGrants.id, grant.id));
-      const options = { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const, paperclipCloudConnector: null };
-      const first = toolAccessService(db, options);
       const second = toolAccessService(db, options);
       const refreshInput = { companyId: company.id, connectionId: connection.id, grantId: grant.id, actor: { actorType: "user" as const, actorId: userId } };
+      if (!refresh) {
+        await expect(first.checkHealth(connection.id, { actorType: "user", actorId: userId }))
+          .rejects.toMatchObject({ status: 422, details: { code: "oauth_refresh_missing" } });
+        expect(calls.filter(call => call.path === "/token")).toHaveLength(1);
+        const restarted = await request(app).post(`/api/tools/oauth/${connection.id}/start`)
+          .send({}).expect(200);
+        expect(new URL(restarted.body.authorizationUrl).searchParams.get("client_id")).toBe("fixture-client");
+        expect(calls.filter(call => call.path === "/register")).toHaveLength(1);
+        return;
+      }
       const refreshed = await Promise.all([
         first.refreshOAuthGrantCredentials(refreshInput),
         second.refreshOAuthGrantCredentials(refreshInput),
