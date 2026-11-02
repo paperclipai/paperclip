@@ -106,6 +106,31 @@
         reload.addEventListener("click", retry);
       })();
     </script>
+    <!--
+      Insecure-context polyfill for crypto.randomUUID. Browsers expose it only
+      in secure contexts (https / localhost), but self-hosted instances are
+      routinely used over plain HTTP on a LAN IP (http://<ip>:3100). There the
+      API is undefined and direct calls throw before their feature runs - most
+      visibly the chat composer (IssueDetail.tsx addComment), where the submit
+      dies before any request is made and sends silently fail. getRandomValues
+      is available in every context, so derive a spec-compliant v4 UUID from it.
+      No-op on secure contexts, where the native API is kept.
+    -->
+    <script>
+      (() => {
+        try {
+          if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
+            crypto.randomUUID = function () {
+              const bytes = crypto.getRandomValues(new Uint8Array(16));
+              bytes[6] = (bytes[6] & 0x0f) | 0x40;
+              bytes[8] = (bytes[8] & 0x3f) | 0x80;
+              const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+              return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+            };
+          }
+        } catch {}
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
