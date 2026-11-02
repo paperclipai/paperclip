@@ -55,7 +55,7 @@ async function assertSelectedSkillsTree(root: string, names: string[]): Promise<
 // Launch preparation owns this isolated directory and runs only after the old
 // provider has stopped. Never follow a retained symlink while removing stale
 // assignments; auth, config and provider conversation history are not touched.
-const clearRemoteCodexSkills = `
+const validateRemoteCodexHome = `
 const fs = require("node:fs"), path = require("node:path");
 const home = path.resolve(process.argv[1]), workspace = path.resolve(process.argv[2]);
 const relative = path.relative(workspace, home);
@@ -70,6 +70,11 @@ for (const segment of relative.split(path.sep)) {
   const stat = fs.lstatSync(current);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("unsafe_codex_home");
 }
+const auth = fs.lstatSync(path.join(current, "auth.json"), { throwIfNoEntry: false });
+if (auth && (!auth.isFile() || auth.isSymbolicLink())) throw Error("unsafe_codex_auth");
+`;
+
+const clearRemoteCodexSkills = `${validateRemoteCodexHome}
 const skills = path.join(current, "skills");
 function unseal(directory) {
   const stat = fs.lstatSync(directory);
@@ -118,6 +123,15 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
     }
   });
   if (input.scope === "credentials") {
+    const home = input.persistenceDirectories.find(directory => directory.name === "codex-home" && directory.location === "filesystem");
+    if (!home?.targetPath || !input.isolatedCodexSkills) throw new Error("runner_remote_codex_credentials_path_invalid");
+    const validated = await input.runner.execute({
+      command: "node",
+      args: ["-e", validateRemoteCodexHome, home.targetPath, input.isolatedCodexSkills.workspaceRoot],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (validated.exitCode !== 0 || validated.timedOut) throw new Error("runner_remote_codex_credentials_path_invalid");
     await materializeLaunchState();
     return;
   }

@@ -113,6 +113,42 @@ async function filesystemFixture() {
   return { ...f, source, remote };
 }
 
+it.each(["ancestor", "home", "auth"] as const)("rejects a retained credential destination link before copying: %s", async link => {
+  const f = await filesystemFixture();
+  writeFileSync(join(f.root, "codex-home", "auth.json"), "selected credential", { mode: 0o600 });
+  const outside = join(f.root, "outside");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "auth.json"), "untouched");
+  if (link === "ancestor") {
+    mkdirSync(join(outside, "codex-home"));
+    symlinkSync(outside, join(f.root, "redirected"));
+    f.input.persistenceDirectories[0]!.targetPath = join(f.root, "redirected", "codex-home");
+  } else if (link === "home") {
+    mkdirSync(dirname(f.remote), { recursive: true });
+    symlinkSync(outside, f.remote);
+  } else {
+    mkdirSync(f.remote, { recursive: true });
+    symlinkSync(join(outside, "auth.json"), join(f.remote, "auth.json"));
+  }
+  const write = vi.fn(f.input.stageFile);
+  f.input.stageFile = write;
+  await expect(stageRemoteLaunchAssets({ ...f.input, scope: "credentials" })).rejects.toThrow("runner_remote_codex_credentials_path_invalid");
+  expect(write).not.toHaveBeenCalled();
+  expect(readFileSync(join(outside, "auth.json"), "utf8")).toBe("untouched");
+});
+
+it("checks the credential destination without changing retained skills or configuration", async () => {
+  const f = await filesystemFixture();
+  writeFileSync(join(f.root, "codex-home", "auth.json"), "selected credential", { mode: 0o600 });
+  mkdirSync(join(f.remote, "skills"), { recursive: true });
+  writeFileSync(join(f.remote, "skills", "retained"), "source skills");
+  writeFileSync(join(f.remote, "config.toml"), "source configuration");
+  await stageRemoteLaunchAssets({ ...f.input, scope: "credentials" });
+  expect(readFileSync(join(f.remote, "auth.json"), "utf8")).toBe("selected credential");
+  expect(readFileSync(join(f.remote, "skills", "retained"), "utf8")).toBe("source skills");
+  expect(readFileSync(join(f.remote, "config.toml"), "utf8")).toBe("source configuration");
+});
+
 describe("remote launch asset staging", () => {
   it("delivers the selected Codex skills to the same discoverable path used by explicit turn input", async () => {
     const f = await filesystemFixture();
