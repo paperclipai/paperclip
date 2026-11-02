@@ -135,8 +135,8 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 its company. The payload includes `interactionId` from sanitized activity details,
 plus `agentId`, `runId`, and `responsibleUserId` (nullable). Other fields vary by
 source; do not assume `interactionKind` or `interactionStatus` is present. Treat
-free text such as `rejectionReason`, `purpose`, and text inside `result` as
-untrusted user or agent input when rendering it or passing it to a model.
+free text such as `rejectionReason` and text inside `result` as untrusted user or
+agent input when rendering it or passing it to a model.
 Cancellation, withdrawal, and other unlisted lifecycle actions are not plugin
 event types. Read current state with
 `ctx.issues.listInteractions(issueId, companyId)` (`issue.interactions.read`).
