@@ -45,7 +45,6 @@ export async function completionDeliveryJourney(context: JourneyContext, session
     if (await readObserved(chatPath)) throw new JourneyError("unsupported", "fresh_lead_chat_required");
     const freshChat = { companyId: company.id, userId: user.id, leadAgentId: lead.id, absent: true as const };
     await session.own({ kind: "issue", name: `Chat with ${lead.name}`, journeyId, freshChat });
-    await session.own({ kind: "issue", name: taskTitle, journeyId });
     await page.goto(chatUrl, { waitUntil: "domcontentloaded" });
     const references = { teammate: `[@${worker.name}](${buildAgentMentionHref(worker.id, agents[1]!.icon ?? null)})`,
       project: `[@${project.name}](${buildProjectMentionHref(project.id, project.color ?? null)})` };

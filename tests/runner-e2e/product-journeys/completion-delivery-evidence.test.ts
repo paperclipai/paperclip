@@ -33,7 +33,7 @@ describe("completion journey independently proves delivery", () => {
     expect(grade(f).find(check => check.id === "completion-source-correlated")?.passed).toBe(false);
     expect(grade(f).find(check => check.id === "completion-result-access")?.passed).toBe(false);
   });
-  it.each(["worker-output", "missing-output", "wrong-source-comment", "revision", "callback-facts", "link", "native", "model", "environment", "creation-audit", "initial-assignment", "assignment", "user-prompt", "extra-run"])("rejects missing or wrong %s", fault => {
+  it.each(["worker-output", "missing-output", "wrong-source-comment", "revision", "callback-facts", "link", "native", "model", "environment", "creation-audit", "title", "initial-assignment", "assignment", "user-prompt", "extra-run"])("rejects missing or wrong %s", fault => {
     const f = fixture();
     if (fault === "worker-output") f.observation.documents[0]!.body = "Reference: completion-campaign. I will write the brief later.";
     if (fault === "missing-output") f.observation.documents = [];
@@ -45,6 +45,7 @@ describe("completion journey independently proves delivery", () => {
     if (fault === "model") f.observation.runs[1]!.runnerProfileJson = { nativeExecutionInput: { provider: { kind: "opencode", model: "other" } } };
     if (fault === "environment") f.observation.runs[1]!.contextSnapshot.paperclipEnvironment.id = "other";
     if (fault === "creation-audit") f.input.events = [];
+    if (fault === "title") f.observation.worker.title = "Briefcampaign";
     if (fault === "initial-assignment") f.input.events[0]!.details.assigneeAgentId = "lead";
     if (fault === "assignment") f.observation.worker.assigneeAgentId = "lead";
     if (fault === "user-prompt") f.observation.comments.push({ ...f.observation.comments[0], id: "extra-request" });
