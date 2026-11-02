@@ -1,4 +1,4 @@
-import { isOpenRouterUrl, openRouterCodexHeaders } from "./openrouter-attribution.js";
+import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "./openrouter-attribution.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -314,18 +314,19 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
  * `config.toml`. Translate the JSON into that TOML so a compatible endpoint
  * reaches Codex exactly as the connection probe verified it.
  */
-export function codexCustomProviderToml(
+export function codexCustomProviders(
   environment: Record<string, string | undefined> | undefined,
-): string {
+): { providers: Record<string, unknown>; modelProvider: string | null } {
+  const empty = { providers: {}, modelProvider: null };
   const raw = environment?.PAPERCLIP_CODEX_PROVIDERS;
-  if (typeof raw !== "string" || raw.trim().length === 0) return "";
+  if (typeof raw !== "string" || raw.trim().length === 0) return empty;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return "";
+    return empty;
   }
-  if (!isRecord(parsed) || !isRecord(parsed.providers)) return "";
+  if (!isRecord(parsed) || !isRecord(parsed.providers)) return empty;
   const providers: Record<string, unknown> = {};
   for (const [providerId, entry] of Object.entries(parsed.providers)) {
     if (!isRecord(entry) || providerId.trim().length === 0) continue;
@@ -336,12 +337,21 @@ export function codexCustomProviderToml(
     const sanitized = dropSecretPlaceholders(entry);
     if (sanitized) providers[providerId] = sanitized;
   }
+  if (Object.keys(providers).length === 0) return empty;
+  const selected = typeof parsed.model_provider === "string" ? parsed.model_provider.trim() : "";
+  // A selector that names no emitted table would make Codex fail with an error
+  // that never mentions the env var, so it is dropped instead of emitted.
+  return { providers, modelProvider: selected && selected in providers ? selected : null };
+}
+
+/** The custom provider table as a standalone TOML document. */
+export function codexCustomProviderToml(
+  environment: Record<string, string | undefined> | undefined,
+): string {
+  const { providers, modelProvider } = codexCustomProviders(environment);
   if (Object.keys(providers).length === 0) return "";
   const document: Record<string, unknown> = { model_providers: providers };
-  const selected = typeof parsed.model_provider === "string" ? parsed.model_provider.trim() : "";
-  // A selector that points at no emitted table would make Codex fail with an
-  // error that never mentions the env var; leave the choice to Codex instead.
-  if (selected && selected in providers) document.model_provider = selected;
+  if (modelProvider) document.model_provider = modelProvider;
   return `${stringifyToml(document)}\n`;
 }
 
@@ -370,13 +380,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
-async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
-  if (!sourceHome?.trim()) return "";
+async function managedCodexProviders(sourceHome?: string | null): Promise<{
+  providers: Record<string, unknown>;
+  modelProvider: string;
+} | null> {
+  if (!sourceHome?.trim()) return null;
   const source = await readSourceCodexAuth(join(sourceHome, "config.toml"));
-  if (!source) return "";
+  if (!source) return null;
   let parsed;
-  try { parsed = parseToml(source.toString("utf8")); } catch { return ""; }
-  if (parsed.model_provider !== "paperclip") return "";
+  try { parsed = parseToml(source.toString("utf8")); } catch { return null; }
+  if (parsed.model_provider !== "paperclip") return null;
   const providers = parsed.model_providers as Record<string, unknown> | undefined;
   const provider = providers?.paperclip as Record<string, unknown> | undefined;
   if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
@@ -389,7 +402,30 @@ async function managedCodexProviderConfig(sourceHome?: string | null): Promise<s
     || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
     throw new Error("Invalid managed Codex provider URL");
   }
-  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}${isOpenRouterUrl(provider.base_url) ? openRouterCodexHeaders() : ""}`;
+  const block: Record<string, unknown> = {
+    name: "Paperclip connection",
+    base_url: provider.base_url,
+    wire_api: "responses",
+    requires_openai_auth: false,
+  };
+  if (provider.env_key) block.env_key = "PAPERCLIP_AI_PROVIDER_KEY";
+  if (isOpenRouterUrl(provider.base_url)) block.http_headers = { ...OPENROUTER_ATTRIBUTION_HEADERS };
+  return { providers: { paperclip: block }, modelProvider: "paperclip" };
+}
+
+/** Merge the managed projection and the custom tables into one TOML document. */
+export function codexProviderToml(
+  custom: { providers: Record<string, unknown>; modelProvider: string | null },
+  managed: { providers: Record<string, unknown>; modelProvider: string } | null,
+): string {
+  const providers = { ...(managed?.providers ?? {}), ...custom.providers };
+  if (Object.keys(providers).length === 0) return "";
+  const document: Record<string, unknown> = { model_providers: providers };
+  // A custom selector wins; otherwise keep the managed one so a custom table
+  // that declares no selector cannot disable an existing working route.
+  const selected = custom.modelProvider ?? managed?.modelProvider ?? null;
+  if (selected && selected in providers) document.model_provider = selected;
+  return `${stringifyToml(document)}\n`;
 }
 
 export async function prepareIsolatedCodexHome(input: {
@@ -407,10 +443,11 @@ export async function prepareIsolatedCodexHome(input: {
   );
 
   // A compatible endpoint arrives as `PAPERCLIP_CODEX_PROVIDERS`, the same
-  // contract the Codex harness probe reads. Emit it as `[model_providers.*]`
-  // tables so the endpoint the probe accepted is the endpoint the run uses.
-  const customProviderConfig = codexCustomProviderToml(input.environment);
-  const providerConfig = customProviderConfig || await managedCodexProviderConfig(input.sourceCodexHome);
+  // contract the Codex harness probe reads. Merge it with the managed
+  // projection so declaring an unused provider cannot remove a working route.
+  const customProviders = codexCustomProviders(input.environment);
+  const managedProviders = await managedCodexProviders(input.sourceCodexHome);
+  const providerConfig = codexProviderToml(customProviders, managedProviders);
   const configPath = join(input.codexHome, "config.toml");
   await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   await chmod(input.codexHome, 0o700);

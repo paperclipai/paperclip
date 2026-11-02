@@ -33,6 +33,7 @@ describe("parseOpenCodeCustomProviders", () => {
         providerId: "custom",
         baseUrl: "https://api.deepseek.com",
         apiKey: "sk-live-key",
+        headers: {},
         models: ["deepseek-flash"],
       },
     ]);
@@ -66,9 +67,66 @@ describe("parseOpenCodeCustomProviders", () => {
         providerId: "gateway",
         baseUrl: "https://gateway.test/v1",
         apiKey: "literal-key",
+        headers: {},
         models: ["model-a", "model-b"],
       },
     ]);
+  });
+
+  it("resolves an endpoint that references the environment", () => {
+    const parsed = parseOpenCodeCustomProviders({
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        gateway: {
+          options: { baseURL: "{env:GATEWAY_URL}", apiKey: "{env:GATEWAY_KEY}" },
+          models: { "model-a": { name: "A" } },
+        },
+      }),
+      GATEWAY_URL: "https://gateway.test/v1",
+      GATEWAY_KEY: "gateway-key",
+    });
+
+    expect(parsed.providers.gateway?.options).toEqual({ baseURL: "https://gateway.test/v1" });
+    expect(parsed.credentials[0]).toEqual({
+      providerId: "gateway",
+      baseUrl: "https://gateway.test/v1",
+      apiKey: "gateway-key",
+      headers: {},
+      models: ["model-a"],
+    });
+  });
+
+  it("skips a provider whose endpoint cannot be resolved", () => {
+    const parsed = parseOpenCodeCustomProviders({
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        gateway: { options: { baseURL: "{env:MISSING_URL}", apiKey: "key" } },
+      }),
+    });
+
+    expect(parsed.providers).toEqual({});
+    expect(parsed.credentials).toEqual([]);
+  });
+
+  it("moves environment-backed headers to the credential and keeps static ones", () => {
+    const parsed = parseOpenCodeCustomProviders({
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        gateway: {
+          options: {
+            baseURL: "https://gateway.test/v1",
+            apiKey: "{env:GATEWAY_KEY}",
+            headers: { "X-Route": "eu", Authorization: "Bearer {env:GATEWAY_KEY}" },
+          },
+        },
+      }),
+      GATEWAY_KEY: "gateway-key",
+    });
+
+    // Static routing headers stay in the config OpenCode reads.
+    expect(parsed.providers.gateway?.options).toEqual({
+      baseURL: "https://gateway.test/v1",
+      headers: { "X-Route": "eu" },
+    });
+    // The credential-bearing header travels with the proxy instead.
+    expect(parsed.credentials[0]?.headers).toEqual({ Authorization: "Bearer gateway-key" });
   });
 
   it("ignores a missing, empty, malformed or non-object table", () => {

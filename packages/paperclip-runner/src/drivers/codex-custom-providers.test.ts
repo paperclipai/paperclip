@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { codexCustomProviderToml } from "./runtime-context-materializer.js";
+import { codexCustomProviderToml, codexProviderToml, codexCustomProviders } from "./runtime-context-materializer.js";
 
 describe("codexCustomProviderToml", () => {
   it("emits the provider table and selector for a compatible endpoint", () => {
@@ -68,5 +68,43 @@ describe("codexCustomProviderToml", () => {
     expect(codexCustomProviderToml({ PAPERCLIP_CODEX_PROVIDERS: "{not json" })).toBe("");
     expect(codexCustomProviderToml({ PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: {} }) })).toBe("");
     expect(codexCustomProviderToml({ PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: { bad: "nope" } }) })).toBe("");
+  });
+
+  it("keeps the managed selector when the custom table declares none", () => {
+    const toml = codexProviderToml(
+      codexCustomProviders({
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: { extra: { base_url: "https://extra.test" } } }),
+      }),
+      { providers: { paperclip: { base_url: "https://managed.test" } }, modelProvider: "paperclip" },
+    );
+
+    expect(toml).toContain('model_provider = "paperclip"');
+    expect(toml).toContain("[model_providers.extra]");
+    expect(toml).toContain("[model_providers.paperclip]");
+  });
+
+  it("keeps the managed route when the custom table is unusable", () => {
+    const toml = codexProviderToml(
+      codexCustomProviders({ PAPERCLIP_CODEX_PROVIDERS: "{not json" }),
+      { providers: { paperclip: { base_url: "https://managed.test" } }, modelProvider: "paperclip" },
+    );
+
+    expect(toml).toContain('model_provider = "paperclip"');
+    expect(toml).toContain("[model_providers.paperclip]");
+  });
+
+  it("prefers the custom selector when it names an emitted table", () => {
+    const toml = codexProviderToml(
+      codexCustomProviders({
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+          providers: { custom: { base_url: "https://api.deepseek.com" }, paperclip: { base_url: "https://managed.test" } },
+          model_provider: "custom",
+        }),
+      }),
+      { providers: { paperclip: { base_url: "https://managed.test" } }, modelProvider: "paperclip" },
+    );
+
+    expect(toml).toContain('model_provider = "custom"');
+    expect(toml).toContain("[model_providers.custom]");
   });
 });

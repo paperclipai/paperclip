@@ -2283,6 +2283,7 @@ async function startOpenCodeProviderProxy(
   key: string,
   models: string | readonly string[],
   environment: NodeJS.ProcessEnv,
+  configuredHeaders: Record<string, string> = {},
 ) {
   const acceptedModels = new Set((Array.isArray(models) ? models : [models]).filter((entry) => entry.length > 0));
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
@@ -2342,7 +2343,7 @@ async function startOpenCodeProviderProxy(
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
           method: "POST",
           agent,
-          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          headers: upstreamHeadersFor(baseUrl, key, body.length, configuredHeaders, request.headers),
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
         }, resolve);
         outgoing.once("error", reject);
@@ -2386,6 +2387,54 @@ async function startOpenCodeProviderProxy(
       agent.destroy();
       await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     },
+  };
+}
+
+const HOP_BY_HOP_REQUEST_HEADERS = new Set([
+  "host",
+  "connection",
+  "keep-alive",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "content-length",
+  "accept-encoding",
+]);
+
+function upstreamHeadersFor(
+  baseUrl: string,
+  key: string,
+  contentLength: number,
+  configuredHeaders: Record<string, string>,
+  incomingHeaders: Record<string, string | string[] | undefined>,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  // OpenCode sends the provider's own headers with each request. Forward them,
+  // so a gateway that needs a routing header behaves the same through the proxy
+  // as it did in the connection probe.
+  for (const [name, value] of Object.entries(incomingHeaders)) {
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP_REQUEST_HEADERS.has(lower)) continue;
+    // The client always authenticates to the proxy. That token must never
+    // reach the upstream; the run's key (or a configured header) is the only
+    // authorization the provider may see.
+    if (lower === "authorization") continue;
+    if (typeof value === "string") headers[name] = value;
+    else if (Array.isArray(value)) headers[name] = value.join(", ");
+  }
+  for (const [name, value] of Object.entries(configuredHeaders)) {
+    if (key && name.toLowerCase() === "authorization") continue;
+    headers[name] = value;
+  }
+  return {
+    ...headers,
+    ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}),
+    "Content-Type": "application/json",
+    "Content-Length": String(contentLength),
+    ...(key ? { Authorization: `Bearer ${key}` } : {}),
   };
 }
 
@@ -2482,6 +2531,7 @@ async function startRuntime(input: {
           ? [...new Set([...credential.models, providerModelId])]
           : credential.models,
         providerEnvironment,
+        credential.headers,
       );
       customProviderProxies.push(proxy);
       sensitiveValues.push(proxy.token);
@@ -2491,7 +2541,10 @@ async function startRuntime(input: {
         options: { ...record(current.options), baseURL: proxy.baseURL, apiKey: proxy.token },
       };
     } catch (error) {
+      // This runs before the outer cleanup scope, so release what this step
+      // already created instead of leaking the isolated home to the next run.
       for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
+      await removeIsolatedHome(isolatedHome).catch(() => {});
       throw error;
     }
   }
@@ -2571,6 +2624,7 @@ async function startRuntime(input: {
           models: {
             ...record(customProviders[modelProvider!]?.models),
             [providerModelId]: {
+              ...record(record(record(customProviders[modelProvider!]?.models)[providerModelId])),
               name: providerModelId,
               ...(modelProvider === "openrouter"
                 ? { variants: {
@@ -3238,6 +3292,8 @@ export interface OpenCodeCustomProviderCredential {
   providerId: string;
   baseUrl: string;
   apiKey: string;
+  /** Upstream headers the provider needs, kept out of the generated config. */
+  headers: Record<string, string>;
   /** Model ids the provider serves, so the proxy can accept exactly those. */
   models: string[];
 }
@@ -3246,10 +3302,10 @@ export interface OpenCodeCustomProviderCredential {
  * Read the custom provider table from the run environment.
  *
  * Provider credentials are never copied into the generated config: a durable
- * key in an agent-readable `opencode.json` would let task-controlled code reuse
- * it. The caller starts a loopback proxy per provider and writes only the
- * short-lived proxy token, the same boundary the OpenRouter and Paperclip
- * provider routes already use.
+ * key or an `{env:...}` header in an agent-readable `opencode.json` would let
+ * task-controlled code reuse it. The caller starts a loopback proxy per
+ * provider and writes only the short-lived proxy token, the same boundary the
+ * OpenRouter and Paperclip provider routes already use.
  */
 export function parseOpenCodeCustomProviders(
   environment: Record<string, string | undefined> | undefined,
@@ -3274,17 +3330,52 @@ export function parseOpenCodeCustomProviders(
     if (!isRecord(entry)) continue;
     const sanitized = structuredClone(entry);
     const options = isRecord(sanitized.options) ? { ...sanitized.options } : {};
-    const baseUrl = typeof options.baseURL === "string" ? options.baseURL.trim() : "";
+    const declaredBaseUrl = typeof options.baseURL === "string" ? options.baseURL.trim() : "";
+    const baseUrl = declaredBaseUrl ? resolveEnvironmentReference(declaredBaseUrl, resolve) : "";
+    // An endpoint that still holds an unresolvable reference would fail inside
+    // `new URL()`. Drop the provider instead of starting a proxy for it.
+    if (declaredBaseUrl && baseUrl.includes("{env:")) continue;
+    // A provider without a base URL still overrides a built-in one (headers,
+    // model metadata), so it stays in the config; it just gets no proxy.
+    if (baseUrl) options.baseURL = baseUrl;
+    else delete options.baseURL;
     const rawKey = typeof options.apiKey === "string" ? options.apiKey.trim() : "";
     delete options.apiKey;
+    const headers: Record<string, string> = {};
+    if (isRecord(options.headers)) {
+      const retained: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(options.headers)) {
+        const text = typeof value === "string" ? value : "";
+        // A header that references the environment carries a credential. The
+        // proxy applies the resolved value; the config must not hold it.
+        if (text.includes("{env:")) {
+          const resolved = resolveEnvironmentReference(text, resolve);
+          if (resolved) headers[name] = resolved;
+          continue;
+        }
+        retained[name] = value;
+      }
+      if (Object.keys(retained).length > 0) options.headers = retained;
+      else delete options.headers;
+    }
     sanitized.options = options;
     providers[providerId] = sanitized;
     const apiKey = resolveApiKeyReference(rawKey, resolve);
-    if (!baseUrl || !apiKey) continue;
+    if (!apiKey) continue;
     const models = isRecord(sanitized.models) ? Object.keys(sanitized.models) : [];
-    credentials.push({ providerId, baseUrl, apiKey, models });
+    credentials.push({ providerId, baseUrl, apiKey, headers, models });
   }
   return { providers, credentials };
+}
+
+/** Resolve `{env:NAME}` anywhere inside a value; unresolved references keep the text. */
+function resolveEnvironmentReference(
+  value: string,
+  resolve: (name: string) => string | undefined,
+): string {
+  return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) =>
+    resolve(name) ?? match,
+  );
 }
 
 function resolveApiKeyReference(raw: string, resolve: (name: string) => string | undefined): string {
