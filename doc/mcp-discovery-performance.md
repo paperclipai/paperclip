@@ -164,8 +164,8 @@ and the pending-review-only treatment.
 
 | Service | Baseline CPU | Combined CPU | Baseline elapsed | Combined elapsed |
 | --- | ---: | ---: | ---: | ---: |
-| `listProfiles` | 3,561 ms | 419 ms | 3,382 ms | 251 ms |
-| `listAppsNeedingAttention` | 2,631 ms | 301 ms | 2,568 ms | 190 ms |
+| `listProfiles` | 3,164 ms | 385 ms | 3,045 ms | 215 ms |
+| `listAppsNeedingAttention` | 2,466 ms | 221 ms | 2,378 ms | 159 ms |
 
 Each version made seven queries per service. Profile listing returned 78,114
 database rows; app attention returned 78,101. These counts did not change.
@@ -184,6 +184,7 @@ the repository root in a disposable worktree. The compile step writes local
 contain the baseline and pending-fix commits named above.
 
 ```sh
+git fetch https://github.com/paperclipai/paperclip.git refs/pull/18681/head
 pnpm install --frozen-lockfile
 node server/scripts/profile-tool-projection/compile.mjs
 node --expose-gc --import ./server/scripts/profile-tool-projection/register.mjs server/scripts/profile-tool-projection/benchmark.mjs --output-dir /tmp/paperclip-tool-projection --repeat 5
@@ -204,9 +205,9 @@ builds and benchmarks on the same host.
 A separate process also sent simple HTTP requests every 20 ms while each
 real service operation ran. The local liveness handler shared the service's
 Node event loop. There was at most one outstanding probe request. Across
-three alternating trials, the median largest probe delay fell from 4,261 ms
-to 73 ms during profile listing, and from 2,487 ms to 69 ms during app
-attention. All 55 probe requests completed without error.
+three alternating trials, the median largest probe delay fell from 3,008 ms
+to 78 ms during profile listing, and from 2,103 ms to 64 ms during app
+attention. All 48 probe requests completed without error.
 
 These are synthetic service measurements on a shared developer machine.
 They are not a full application build, a browser test, or hosted acceptance.
