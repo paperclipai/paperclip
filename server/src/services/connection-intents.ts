@@ -1,3 +1,4 @@
+import { isBrowserUseConnection } from "./browser-use-client.js";
 import { connectionManagementService } from "./connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS, chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
@@ -325,7 +326,7 @@ export function connectionIntentService(db: Db) {
     const usable = (connection: ToolConnection | undefined) => connection
       && installedIds.has(connection.id) && permittedIds.has(connection.id)
       && connection.status === "active" && connection.enabled
-      && (["mcp_remote", "local_stdio"].includes(connection.transport) || Boolean(restConnectorFor(connection)))
+      && (["mcp_remote", "local_stdio"].includes(connection.transport) || Boolean(restConnectorFor(connection)) || isBrowserUseConnection(connection))
       && !isToolConnectionAttentionHealth(connection.healthStatus) ? connection : null;
     if (input.serviceSlug === "github") {
       const selection = await resolveManagedGitHubIdentitySelection(db, input.companyId, {
