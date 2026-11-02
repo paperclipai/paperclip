@@ -6,7 +6,7 @@ import { notifyToolConnectionHealth } from "../../tool-connection-health-notific
 import { managedConnectorProfile } from "./client-settings.js";
 import type { ActorInfo } from "../types.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
-import { connectionMethodForConnection } from "../connection-methods.js";
+import { connectionMethodForConnection, projectedConnectionHeaders } from "../connection-methods.js";
 import { loadGitHubGrantMetadata } from "../github-access-discovery.js";
 import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
@@ -14,7 +14,7 @@ import { and, eq, gte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, companyMemberships, principalPermissionGrants, issueThreadInteractions, toolApplications, toolConnections, toolOauthStates } from "@paperclipai/db";
 import type { ConnectionGrantKind, ConnectToolAppResult } from "@paperclipai/shared";
-import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { getConnectableAppDefinition, mergeHeaderRecords, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, unprocessable } from "../../../errors.js";
 import { secretService } from "../../secrets.js";
 import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
@@ -454,7 +454,10 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       enableAllByDefault: false,
       quarantineManagedOAuthDraft: shouldFinalizeManagedDefaults,
       skipDefaultProfileSync: true,
-      credentialHeaders: { Authorization: `Bearer ${credentials.accessToken}` },
+      credentialHeaders: mergeHeaderRecords(
+        projectedConnectionHeaders(connection),
+        { Authorization: `Bearer ${credentials.accessToken}` },
+      ),
     });
     const recommended = recommendedDefaultsForApp(galleryEntry!, method.key);
     const suggestedDefaults = subjectAgentId

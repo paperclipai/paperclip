@@ -73,10 +73,12 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
-    let headers = credentialHeaders ?? mergeHeaderRecords(
-      projectedConnectionHeaders(connection),
-      await resolveCredentialHeaders(connection, actor),
-    );
+    let headers = credentialHeaders
+      ? mergeHeaderRecords(projectedConnectionHeaders(connection), credentialHeaders)
+      : mergeHeaderRecords(
+          projectedConnectionHeaders(connection),
+          await resolveCredentialHeaders(connection, actor),
+        );
     if (connection.config.sourceTemplateKey === "google-workspace" && !workspaceEndpoint) {
       const grant = await vaultGrantForConnection(connection, actor);
       const scopes = googleWorkspaceGrantedScopes(grant);
