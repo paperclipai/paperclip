@@ -154,6 +154,10 @@ guard still applies. The
 checks persisted configuration across both admissions; it does not prove a live
 provider conversation resumed.
 
+For a workspace carrying an older temporary fingerprint, verify that ordinary
+reuse retains the strategy warning. Use the normal fresh recovery flow after
+preserving its work, then repeat the unchanged follow-up check on the new workspace.
+
 For `runs-adapters/session`, complete a task in a disposable warm sandbox and
 retain its saved workspace file. Let the warm session close normally and verify
 that the retained lease has a complete, lease-bound harness backup before

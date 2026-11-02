@@ -170,15 +170,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it.each([
-    { kind: "empty", repoUrl: null, branchMode: null, fresh: false, ephemeral: true },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: null, fresh: false },
-    { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git", branchMode: null, fresh: false },
-    { kind: "git", repoUrl: "git@github.com:example/remote.git", branchMode: null, fresh: false },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "existing", fresh: false },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: false },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: true },
-  ] as const)("reserves a $kind remote workspace ($repoUrl, branch: $branchMode, fresh: $fresh) without materializing a controller checkout", async (scenario) => {
-    const { kind, repoUrl, branchMode, fresh } = scenario;
+    { kind: "empty", repoUrl: null, branchMode: null, fresh: false, strategyChange: false, ephemeral: true },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: null, fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git", branchMode: null, fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "git@github.com:example/remote.git", branchMode: null, fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "existing", fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: false, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: true, strategyChange: false },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: true, strategyChange: true },
+  ] as const)("reserves a $kind remote workspace ($repoUrl, branch: $branchMode, fresh: $fresh, strategy change: $strategyChange) without materializing a controller checkout", async (scenario) => {
+    const { kind, repoUrl, branchMode, fresh, strategyChange } = scenario;
     const { input, source, issue, envOrchestrator } = await fixture();
     const [savedEnvironment] = await db.insert(environments).values({ name: `Remote ${randomUUID()}`,
       driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
@@ -194,7 +195,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (branchMode) {
       input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
       input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
-      input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree", baseRef: "main",
+      input.config.mergedConfig = strategyChange ? { workspaceStrategy: { type: "project_primary" } } : { workspaceStrategy: { type: "git_worktree", baseRef: "main",
         ...(branchMode === "existing" ? { existingBranch: "feature/diverged" } : { branchTemplate: "test-{{issue.identifier}}" }) } };
     }
     if (kind === "git") {
@@ -243,10 +244,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       expect(workspace.mode).toBe(branchMode ? "isolated_workspace" : "shared_workspace");
       expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: { kind }, writerRunId: input.run.id });
       if (branchMode) expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: {
-        ref: "main", branchMode, branchName: branchMode === "existing" ? "feature/diverged" : "test-WSP-1",
+        ref: "main", branchMode,
+        ...(strategyChange ? {} : { branchName: branchMode === "existing" ? "feature/diverged" : "test-WSP-1" }),
       } });
       await expect(access(workspace.cwd!)).rejects.toThrow();
-      if (fresh && branchMode === "create") {
+      if ((fresh || strategyChange) && branchMode === "create") {
+        expect(workspace.strategyType).toBe("git_worktree");
         await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
           .where(eq(heartbeatRuns.id, input.run.id));
         const [saved] = await db.update(executionWorkspaces).set({ metadata: {
@@ -264,9 +267,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
           issueExecutionWorkspaceId: saved.id, issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: "active",
         });
+        if (strategyChange) input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree" } };
         await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached remote acquisition");
         const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, nextRun.id));
-        expect(operations.filter(operation => operation.phase === "workspace_config_freshness")).toEqual([]);
+        const freshness = operations.filter(operation => operation.phase === "workspace_config_freshness");
+        if (strategyChange) {
+          expect(freshness).toHaveLength(1);
+          expect(freshness[0].metadata).toMatchObject({ action: "replace", changedCategories: ["strategy"] });
+        } else expect(freshness).toEqual([]);
         const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, saved.id));
         expect(retained.id).toBe(workspace.id);
         expect(retained.metadata?.configFingerprint).toMatchObject({

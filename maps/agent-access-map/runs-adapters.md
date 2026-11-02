@@ -328,6 +328,10 @@ workspace or credential authority. The
 uses PostgreSQL and controlled runtime acquisition. Live provider resumption
 remains a separate check in the [session recipe](../feature-map/runs-adapters.md#session).
 
+Older strategy fingerprints retain their existing guard until an explicitly
+admitted fresh recovery. A remote Git row alone does not authorize rewriting its
+configuration history or bypassing a real policy change.
+
 Scoped source evidence: restart preparation transfers its lease renewal to the
 native executor after the executor acquires its own reference. Completion stops
 renewal before coordinator release, while real ownership loss retains the detach
