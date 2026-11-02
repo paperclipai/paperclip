@@ -1,7 +1,8 @@
 import { createObservedReader } from "./observation-read.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { withBrowserEvent } from "../user-actions.js";
 import { validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { scheduledInvocationMatches, schedulePauseMatches, schedulePauseObservationMs, type ScheduledInvocation, type ScheduledTask } from "./routine-schedule-evidence.js";
@@ -17,6 +18,15 @@ export async function routineUiStep<T>(step: RoutineUiStep, action: () => Promis
     // Browser failures can contain form values and URLs. Retain only this closed step code.
     throw new JourneyError("failed", `routine_${step}_failed`);
   }
+}
+export async function enableRoutineScheduleTrigger(page: Pick<Page, "getByRole" | "waitForResponse">, triggerRoute: string) {
+  const schedule = page.getByRole("region", { name: "Schedule trigger", exact: true });
+  // The enable/pause controls are children of the collapsed schedule editor.
+  await schedule.getByRole("button", { name: "Edit schedule", exact: true }).click();
+  return withBrowserEvent(
+    () => page.waitForResponse(response => response.request().method() === "PATCH"
+      && new URL(response.url()).pathname === triggerRoute),
+    () => schedule.getByRole("button", { name: "Enable trigger", exact: true }).click());
 }
 export async function runScheduledRoutine(context: JourneyContext, session: TargetSession, campaignId: string,
   evidence: JourneyEvidence, options: { deadlineAt: number; directory: string }) {
@@ -58,12 +68,10 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     });
     await routineUiStep("fill_instructions", () => dialog.locator('[contenteditable="true"]').fill(prompt));
     await session.own({ kind: "routine", name: title, journeyId });
-    const responsePromise = page.waitForResponse(response => response.request().method() === "POST"
-      && new URL(response.url()).pathname === `/api/companies/${company.id}/routines`);
-    const response = await routineUiStep("submit", async () => {
-      await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
-      return await responsePromise;
-    });
+    const response = await routineUiStep("submit", () => withBrowserEvent(
+      () => page.waitForResponse(response => response.request().method() === "POST"
+        && new URL(response.url()).pathname === `/api/companies/${company.id}/routines`),
+      () => dialog.getByRole("button", { name: "Create routine", exact: true }).click()));
     if (response.status() !== 201) throw new JourneyError("failed", "routine_ui_creation_failed");
     const routine = await response.json();
     if (typeof routine.id !== "string") throw new JourneyError("failed", "routine_creation_receipt_missing");
@@ -96,10 +104,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     try {
       const enabledResponse = await routineUiStep("enable_trigger", async () => {
         await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/triggers`, { waitUntil: "domcontentloaded" });
-        const enabling = page.waitForResponse(response => response.request().method() === "PATCH"
-          && new URL(response.url()).pathname === triggerRoute);
-        await page.getByRole("button", { name: "Enable trigger", exact: true }).click();
-        return await enabling;
+        return enableRoutineScheduleTrigger(page, triggerRoute);
       });
       if (enabledResponse.status() !== 200) throw new JourneyError("failed", "routine_schedule_enable_failed");
       const enabledTrigger = await enabledResponse.json();
