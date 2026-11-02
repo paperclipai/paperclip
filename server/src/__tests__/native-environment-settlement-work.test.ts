@@ -16,7 +16,7 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import { heartbeatService } from "../services/heartbeat.js";
 import { environmentRuntimeService, type EnvironmentDriver } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
-import { nativeEnvironmentSettlementWork } from "../services/native-runtime/native-environment-settlement-work.js";
+import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../services/native-runtime/native-environment-settlement-work.js";
 import { notifyNativeEnvironmentSettlement } from "../services/native-environment-settlement-notifications.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
@@ -30,6 +30,23 @@ vi.mock("../services/agent-task-run-telemetry.js", () => ({ emitAgentTaskRun: vi
 vi.mock("../services/run-failure-report.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/run-failure-report.js")>(), reportRunFailure: vi.fn(async () => undefined),
 }));
+
+describe("saved native resource policy", () => {
+  it.each([
+    ["keep_running", true, false, "keep_running"],
+    ["stop_and_retain", true, false, "stop_and_retain"],
+    ["destroy", true, false, "destroy"],
+    ["keep_running", false, false, "stop_and_retain"],
+    ["destroy", false, false, "stop_and_retain"],
+    ["keep_running", true, true, "stop_and_retain"],
+    ["destroy", true, true, "destroy"],
+    ["invalid", true, false, "stop_and_retain"],
+    [null, true, false, "stop_and_retain"],
+  ] as const)("settles %s with committed=%s and pending export=%s as %s", (saved, succeeded, pending, expected) => {
+    expect(nativeEnvironmentSettlementDisposition({ runnerProfileJson: { nativeResourceDisposition: saved },
+      resultJson: pending ? { workspaceExportRetry: { pending: true } } : null }, succeeded)).toBe(expected);
+  });
+});
 
 describe("native environment release scheduling", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -356,9 +373,9 @@ describe("native environment release scheduling", () => {
       } finally { await settings.updateExperimental({ enableWorktreeRunExecution: false }); }
     }
   });
-  it("preserves keep-running retention instead of turning a completed native run into destruction", async () => {
+  it.each(["workspace", "runtime"])("preserves %s keep-running retention without stopping the completed Runner", async source => {
     const binding = await committed();
-    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+    await db.update(heartbeatRuns).set({ runnerProfileJson: source === "runtime" ? { nativeResourceDisposition: "keep_running" } : { nativeWorkspaceSync: {
       schema: "paperclip.native-workspace-sync/v3", state: "finalized", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
       finalHostSha256: "c".repeat(64), workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: "kept", remoteCwd: "/workspace",
       resourceDisposition: "keep_running",
@@ -367,6 +384,18 @@ describe("native environment release scheduling", () => {
       issueId: binding.issueId, leasePolicy: "reuse_by_environment", provider: "local", providerLeaseId: "kept" });
     await start(); await flush(); expect(release).not.toHaveBeenCalled();
     expect((await environmentService(db).getLeaseById(acquired.id))?.status).toBe("retained"); await quiet();
+  });
+  it.each(["failed", "cancelled"] as const)("stops a %s run despite its selected warm policy", async status => {
+    const binding = await committed();
+    await db.update(heartbeatRuns).set({ status, runnerProfileJson: { nativeResourceDisposition: "keep_running" } })
+      .where(eq(heartbeatRuns.id, binding.runId));
+    const acquired = await environmentService(db).acquireLease({ companyId, environmentId, heartbeatRunId: binding.runId,
+      issueId: binding.issueId, leasePolicy: "reuse_by_environment", provider: "local", providerLeaseId: randomUUID() });
+    await start(); await flush();
+    expect(release).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ resourceDisposition: "stop_and_retain" }));
+    expect((await environmentService(db).getLeaseById(acquired.id))?.status).toBe("released");
+    expect((await read(binding.runId)).status).toBe(status);
+    await quiet();
   });
   it.each([true, false])("delegates only periodic environment settlement, keeping manual behavior and other callbacks: %s", async delegated => {
     const binding = await committed(), acquired = await lease(binding);

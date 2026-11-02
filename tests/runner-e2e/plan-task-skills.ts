@@ -21,7 +21,7 @@ export async function preparePlanSkills(api: SkillApi, companyId: string, varian
     const created = await api.post<{ id: string; key: string; sourceType: string }>(`${company}/skills`, {
       name, slug: `eval-${name}`, markdown: content, sharingScope: "company",
     });
-    if (created.sourceType !== "local_path") throw new Error("Planning fixture did not create an editable company skill");
+    if (created.sourceType !== "managed") throw new Error("Planning fixture did not create an editable company skill");
     const served = await api.get<{ content: string; editable: boolean }>(`${company}/skills/${created.id}/files?path=SKILL.md`);
     if (!served.editable || planHash(served.content) !== planHash(content)) throw new Error(`Served skill differs from editable source ${relative}`);
     skills.push({ originalKey: skill.key, key: created.key, id: created.id, sourcePath: relative,

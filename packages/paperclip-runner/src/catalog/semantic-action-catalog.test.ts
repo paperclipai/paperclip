@@ -127,8 +127,9 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(49);
+    expect(operationIds).toHaveLength(50);
     expect(operationIds).toContain("set_task_monitor");
+    expect(operationIds).toContain("send_chat_message");
     expect(new Set(operationIds).size).toBe(operationIds.length);
     expect(operationIds).not.toContain("generic_api_request");
     expect(Object.isFrozen(PAPERCLIP_SEMANTIC_ACTION_CATALOG)).toBe(true);

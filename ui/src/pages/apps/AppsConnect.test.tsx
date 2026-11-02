@@ -24,6 +24,7 @@ vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: {
 } }));
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
+const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const getConnectionMock = vi.hoisted(() => vi.fn());
 const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
@@ -82,6 +83,7 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
+    listConnectionGrants: (connectionId: string) => listConnectionGrantsMock(connectionId),
     getConnection: (id: string) => getConnectionMock(id),
     getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
@@ -2892,6 +2894,34 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=resumed",
     );
+  });
+
+  it("keeps Gmail read-only selected when Finish setup resumes a declined Workspace draft", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    const workspace = getAppStoreDefinition("google-workspace")!;
+    mockSearch.value = `source=google-workspace&resume=${connectionId}&oauth=denied`;
+    listGalleryMock.mockResolvedValue({ apps: [{ ...workspace, ownershipAvailability: { ...workspace.ownershipAvailability, platform_shared: true } }] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-workspace", companyId: "company-1", status: "draft", metadata: { sourceTemplateKey: "google-workspace" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      ...notionConnection(connectionId, "per_user", "draft"), companyId: "company-1", applicationId: "app-workspace",
+      config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "paperclip-workspace", workspaceSetup: {
+        version: 1, companyId: "company-1", connectionId, actorType: "user", actorId: "me", grantKind: "user", subjectId: "me",
+        requestedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      } },
+    }] });
+    listConnectionGrantsMock.mockResolvedValue({ currentUserId: "me", grants: [] });
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Try again"));
+    await act(async () => buttonByText("Try again")!.click());
+    await flushReact();
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"] select')).not.toBeNull());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect([...dialog.querySelectorAll('[role="switch"]')].map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    expect(dialog.querySelector("select")?.value).toBe("read");
+    await act(async () => buttonByText("Continue")!.click());
+    await flushReact();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true, workspaceServices: { gmail: "read" } });
   });
 
   it("resumes a hidden provider draft only after matching its company-visible application", async () => {

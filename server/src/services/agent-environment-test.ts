@@ -533,6 +533,14 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
     const startedAt = new Date();
+    if (adapterType === "paperclip_runner" && binding.provider === "google" && context.config.provider === "acpx"
+      && context.config.acpxAgent === "antigravity" && managed.home) {
+      const selectedHome = join(managed.home, "provider");
+      if (context.managedAiCredentialHome && context.managedAiCredentialHome !== selectedHome) {
+        throw unprocessable("The Google runtime credential home does not match the selected managed account.");
+      }
+      context = { ...context, managedAiCredentialHome: selectedHome };
+    }
     const target = context.executionTarget;
     if (managed.credentialWriteback && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId) {
       await registerPluginTaskCredentialHandoff(db, { companyId: context.companyId, leaseId: target.leaseId }, managed.sessionIdentity, managed.credentialWriteback);
@@ -552,7 +560,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     return result;
   }
 
-  async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) {
+  async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>): Promise<AdapterEnvironmentTestResult> {
     if (binding.provider === "github") {
       try {
         const token = parseObject(context.config.env).COPILOT_GITHUB_TOKEN;
@@ -572,6 +580,13 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
           home: managed.home ? join(managed.home, "provider") : undefined })
       : await requireServerAdapter(adapterType).testEnvironment(context);
     if (result.status === "fail") return result;
+    // Antigravity's native admission checks the selected managed account and
+    // exact model without a billable turn. Do not invoke another Google CLI.
+    if (adapterType === "paperclip_runner" && context.config.provider === "acpx" && context.config.acpxAgent === "antigravity") {
+      if (result.status === "pass" && result.checks.some(check => check.code === "antigravity_metadata_verified" && check.level === "info")) return result;
+      return { ...result, status: "fail", checks: [...result.checks, { code: "ai_connection_validation_incomplete", level: "error",
+        message: "The selected Google account has not completed native account and model verification. Retry before adopting it." }] };
+    }
     // The resolved method, not binding.method — on a responsible_user binding
     // that field is wire-compat only and the default connection decides.
     if (adapterType === "paperclip_runner" && context.executionTarget?.kind === "remote"

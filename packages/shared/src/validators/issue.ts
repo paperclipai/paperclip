@@ -309,6 +309,7 @@ export const issueAssigneeAdapterOverridesSchema = z
     adapterConfig: z.record(z.string(), z.unknown())
       .refine(config => !Object.prototype.hasOwnProperty.call(config, "homeMode"), "homeMode must be set by an operator on the agent, not on a task")
       .refine(config => !config.env || typeof config.env !== "object" || !Object.keys(config.env).some(key => key.toUpperCase() === "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"), "Prepared harness homes must be provisioned by the execution environment, not on a task")
+      .refine(config => !config.env || typeof config.env !== "object" || !Object.keys(config.env).some(key => ["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"].includes(key.toUpperCase())), "Managed shell helpers must be provisioned by the execution environment, not on a task")
       .optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -1100,6 +1101,12 @@ export const issueCommentMetadataSectionSchema = z
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
+    chatMessage: z.object({
+      sourceTaskId: z.uuid(),
+      sourceTaskIdentifier: z.string().min(1).max(80),
+      sourceRunId: z.uuid(),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict().optional(),
     recoveryResponsibility: z.enum(["system", "user"]).optional(),
     sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
     sourceRunId: z.string().guid().nullable().optional(),
@@ -1123,6 +1130,13 @@ export const issueCommentMetadataSchema = z
   .strict();
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
+
+export const sendChatMessageSchema = z.object({
+  body: multilineTextSchema.pipe(z.string().trim().min(1).max(20000)),
+  idempotencyKey: z.string().trim().min(1).max(240),
+}).strict();
+
+export const markIssueReadSchema = z.object({ throughCommentId: z.uuid().optional() }).strict();
 
 export const addIssueCommentSchema = z.object({
   clientRequestId: z.string().uuid().optional(),

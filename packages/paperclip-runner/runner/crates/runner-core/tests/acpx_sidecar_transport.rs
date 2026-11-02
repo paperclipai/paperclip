@@ -393,6 +393,78 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
 }
 
 #[test]
+fn antigravity_candidate_forwards_only_selected_credentials_and_binding() {
+    const CHILD: &str = "PAPERCLIP_TEST_ANTIGRAVITY_ENV_CHILD";
+    let selected = match std::env::var(CHILD) {
+        Ok(selected) => selected,
+        Err(_) => {
+            for selected in [
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "antigravity_candidate_forwards_only_selected_credentials_and_binding",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                    .env(CHILD, selected)
+                    .env(selected, "fixture-selected-credential")
+                    .env(
+                        "PAPERCLIP_ACPX_CREDENTIAL_BINDING",
+                        "fixture-controller-binding",
+                    )
+                    .envs(
+                        [
+                            "ANTHROPIC_API_KEY",
+                            "OPENAI_API_KEY",
+                            "COPILOT_GITHUB_TOKEN",
+                            "UNRELATED_EVAL_SECRET",
+                            "GEMINI_HOME",
+                            "GOOGLE_APPLICATION_CREDENTIALS",
+                            "GOOGLE_API_KEY",
+                            "GOOGLE_CLOUD_PROJECT",
+                            "AGY_ACP_FORCE_FILE_STORAGE",
+                            "PYTHONPATH",
+                            "PYTHONHOME",
+                        ]
+                        .into_iter()
+                        .map(|key| (key, "fixture-ambient-must-not-cross")),
+                    )
+                    .status()
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "isolated Antigravity environment test failed"
+                );
+            }
+            return;
+        }
+    };
+    let mut sidecar = AcpxSidecarTransport::start_for_agent(
+        &AcpxSidecarTransportConfig {
+            command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+            args: vec!["--mode".into(), "mcp-environment".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(2),
+            shutdown_grace: Duration::from_millis(50),
+        },
+        "antigravity",
+    )
+    .unwrap();
+    let response = sidecar
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .unwrap();
+    assert_eq!(response["credentialKeys"], json!([selected]));
+    assert_eq!(response["credentialBinding"], "fixture-controller-binding");
+    assert_eq!(response["hasUnrelatedSecret"], false);
+    assert_eq!(response["ambientAntigravityKeys"], json!([]));
+    sidecar.shutdown().unwrap();
+}
+
+#[test]
 fn pi_ordinary_request_timeout_still_retires_the_sidecar() {
     let mut sidecar = AcpxSidecarTransport::start_for_agent(
         &AcpxSidecarTransportConfig {

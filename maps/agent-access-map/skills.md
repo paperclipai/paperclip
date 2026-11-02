@@ -13,6 +13,31 @@ Each capability needs operation-level review before its entire scope can be
 qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
 for format, permission checks, evidence and maintenance.
 
+Cold Git package recovery rechecks the original source's current setup identity,
+company membership, policy and repository grant. It never borrows another company's
+credentials or substitutes a moving branch for the saved commit. A missing/revoked
+source fails with a reconnect error and persisted retry backoff. Warm access still
+uses the ordinary skill/project permission check.
+
+External package storage changes persistence, not agent authority. Runtime selection
+still checks current company/project access before consulting immutable package caches;
+no storage key is exposed as an agent capability. Public selected rows are constrained
+to `access_source_id IS NULL` at their final read. Warm package and native asset caches
+hold file metadata, never authorization decisions. The
+[concurrency regression](../../server/src/__tests__/company-skills-runtime-concurrency.test.ts)
+covers separate actors and revoked project access; the
+[package regression](../../server/src/__tests__/skill-package-store.test.ts) covers
+company isolation and warm-cache behavior. This does not claim live agent qualification.
+
+Managed ownership remains in the existing `workspace` policy category. Immutable
+content references do not grant authority: publication rechecks policy and source
+access, and delivery/recovery rechecks the company's skill visibility. File reads
+and mutations return `versionId`; content requests may supply `expectedVersionId`
+and receive `409` on a stale base. Existing idempotent agent receipt shapes remain.
+Detached assignments do not release active/recovering execution pins. These are
+source-reviewed contracts; the independent-process board fixture is not agent
+credential or hosted Runner qualification.
+
 ## `discovery`
 
 Capability ID: `skills/discovery`.
@@ -74,6 +99,12 @@ Gaps: Writable/fork policy and expected version apply. Native helpers intentiona
 support a narrower shape than full API.
 
 ## `versions`
+
+Version lists and current/test-run version summaries contain file names and kinds.
+Use `GET /api/companies/{companyId}/skills/{skillId}/versions/{versionId}` for the
+selected version's file contents. Authorization remains company/skill scoped; support
+inspection reads only stored bytes for the requested version and does not recover Git.
+
 
 Capability ID: `skills/versions`.
 
@@ -187,6 +218,20 @@ remaining operations before qualifying the whole capability.
 Gaps: No dedicated native orchestration binding; generic REST calls retain
 skills.test policy, task-assignment authorization, responsible-user intersection and
 admitted skill-test JWT scope.
+
+Studio's `skill_test` work mode is admitted through native Runner selection and
+preserved in execution input. The admitted task-bound scope restricts REST and
+native authorization, including after task-mode edits and recovery. Native tools
+allow only the harness task and admitted skills. Task creation, company browsing,
+connectors and assigned MCP tools are unavailable; native mutation receipts recheck
+the scope before replay or effects.
+Preparation reads the pinned version from the durable test row, replaces ordinary
+assignments, and enforces current skill access. Required environment skills retain
+their owner policy; a shadowed test pin fails explicitly. Recovery preserves the
+admitted selection. Preconfigured Runner homes reject managed Studio delivery.
+The [execution configuration regression](../../server/src/__tests__/heartbeat-execution-configuration.test.ts)
+covers unassigned historical pins, Beta skills disabled, revoked access, recovery,
+unchanged agent assignments, and assembled heartbeat dispatch.
 
 Project-source API additions: GET `/api/companies/{companyId}/skill-sources/project-repositories`,
 POST `/api/companies/{companyId}/skill-sources/adopt-project` with `workspaceId`, and

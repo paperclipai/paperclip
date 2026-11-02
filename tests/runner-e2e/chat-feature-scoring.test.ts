@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { gradeChatFeature, type ChatFeatureObservation } from "./chat-feature-scoring.js";
+import { chatFeatureExecutionRuns, gradeChatFeature, type ChatFeatureObservation } from "./chat-feature-scoring.js";
 import { chatFeatureScenarios, readChatFeatureScenarios } from "./chat-feature-cases.js";
-import { runnerMatrix } from "./catalog.js";
+import { runnerMatrix, runnerProfiles } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 
 const announcement = "Welcome to Acorn Notes, launching November 12! Join us with invitation code ACORN123.";
@@ -32,10 +32,41 @@ function outcome(delegated = false): ChatFeatureObservation {
   return input;
 }
 const failures = (input: ChatFeatureObservation) => gradeChatFeature(input).checks.filter(check => !check.passed).map(check => check.id);
+function withSupersededWake(input = outcome(true)) {
+  input.runs.push({ id: "old-assignment", companyId: "company", agentId: "ceo", status: "cancelled", runtimeMode: "legacy",
+    startedAt: null, errorCode: "issue_assignee_changed", contextSnapshot: { issueId: "task" },
+    resultJson: { stopReason: "issue_assignee_changed", timeoutSource: "stale_queued_run_gate", timeoutFired: false } });
+  return input;
+}
 
 describe("chat feature saved-state oracle", () => {
   it.each([false, true])("accepts a complete %s delegation outcome", delegated => {
     expect(failures(outcome(delegated))).toEqual([]);
+  });
+  it("accepts a completed delegation after an obsolete assignment wake was cancelled before execution", () => {
+    const input = withSupersededWake();
+    expect(failures(input)).toEqual([]);
+    expect(chatFeatureExecutionRuns(input).map(run => run.id)).toEqual(["handoff", "writing", "delivery"]);
+    expect(input.runs).toHaveLength(4);
+  });
+  it("keeps an unfinished delegation failed after a harmless queued cancellation", () => {
+    const input = withSupersededWake();
+    input.runs.splice(1, 2);
+    input.tasks[0]!.status = "todo";
+    input.documents = [];
+    input.comments.pop();
+    expect(chatFeatureExecutionRuns(input).map(run => run.id)).toEqual(["handoff"]);
+    expect(failures(input)).toEqual(expect.arrayContaining(["worker-executed", "grounded-worker-document", "completion-source-response"]));
+  });
+  it.each([
+    { startedAt: "2026-10-26T10:00:15Z" }, { startedAt: undefined }, { errorCode: "cancelled" },
+    { companyId: "foreign" }, { agentId: "unrelated" }, { contextSnapshot: { issueId: "other-task" } },
+    { contextSnapshot: { issueId: "chat" } }, { resultJson: {} }, { nativeIssueId: "task" },
+  ])("rejects cancelled work without proof of an obsolete unstarted handoff: %j", patch => {
+    const input = withSupersededWake();
+    Object.assign(input.runs.at(-1)!, patch);
+    expect(chatFeatureExecutionRuns(input)).toHaveLength(4);
+    expect(failures(input)).toContain("bounded-native-work");
   });
   it.each([
     ["duplicate task", (o: ChatFeatureObservation) => o.tasks.push({ ...o.tasks[0]!, id: "duplicate" }), "one-assigned-task"],
@@ -76,17 +107,47 @@ describe("chat feature saved-state oracle", () => {
 });
 
 describe("chat feature selection", () => {
-  it("registers only the two authored queries as explicit local subscription cells", () => {
-    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features");
-    expect(cells).toHaveLength(2);
+  it("preserves the four authored subscription and production OpenCode cells", () => {
+    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id !== "runner-opencode-deepseek-1017");
+    expect(cells).toHaveLength(4);
+    const stock = runnerProfiles.find(profile => profile.id === "runner-opencode")!;
+    expect(cells.filter(cell => cell.profile.id === stock.id).map(cell => cell.profile.model)).toEqual([stock.model, stock.model]);
+    for (const cell of cells.filter(cell => cell.profile.id === stock.id)) {
+      const payload = cell.profile.buildAgent({ environmentId: "env", environmentFixtureId: "local", workspacePath: "/tmp/fixture", executionId: cell.id, secretRefs: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: "fixture-openrouter", version: "latest" } } });
+      expect(payload.adapterConfig).toMatchObject({ model: stock.model, modelReasoningEffort: "low", timeoutSec: 120 });
+    }
     for (const cell of cells) {
       expect(cell.environment.id).toBe("local");
-      expect(cell.requiredCredentials).toEqual(["CODEX_AUTH_JSON"]);
+      expect(cell.requiredCredentials).toEqual([cell.profile.id === "runner-opencode" ? "OPENROUTER_API_KEY" : "CODEX_AUTH_JSON"]);
       expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
       expect(cell.task.buildPrompt("nonce")).toBe(chatFeatureScenarios.find(row => row.id === `tasks.${cell.task.id}`)!.query);
       expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(row => row.id)).toEqual([cell.id]);
       expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.id === cell.id)).toBe(false);
     }
+  });
+  it("selects one bounded OpenCode backlog cell with the requested model and secret reference", () => {
+    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id === "runner-opencode-deepseek-1017");
+    expect(cells.map(cell => cell.id)).toEqual(["chat-features.runner-opencode-deepseek-1017.local.create-backlog"]);
+    const cell = cells[0]!;
+    expect(cell.profile).toMatchObject({ provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", expectedRuntimeMode: "native" });
+    expect(cell.profile.modelQualification.source).toBe("candidate_runner_profile");
+    expect(cell.requiredCredentials).toEqual(["OPENROUTER_API_KEY"]);
+    expect(cell.task).toMatchObject({ expectedRunCount: 1, turnTimeoutMs: 120_000,
+      attemptTimeoutMs: { local: 420_000 }, automaticRetryPolicy: "single_attempt" });
+    expect(cell.task.buildPrompt("nonce")).toBe(chatFeatureScenarios[0]!.query);
+    const secret = { type: "secret_ref", secretId: "fixture-openrouter", version: "latest" } as const;
+    const input = { environmentId: "env", environmentFixtureId: "local", workspacePath: "/tmp/fixture", executionId: "backlog" } as const;
+    const agent = cell.profile.buildAgent({ ...input, secretRefs: { OPENROUTER_API_KEY: secret } });
+    expect(agent).toMatchObject({ role: "ceo", adapterType: "paperclip_runner", budgetMonthlyCents: 500,
+      adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", timeoutSec: 120,
+        env: { OPENROUTER_API_KEY: secret } },
+      runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 3, maxDailyCostCents: 500 } } });
+    expect(agent).not.toHaveProperty("instructionsBundle");
+    expect(agent.adapterConfig).not.toHaveProperty("modelReasoningEffort");
+    expect(agent.adapterConfig).not.toHaveProperty("codexPermissionMode");
+    expect(() => cell.profile.buildAgent({ ...input, secretRefs: {} })).toThrow("Missing fixture secret reference OPENROUTER_API_KEY");
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(row => row.id)).toEqual([cell.id]);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.id === cell.id)).toBe(false);
   });
   it("refuses missing, malformed or duplicate catalog entries", () => {
     for (const yaml of ["{", "schema_version: 2", "schema_version: 1\nfeature: tasks\nstatus: planned\nscenarios: []"])

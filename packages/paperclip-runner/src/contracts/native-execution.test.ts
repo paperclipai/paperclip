@@ -1,5 +1,4 @@
 import { nativeTaskConstraints } from "../backends/runtime-context.js";
-import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
@@ -435,11 +434,14 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("does not match");
   });
 
-  it.each([17, 43, 44] as const)("decodes saved Copilot v%s input after the current source declaration advances", (version) => {
-    const historical = JSON.parse(readFileSync(new URL(`../../test/fixtures/copilot-profile-v${version}-identity.json`, import.meta.url), "utf8"));
+  // Old saved inputs decode with their own digest; admission refuses them later.
+  it.each([
+    [17, `sha256:${"1".repeat(64)}`],
+    [91, "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9"],
+  ] as const)("decodes saved Copilot v%s input after the current profile advances", (version, commandDigest) => {
     const { permissionPolicy, qualificationStatus: _status, ...currentProfile } = QUALIFIED_ACPX_PROFILES.copilot;
     const provider = { kind: "acpx", agent: "copilot", model: "explicit-provider-model", permissionPolicy,
-      profile: { ...currentProfile, agentProfileVersion: version, commandDigest: historical.commandDigest } };
+      profile: { ...currentProfile, agentProfileVersion: version, commandDigest } };
     const parsed = parseNativeExecutionInput({ ...input, session: { ...input.session, driverKind: "acpx_runtime" }, provider });
     expect(parsed.provider).toEqual(provider);
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
@@ -565,34 +567,34 @@ describe("NativeExecutionInputV2 planning", () => {
   });
 });
 
-describe("NativeExecutionInputV2 ask mode", () => {
-  it("round-trips ask mode as a default execution without planning context", () => {
+describe.each(["ask", "skill_test"])("NativeExecutionInputV2 %s mode", (workMode) => {
+  it("round-trips the restricted mode as a default execution without planning context", () => {
     const parsed = parseNativeExecutionInput({
       ...input,
       schema: "paperclip.native-execution-input.v2",
       executionMode: "default",
-      task: { ...input.task, workMode: "ask" },
+      task: { ...input.task, workMode },
       planningContext: null,
     });
     expect(parsed).toMatchObject({
       schema: "paperclip.native-execution-input.v2",
       executionMode: "default",
-      task: { workMode: "ask" },
+      task: { workMode },
     });
     expect(buildNativeModelEnvelope(parsed)).toMatchObject({
       schema: "paperclip.native-model-envelope.v2",
-      task: { workMode: "ask" },
+      task: { workMode },
       executionMode: "default",
       planningContext: null,
     });
   });
 
-  it("rejects plan execution for ask mode", () => {
+  it("rejects plan execution for the restricted mode", () => {
     expect(() => parseNativeExecutionInput({
       ...input,
       schema: "paperclip.native-execution-input.v2",
       executionMode: "plan",
-      task: { ...input.task, workMode: "ask" },
+      task: { ...input.task, workMode },
       planningContext: {
         documentId: null,
         baseRevisionId: null,

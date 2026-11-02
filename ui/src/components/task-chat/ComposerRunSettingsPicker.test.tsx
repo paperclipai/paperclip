@@ -276,9 +276,9 @@ describe("composer assignee picker", () => {
     expect(choices.some((item) => item.includes("GPT-6 Sol"))).toBe(false);
   });
 
-  it("keeps Copilot discovery passive during reconnect reconciliation and refreshes on opening", async () => {
+  it.each(["copilot", "antigravity"])("keeps %s discovery passive during reconnect reconciliation and refreshes on opening", async acpxAgent => {
     const copilot = { ...agent, adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
-      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" } } as Agent;
+      adapterConfig: { provider: "acpx", acpxAgent, model: "gpt-5.6-luna" } } as Agent;
     const loadModels = vi.spyOn(agentsApi, "adapterModels")
       .mockResolvedValueOnce([{ id: "gpt-5.6-luna", label: "Copilot Luna" }])
       .mockResolvedValue([{ id: "gpt-5.6-luna", label: "Updated Copilot Luna" }]);
@@ -301,25 +301,40 @@ describe("composer assignee picker", () => {
     expect(document.body.textContent).toContain("Updated Copilot Luna");
   });
 
-  it("discovers Copilot task models with the assignee connection and environment", async () => {
-    const binding = { provider: "github", method: "api_key", mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" } as const;
-    const copilot = { ...agent, adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
-      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
-      runtimeConfig: { aiConnection: binding } } as Agent;
-    const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValueOnce([
-      { id: "gpt-5.6-luna", label: "Copilot Luna" },
-    ]);
-    render(vi.fn(), vi.fn(), true, { agents: new Map([[agent.id, copilot]]), settings: null });
+  it.each([
+    { name: "Copilot", acpxAgent: "copilot", provider: "github", method: "api_key", model: "gpt-5.6-luna", label: "Copilot Luna" },
+    { name: "Antigravity", acpxAgent: "antigravity", provider: "google", method: "subscription", model: "gemini-exact", label: "Personal Gemini" },
+  ] as const)("discovers $name task models with the assignee connection and environment", async ({ acpxAgent, provider, method, model, label }) => {
+    const binding = { provider, method, mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" } as const;
+    const selectedAgent = { ...agent, adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
+      adapterConfig: { provider: "acpx", acpxAgent, model }, runtimeConfig: { aiConnection: binding } } as Agent;
+    const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValueOnce([{ id: model, label }]);
+    render(vi.fn(), vi.fn(), true, { agents: new Map([[agent.id, selectedAgent]]), settings: null });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(loadModels).not.toHaveBeenCalled();
     await click("Select model and effort");
     expect(loadModels).toHaveBeenCalledWith("company-1", "paperclip_runner", {
       environmentId: "daytona-1", provider: "acpx", poolId: undefined,
-      acpxAgent: "copilot", agentId: agent.id, aiConnection: binding,
+      acpxAgent, agentId: agent.id, aiConnection: binding,
     });
     await click("Choose exact model");
-    expect(document.body.textContent).toContain("Copilot Luna");
+    expect(document.body.textContent).toContain(label);
     expect(document.body.textContent).not.toContain("Claude Sonnet");
+  });
+
+  it.each(["subscription", "api_key"] as const)("allows an exact Antigravity model absent from its %s catalog", async method => {
+    const selectedAgent = { ...agent, adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-default" },
+      runtimeConfig: { aiConnection: { provider: "google", method, mode: "responsible_user" } } } as Agent;
+    vi.spyOn(agentsApi, "adapterModels").mockResolvedValue([{ id: "gemini-listed", label: "Listed native model" }]);
+    const onSettingsChange = vi.fn();
+    render(vi.fn(), onSettingsChange, true, { agents: new Map([[agent.id, selectedAgent]]), settings: null,
+      initialOpen: true, initialView: "models", initialModelSearch: "gemini-custom-exact" });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    const manual = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Use exact ID"));
+    expect(manual?.disabled).toBe(false);
+    await act(async () => manual!.click());
+    expect(onSettingsChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "gemini-custom-exact" }));
   });
 
   it("preserves settings when the selected assignee is chosen again", async () => {

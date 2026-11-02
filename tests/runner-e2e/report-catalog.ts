@@ -29,6 +29,9 @@ export function parseReportExecutionId(id: string) {
     throw new Error("Report execution identity must be a string");
   const journey = /^(product-journeys)\.([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*)$/.exec(id);
   if (journey && id.length <= 512) return { suiteId: journey[1]!, targetId: journey[2]!, profileId: journey[3]!, environmentId: journey[4]! as "local" | "daytona", caseId: journey[5]! };
+  // Only the chat catalog has a two-part area.case task identity.
+  const chat = /^(chat-features)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*\.[a-z0-9][a-z0-9_-]*)$/.exec(id);
+  if (chat && id.length <= 512) return { suiteId: chat[1]!, profileId: chat[2]!, environmentId: chat[3]! as "local" | "daytona", caseId: chat[4]!, targetId: undefined };
   const match =
     /^([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*)$/.exec(
       id,

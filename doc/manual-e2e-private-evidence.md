@@ -10,18 +10,18 @@ route never uploads raw cell evidence or a merged report to Actions, S3 public
 history, or Pages. This stays true on setup failure, launcher failure and report
 failure. Previously staged files do not enable a public fallback.
 
-## Supported first selections
+## Supported selections
 
-The first supported selection is an exact subset of these execution IDs:
-
-- `chat-features.runner-opencode.local.activity.agent-feedback`
-- `chat-features.runner-opencode.local.activity.work-timeline`
-- `chat-features.runner-opencode.local.companies.import-preview`
-- `chat-features.runner-opencode.local.navigation-preferences.dismiss-announcement`
-- `chat-features.runner-opencode.local.tasks.completion-with-gate`
-- `chat-features.runner-opencode.local.tasks.private-task`
-- `chat-features.runner-opencode.local.secrets.personal-secret`
-- `chat-features.runner-opencode.local.agents.choose-primary`
+An approved original run selects at most **eight** distinct execution IDs from
+one fixed registry of the frozen 244 chat scenarios. All use profile
+`runner-opencode` and environment `local`. The 242 catalog tasks retain their
+exact `area.case` IDs. The two standalone scenarios retain their existing task
+IDs: `tasks.create-backlog` maps to
+`chat-features.runner-opencode.local.create-backlog`, and
+`tasks.delegate-announcement` maps to
+`chat-features.runner-opencode.local.delegate-announcement`. The dotted task
+aliases are not registered. The exact registry is in
+`tests/runner-e2e/manual-private-retention.ts`.
 
 These IDs require the reviewed AWS Fleet route. Broad chat suites, mixed
 unsupported IDs, reruns and missing approvals fail closed. All chat-feature IDs
@@ -30,9 +30,25 @@ Other manual selections keep the existing Actions route only after a trusted
 per-cell check confirms that the actual selected execution is not restricted.
 Selector whitespace and exclusivity follow the catalog producer.
 
-A case that needs invitation-capability handling or other new producer support
-is not supported merely because restricted storage exists. It needs its own
-reviewed source, evidence contract and exact operation approval.
+The registry size does not increase the per-run limit or the eight fixed report
+read slots. Classification, cell binding, every approval row and session policy
+reject a private selection larger than eight before actionable outputs or archive
+credentials. Generic nonprivate catalog selection retains its existing semantics.
+
+A registered ID is not a claim of feature readiness or permission to run it.
+Each target still needs the exact reviewed producer contracts, matching helper
+bytes, declared private inputs, fresh source fingerprints, an available original
+attempt and exact operation approval. Earlier accepted target branches do not
+acquire these bytes or approval automatically. Running jobs keep their pinned
+sources. No retained grade or historical qualification transfers to a new target.
+
+The private cell report contract binds the installed pinned Playwright producer
+and the selected cell before it accepts canonical static trace files. Default
+cell evidence keeps its existing unknown-carrier rules. Excluded installed build
+staging is outside the evidence tree; unknown carriers inside standard evidence
+paths still fail. A target with stronger ZIP or embedded-report scanning must
+retain those checks when it adapts this contract. Installed-target identities
+and runtime evidence remain separate from source-preparation metadata.
 
 ## Deployment and operator gates
 

@@ -49,7 +49,7 @@ export function AgentProviderConnection({
   advancedConnection,
 }: {
   companyId: string;
-  adapterType: "claude_local" | "codex_local" | "grok_local";
+  adapterType: "claude_local" | "codex_local" | "grok_local" | "antigravity_runtime";
   environmentId: string | null;
   canLogin: boolean;
   localEnvironment?: boolean;
@@ -97,10 +97,10 @@ export function AgentProviderConnection({
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
-  const provider = adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
+  const provider = adapterType === "antigravity_runtime" ? "Google" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
   const envKey =
-    adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
-  const aiProvider = adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
+    adapterType === "antigravity_runtime" ? "GEMINI_API_KEY" : adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
+  const aiProvider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
   const availableKeys = useSavedProviderKeys(companyId, envKey);
   // Add/reconnect creates the requested account, never copies a saved account's
   // credential or silently changes its ownership. Agent setup retains reuse.
@@ -158,7 +158,7 @@ export function AgentProviderConnection({
         environmentId ?? undefined,
       ),
     retry: false,
-    enabled: !managedAccount && !advanced,
+    enabled: !managedAccount && !advanced && adapterType !== "antigravity_runtime",
   });
   async function connect() {
     if (busy || managedAccount?.disabled) return;
@@ -230,7 +230,7 @@ export function AgentProviderConnection({
   }
   const needsLogin =
     method === "subscription" &&
-    canLogin &&
+    canLogin && adapterType !== "antigravity_runtime" &&
     environmentId &&
     !savedSubscription &&
     !savedKeys.loading &&
@@ -448,7 +448,7 @@ export function AgentProviderConnection({
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
           (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
           (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
-          (!managedAccount && auth.isPending) ||
+          (!managedAccount && adapterType !== "antigravity_runtime" && auth.isPending) ||
           savedKeys.loading ||
           (adapterType === "claude_local" && storedLogin.isPending) ||
           // The saved-subscription chooser renders outside the opened section,

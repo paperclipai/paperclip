@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { canonicalManualIds, MANUAL_PRIVATE_EXECUTIONS, requiresPrivateManualEvidence } from './manual-private-retention.ts';
+import { canonicalManualIds, canonicalPrivateManualIds, MANUAL_PRIVATE_EXECUTIONS, requiresPrivateManualEvidence } from './manual-private-retention.ts';
 
 const values = value => (value ?? '').split(',').map(item => item.trim()).filter(Boolean);
 export function manualEvidenceRouting(env) {
@@ -12,7 +12,7 @@ export function manualEvidenceRouting(env) {
     return { retention: 'actions', executionIds: [] };
   }
   if (!ids.some(requiresPrivateManualEvidence)) return { retention: 'actions', executionIds: ids };
-  const selected = canonicalManualIds(ids);
+  const selected = canonicalPrivateManualIds(ids);
   if (selected.some(id => !MANUAL_PRIVATE_EXECUTIONS.includes(id))) throw new Error('Unsupported private manual selection');
   if (env.TEST_RUNNER !== 'runs-on/fleet=paperclip-public-pr-x64/env=public-ci') throw new Error('Private manual evidence currently requires the reviewed AWS route');
   return { retention: 'private', executionIds: selected };
@@ -20,7 +20,7 @@ export function manualEvidenceRouting(env) {
 export function authorizeManualCellRoute(retention, executionId, privateIds) {
   const ids = canonicalManualIds([executionId]);
   if (retention === 'private') {
-    if (!MANUAL_PRIVATE_EXECUTIONS.includes(ids[0]) || !canonicalManualIds(JSON.parse(privateIds)).includes(ids[0])) throw new Error('Private cell differs from trusted selection');
+    if (!MANUAL_PRIVATE_EXECUTIONS.includes(ids[0]) || !canonicalPrivateManualIds(JSON.parse(privateIds)).includes(ids[0])) throw new Error('Private cell differs from trusted selection');
     return 'private';
   }
   if (retention !== 'actions' || requiresPrivateManualEvidence(ids[0])) throw new Error('Sensitive cell cannot enter public manual artifacts');

@@ -32,8 +32,10 @@ import { activityRoutes } from "../routes/activity.js";
 import { agentRoutes } from "../routes/agents.js";
 import { authorizationService } from "../services/authorization.js";
 import { canActorReadWorkspaceOperation, getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_LOG_PRIVACY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, () => {
@@ -42,8 +44,8 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
   const previousPrivacyMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-privacy-routes-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-privacy-routes-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString);
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
   }, 120_000);
 
@@ -66,6 +68,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     if (previousPrivacyMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
     else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousPrivacyMode;
     await tempDb?.cleanup();
+    if (externalDatabaseUrl) await db.$client.end({ timeout: 1 });
   });
 
   async function seedFixture() {
@@ -264,7 +267,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       runnerProfileJson: { instructions: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
     }).where(eq(heartbeatRuns.id, f.privateRunId));
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId));
-    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const observed = createDb(externalDatabaseUrl ?? tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
     const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
@@ -281,13 +284,15 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     } finally { capture.flush(); await observed.$client.end(); }
   });
 
-  it("returns 404 for direct private-run content and metadata-only list stubs to a non-member", async () => {
+  it.each(["local_file", "s3_segments"])("returns 404 for private %s run content and metadata-only list stubs", async (logStore) => {
     const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ logStore }).where(eq(heartbeatRuns.id, fixture.privateRunId));
     const app = createApp(fixture.companyId, fixture.otherAgentId);
 
     for (const path of [
       `/api/heartbeat-runs/${fixture.privateRunId}`,
       `/api/heartbeat-runs/${fixture.privateRunId}/events`,
+      `/api/heartbeat-runs/${fixture.privateRunId}/events?view=plugin-panels`,
       `/api/heartbeat-runs/${fixture.privateRunId}/log`,
       `/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`,
       `/api/workspace-operations/${fixture.operationId}/log`,

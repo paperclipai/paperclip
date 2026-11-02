@@ -341,7 +341,50 @@ describe("plugin-provided Runner execution", () => {
     const workers = worker({ kind: "accepted", taskId: value.lease.providerLeaseId });
     await expect(executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation: { kind: "stop" } })).resolves.toMatchObject({ taskId: value.lease.providerLeaseId });
   });
-  it("returns a validated connection only while the lease and run are active", async () => {
+  it("reconnects a successful retained warm task without granting new execution", async () => {
+    const value = row();
+    value.lease.status = "retained";
+    value.run!.status = "succeeded";
+    Object.assign(value.lease, { leasePolicy: "reuse_by_environment" });
+    Object.assign(value.lease.metadata, { runnerTaskDispatched: true,
+      runnerTaskExecutionStopped: false, runnerTaskIdentity: { ...submit.runner },
+      runnerTaskLifecyclePolicy: { mode: "warm", idleTimeoutMs: 120_000 } });
+    const connection = { kind: "connection", taskId: "attempt-1", endpoint: {
+      kind: "authenticated_websocket", websocketUrl: "wss://runner.example.test/connect", generation: "attempt-1",
+      secretHeaders: [{ name: "Authorization", value: "Bearer fixture" }],
+    } };
+    const workers = worker(connection);
+    await expect(executeEnvironmentTask(database(value).db, workers as never, {
+      companyId: "company", leaseId, operation: { kind: "connection" },
+    })).resolves.toEqual(connection);
+    expect(workers.call).toHaveBeenCalledOnce();
+    for (const operation of [submit, { kind: "describe" as const }]) {
+      const denied = worker();
+      await expect(executeEnvironmentTask(database(value).db, denied as never, {
+        companyId: "company", leaseId, operation,
+      })).rejects.toThrow("not active");
+      expect(denied.call).not.toHaveBeenCalled();
+    }
+    for (const change of ["retiring", "stopped", "undispatched", "per_turn", "expired", "superseded", "failed", "cancelled", "missing_identity", "foreign_identity", "deleted"] as const) {
+      const changed = structuredClone(value);
+      if (change === "retiring") Object.assign(changed.lease.metadata, { runnerTaskRetiring: true });
+      if (change === "stopped") Object.assign(changed.lease.metadata, { runnerTaskExecutionStopped: true });
+      if (change === "undispatched") Object.assign(changed.lease.metadata, { runnerTaskDispatched: false });
+      if (change === "per_turn") Object.assign(changed.lease.metadata, { runnerTaskLifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } });
+      if (change === "expired") changed.lease.expiresAt = new Date(0);
+      if (change === "superseded") changed.lease.status = "expired";
+      if (change === "failed" || change === "cancelled") changed.run!.status = change;
+      if (change === "missing_identity") Object.assign(changed.lease.metadata, { runnerTaskIdentity: undefined });
+      if (change === "foreign_identity") Object.assign(changed.lease.metadata, { runnerTaskIdentity: { ...submit.runner, runId: "other" } });
+      if (change === "deleted") changed.environment = null;
+      const denied = worker(connection);
+      await expect(executeEnvironmentTask(database(changed).db, denied as never, {
+        companyId: "company", leaseId, operation: { kind: "connection" },
+      }), change).rejects.toThrow("not active");
+      expect(denied.call).not.toHaveBeenCalled();
+    }
+  });
+  it("returns a validated connection for active execution", async () => {
     const connection = { kind: "connection", taskId: "attempt-1", endpoint: {
       kind: "authenticated_websocket", websocketUrl: "wss://runner.example.test/connect", generation: "attempt-1",
       secretHeaders: [{ name: "Authorization", value: "Bearer fixture" }],

@@ -83,7 +83,7 @@ describeDatabase("selected runtime skill reconciliation", () => {
     } finally { insert.mockRestore(); update.mockRestore(); }
   });
 
-  it("refreshes selected bundled paths after an installation moves even when the old directory remains", async () => {
+  it("uses the committed bundled version even when a legacy installation path contains different bytes", async () => {
     const service=companySkillService(db);
     const initial=await service.listRuntimeSkillEntries(companyId,{includeLegacy:true,snapshotLatest:true});
     const selected=initial[0]!;
@@ -94,7 +94,7 @@ describeDatabase("selected runtime skill reconciliation", () => {
     const current=await service.listRuntimeSkillEntries(companyId,{onlyKeys:new Set([selected.key]),snapshotLatest:true});
     expect(await fs.readFile(path.join(current[0]!.source,"SKILL.md"),"utf8")).toBe(await fs.readFile(path.join(selected.source,"SKILL.md"),"utf8"));
     const [row]=await db.select().from(companySkills).where(and(eq(companySkills.companyId,companyId),eq(companySkills.key,selected.key)));
-    expect(row!.sourceLocator).not.toBe(old);
+    expect(row!.currentVersionId).toBe(selected.versionId);
     expect(await fs.readFile(path.join(old,"SKILL.md"),"utf8")).toBe("Old installation content");
   });
 

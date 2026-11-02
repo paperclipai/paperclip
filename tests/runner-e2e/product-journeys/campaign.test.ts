@@ -31,13 +31,14 @@ vi.mock("../dashboard-regenerate.js", () => ({ regenerateRunnerDashboard: vi.fn(
   if(input.outputDirectory){const {writeFile}=await import("node:fs/promises");await Promise.all(["index.html","dashboard.html"].map(name=>writeFile(path.join(input.outputDirectory!,name),"dashboard")));}
 }) }));
 vi.mock("./task-properties.js", () => ({taskProperties: async (_context:unknown,_session:unknown,_id:unknown,evidence:any) => {evidence.checks.push({id:"assignment-persisted",passed:true},{id:"no-agent-work",passed:true});}}));
+vi.mock("./task-search-filter.js", () => ({taskSearchFilter: async (_context:unknown,_session:unknown,_id:unknown,evidence:any) => {evidence.checks.push(...["task-search-results-exact","task-status-filter-excludes-controls","task-search-filter-reloaded","task-search-result-reopened","no-agent-work"].map(id=>({id,passed:true})));}}));
 import { chromium } from "@playwright/test";
 import { launchProductJourneys } from "./launch.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 const roots: string[]=[];
 afterEach(async()=>{vi.useRealTimers(); vi.restoreAllMocks(); persistenceFault.kind=null; persistenceFault.active=false; persistenceFault.latestReport=null; process.exitCode=0; await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
 type Hook = "collect" | "release" | "stop" | "finalizeEvidence" | "checkpointEvidence";
-async function run(options:{authFailure?:boolean;onboardingFailure?:boolean;preAcceptanceFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
+async function run(options:{search?:boolean;authFailure?:boolean;onboardingFailure?:boolean;preAcceptanceFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
   const root=await mkdtemp(path.join(os.tmpdir(),"journey-campaign-test-")); roots.push(root);
   const module=path.join(root,"provider.mjs");
   const proof = createConnectionProof();
@@ -45,7 +46,7 @@ async function run(options:{authFailure?:boolean;onboardingFailure?:boolean;preA
   await writeFile(module, `import {readFile,writeFile} from 'node:fs/promises';
 const identity={kind:'cloud',targetId:'qa',origin:'https://qa.example.test',commit:'${"a".repeat(40)}',cloudRelease:'v1',runtimeImage:'image',configurationHash:'config'};
 let onboarded=false;
-const context={identity,company:{id:'company-1',issuePrefix:'QA'},api:{origin:identity.origin,post:async()=>({id:'issue-fixture-1',identifier:'QA-1'})},startingState:'onboarding',capabilities:['company','board-user','task-write'],page:{url:()=>identity.origin+'/QA/issues/QA-1',locator:()=>({isVisible:async()=>true,screenshot:async()=>{}}) }};
+const context={identity,company:{id:'company-1',issuePrefix:'QA'},api:{origin:identity.origin,post:async()=>({id:'issue-fixture-1',identifier:'QA-1'})},startingState:'onboarding',capabilities:['company','board-user','task-write'],page:{url:()=>identity.origin+'/QA/issues/QA-1',locator:()=>({waitFor:async()=>{},isVisible:async()=>true,screenshot:async()=>{}}) }};
 export const provider={version:1, async acquire(input){return {
 async authenticate(){${options.authFailure ? "throw {outcome:'failed',code:'login_code_expired'};" : ""}},
 async onboard(evidence){${options.preAcceptanceFailure ? `evidence.onboardingPreAcceptance=${JSON.stringify(preAcceptanceEvidence)};throw {outcome:'failed',code:'onboarding_work_before_acceptance'};` : options.onboardingFailure ? "throw {outcome:'failed',code:'onboarding_failed'};" : `${options.missingArtifact ? "" : `evidence.artifact=${JSON.stringify(artifact)};`}evidence.checks.push(...['fresh-workspace','ui-connection-and-native-agent','first-task-complete','downloadable-artifact-verified'${options.missingCheck ? "" : ",'native-trace-verified'"}].map(id=>({id,passed:true})));onboarded=true;return context;`}},
@@ -61,7 +62,7 @@ const report=JSON.parse(await readFile(input.outputDir+'/normalized-results.json
 if(report.results.some(r=>r.cleanup!=='failed'))throw Error('failure checkpoint preceded failure persistence');
 await writeFile(input.outputDir+'/failure-checkpoint.json',JSON.stringify(report));
 }}}};`);
-  const config={version:1,id:"qa",mode:"new-cloud",adapterModule:module,journeys:["cloud-onboarding","task-properties"],executionEnvironment:"daytona",baseline:{features:{},connections:[]},limits:{durationMs:60000,modelBudgetCents:1000,maxRuns:1},...(options.mini?{modelProfileId:"runner-codex-mini"}:{})};
+  const config={version:1,id:"qa",mode:"new-cloud",adapterModule:module,journeys:["cloud-onboarding",options.search?"task-search-filter":"task-properties"],executionEnvironment:"daytona",baseline:{features:{},connections:[]},limits:{durationMs:60000,modelBudgetCents:1000,maxRuns:1},...(options.mini?{modelProfileId:"runner-codex-mini"}:{})};
   const file=path.join(root,"target.json"),output=path.join(root,"report"); await writeFile(file,JSON.stringify(config));
   const lifecycle: string[] = [];
   let artifactBeforeRelease: unknown;
@@ -86,6 +87,13 @@ await writeFile(input.outputDir+'/failure-checkpoint.json',JSON.stringify(report
     failureCheckpoint: await readFile(path.join(output,"failure-checkpoint.json"),"utf8").then(JSON.parse).catch(()=>null) };
 }
 describe("product journey campaign boundary outcomes",()=>{
+  it("dispatches task search separately and reports it without model work", async () => {
+    const campaign = await run({search:true});
+    const search = campaign.results[1];
+    expect(search).toMatchObject({caseId:"task-search-filter",profileId:"browser",model:null,provider:null,runtimeMode:"none",status:"passed"});
+    expect(search.runIds ?? []).toEqual([]);
+    expect(search.productJourney.checks).toHaveLength(5);
+  });
   it("accepts the conventional pnpm separator in a credential-free preview", async () => {
     const root=await mkdtemp(path.join(os.tmpdir(),"journey-preview-test-")); roots.push(root);
     const file=path.join(root,"target.json");

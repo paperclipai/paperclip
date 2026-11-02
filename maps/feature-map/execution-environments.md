@@ -142,6 +142,10 @@ uses the real Runner and a synthetic Codex provider through loopback PRP; TLS
 termination is replaced by the fixture. It does not qualify a live plugin provider.
 
 The plugin prepares execution-host resources and the provider descriptor. Core validates the result, then supplies task identity and PRP launch limits.
+For managed GitHub commands, verify the qualified executable remains canonical,
+controller-staged helper discovery survives task entry, and a task-supplied shell
+selector is rejected. A launch description or a healthy Runner alone is not proof
+of authenticated git/gh execution.
 
 ### Storybook verification
 
@@ -185,3 +189,11 @@ Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and
 project set. New preparation removes old validation. Core checks the saved
 validation again in the dispatch update.
+
+Plugin task providers can advertise `githubCredentialBrokerVersion: 1` and receive
+a live-run capability during preparation. This adds no agent management API.
+Core resolves accepted identity, grants, company scope and trust at command time.
+The plugin owns the command implementation; no particular script is required.
+[Broker handoff coverage](../../server/src/services/native-runtime/plugin-runner-task.test.ts)
+checks capability changes across warm turns. This is contract coverage, not live
+authenticated push acceptance.

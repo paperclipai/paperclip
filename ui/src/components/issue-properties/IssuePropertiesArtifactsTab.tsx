@@ -1,5 +1,5 @@
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
-import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { ArtifactUploadContent, type ArtifactUploadEntry } from "@/components/artifacts/ArtifactUploadControls";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -17,6 +17,8 @@ import {
 import { Download, ExternalLink, FileText } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
+import { authApi } from "@/api/auth";
+import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
 import { activityApi } from "@/api/activity";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
@@ -24,6 +26,7 @@ import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useIssueWorkProducts } from "@/hooks/useIssueWorkProducts";
 import {
   documentDisplayTitle,
+  isGeneralTaskDocumentKey,
   selectArtifactAttachments,
   workProductHref,
 } from "@/lib/issue-artifacts";
@@ -47,8 +50,28 @@ import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
 import { ArtifactFileRow, ArtifactRow, ROW_ACTION_CLASS, fileRowSourceFromAttachment, fileRowSourceFromWorkProduct, subjectFromAttachment, subjectFromIssueDocument, subjectFromWorkProduct, workProductStateBadge, type ArtifactSubject } from "@/components/artifacts/v1";
 import { artifactUrl } from "@/lib/artifact-card-data";
 
+export type TaskDocumentEditorOptions = Pick<ComponentProps<typeof IssueDocumentsSection>,
+  "mentions" | "imageUploadHandler" | "externalReferences" | "feedbackVotes" | "feedbackDataSharingPreference"
+  | "feedbackTermsUrl" | "onVote" | "agentMap" | "userProfileMap">;
+
+/** Shared authoring and signed-in permissions for task and conversation hosts. */
+export function TaskGeneralDocuments({ issue, documentEditor }: { issue: Issue; documentEditor: TaskDocumentEditorOptions }) {
+  const { data: session } = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
+  return (
+    <IssueDocumentsSection
+      issue={issue}
+      generalDocumentsOnly
+      canDeleteDocuments={Boolean(session?.user?.id)}
+      canManageDocumentLocks={Boolean(session?.user?.id)}
+      {...documentEditor}
+    />
+  );
+}
+
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
+  /** Present only when this host owns the chat shell's document editor. */
+  documentEditor?: TaskDocumentEditorOptions;
   uploadState?: { entries: ArtifactUploadEntry[]; retry: (id: string) => void; dismiss: (id: string) => void };
   onOpenDocument?: (document: IssueDocument) => void;
   documentDeepLink?: {
@@ -407,11 +430,13 @@ function DocumentRow({
  */
 export function IssuePropertiesArtifactsTab({
   issue,
+  documentEditor,
   documentDeepLink,
   onOpenDocument,
   uploadState,
 }: IssuePropertiesArtifactsTabProps) {
   const { enabled: v1 } = useArtifactsV1Enabled();
+  const documentAuthoring = documentEditor !== undefined;
   const {
     data: attachments,
     isPending: attachmentsPending,
@@ -446,7 +471,7 @@ export function IssuePropertiesArtifactsTab({
   // Proxy review documents (`artifact-review-*`) present only through their
   // originating Work product row, never as standalone Documents rows.
   const documentRows = (documents ?? []).filter(
-    (doc) => !isArtifactReviewDocumentKey(doc.key),
+    (doc) => !isArtifactReviewDocumentKey(doc.key) && (!documentAuthoring || doc.key === "plan"),
   );
   const reviewDocsByKey = new Map(
     (documents ?? []).map((doc) => [doc.key, doc]),
@@ -558,9 +583,20 @@ export function IssuePropertiesArtifactsTab({
     </p>
   ) : null;
 
-  const withUploads = (content: ReactNode, empty = false) => uploadState ? (
-    <ArtifactUploadContent empty={empty} entries={uploadState.entries} onRetry={uploadState.retry} onDismiss={uploadState.dismiss}>{content}</ArtifactUploadContent>
-  ) : content;
+  const withUploads = (content: ReactNode, empty = false) => {
+    const artifacts = uploadState ? (
+      <ArtifactUploadContent empty={empty} entries={uploadState.entries} onRetry={uploadState.retry} onDismiss={uploadState.dismiss}>{content}</ArtifactUploadContent>
+    ) : content;
+    return documentAuthoring ? (
+      <div className="space-y-4">
+        <TaskGeneralDocuments
+          issue={issue}
+          documentEditor={{ agentMap: agentsById, ...documentEditor }}
+        />
+        {artifacts}
+      </div>
+    ) : artifacts;
+  };
 
   if (
     workProductRows.length === 0 &&
@@ -568,6 +604,9 @@ export function IssuePropertiesArtifactsTab({
     fileRows.length === 0
   ) {
     if (feedback) return withUploads(feedback);
+    if (documentAuthoring && (documents ?? []).some((doc) => isGeneralTaskDocumentKey(doc.key))) {
+      return withUploads(null);
+    }
     return withUploads(
       <div className="px-1 py-6 text-sm text-muted-foreground">
         No artifacts yet. Work products, documents, and agent-produced files

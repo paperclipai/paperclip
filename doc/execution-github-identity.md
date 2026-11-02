@@ -221,3 +221,15 @@ must send them only to trusted execution infrastructure over HTTPS. Revocation
 prevents subsequent credential acquisition; it cannot recall a token already
 sent to an in-flight operation. Existing tasks and Git credential fallback rules
 outside this plugin API are unchanged.
+
+### Plugin-owned task command environments
+
+Task-only environment plugins negotiate `githubCredentialBrokerVersion: 1` and
+receive the current run's broker capability through structured preparation.
+Core does not prescribe executable names, files, scripts, or a staging layout.
+The plugin owns its command implementation and isolates ambient host identity.
+See [the plugin broker contract](plugins/PLUGIN_RUNNER_EXECUTION.md#operation-time-github-credentials).
+These task providers use the signed, run-scoped public broker endpoint; they do
+not require the controller's remote shell or session callback bridge. Warm task
+preparation replaces the capability before the next run's commands. Credentials
+are still captured separately for each operation through the same live resolver.

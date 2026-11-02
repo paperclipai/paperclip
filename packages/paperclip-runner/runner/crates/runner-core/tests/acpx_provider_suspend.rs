@@ -10,6 +10,7 @@ use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, Aut
 fn config(mode: &str) -> AcpxProviderSessionConfig {
     let operations = Vec::new();
     AcpxProviderSessionConfig {
+        candidate_admission: None,
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],

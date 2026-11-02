@@ -12,6 +12,10 @@ import {
 } from "./paperclip-runner-permissions.js";
 
 describe("Paperclip Runner permission defaults", () => {
+  it("exposes qualified Kimi Code with an explicit runtime credential", () => {
+    expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "kimi"))
+      .toMatchObject({ qualified: true, credentialEnvironment: ["KIMI_API_KEY"] });
+  });
   it("marks Pi and Copilot qualified with their provider credential bindings", () => {
     expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "pi"))
       .toMatchObject({ qualified: true, credentialEnvironment: expect.arrayContaining(["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]) });

@@ -37,6 +37,7 @@ export function aiProviderForAdapter(
       pi_local: "openrouter",
       grok_local: "xai",
       copilot_runtime: "github",
+      antigravity_runtime: "google",
       gemini_local: "google",
       hermes_local: "openrouter",
     } as Record<string, AiProvider>

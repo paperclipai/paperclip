@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
+import { MAX_MANUAL_PRIVATE_CELLS, MANUAL_PRIVATE_EXECUTIONS } from "./manual-private-retention.js";
 const source=await readFile(new URL("../../.github/workflows/runner-full-stack-e2e.yml",import.meta.url),"utf8");
 const jobs=YAML.parse(source).jobs;
 const step=(job:string,name:string)=>jobs[job].steps.find((row:{name?:string})=>row.name===name);
@@ -50,7 +51,14 @@ it("requires downloaded complete private cell receipts before retaining merged r
 
 it("uses one exact read session per approved cell and a distinct write-only report session",()=>{
  const report=jobs.report.steps;
- for(let index=0;index<8;index++){
+ expect(MAX_MANUAL_PRIVATE_CELLS).toBe(8);
+ expect(MANUAL_PRIVATE_EXECUTIONS).toHaveLength(244);
+ const indices=report.filter((row:any)=>/^manual_read_credentials_/.test(row.id??""))
+  .map((row:any)=>Number(row.id.replace("manual_read_credentials_","")));
+ expect(indices).toEqual(Array.from({length:MAX_MANUAL_PRIVATE_CELLS},(_,i)=>i));
+ expect(report.filter((row:any)=>/^Download restricted manual cell /.test(row.name??""))
+  .map((row:any)=>Number(row.env.SELECTED_CELL_INDEX))).toEqual(indices);
+ for(let index=0;index<MAX_MANUAL_PRIVATE_CELLS;index++){
   const credentials=report.find((row:any)=>row.id===`manual_read_credentials_${index}`);
   expect(credentials.with["inline-session-policy"]).toBe("${{ steps.manual_report.outputs.read_policy_"+index+" }}");
   expect(credentials.if).toContain(`cell_count) > ${index}`);

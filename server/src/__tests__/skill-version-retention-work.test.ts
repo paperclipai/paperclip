@@ -55,3 +55,49 @@ it("keeps an expired cache change eligible when its own paged scan finishes", as
   expect(prune).toHaveBeenCalledTimes(5);
   expect(onError).not.toHaveBeenCalled();
 });
+
+it("continues a successful page when another company's grace deadline expires during it", async () => {
+  home = mkdtempSync(path.join(tmpdir(), "retention-page-deadline-"));
+  vi.stubEnv("PAPERCLIP_HOME", home);
+  vi.stubEnv("PAPERCLIP_INSTANCE_ID", "retention-page-deadline");
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2099-01-01T00:00:00Z"));
+  const startedAt = Date.now();
+  const dueCompany = randomUUID(), pagedCompany = randomUUID();
+  const began = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let pages = 0, dueScans = 0;
+  const prune = vi.fn(async (id: string) => {
+    const due = id === dueCompany;
+    if (due) dueScans++;
+    else if (++pages === 2) { began.resolve(); await release.promise; }
+    const truncated = !due && pages < 3;
+    return { checked: due ? 2 : pages === 1 ? 48 : 50, removed: 0, failed: 0, skipped: {},
+      truncated, interrupted: false, nextRunAt: due && dueScans === 1 ? startedAt + 5_000 : null,
+      cursor: truncated ? { skillId: "page", name: String(pages) } : null };
+  });
+  const service = { graceMs: 5_000, dryRun: false,
+    listCompanies: async () => [{ id: dueCompany }, { id: pagedCompany }],
+    pruneCompany: prune, dispose: async () => {} } as unknown as ReturnType<typeof skillVersionRetentionService>;
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  worker = registerSkillVersionRetentionWork(coordinator, service, () => true);
+  await worker.ready;
+  try {
+    await vi.advanceTimersByTimeAsync(1_000);
+    await began.promise;
+    await vi.advanceTimersByTimeAsync(5_000);
+    release.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    const next = coordinator.nextWakeAt();
+    expect(next === null ? 0 : next - Date.now()).toBeLessThanOrEqual(1_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(pages).toBe(3);
+    expect(dueScans).toBe(2);
+    expect(coordinator.nextWakeAt()).toBeNull();
+    const calls = prune.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(prune).toHaveBeenCalledTimes(calls);
+    expect(onError).not.toHaveBeenCalled();
+  } finally { release.resolve(); }
+});

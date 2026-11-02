@@ -186,8 +186,16 @@ Current company, agent, workspace, and lease checks still gate state reads and
 connection acquisition. Reconnection adds no agent management permission or
 replacement task submission. The integration covers this with synthetic tasks;
 it does not establish deployed plugin recovery.
+Successful warm tasks can refresh their control connection through the current
+retained lease. Expired, superseded, retiring, and stopped leases remain denied.
+The [focused policy tests](../../server/src/__tests__/environment-task-runtime.test.ts)
+cover these checks; this is not live provider verification.
 This source update does not qualify live agent access, warm retention, or a provider.
 See the [execution contract](../../doc/plugins/PLUGIN_RUNNER_EXECUTION.md).
+Managed GitHub shell selectors are controller-owned. Task overrides cannot set
+BASH_ENV, ZDOTDIR, GH_CONFIG_DIR or the launcher-directory marker. Stored bindings
+are stripped before secret resolution, and configured environment projections
+reject shell selectors. The native qualified executable checks still apply.
 
 Same-run checkpoint recovery also uses the saved lease path after a turn omits
 its completion result. It requires verified prior termination, retained session
@@ -235,3 +243,11 @@ Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and
 project set. New preparation removes old validation. Core checks the saved
 validation again in the dispatch update.
+
+Plugin task providers can advertise `githubCredentialBrokerVersion: 1` and receive
+a live-run capability during preparation. This adds no agent management API.
+Core resolves accepted identity, grants, company scope and trust at command time.
+The plugin owns the command implementation; no particular script is required.
+[Broker handoff coverage](../../server/src/services/native-runtime/plugin-runner-task.test.ts)
+checks capability changes across warm turns. This is contract coverage, not live
+authenticated push acceptance.

@@ -32,6 +32,7 @@ export { projectAccessMembers } from "./project_access_members.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { executionWorkspaceSnapshots } from "./execution_workspace_snapshots.js";
 export {
   executionWorkspaceRestorePoints,
   EXECUTION_WORKSPACE_RESTORE_POINT_STATUSES,
@@ -39,6 +40,7 @@ export {
 } from "./execution_workspace_restore_points.js";
 export { executionWorkspaceRuntimeLeases } from "./execution_workspace_runtime_leases.js";
 export { environments } from "./environments.js";
+export { sandboxCreationOperations } from "./sandbox_creation_operations.js";
 export { environmentLeases } from "./environment_leases.js";
 export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
@@ -137,7 +139,7 @@ export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";
-export { heartbeatRuns } from "./heartbeat_runs.js";
+export { heartbeatRuns, workspaceRestoreFailureCodesSql } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
 export { completionContracts } from "./completion_contracts.js";
@@ -193,13 +195,15 @@ export {
 } from "./tool_access.js";
 export {
   companySkills,
-  companySkillVersions, companySkillRepositorySnapshots,
+  companySkillMutationReceipts,
+  companySkillVersions, companySkillRepositorySnapshots, skillPackageDeletions,
   companySkillStars,
   companySkillComments,
   companySkillTestInputs,
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+export type { SkillPackageStorageReceipt, SkillPackageUpload, SkillPackageRestoreRecipe, SkillPackageFileMapping } from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
@@ -229,6 +233,7 @@ export { announcementDismissals, announcementPublications } from "./announcement
 export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_completion_deliveries.js";
 
 export { agentInstructionRevisions, agentInstructionHeads, agentInstructionWorkingCopies } from "./agent_instruction_revisions.js";
+export { agentFileRoots, type DurableAgentFileEntry } from "./agent_file_roots.js";
 export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrowsers } from "./browser_use.js";
 
 

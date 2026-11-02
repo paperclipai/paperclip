@@ -597,8 +597,10 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
     await agentService(db).update(f.agent.id, { runtimeConfig: { heartbeat: { enabled: true, intervalSec: 600 } } });
     await vi.advanceTimersByTimeAsync(2000);
 
-
-    expect(idleWorkSnapshot().active).toBe(1);
+    // The producer committed: retain its resume deadline without keeping the
+    // instance busy throughout the drain. Uncertain writes still hold admission.
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(coordinator!.nextWakeAt()).toBeGreaterThan(Date.now());
     const select = vi.spyOn(db, "select"), execute = vi.spyOn(db, "execute"), transaction = vi.spyOn(db, "transaction");
     try {
       await vi.advanceTimersByTimeAsync(60_000);
@@ -608,6 +610,11 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
     stopTaskDrain();
     await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(now.getTime() + 600_000), { timeout: 3000 });
+    await vi.advanceTimersByTimeAsync(coordinator!.nextWakeAt()! - Date.now());
+    await vi.waitFor(() => expect(f.enqueueWakeup).toHaveBeenCalledOnce());
+    expect(f.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({ source: "timer", reason: "heartbeat_timer" }));
+    await agentService(db).update(f.agent.id, { runtimeConfig: { heartbeat: { enabled: false } } });
+    await quiet();
   });
 
   it("does not inspect timer rows during startup drain, then reconstructs them on resume", async () => {

@@ -12,7 +12,9 @@ export function planToolChanges(snapshot: AgentConfigurationSnapshot, document: 
   unique(next.profiles.flatMap(row => row.profileId ? [row.profileId] : []), "tools.profiles");
   unique(next.policies.flatMap(row => row.id ? [row.id] : []), "tools.policies");
   for (const row of next.connections) requireItem(snapshot.connections, connection => connection.id === row.connectionId, `Connection ${row.connectionId}`);
-  for (const previous of before.connections) {
+  const connectionIds = new Set([...before.connections, ...next.connections].map(row => row.connectionId));
+  for (const connectionId of connectionIds) {
+    const previous = before.connections.find(row => row.connectionId === connectionId) ?? { connectionId, installed: false };
     const installed = next.connections.find(row => row.connectionId === previous.connectionId)?.installed ?? false;
     if (installed === previous.installed) continue;
     const connection = snapshot.connections.find(row => row.id === previous.connectionId)!;

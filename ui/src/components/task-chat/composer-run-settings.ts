@@ -46,6 +46,7 @@ export function composerDefaultModel(agent: Agent | undefined): string {
     const provider = composerCatalogProvider(agent);
     if (provider === "codex" || provider === "opencode") return resolvePaperclipRunnerModel(provider, config.model);
     if (provider === "acpx" && config.acpxAgent === "grok") return "grok-4.7";
+    if (provider === "acpx" && config.acpxAgent === "kimi") return "";
     if (provider === "acpx" && config.acpxAgent !== "grok") return resolvePaperclipRunnerModel(provider, config.model);
   }
   return "";

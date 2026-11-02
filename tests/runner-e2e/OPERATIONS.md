@@ -978,9 +978,11 @@ without registry resolution. The worker target and its lock artifact never
 control report dependencies. An already-reviewed output lock is used unchanged. An unknown committed lock fails before install;
 review the correction with dependency changes. The existing lockfile-refresh bot runs
 `prepare-report-lock.mjs --refresh` and includes the correction and hashes in its
-lockfile PR. The PR includes the root lock, which is owned by CODEOWNERS;
-the bot requests normal auto-merge and cannot bypass required code-owner review
-or checks. It refuses to bless an unrecognized committed lock. Paid authorization
+lockfile PR. The lockfile bot merges that PR without checks or code-owner review
+when every added package version is at least 3 days old on npm; otherwise the PR
+waits for a maintainer (see `doc/RELEASE-AUTOMATION-SETUP.md` §8.1). The bot
+merges only the commit the workflow generated. It refuses to bless an
+unrecognized committed lock. Paid authorization
 and report jobs still apply only the reviewed offline correction. The original
 failed run remains failed when retained evidence gets a new presentation.
 

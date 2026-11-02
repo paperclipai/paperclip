@@ -1,23 +1,31 @@
+import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import type { CancelledWorkspacePreservationScope } from "../cancelled-workspace-preservation-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRuns, workspaceRestoreFailureCodesSql, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { logActivity } from "../activity-log.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
-import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
+import { hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
+
+
+function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
+  const remote = remoteWorkspaceRunReferenceSchema.safeParse(profile?.remoteWorkspace);
+  return readNativeWorkspaceSyncReference(profile?.nativeWorkspaceSync) ?? (remote.success ? remote.data : null);
+}
 
 export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">,
   options: { allowPreterminal?: boolean; requireCancelledStop?: boolean; restartRecovery?: NativeRestartRecoveryClaim } = {}) {
-  if (readNativeWorkspaceSyncReference(selected.runnerProfileJson?.nativeWorkspaceSync)?.state !== "prepared") return;
+  if (workspaceRecoveryReference(selected.runnerProfileJson)?.state !== "prepared") return;
   const issueId = selected.nativeIssueId ?? selected.issueId ?? selected.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return;
   return db.transaction(async tx => {
@@ -32,7 +40,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     )).for("update");
     if (options.requireCancelledStop && coordinator?.phase !== "terminal_failure") return;
     const claim = options.restartRecovery;
-    const reference = readNativeWorkspaceSyncReference(selected.runnerProfileJson?.nativeWorkspaceSync)!;
+    const reference = workspaceRecoveryReference(selected.runnerProfileJson)!;
     const ownsClaim = Boolean(options.allowPreterminal && coordinator?.phase === "observed" && claim
       && claim.runId === selected.id && claim.leaseOwner === coordinator.leaseOwner
       && claim.controllerGeneration === coordinator.controllerGeneration && claim.providerAttempt === coordinator.attempt
@@ -46,8 +54,9 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       eq(heartbeatRuns.id, selected.id), eq(heartbeatRuns.companyId, selected.companyId),
     )).for("update");
     if (!run || run.runtimeMode !== "native" || (!options.allowPreterminal && run.status !== "failed")) return;
-    if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeStopIntent(run))) return;
-    const currentReference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
+    if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeRunStopReceipt(run)
+      || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt.getTime() > Date.now())) return;
+    const currentReference = workspaceRecoveryReference(run.runnerProfileJson);
     if (!currentReference || currentReference.state !== "prepared"
       || (claim?.kind === "reattach_remote_runner" && (claim.remote.kind === "plugin_task" || claim.remote.providerLeaseId !== currentReference.providerLeaseId
         || claim.remote.remoteCwd !== currentReference.remoteCwd))) return;
@@ -65,7 +74,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     let retained = !retainFiles || alreadyRetained ? run : await recordRequiredWorkspaceRestoreFailure(tx as unknown as Db, run, { workspaceRestoreFailure: "restore_failed" }, source);
     if (!retained || retainFiles && !hasRequiredWorkspaceRecovery(retained.resultJson)) return;
     if (options.allowPreterminal && coordinator.phase === "observed") {
-      await notifyExecutionRunWork(tx);
+      await notifyExecutionRunWork(tx, { companyId: run.companyId });
       const [settled] = await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure",
         leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, nextAttemptAt: null,
         recoveryState: "blocked", failureCode: coordinator.failureCode ?? "native_continuation_requires_reconciliation", updatedAt: new Date(),
@@ -91,20 +100,30 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
 }
 
 export async function preserveOrphanedNativeWorkspace(db: Db, lease: Pick<typeof environmentLeases.$inferSelect,
-  "companyId" | "heartbeatRunId">): Promise<boolean> {
+  "companyId" | "heartbeatRunId">, options: { onDeferredDeadline?: (at: number) => void } = {}): Promise<boolean> {
   if (!lease.heartbeatRunId) return false;
   const [run] = await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, lease.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId),
-    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "failed"),
+    inArray(heartbeatRuns.status, ["failed", "cancelled", "timed_out", "interrupted"]),
   )).limit(1);
   if (!run || hasRequiredWorkspaceRecovery(run.resultJson)) return false;
   try {
+    if (run.runtimeMode === "legacy") {
+      const parsed = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+      if (!parsed.success) return false;
+      const [source] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, run.companyId),
+        eq(environmentLeases.id, parsed.data.leaseId), eq(environmentLeases.heartbeatRunId, run.id))).limit(1);
+      const retained = source && await preserveRemoteWorkspacePreparationFailure(db, source);
+      return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
+    }
+    if (run.status !== "failed") return false;
     const retained = await preserveNativeFailedWorkspace(db, run);
     return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
   } catch (error) {
     if (error instanceof NativeWorkspaceFinalizationBusyError) return false;
     const code = retentionContentionCode(error);
     if (!code) throw error;
+    options.onDeferredDeadline?.(Date.now() + 30_000);
     logger.warn({ runId: run.id, code }, "Native workspace retention is waiting for its current owner");
     return false;
   }
@@ -136,7 +155,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
     )), eq(heartbeatRuns.runtimeMode, "native"),
       eq(heartbeatRuns.status, "cancelled"), eq(nativeRunFinalizations.phase, "terminal_failure"),
       isNull(nativeRunFinalizations.resultId), isNull(nativeRunFinalizations.leaseOwner),
-      sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'`,
+      sql`(${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared' OR ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared')`,
       sql`${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'`,
       cursor ? gt(heartbeatRuns.id, cursor) : undefined,
     )).orderBy(asc(heartbeatRuns.id)).limit(5);
@@ -148,7 +167,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
   for (const candidate of candidates) {
     cancelledWorkspaceCursors.set(db, candidate.runId);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.runId));
-    if (run && hasAcknowledgedNativeStopIntent(run)) {
+    if (run && hasAcknowledgedNativeRunStopReceipt(run)) {
       try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true }); }
       catch (error) {
         if (error instanceof NativeWorkspaceFinalizationBusyError) continue;
@@ -162,10 +181,10 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
 
 function pendingCancelledWorkspace() {
   return sql`${heartbeatRuns.runtimeMode} = 'native' AND ${heartbeatRuns.status} = 'cancelled'
-    AND ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+    AND (${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared' OR ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared')
     AND ${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
     AND (${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
-      AND ${heartbeatRuns.resultJson}->>'workspaceRestoreFailure' IN ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')) IS NOT TRUE`;
+      AND ${heartbeatRuns.resultJson}->>'workspaceRestoreFailure' IN (${workspaceRestoreFailureCodesSql})) IS NOT TRUE`;
 }
 
 export function registerCancelledWorkspacePreservationWork(db: Db,
@@ -174,8 +193,8 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
   type Entry = { id: string; companyId: string; dueAt: number };
   type Candidate = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId"
     | "runtimeMode" | "driverKind" | "status" | "resultJson" | "runnerProfileJson">;
-  const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeStopIntent(run)
-    && readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
+  const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeRunStopReceipt(run)
+    && workspaceRecoveryReference(run.runnerProfileJson)?.state === "prepared"
     && !hasRequiredWorkspaceRecovery(run.resultJson) && !nativeRunHasNoWorkspaceAccess(run);
   const scopeCondition = (scope?: CancelledWorkspacePreservationScope) => scope ? and(
     eq(heartbeatRuns.companyId, scope.companyId), scope.runId ? eq(heartbeatRuns.id, scope.runId) : undefined) : undefined;
@@ -201,6 +220,8 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
       .where(and(pendingCancelledWorkspace(), scopeCondition({ companyId: entry.companyId, runId: entry.id })));
     if (!run || !eligible(run)) return null;
     if (!canRun() || signal?.aborted) throw new Error("Cancelled workspace preservation stopped");
+    const controllerDeadline = run.controllerLeaseExpiresAt?.getTime();
+    if (controllerDeadline && controllerDeadline > Date.now()) return { ...entry, dueAt: controllerDeadline };
     const [finalization] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
       eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
@@ -216,7 +237,9 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
     if (source) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
     const [current] = await db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
-    return current && current.status === "cancelled" && eligible(current) ? { ...entry, dueAt: Date.now() + 30_000 } : null;
+    const currentControllerDeadline = current?.controllerLeaseExpiresAt?.getTime();
+    return current && current.status === "cancelled" && eligible(current) ? { ...entry,
+      dueAt: currentControllerDeadline && currentControllerDeadline > Date.now() ? currentControllerDeadline : Date.now() + 30_000 } : null;
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.cancelledWorkspacePreservation, batchSize: 5,

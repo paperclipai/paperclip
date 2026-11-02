@@ -39,6 +39,40 @@ The header shows Finish setup instead of Run or Resume, including during compute
 preparation and verification. Terminating agents cannot reopen setup. Final
 submission requests approval when required, then follows the existing preparation
 and verification lifecycle.
+The confirmation shows **Finishing agent setup** until the foreground detail
+query observes actual readiness. **Assign a Task** then hands that current
+record to the composer, so its status does not come from an older paused draft.
+Manual/import pauses and required hire approval remain blocking states.
+
+When the native Runner adapter is available, **Google Antigravity** appears in the ordinary
+adapter picker. Before runtime acceptance, its card says **Not available yet**.
+Selecting it opens Google account setup and model configuration without saving
+an unqualified native execution configuration. The existing inactive draft stays
+held; Test and Finish remain unavailable, and the page says model and connection settings are not
+saved. The selected adapter is retained with the draft: **Back to agents**, reload,
+and **Finish setup** return to the same Google setup. Pending roster rows identify
+Google Antigravity without implying a configured connection or runnable model.
+**Change adapter** returns to the picker with the saved choice selected and allows
+switching that same held draft to another supported adapter.
+Verify discovery, Google-specific setup, draft preservation and the
+disabled actions separately from a successful Antigravity hire or task run.
+
+On an isolated host with a current operator candidate authorization, company-scoped
+adapter inventory can expose **Candidate** with one exact model. That company can
+connect, save, reopen, Test and Finish setup while the global release stays pending.
+Test verifies native account/model admission and cleanup without a model turn.
+Other companies, remote targets, expired authority and other models stay blocked.
+Verify this scoped path separately from production qualification and real task acceptance.
+
+The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+protects the ordinary roster/picker path, saved personal Google subscription,
+native Test, actual ready handoff, Instructions-only file marker, task and
+same-task follow-up. Its fixed driver starts from the dashboard and creates the
+new agent through visible controls. The current runnable cell attaches to a
+self-hosted target with the admitted local macOS ARM64 candidate and exact low
+model. Saved-account reuse does not qualify fresh OAuth, other platforms or
+global provider release; registration and synthetic controls are separate from
+the retained exploratory and fresh fixed-driver results.
 
 Agent-owned plugin environments prepare the saved draft in the background when
 their driver declares `requiresAgent`. The draft waits in `verifying` with its
@@ -51,18 +85,36 @@ resource allocation waits for approval.
 ### `agent-configuration`
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
+The agent nav has two sections: **Agent** (Overview, Identity at
+`/agents/:agentId/identity`, Harness / Runtime, Secrets & variables,
+Permissions / Trust, Advanced) and **Audit** (Activity, Runs, Costs, Budgets),
+which render inside the agent, filtered to it. Skills, Tools, Channels, API Keys
+and Revisions are not in the nav but still open by URL. Edit the name and title
+in place in the header (Enter or blur saves, Escape cancels); while a tab has
+unsaved changes, the header refuses the edit and asks to save or discard first.
+Assign task is the header's one button (Finish setup while setup is pending);
+Run now, Pause/Resume, Clear error, **Agent history** (a dialog listing
+revisions with a confirmed Restore), Duplicate, Copy ID, Reset sessions and
+Terminate are in the actions menu. On Identity, **Advanced settings** →
+**Load profile** switches to an external root only when the root directory and
+entry file already exist; otherwise the server refuses and the panel shows why.
 
-Open **Advanced** at `/agents/:agentId/advanced` for the complete agent
+Open **Advanced** at `/agents/:agentId/advanced` for the compact agent
 [YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
 runtime setting, and adapter key; save, reload, and check the ordinary settings
-and Revisions. Try malformed YAML, a missing/unknown field, a removed nested key,
+and Agent history. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
 and a concurrent settings edit. Errors must retain the draft; stale saves return
-a conflict. Unchanged secret markers must preserve their stored values. Navigating
-away with a draft must show the existing unsaved-change guard. **Reload saved**
+a conflict. Unchanged secret markers must preserve their stored values. Following
+a link away from a draft must open the Discard unsaved changes? dialog; Back/Forward
+keeps the browser confirmation. **Reload saved**
 discards the draft. Also edit instruction text, skill pins, direct tool installs,
 channel settings/resources, permissions/trust/project boundaries, secret operations,
 and API key operations. Verify each result in its owning tab. Revision restore is
-an isolated save. Inherited access/history under `observed` is read-only. An
+an isolated save. Default YAML excludes catalogs, inherited definitions, history, and instruction
+contents. Verify profile-key references, named instruction-file patches (`null`
+deletes one file), omitted-setting preservation, and explicit clears. Adding
+unrelated company profiles must not grow this agent’s YAML. Inherited access and
+history remain in their owning tabs. An
 interrupted multi-resource save must report partial progress, preserve returned
 one-time keys, and require reload before another save. Domain APIs retain their
 existing authorization; a multi-resource save is not atomic.
@@ -94,12 +146,13 @@ Use the roster’s organization view; `/org` redirects to the roster in the stre
 
 ### `personal-primary-agent`
 
-Open an agent profile and choose **Set as my primary**. Inspect its crown on the
-profile/roster and its position in the Agents sidebar, then open a new task or Chat.
+Open an agent profile and choose the outlined crown beside its name (**Set as my
+primary**). Inspect the filled crown on the profile, the crown on the roster and
+its position in the Agents sidebar, then open a new task or Chat.
 
 ### `agent-api-keys`
 
-Open `/agents/:agentId/api-keys` → **API Keys** with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
+Open `/agents/:agentId/api-keys` → **API Keys** (by URL; it is not in the agent nav) with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
 
 ### `managed-agent-cli`
 
@@ -177,7 +230,9 @@ Manual: Save a harmless instruction edit, reload, and verify its revision and ef
 
 For failed setup, use an unavailable model or invalid command on a disposable agent.
 Confirm the profile names the failed verification step and gives a relevant action.
-Check that it explains automatic retry and offers **Retry now**. Fix the configuration,
+Check that a failed configuration test explains that automatic verification is paused
+and offers **Retry now**. Repeated refreshes must not start another test. Timeouts
+and temporary test-environment failures still retry automatically. Fix the configuration,
 retry, and reload; the failure must disappear only after readiness commits.
 Provider output and credentials must not appear in the lifecycle message.
 
@@ -234,9 +289,10 @@ Manual: Inspect a manager and report, change the relationship through the offere
 
 ### `personal-primary-agent`
 
-Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx)
+Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx),
+[the profile crown](../../ui/src/components/primary-agent/PrimaryAgentPresentation.test.tsx)
 and [primary-agent routes](../../server/src/__tests__/primary-agent.test.ts)
-cover selection, company/user scope, and request contracts.
+cover selection, replacement confirmation, company/user scope, and request contracts.
 
 Manual: Select an available agent, reload, and inspect the retained personal choice.
 Replace it and verify confirmation is required. Leave or terminate the selected

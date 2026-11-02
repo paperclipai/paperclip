@@ -40,7 +40,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let companyId: string;
   const workers: ReturnType<typeof configureAgentLifecycle>[] = [];
   beforeAll(async () => {
-    if (external) { await applyPendingMigrations(external); db = createDb(external); }
+    if (external) { await applyPendingMigrations(external); db = createDb(external, { maxConnections: 6 }); }
     else { database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-"); db = createDb(database.connectionString); }
   }, 90_000);
   afterAll(async () => {

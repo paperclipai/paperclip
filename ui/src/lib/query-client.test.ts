@@ -9,6 +9,7 @@ import {
   reconnectDelayFor,
   retryDelayFor,
   shouldReportQueryError,
+  QueryNotReadyError,
   shouldRetryRequest,
   TRANSIENT_RETRY_DELAYS_MS,
   type MutationErrorToast,
@@ -59,6 +60,7 @@ describe("retry policy", () => {
   it("reports only unexpected query errors to Sentry", () => {
     expect(shouldReportQueryError(new ApiError("boom", 500, null))).toBe(true);
     expect(shouldReportQueryError(new Error("parse failure"))).toBe(true);
+    expect(shouldReportQueryError(new QueryNotReadyError("Not ready"))).toBe(false);
     expect(shouldReportQueryError(gatewayDown())).toBe(false);
     expect(shouldReportQueryError(new TypeError("Failed to fetch"))).toBe(false);
     expect(shouldReportQueryError(new ApiError("Not found", 404, null))).toBe(false);

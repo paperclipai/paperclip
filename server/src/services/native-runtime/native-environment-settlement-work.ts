@@ -11,8 +11,11 @@ import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson" | "resultJson">;
 export function nativeEnvironmentSettlementDisposition(run: Run, succeeded: boolean): ProviderResourceDisposition {
   const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
-  return succeeded && (!run.resultJson?.workspaceExportRetry || reference?.resourceDisposition === "destroy")
-    ? reference?.resourceDisposition ?? "stop_and_retain" : "stop_and_retain";
+  const saved = run.runnerProfileJson?.nativeResourceDisposition;
+  const disposition = reference?.resourceDisposition
+    ?? (saved === "keep_running" || saved === "stop_and_retain" || saved === "destroy" ? saved : "stop_and_retain");
+  return succeeded && (!run.resultJson?.workspaceExportRetry || disposition === "destroy")
+    ? disposition : "stop_and_retain";
 }
 
 type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
@@ -28,7 +31,8 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
     return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       issueId: nativeRunFinalizations.issueId, phase: nativeRunFinalizations.phase,
       runnerProfileJson: sql<Run["runnerProfileJson"]>`case when ${heartbeatRuns.runnerProfileJson} is null then null
-        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync') end`,
+        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync',
+          'nativeResourceDisposition', ${heartbeatRuns.runnerProfileJson}->'nativeResourceDisposition') end`,
       resultJson: sql<Run["resultJson"]>`case when ${heartbeatRuns.resultJson} is null then null
         else jsonb_build_object('workspaceExportRetry', ${heartbeatRuns.resultJson}->'workspaceExportRetry') end`,
     }).from(nativeRunFinalizations)

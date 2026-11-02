@@ -377,8 +377,8 @@ export const issuesApi = {
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
   deleteWatchdog: (id: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
-  markRead: (id: string) =>
-    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  markRead: (id: string, throughCommentId?: string) =>
+    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, throughCommentId ? { throughCommentId } : {}),
   markUnread: (id: string) =>
     api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

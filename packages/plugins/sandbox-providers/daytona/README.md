@@ -36,6 +36,7 @@ Notes:
 - A session log socket can close while its command still runs. The driver requires a recorded command exit before returning a completed execution. It reconnects the log stream once, then polls status and log snapshots at most once per second. Replayed output is removed by byte offset, new output continues to reach the host, and the command is never dispatched again. A socket that delivers no output for 15 seconds switches directly to polling, even if the socket stays open or its initial connection never completes. Late callbacks from that socket are ignored. This recovers pending permission requests and cancellation results from saved output without replaying the command. Healthy initial and reconnected streams retain their existing lifetime under the caller’s RPC/run guard. After a clean close or an idle socket, each status or snapshot read gets a fresh operation timeout; successful recovery polling does not impose a new command lifetime. When both stream attempts fail without a clean close, fallback retains its original timeout budget starting after the stream attempts.
 - The SDK returns full log snapshots, so fallback bandwidth grows with retained output; it has no paged snapshot or stream cancellation API. A recovery-read timeout keeps partial output and explicitly reports whether command exit remains unconfirmed; it does not prove the remote command stopped. Provider/session teardown remains responsible for closing an outstanding socket. A final snapshot reconciles bytes missed by the stream before returning a recorded exit.
 - A sandbox record can survive the loss of its underlying container. Resume treats it as expired only when a fresh provider read confirms the exact missing-container error for that sandbox and marks it unrecoverable. Unknown errors and failed confirmation reads preserve the lease. The host still requires a verified native-runner backup before replacement.
+- Directory export normally builds a sandbox archive and downloads it. If archive creation exhausts disk space, quota, or the file-size limit, export streams the archive through a raw terminal instead. Each bounded chunk waits for a host write acknowledgement. Import still requires successful tar completion and the existing archive/path validation. The total archive cannot exceed the provider-reported sandbox disk allocation, and each host write must leave a 1 GiB free-space reserve. This fallback writes no sandbox archive or command log, preserves source files, and retains the configured transfer timeout. Terminal cleanup has a separate five-second limit and cannot hold the host archive open. It requires Bash and GNU `tar`, `dd`, and `base64` in the sandbox. It does not repair a provider session that already failed to save its state or increase the sandbox's disk allocation.
 
 ## Local development
 
@@ -49,8 +50,35 @@ pnpm typecheck
 
 These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
 
+The capacity regression uses Python 3 for a real local PTY, Bash, and GNU core
+utilities (`gtar`, `gdd`, and `gbase64` on macOS). It skips when those prerequisites
+are unavailable or their version checks do not match. With `DAYTONA_API_KEY` set, run
+`pnpm test src/file-sync-capacity.live.test.ts` to exercise an actual stopped and
+resumed Daytona sandbox, a tar write to `/dev/full`, validated export, and a
+second export after reconnect. The test creates and deletes one disposable
+1 GiB Ubuntu sandbox; it does not fill a disk or modify existing sandboxes.
+
 ## Package layout
 
 - `src/manifest.ts` declares the sandbox-provider driver metadata
 - `src/plugin.ts` implements the environment lifecycle hooks
 - `paperclipPlugin.manifest` and `paperclipPlugin.worker` point the host at the built plugin entrypoints in `dist/`
+
+
+### Interrupted run-lease creation
+
+The host commits a company-scoped creation operation before acquiring a new run
+lease. The operation UUID becomes `paperclip-create-<uuid>` and the
+`paperclip-create-attempt` label. The existing inspection hook can resolve that
+name and validate company, environment and run labels without starting a sandbox.
+Recovery persists the observed provider ID before the existing cleanup worker
+deletes it. A missing creation name is an uncertain outcome, not proof of removal.
+The host retains that operation for manual reconciliation and never repeats the
+creation request blindly. Credential identity must still match admission.
+
+This capability is declared as `creationOperationVersion: 1` in manifest version
+0.1.10. It covers normal run/ad-hoc lease acquisition and plugin task replacement.
+Legacy provider `environmentProbe` and custom-image interactive setup have separate
+lifecycles and are outside this lease-orphan fallback replacement. The normal Test
+path which acquires a runtime lease is covered. Unit fixtures exercise lookup and
+deletion; live provider qualification requires an explicit disposable test account.

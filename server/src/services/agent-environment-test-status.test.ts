@@ -36,6 +36,40 @@ function verifiedClaude() {
 }
 
 describe("managed Runner connection test status", () => {
+  it("projects the selected Google home for background verification and rejects a conflicting explicit home", async () => {
+    const service = agentEnvironmentTestService({} as Db);
+    const input = { companyId: "company-1", adapterType: "paperclip_runner", executionTarget: null,
+      config: { provider: "acpx", acpxAgent: "antigravity", model: "exact-google-model", env: {}, managedAiConnection: { method: "subscription" } } };
+    const binding = { provider: "google", method: "subscription", mode: "responsible_user" } as const;
+    const managed = { home: "/private/selected-google", identity: "fixture-identity",
+      attribution: { provider: "google", connectionId: "connection-1", grantId: "grant-1" } } as Parameters<typeof service.testManagedEnvironment>[3];
+    runtimeProbe.mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: checkedAt,
+      checks: [{ code: "antigravity_metadata_verified", level: "info", message: "Native account and model accepted." }] });
+    expect((await service.testManagedEnvironment("paperclip_runner", input, binding, managed)).status).toBe("pass");
+    expect(runtimeProbe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ managedAiCredentialHome: "/private/selected-google/provider" }));
+    runtimeProbe.mockClear();
+    await expect(service.testManagedEnvironment("paperclip_runner", { ...input, managedAiCredentialHome: "/private/other-google/provider" }, binding, managed))
+      .rejects.toThrow("does not match the selected managed account");
+    expect(runtimeProbe).not.toHaveBeenCalled();
+    expect(claudeProbe).not.toHaveBeenCalled();
+  });
+  it("accepts only the Antigravity native admission receipt without invoking another provider", async () => {
+    const service = agentEnvironmentTestService({} as Db);
+    const input = { companyId: "company-1", adapterType: "paperclip_runner", executionTarget: null,
+      config: { provider: "acpx", acpxAgent: "antigravity", model: "exact-google-model", env: {}, managedAiConnection: { method: "subscription" } } };
+    const binding = { provider: "google", method: "subscription", mode: "responsible_user" } as const;
+    const managed = { identity: "fixture-identity", attribution: { provider: "google", connectionId: "connection-1", grantId: "grant-1" } } as Parameters<typeof service.testManagedEnvironment>[3];
+    runtimeProbe.mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: checkedAt,
+      checks: [{ code: "antigravity_metadata_verified", level: "info", message: "Native account and model accepted." }] });
+    expect((await service.testManagedEnvironment("paperclip_runner", input, binding, managed)).status).toBe("pass");
+    expect(claudeProbe).not.toHaveBeenCalled();
+    expect(verifyKey).not.toHaveBeenCalled();
+    runtimeProbe.mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: checkedAt, checks: [] });
+    const missing = await service.testManagedEnvironment("paperclip_runner", input, binding, managed);
+    expect(missing.status).toBe("fail");
+    expect(missing.checks).toContainEqual(expect.objectContaining({ code: "ai_connection_validation_incomplete" }));
+    expect(claudeProbe).not.toHaveBeenCalled();
+  });
   it("passes a healthy Cloud Claude connection without asking the user to verify launch-time runtime preparation", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "managed-fixture");
     verifiedClaude();
