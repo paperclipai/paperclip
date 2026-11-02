@@ -8,20 +8,25 @@ import { idleDeadlineRowLimit, isFutureIdleDeadline, type IdleDeadlineSnapshot }
 
 export async function readIdleAgentTimerSchedule(tx: Pick<Db, "select">, now: number,
   env: Record<string, string | undefined> = process.env, checkBudget: () => void = () => {}): Promise<IdleDeadlineSnapshot> {
+  const flags = [env.HEARTBEAT_SCHEDULER_ENABLED, env.PAPERCLIP_IN_WORKTREE,
+    env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS, env.PAPERCLIP_RESTORE_IN_PROGRESS];
+  const state: unknown[] = [flags];
+  const blocked = () => ({ blocked: true, state, deadlines: [] });
+  if (flags[0] === "false" || flags.slice(1).some(v => ["true", "1", "yes", "on"].includes(v ?? ""))) return blocked();
   const rows = await tx.select({ agent: getTableColumns(agents), companyStatus: companies.status,
     companyUpdatedAt: companies.updatedAt }).from(agents).leftJoin(companies, eq(companies.id, agents.companyId))
     .orderBy(agents.id).limit(idleDeadlineRowLimit + 1);
-  const state: unknown[] = [rows];
-  const blocked = () => ({ blocked: true, state, deadlines: [] });
+  state.push(rows);
   if (rows.length > idleDeadlineRowLimit) return blocked();
-  const byCompany = new Map<string, typeof agents.$inferSelect[]>();
+  const byCompany = new Map<string, Map<string, typeof agents.$inferSelect>>();
   for (const { agent } of rows) {
-    const group = byCompany.get(agent.companyId) ?? [];
-    group.push(agent);
+    const group = byCompany.get(agent.companyId) ?? new Map<string, typeof agents.$inferSelect>();
+    if (group.has(agent.id)) return blocked();
+    group.set(agent.id, agent);
     byCompany.set(agent.companyId, group);
   }
   const owner = createHeartbeatTimerPolicy(tx);
-  let inspectedTimers = 0;
+  const candidates: typeof agents.$inferSelect[] = [];
   const deadlines: number[] = [];
   for (const { agent, companyStatus } of rows) {
     checkBudget();
@@ -31,17 +36,29 @@ export async function readIdleAgentTimerSchedule(tx: Pick<Db, "select">, now: nu
     const policy = owner.parseHeartbeatPolicy(agent);
     if (!Number.isFinite(policy.intervalSec)) return blocked();
     if (!policy.enabled || policy.intervalSec <= 0 || !supportsUnscopedTimerHeartbeat(agent)) continue;
-    if (++inspectedTimers > 128) return blocked();
-    const invokability = evaluateAgentInvokability(agent, byCompany.get(agent.companyId)!);
+    const ancestors: typeof agents.$inferSelect[] = [];
+    const seen = new Set<string>();
+    let current: typeof agents.$inferSelect | undefined = agent;
+    while (current && !seen.has(current.id)) {
+      checkBudget();
+      seen.add(current.id);
+      ancestors.push(current);
+      current = current.reportsTo ? byCompany.get(agent.companyId)!.get(current.reportsTo) : undefined;
+    }
+    const invokability = evaluateAgentInvokability(agent, ancestors);
     if (!invokability.invokable) {
       if (invokability.invalidOrgChain || invokability.reason === "unknown_status") return blocked();
       continue;
     }
-    const flags = [env.HEARTBEAT_SCHEDULER_ENABLED, env.PAPERCLIP_IN_WORKTREE,
-      env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS, env.PAPERCLIP_RESTORE_IN_PROGRESS];
-    state.push(flags);
-    if (flags[0] === "false" || flags.slice(1).some(v => ["true", "1", "yes", "on"].includes(v ?? ""))) return blocked();
-    const snapshot = await owner.readTimerHeartbeatSchedule(agent, new Date(now));
+    candidates.push(agent);
+  }
+  const batch = await owner.readTimerHeartbeatSchedules(candidates, new Date(now), checkBudget);
+  if (!batch || batch.schedules.size !== candidates.length) return blocked();
+  state.push(batch.state);
+  for (const agent of candidates) {
+    checkBudget();
+    const snapshot = batch.schedules.get(agent.id);
+    if (!snapshot) return blocked();
     state.push([agent.id, snapshot]);
     if (snapshot.deadline === null) continue;
     if (!isFutureIdleDeadline(snapshot.deadline, now)) return blocked();

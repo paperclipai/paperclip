@@ -20,8 +20,8 @@ import { startTaskDrain, stopTaskDrain, beginIdleTrackedWork } from "../services
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
-import { agents, companies, heartbeatRuns, plugins, pluginJobs, pluginJobRuns, pluginState, providerTraceRecords, issues, issueWatchdogs, issueThreadInteractions, toolApplications, toolConnections, connectionGrants, companySecrets,
+import { eq, sql, inArray } from "drizzle-orm";
+import { agents, companies, heartbeatRuns, plugins, pluginJobs, pluginJobRuns, pluginState, providerTraceRecords, issues, issueWatchdogs, issueThreadInteractions, toolApplications, toolConnections, connectionGrants, companySecrets, companySecretVersions,
   applyPendingMigrations, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -55,9 +55,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     let hold: { ownerId: string; expiresAt: number } = { ownerId: randomUUID(), expiresAt: now + 300_000 };
     let pluginReceipt: Awaited<ReturnType<NonNullable<PluginWorkerManager["inspectIdleSleep"]>>> | undefined;
     const capability = { deadlineCatalog: "domain_deadlines_v1" } as VerifiedIdleCapabilities;
+    let projectionReads = 0;
     const read = (quietPluginIds: string[] = []) => db.transaction(async tx => {
+      projectionReads = 0;
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
-      return readIdleDeadlineProof(tx, hold, { now: Date.now(), verifiedCapability: capability, quietPluginIds,
+      const counted = { select: (...args: unknown[]) => { projectionReads++; return Reflect.apply(tx.select, tx, args); } } as Pick<Db, "select">;
+      return readIdleDeadlineProof(counted, hold, { now: Date.now(), verifiedCapability: capability, quietPluginIds,
         quietPluginGeneration: pluginReceipt?.catalogGeneration, quietPluginCatalog: pluginReceipt?.catalog });
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
     await db.insert(companies).values({ id: companyId, name: "Deadline fixture", issuePrefix: `D${companyId.slice(0, 6)}` });
@@ -104,6 +107,27 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(noAlarm).toMatchObject({ version: 3, backgroundWork: "none", deadlineProof: { catalog: "domain_deadlines_v1" } });
     expect(noAlarm.scheduledWake).toBeUndefined();
     expect(noAlarm.deadlineProof?.generation).not.toBe(negotiated.deadlineProof?.generation);
+    const scaleIds = Array.from({ length: 160 }, () => randomUUID());
+    const scaleAgent = (id: string, cost = false) => ({ id, companyId, name: "Scale timer", role: "engineer", status: "idle", adapterType: "codex_local",
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 900, maxDailyRuns: 2, ...(cost ? { maxDailyCostCents: 100 } : {}) } },
+      createdAt: new Date(now), lastHeartbeatAt: new Date(now) });
+    await db.insert(agents).values(scaleIds.slice(0, 80).map(id => scaleAgent(id)));
+    expect((await read()).scheduledWake?.nextWakeAt).toBe(new Date(now + 900_000).toISOString());
+    expect(projectionReads).toBe(5);
+    await db.insert(agents).values(scaleIds.slice(80).map(id => scaleAgent(id, true)));
+    const inactiveIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(agents).values(inactiveIds.map((id, i) => ({ ...scaleAgent(id), status: i === 0 ? "paused" : i === 1 ? "terminated" : "idle",
+      ...(i === 2 ? { runtimeConfig: { heartbeat: { enabled: false } } } : {}) })));
+    const scaled = await read();
+    expect(scaled.blocked).toBe(false);
+    expect(scaled.scheduledWake?.nextWakeAt).toBe(new Date(now + 900_000).toISOString());
+    expect(projectionReads).toBe(6);
+    await db.update(agents).set({ lastHeartbeatAt: new Date(now - 900_000) }).where(eq(agents.id, scaleIds[0]));
+    expect((await read()).blocked).toBe(true);
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: false } } }).where(inArray(agents.id, [...scaleIds, ...inactiveIds]));
+    const cancelledScale = await read();
+    expect(cancelledScale.scheduledWake).toBeUndefined();
+    expect(cancelledScale.generation).not.toBe(scaled.generation);
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0.5 } }, lastHeartbeatAt: new Date(now) }).where(eq(agents.id, agentId));
     let checkpointClock = now;
     const becameDue = await readIdleSleepSafety(db, () => ({ ownerId: hold.ownerId, draining: true, startedAt: new Date(now - 1000),
@@ -233,6 +257,27 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
     await db.update(connectionGrants).set({ credentialSecretRefs: refs }).where(eq(connectionGrants.id, grant.id));
     const vault = secretService(db), credentials = createOAuthCredentialStore(db, vault);
+    await credentials.syncCredentialBindings(connection, refs);
+    const pinned = await writeConnectionCredential(db, { companyId, connectionName: "GitHub pinned", configPath: "oauth.access_token",
+      label: "Pinned access", value: "pinned-initial", ownerUserId: owner });
+    const pinnedRef = { configPath: "oauth.access_token", secretId: pinned.secret.id, versionSelector: 1 as const, required: true };
+    await writeConnectionCredential(db, { companyId, connectionName: "GitHub pinned", configPath: "oauth.access_token", label: "Pinned access",
+      value: "pinned-rotated", ownerUserId: owner, existingRef: pinnedRef });
+    await db.update(connectionGrants).set({ credentialSecretRefs: [pinnedRef, refs[1]] }).where(eq(connectionGrants.id, grant.id));
+    await credentials.syncCredentialBindings(connection, [pinnedRef, refs[1]]);
+    const [pinnedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect((await credentials.resolveOAuthGrantSecret(connection, pinnedGrant, pinnedRef,
+      { actorType: "system", actorId: "fixture" }, undefined)).value).toBe("pinned-initial");
+    expect((await read()).blocked).toBe(false);
+    for (const status of ["disabled", "destroyed"]) {
+      await db.update(companySecretVersions).set({ status }).where(eq(companySecretVersions.secretId, pinned.secret.id));
+      expect((await read()).blocked).toBe(true);
+    }
+    await db.update(companySecretVersions).set({ status: "previous", revokedAt: new Date() }).where(eq(companySecretVersions.secretId, pinned.secret.id));
+    expect((await read()).blocked).toBe(true);
+    await db.update(companySecretVersions).set({ revokedAt: null }).where(eq(companySecretVersions.secretId, pinned.secret.id));
+    expect((await read()).blocked).toBe(false);
+    await db.update(connectionGrants).set({ credentialSecretRefs: refs }).where(eq(connectionGrants.id, grant.id));
     await credentials.syncCredentialBindings(connection, refs);
     const baseline = await read();
     expect(baseline.blocked).toBe(false);
