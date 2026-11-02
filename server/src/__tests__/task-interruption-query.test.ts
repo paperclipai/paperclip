@@ -36,6 +36,28 @@ describe("task interruption latest run query", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it.each(["decryption failure", "expanded message"])("keeps task reads available after provider display %s", async scenario => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = "pw-short";
+      const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+        category: "unknown", message: secret + "🚀".repeat(4000 - secret.length), retryability: "unknown" };
+      await db.update(heartbeatRuns).set({ resultJson: { providerFailure } }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      if (scenario === "decryption failure") vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "b".repeat(64));
+      const presentation = await taskInterruptionPresentation(db, f.input[0]!);
+      expect(presentation).toMatchObject({ state: "failed", canRetry: true });
+      if (scenario === "decryption failure") expect(presentation).not.toHaveProperty("providerFailure");
+      else {
+        expect(presentation?.providerFailure?.message).toContain("REDACTED");
+        expect([...presentation!.providerFailure!.message]).toHaveLength(4000);
+      }
+      expect(JSON.stringify(presentation)).not.toContain(secret);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("does not inspect unrelated company history for a small issue page", async () => {
     const f = await seedInterruptionFixture(db, { selected: 2, history: 3, unrelated: 1500, payloadBytes: 4096 });
     const query = await captureInterruptionQuery(db, taskInterruptionPresentations, f.companyId, f.input);

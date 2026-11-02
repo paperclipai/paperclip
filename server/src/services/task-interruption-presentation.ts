@@ -12,6 +12,7 @@ import { taskWorkspaceProjectRequirements } from "./task-workspace-access.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { logger } from "../middleware/logger.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -196,16 +197,23 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const disclosures = [...result.values()].flatMap(presentation => presentation?.providerFailure && presentation.observedRunId
     ? [{ id: presentation.observedRunId, providerFailure: presentation.providerFailure, presentation }] : []);
   if (disclosures.length) {
-    const [safe, settings] = await Promise.all([
-      createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.map(({ id, providerFailure }) => ({ id, providerFailure }))),
-      instanceSettingsService(db).getGeneral(),
-    ]);
-    disclosures.forEach(({ presentation }, index) => {
-      const failure = readProviderFailure(safe[index]?.providerFailure);
-      if (failure) presentation.providerFailure = { ...failure,
-        message: redactCurrentUserText(failure.message, { enabled: settings.censorUsernameInLogs }) };
-      else delete presentation.providerFailure;
-    });
+    try {
+      const [safe, settings] = await Promise.all([
+        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.map(({ id, providerFailure }) => ({ id, providerFailure }))),
+        instanceSettingsService(db).getGeneral(),
+      ]);
+      disclosures.forEach(({ presentation }, index) => {
+        const value = safe[index]?.providerFailure;
+        const message = typeof value?.message === "string"
+          ? [...redactCurrentUserText(value.message, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
+        const failure = readProviderFailure({ ...value, message });
+        if (failure) presentation.providerFailure = failure;
+        else delete presentation.providerFailure;
+      });
+    } catch {
+      for (const { presentation } of disclosures) delete presentation.providerFailure;
+      logger.warn({ companyId, runCount: disclosures.length }, "Could not redact provider failure display; explanations omitted");
+    }
   }
   return result;
 }
