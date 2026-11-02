@@ -1136,18 +1136,19 @@ export function secretService(db: Db | DbTransaction) {
     companyId: string,
     secretId: string,
     context: SecretBindingContext | undefined,
+    selectedBinding?: typeof companySecretBindings.$inferSelect | null,
   ) {
     if (!context) return null;
     if (!context.configPath) {
       throw unprocessable("Secret resolution requires a binding config path", { code: "binding_missing" });
     }
-    const binding = await getBinding({
+    const binding = selectedBinding === undefined ? await getBinding({
       companyId,
       secretId,
       consumerType: context.consumerType,
       consumerId: context.consumerId,
       configPath: context.configPath,
-    });
+    }) : selectedBinding;
     if (!binding) {
       throw unprocessable(
         `Secret is not bound to ${context.consumerType}:${context.consumerId} at ${context.configPath}`,
@@ -1362,7 +1363,30 @@ export function secretService(db: Db | DbTransaction) {
   ): Promise<RuntimeSecretResolution> {
     const bindingContext = options?.bindingContext;
     const accessContext = options?.accessContext ?? bindingContext;
-    const secret = await getById(secretId);
+    // Read one current authority snapshot per bound access. Do not prefetch a
+    // later reference across a provider await: it may rotate or be revoked.
+    // LEFT JOIN keeps missing bindings/versions available to the existing
+    // ordered checks and failure audit below.
+    const selected = bindingContext?.configPath
+      ? await db
+          .select({ secret: companySecrets, binding: companySecretBindings, version: companySecretVersions })
+          .from(companySecrets)
+          .leftJoin(companySecretBindings, and(
+            eq(companySecretBindings.companyId, companyId),
+            eq(companySecretBindings.secretId, companySecrets.id),
+            eq(companySecretBindings.targetType, bindingContext.consumerType),
+            eq(companySecretBindings.targetId, bindingContext.consumerId),
+            eq(companySecretBindings.configPath, bindingContext.configPath),
+          ))
+          .leftJoin(companySecretVersions, and(
+            eq(companySecrets.companyId, companyId),
+            eq(companySecretVersions.secretId, companySecrets.id),
+            eq(companySecretVersions.version, version === "latest" ? companySecrets.latestVersion : version),
+          ))
+          .where(eq(companySecrets.id, secretId))
+          .then(rows => rows[0] ?? null)
+      : undefined;
+    const secret = selected === undefined ? await getById(secretId) : selected?.secret;
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     const instanceOwned = secret.scope === "instance" && options?.instanceOwner &&
@@ -1383,8 +1407,8 @@ export function secretService(db: Db | DbTransaction) {
       if (secret.status !== "active") {
         throw unprocessable("Secret is not active", { code: "secret_inactive" });
       }
-      const binding = await assertBindingContext(companyId, secret.id, bindingContext);
-      const versionRow = await getSecretVersion(secret.id, resolvedVersion);
+      const binding = await assertBindingContext(companyId, secret.id, bindingContext, selected?.binding);
+      const versionRow = selected === undefined ? await getSecretVersion(secret.id, resolvedVersion) : selected?.version;
       if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
       if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
         throw unprocessable("Secret version is not active", { code: "version_inactive" });
