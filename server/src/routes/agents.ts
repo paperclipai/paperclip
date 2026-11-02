@@ -3217,13 +3217,15 @@ export function agentRoutes(
       aiRoutingModel(routing, agentHarnessType(adapterType, config), model.id) === config.model)) {
       throw unprocessable("Choose a default model available on the selected connection");
     }
+    const testEnvironmentId = probe !== "none" || binding.provider === "github"
+      ? await resolveAdapterTestEnvironmentId(companyId, environmentId, binding.provider === "github")
+      : null;
+    if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId, adapterType);
     // Healthy saved accounts were verified when connected. Configuration saves
     // must not acquire a computer or send another hello prompt. Legacy adoption
     // and explicit task adoption still need proof. Copilot retains its metadata-only
     // packaged-runtime check because model availability is account-specific.
     if (probe === "always" || (probe === "legacy" && selection.connection.config.aiLegacyAdoption === true) || binding.provider === "github") {
-      const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId, binding.provider === "github");
-      if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId, adapterType);
       const hasSavedAgent = !newAgent || (isUuidLike(agentId) && Boolean(await svc.getById(agentId)));
       if (newAgent && probe === "none" && testEnvironmentId && (await environmentsSvc.getById(testEnvironmentId))?.driver === "plugin") {
         // The lifecycle verifies the saved agent after its plugin can create the agent-owned computer.

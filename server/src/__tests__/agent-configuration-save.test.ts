@@ -6,10 +6,11 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentConfigRevisions, activityLog, companies, companyMemberships, connectionGrants, createDb, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { agentRoutes } from "../routes/agents.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as environmentTests from "../services/agent-environment-test.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -113,6 +114,43 @@ describePostgres("agent configuration save latency", () => {
     expect((await readAgent()).runtimeConfig.aiConnection).toBeUndefined();
     expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(0);
     expect(allocate).not.toHaveBeenCalled();
+  });
+
+  it.each(["foreign", "same-company", "global"])("checks %s environment ownership without a runtime probe", async ownership => {
+    const [environment] = await db.insert(environments).values({ name: `Save target ${agent.companyId}`, driver: "sandbox", config: { provider: "daytona" } }).returning();
+    if (ownership !== "global") {
+      const companyId = ownership === "foreign" ? randomUUID() : agent.companyId;
+      if (ownership === "foreign") await db.insert(companies).values({ id: companyId, name: "Foreign company", issuePrefix: `FC${++fixtureNumber}` });
+      await db.insert(builtInManagedResources).values({ companyId, bundleKey: "managed-environment", resourceKind: "environment",
+        resourceKey: "managed-sandbox", resourceId: environment.id, stockVersion: "1", stockHash: "fixture" });
+    }
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: environment.id, runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(ownership === "foreign" ? 403 : 200);
+    const saved = await readAgent();
+    expect(saved.defaultEnvironmentId).toBe(ownership === "foreign" ? null : environment.id);
+    expect(saved.runtimeConfig.aiConnection).toEqual(ownership === "foreign" ? undefined : binding);
+    expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(ownership === "foreign" ? 0 : 1);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each(["inherited", "existing-binding"])("rejects a foreign environment with %s settings", async mode => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Foreign company", issuePrefix: `FC${++fixtureNumber}` });
+    const [environment] = await db.insert(environments).values({ name: `Foreign target ${companyId}`, driver: "sandbox", config: { provider: "daytona" } }).returning();
+    await db.insert(builtInManagedResources).values({ companyId, bundleKey: "managed-environment", resourceKind: "environment",
+      resourceKey: "managed-sandbox", resourceId: environment.id, stockVersion: "1", stockHash: "fixture" });
+    const settings = instanceSettingsService(db);
+    const previousDefault = (await settings.get()).defaultEnvironmentId;
+    try {
+      if (mode === "inherited") await settings.update({ defaultEnvironmentId: environment.id });
+      else await db.update(agents).set({ runtimeConfig: { aiConnection: binding } }).where(eq(agents.id, agent.id));
+      const response = await request(app).patch(`/api/agents/${agent.id}`).send(mode === "inherited"
+        ? { runtimeConfig: { aiConnection: binding } } : { defaultEnvironmentId: environment.id });
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+      expect((await readAgent()).defaultEnvironmentId).toBeNull();
+      expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(0);
+      expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+    } finally { if (mode === "inherited") await settings.update({ defaultEnvironmentId: previousDefault }); }
   });
 
   it("keeps live validation for an unverified legacy account", async () => {
