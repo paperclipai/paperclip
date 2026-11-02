@@ -647,12 +647,20 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       assert.match(workflow, /group: chat-catalog-testops-streaming-v1/);
       for (const id of ["chat", "chat_external"]) {
         const block = workflow.split(`  ${id}:\n`)[1].split(/\n  [a-z_]+:\n/)[0];
+        const assertCaller = block => {
+        assert.match(block, /if: needs\.authorize\.outputs\.operation == 'evaluate'/);
+        assert.ok(block.includes(`needs.select.outputs.${id === "chat" ? "native" : "external"}_count != '0'`));
         assert.match(block, /needs: \[authorize, select, build\]/);
         assert.match(block, /uses: \.\/\.github\/workflows\/chat-catalog-testops-case\.yml/);
         assert.match(block, /protocol: streaming-v1/);
         assert.match(block, /secrets:\n      OPENROUTER_API_KEY: ''\n      ANTHROPIC_API_KEY: ''\n      ALLURE_TOKEN: ''/);
         assert.doesNotMatch(block, /secrets: inherit|secrets\./);
         assert.match(block, /fail-fast: false/);
+        };
+        assertCaller(block);
+        const lane = id === "chat" ? "native" : "external";
+        for (const mutant of [block.replace("needs.authorize.outputs.operation == 'evaluate' && ", ""),
+          block.replace(`needs.select.outputs.${lane}_count != '0'`, 'true')]) assert.throws(() => assertCaller(mutant));
       }
       const final = workflow.split("  verify:\n")[1];
       assert.match(final, /chat-completion-testops-cli\.mjs verify-stream/);
