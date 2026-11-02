@@ -115,6 +115,7 @@ databaseSuite("environment task lease authority", () => {
       expect(lease.providerLeaseId).toBe("stopped-task");
       const [creation] = await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.runId, runId));
       expect(creation.state).toBe("cleanup_pending");
+      expect(creation.metadata.runnerTaskCreationContextId).toBe(context.id);
       const [cleanup] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, creation.leaseId!));
       expect(cleanup).toMatchObject({ heartbeatRunId: runId, providerLeaseId: "replacement-task", status: "pending_cleanup" });
       expect(cleanup.metadata).toMatchObject({ runnerTaskLease: true, providerMetadata: { binding: "fresh" } });

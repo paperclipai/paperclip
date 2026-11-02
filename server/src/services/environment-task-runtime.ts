@@ -265,7 +265,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           issueId: lease.issueId, executionWorkspaceId: lease.executionWorkspaceId, provider: lease.provider!,
           pluginId: plugin.id, driverKey: metadata.driverKey, config: {}, requestKey: taskId,
           metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: plugin.pluginKey, driverKey: metadata.driverKey,
-            runnerTaskLease: true, agentId: run!.agentId },
+            runnerTaskLease: true, agentId: run!.agentId,
+            ...(context ? { runnerTaskCreationContextId: context.id } : {}) },
         }, async identity => {
           const params = { driverKey: replacementDriverKey, companyId: input.companyId, environmentId: environment!.id,
             issueId: lease.issueId, config: driverConfig, runId: identity.runId, creationOperationId: identity.id,
@@ -305,7 +306,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         try {
           context?.assertOpen();
           if (!context) await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
-            environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId, providerMetadata: fresh.metadata });
+            environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId });
           const expiresAt=fresh.expiresAt ? new Date(fresh.expiresAt) : null;
           const deadline=typeof metadata.runnerTaskRequestedExpiresAt === "string" ? Date.parse(metadata.runnerTaskRequestedExpiresAt) : null;
           if ((expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())) ||
@@ -323,7 +324,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
             return attached;
           });
         } catch (error) {
-          await queueSandboxCreationCleanup(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
+          if (context) await queueSandboxCreationCleanup(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
             environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId, providerMetadata: fresh.metadata });
           throw error;
         }

@@ -128,7 +128,8 @@ export async function recoverSandboxCreations(db: Db,
   )).limit(100);
   for (const candidate of due) {
     try {
-      if (candidate.metadata.runnerTaskLease === true && typeof candidate.metadata.creationProviderLeaseId === "string") {
+      if (candidate.metadata.runnerTaskLease === true && typeof candidate.metadata.runnerTaskCreationContextId === "string" &&
+          typeof candidate.metadata.creationProviderLeaseId === "string") {
         await queueSandboxCreationCleanup(db, { id: candidate.id, companyId: candidate.companyId,
           environmentId: candidate.originalEnvironmentId, providerLeaseId: candidate.metadata.creationProviderLeaseId });
         continue;

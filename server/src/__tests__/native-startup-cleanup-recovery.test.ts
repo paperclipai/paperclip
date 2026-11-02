@@ -103,7 +103,7 @@ describePostgres("durable cleanup after a native startup timeout", () => {
     const entered = new Promise<void>(resolve => { creating = resolve; });
     const acquiring = createOwnedSandbox(db, { companyId, environmentId: original.environmentId!, heartbeatRunId: f.request.runId,
       issueId: original.issueId, provider: original.provider!, driverKey: "tasks", config: {}, requestKey: original.providerLeaseId!,
-      metadata: { runnerTaskLease: true } }, async () => new Promise(resolve => { reply = resolve; creating(); }));
+      metadata: { runnerTaskLease: true, runnerTaskCreationContextId: f.request.contextId } }, async () => new Promise(resolve => { reply = resolve; creating(); }));
     await entered;
     await requestNativeStartupCleanup(db, f.request);
     await f.stopReceipt({}, true);
