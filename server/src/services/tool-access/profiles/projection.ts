@@ -103,6 +103,24 @@ export function profileEntryMatchesCatalog(
   return false;
 }
 
+export function profileCatalogMatcher(entries: ProfileEntryMatch[]) {
+  const applications = new Set<string | null>();
+  const connections = new Set<string | null>();
+  const catalogIds = new Set<string | null>();
+  const toolNames = new Set<string | null>();
+  const risks = new Set<string | null>();
+  for (const entry of entries) {
+    if (entry.selectorType === "application") applications.add(entry.applicationId);
+    else if (entry.selectorType === "connection") connections.add(entry.connectionId);
+    else if (entry.selectorType === "catalog_entry") catalogIds.add(entry.catalogEntryId);
+    else if (entry.selectorType === "tool_name") toolNames.add(entry.toolName);
+    else if (entry.selectorType === "risk_level") risks.add(entry.riskLevel);
+  }
+  return (entry: ProfileCatalogMatch) => applications.has(entry.applicationId)
+    || connections.has(entry.connectionId) || catalogIds.has(entry.id)
+    || toolNames.has(entry.toolName) || risks.has(entry.riskLevel);
+}
+
 export function summarizeProfile(input: {
   profile: typeof toolProfiles.$inferSelect;
   entries: Array<typeof toolProfileEntries.$inferSelect>;
@@ -110,22 +128,18 @@ export function summarizeProfile(input: {
   catalog: ProfileCatalogEntry[];
   agentIds: string[];
 }): ToolProfileSummary {
-  const includes = input.entries.filter((entry) => entry.effect === "include");
-  const excludes = input.entries.filter((entry) => entry.effect === "exclude");
+  const included = profileCatalogMatcher(input.entries.filter((entry) => entry.effect === "include"));
+  const excluded = profileCatalogMatcher(input.entries.filter((entry) => entry.effect === "exclude"));
   const allowedCatalogIds = new Set<string>();
   const allowedApplicationIds = new Set<string>();
   const excludedCatalogIds = new Set<string>();
 
   for (const catalogEntry of input.catalog) {
-    const excluded = excludes.some((entry) =>
-      profileEntryMatchesCatalog(entry, catalogEntry),
-    );
-    if (excluded) excludedCatalogIds.add(catalogEntry.id);
-    if (excluded) continue;
-    const included = includes.some((entry) =>
-      profileEntryMatchesCatalog(entry, catalogEntry),
-    );
-    if (input.profile.defaultAction === "allow" || included) {
+    if (excluded(catalogEntry)) {
+      excludedCatalogIds.add(catalogEntry.id);
+      continue;
+    }
+    if (input.profile.defaultAction === "allow" || included(catalogEntry)) {
       allowedCatalogIds.add(catalogEntry.id);
       if (catalogEntry.applicationId)
         allowedApplicationIds.add(catalogEntry.applicationId);
