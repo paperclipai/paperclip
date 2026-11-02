@@ -171,37 +171,44 @@ describePostgres("accepted comment finalization", () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     const ready = new Promise<void>(resolve => { held = resolve; });
     const receiptPid = new Promise<number>(resolve => { receiptStarted = resolve; });
-    const wrap = (deleting: boolean) => new Proxy(db, {
-      get(target, property) {
-        if (property === "transaction") return (callback: (tx: any) => Promise<unknown>) => target.transaction(async tx => {
-          if (!deleting) {
-            const [row] = await tx.execute(sql`select pg_backend_pid() as pid`);
-            receiptStarted(Number(row.pid));
-          }
-          return callback(new Proxy(tx, {
-            get(transaction, method) {
-              // Delay the real task DELETE, preserving each service's normal
-              // earlier locks (including company deletion's child-row locks).
-              if (deleting && method === "delete") return (table: unknown) => {
-                const builder = transaction.delete(table as typeof issues);
-                if (table !== issues) return builder;
-                return { where: (...args: Parameters<typeof builder.where>) => {
-                  const query = builder.where(...args);
-                  const wait = async () => { held(); await gate; };
-                  return kind === "task"
-                    ? { returning: async () => { await wait(); return query.returning(); } }
-                    : (async () => { await wait(); return query; })();
-                } };
-              };
-              const value = Reflect.get(transaction, method, transaction);
-              return typeof value === "function" ? value.bind(transaction) : value;
-            },
-          }));
-        });
-        const value = Reflect.get(target, property, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
+    const deletionDb = createDb(database.connectionString);
+    const originalTransaction = deletionDb.transaction.bind(deletionDb);
+    const wrap = (deleting: boolean) => {
+      const wrapped = new Proxy(db, {
+        get(target, property) {
+          if (property === "transaction") return (callback: (tx: any) => Promise<unknown>) => (deleting ? originalTransaction : target.transaction.bind(target))(async tx => {
+            if (!deleting) {
+              const [row] = await tx.execute(sql`select pg_backend_pid() as pid`);
+              receiptStarted(Number(row.pid));
+            }
+            return callback(new Proxy(tx, {
+              get(transaction, method) {
+                // Delay the real task DELETE, preserving each service's normal
+                // earlier locks (including company deletion's child-row locks).
+                if (deleting && method === "delete") return (table: unknown) => {
+                  const builder = transaction.delete(table as typeof issues);
+                  if (table !== issues) return builder;
+                  return { where: (...args: Parameters<typeof builder.where>) => {
+                    const query = builder.where(...args);
+                    const wait = async () => { held(); await gate; };
+                    return kind === "task"
+                      ? { returning: async () => { await wait(); return query.returning(); } }
+                      : (async () => { await wait(); return query; })();
+                  } };
+                };
+                const value = Reflect.get(transaction, method, transaction);
+                return typeof value === "function" ? value.bind(transaction) : value;
+              },
+            }));
+          });
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      if (!deleting) return wrapped;
+      vi.spyOn(deletionDb, "transaction").mockImplementation(wrapped.transaction);
+      return deletionDb;
+    };
     const deleting = (kind === "task" ? issueService(wrap(true)).remove(issueId)
       : deleteCompany(wrap(true), companyId)).catch(error => error);
     let completing: Promise<unknown> | undefined;
@@ -227,6 +234,7 @@ describePostgres("accepted comment finalization", () => {
     } finally {
       release();
       await Promise.allSettled([deleting, completing]);
+      await deletionDb.$client.end({ timeout: 1 });
     }
   }, 30_000);
 });
