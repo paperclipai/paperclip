@@ -426,6 +426,7 @@ export const storybookProjectWorkspaces: Project["workspaces"] = [
       desiredState: "running" as const,
       serviceStates: { storybook: "running" as const },
     },
+    defaultCompletionRequirement: null,
     isPrimary: true,
     runtimeServices: [createRuntimeService()],
     createdAt: recent(20_000),
@@ -464,6 +465,7 @@ export const storybookProjectWorkspaces: Project["workspaces"] = [
       desiredState: "stopped",
       serviceStates: { docs: "stopped" },
     },
+    defaultCompletionRequirement: null,
     isPrimary: false,
     runtimeServices: [
       createRuntimeService({
@@ -524,6 +526,7 @@ export const storybookProjectWorkspaces: Project["workspaces"] = [
       desiredState: "stopped",
       serviceStates: null,
     },
+    defaultCompletionRequirement: null,
     isPrimary: false,
     runtimeServices: [],
     createdAt: recent(7_200),

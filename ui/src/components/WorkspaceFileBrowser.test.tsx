@@ -136,6 +136,7 @@ function createWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWork
     sharedWorkspaceKey: null,
     metadata: null,
     runtimeConfig: null,
+    defaultCompletionRequirement: null,
     isPrimary: true,
     createdAt: new Date("2026-06-08T00:00:00.000Z"),
     updatedAt: new Date("2026-06-08T00:00:00.000Z"),
