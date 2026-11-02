@@ -10,6 +10,7 @@ import {
   projects, projectWorkspaces, routines, routineTriggers, toolApplications, toolConnections, workspaceOperations, executionWorkspaceRuntimeLeases, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
 
 const now = Date.UTC(2020, 0, 1);
@@ -162,18 +163,19 @@ describe("idle sleep admission and local work", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_IDLE_SLEEP_SAFETY_TEST_DATABASE_URL");
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${support.reason}`);
 (support.supported ? describe : describe.skip)("idle sleep durable work", () => {
   let db: ReturnType<typeof createDb>;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("idle-sleep-safety-");
-    db = createDb(database.connectionString);
+    if (!externalDatabaseUrl) database = await startEmbeddedPostgresTestDatabase("idle-sleep-safety-");
+    db = createDb(externalDatabaseUrl ?? database.connectionString, { maxConnections: 4 });
   }, 60_000);
   afterEach(async () => { await db.execute(sql`TRUNCATE companies, plugins, environments CASCADE`); });
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   const read = () => readIdleSleepSafety(db, owned, () => now, ownerId, emptyLocal);
   const readScheduled = () => readIdleSleepSafety(db, owned, () => now, ownerId, emptyLocal, undefined, undefined, true);

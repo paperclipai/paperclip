@@ -62,13 +62,38 @@ export async function readIdleIncomingWakeProof(tx: Pick<Db, "select" | "execute
   return proof;
 }
 
-/** Narrowly substitute proven rows while leaving every other ingress predicate intact. */
-export function incomingWakeWorkCheck(query: string, proof?: IdleIncomingWakeProof, continuityConnectionIds: readonly string[] = []): SQL {
-  if (proof?.capability.routes.includes("tenant-api-http-v1") && (query.startsWith("SELECT 1 FROM agent_api_keys ") || query.startsWith("SELECT 1 FROM board_api_keys "))) return sql`false`;
-  const endpointPrefix = "SELECT 1 FROM chat_endpoints endpoint WHERE ";
-  const connectionPrefix = "SELECT 1 FROM tool_connections c WHERE ";
+/** Exact domain predicates selected by stable inventory reason, never SQL-text identity. */
+export function incomingWakeWorkQuery(reason: string, proof?: IdleIncomingWakeProof, continuityConnectionIds: readonly string[] = []): SQL | undefined {
   const connectionIds = [...proof?.connectionIds ?? [], ...proof?.requiredContinuityConnectionIds.filter(id => continuityConnectionIds.includes(id)) ?? []];
-  if (proof?.endpointIds.length && query.startsWith(endpointPrefix)) return sql`EXISTS (SELECT 1 FROM chat_endpoints endpoint WHERE endpoint.id NOT IN (${sql.join(proof.endpointIds.map(id => sql`${id}::uuid`),sql`, `)}) AND (${sql.raw(query.slice(endpointPrefix.length))}))`;
-  if (connectionIds.length && query.startsWith(connectionPrefix)) return sql`EXISTS (SELECT 1 FROM tool_connections c WHERE c.id NOT IN (${sql.join(connectionIds.map(id => sql`${id}::uuid`),sql`, `)}) AND (${sql.raw(query.slice(connectionPrefix.length))}))`;
-  return sql`EXISTS (${sql.raw(query)})`;
+  if (reason === "agent_api_keys") return proof?.capability.routes.includes("tenant-api-http-v1") ? sql`SELECT 1 WHERE false` : sql`SELECT 1 FROM agent_api_keys WHERE revoked_at IS NULL`;
+  if (reason === "board_api_keys") return proof?.capability.routes.includes("tenant-api-http-v1") ? sql`SELECT 1 WHERE false` : sql`SELECT 1 FROM board_api_keys WHERE revoked_at IS NULL
+    AND (expires_at IS NULL OR expires_at > now())`;
+  if (reason === "chat_endpoints") {
+    const ids = proof?.endpointIds ?? [];
+    return sql`SELECT 1 FROM chat_endpoints endpoint WHERE ((endpoint.provider = 'slack'
+    AND endpoint.status = 'draft' AND endpoint.setup->>'step' = 'provider_setup'
+    AND (endpoint.setup - ARRAY['step', 'command']) = '{}'::jsonb
+    AND (endpoint.setup->'command' IS NULL OR endpoint.setup->'command' = 'null'::jsonb
+      OR jsonb_typeof(endpoint.setup->'command') = 'string')
+    AND endpoint.activated_at IS NULL AND endpoint.provider_account_id IS NULL
+    AND endpoint.bot_external_id IS NULL AND endpoint.bot_username IS NULL
+    AND endpoint.last_event_at IS NULL AND endpoint.last_publication_at IS NULL
+    AND endpoint.health_message IS NULL AND endpoint.last_error IS NULL
+    AND NOT EXISTS (SELECT 1 FROM chat_slack_registrations registration WHERE registration.endpoint_id = endpoint.id)
+    AND EXISTS (SELECT 1 FROM tool_connections draft_connection
+      WHERE draft_connection.id = endpoint.connection_id AND draft_connection.company_id = endpoint.company_id
+        AND draft_connection.connection_purpose = 'channel' AND draft_connection.transport = 'chat_sdk'
+        AND draft_connection.status = 'draft' AND draft_connection.enabled = false)) IS NOT TRUE) AND ${ids.length ? sql`endpoint.id NOT IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})` : sql`true`}`;
+  }
+  if (reason === "tool_connections") {
+    const ids = connectionIds;
+    return sql`SELECT 1 FROM tool_connections c WHERE (c.status <> 'archived' AND (
+    (c.status = 'draft' AND c.enabled = false)
+    OR (c.status = 'active' AND c.connection_purpose = 'ai' AND c.transport = 'runtime_auth')
+    OR (c.status = 'active' AND c.connection_purpose = 'tool' AND c.transport = 'mcp_remote'
+      AND NOT EXISTS (SELECT 1 FROM connection_grants g WHERE g.connection_id = c.id
+        AND (g.company_id <> c.company_id OR g.provider_tenant->'github' IS NOT NULL)))
+    ) IS NOT TRUE) AND ${ids.length ? sql`c.id NOT IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})` : sql`true`}`;
+  }
+  return undefined;
 }
