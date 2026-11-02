@@ -1,0 +1,195 @@
+import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { createServer } from 'node:http';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { createDb } from '@paperclipai/db';
+import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
+import { prepareMaintenanceRuntime } from './helpers/maintenance/runtime-build.js';
+import { produceCompletedToolReview } from './helpers/maintenance/configuration-producers.js';
+import { observeMaintenanceBrowser } from './helpers/maintenance/browser-observation.js';
+import { startMaintenanceServer, withMaintenanceProvider } from './helpers/maintenance/server-harness.js';
+import { CLOUD_CONTROL_AUDIENCE, CLOUD_CONTROL_HEADER, CLOUD_CONTROL_JWS_TYPE, CLOUD_RUNTIME_IDENTITY_ISSUER } from '../services/cloud-runtime-identity.js';
+
+const databaseUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_SLEEP_ACCEPTANCE_TEST_DATABASE_URL');
+if (process.env.PAPERCLIP_SLEEP_CONFIGURED_ACCEPTANCE === '1' && !databaseUrl) throw new Error('Configured acceptance requires an explicit dedicated PAPERCLIP_SLEEP_ACCEPTANCE_TEST_DATABASE_URL; embedded allocation is forbidden');
+const cloudSha = process.env.PAPERCLIP_SLEEP_CLOUD_SHA;
+if (process.env.PAPERCLIP_SLEEP_CONFIGURED_ACCEPTANCE === '1' && !/^[a-f0-9]{40}$/.test(cloudSha ?? '')) throw new Error('Configured acceptance requires the exact PAPERCLIP_SLEEP_CLOUD_SHA');
+const cloudCheckout = process.env.PAPERCLIP_SLEEP_CLOUD_CHECKOUT;
+if (process.env.PAPERCLIP_SLEEP_CONFIGURED_ACCEPTANCE === '1' && !cloudCheckout) throw new Error('Configured acceptance requires a reviewed PAPERCLIP_SLEEP_CLOUD_CHECKOUT with its built qualification broker adapter');
+const enabled = process.env.PAPERCLIP_SLEEP_CONFIGURED_ACCEPTANCE === '1' && Boolean(databaseUrl);
+const quietMs = 90_000, apiCooldownMs = 600_000;
+
+describe.skipIf(!enabled)('configured assembled sleep qualification (explicit owned external PostgreSQL only)', () => {
+  beforeAll(async () => { await prepareMaintenanceRuntime(); }, 150_000);
+  it('retains normal credentials, completed work and a future routine through a real cooldown and quiet window', async () => {
+    const collectorRequests: Array<{ path: string; body: unknown }> = [];
+    const collector = createServer(async (req, res) => {
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      collectorRequests.push({ path: req.url!, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+      res.setHeader('Content-Type', 'application/json'); res.end('{}');
+    });
+    if (execFileSync('git', ['-C', cloudCheckout!, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== cloudSha) throw new Error('Qualification Cloud checkout does not match the exact requested SHA');
+    const { startQualificationBroker } = await import(pathToFileURL(path.join(cloudCheckout!, 'scripts/sleep-qualification-broker.mjs')).href);
+    const broker = await startQualificationBroker();
+    try {
+    await withMaintenanceProvider(collector, async origin => {
+      const pair = generateKeyPairSync('ed25519');
+      const jwk = { ...pair.publicKey.export({ format: 'jwk' }), kid: 'sleep-qualification', alg: 'EdDSA', use: 'sig' };
+      const configuration = { automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetryOrigin: `${origin}/telemetry`, otelOrigin: origin, serveUi: process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' };
+      const startedAt = new Date().toISOString();
+      const server = await startMaintenanceServer(databaseUrl!, { configuration, controlJwks: JSON.stringify({ keys: [jwk] }), githubOrigin: broker.origin,
+        connector: { origin: broker.origin, instanceId: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID,
+          signPrivateKey: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY, sealPrivateKey: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY } });
+      let fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      const control = (action: string, idleCapabilities?: unknown) => {
+        const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+        const now = Math.floor(Date.now() / 1000);
+        const header = encode({ alg: 'EdDSA', typ: CLOUD_CONTROL_JWS_TYPE, kid: jwk.kid });
+        const payload = encode({ v: 1, iss: CLOUD_RUNTIME_IDENTITY_ISSUER, aud: CLOUD_CONTROL_AUDIENCE, sub: 'maintenance-stack', action, requestId: randomUUID(), iat: now, exp: now + 60, ...(idleCapabilities ? { idleCapabilities } : {}) });
+        return { [CLOUD_CONTROL_HEADER]: `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`, 'ascii'), pair.privateKey).toString('base64url')}` };
+      };
+      try {
+        const company = await server.api<{ id: string }>('POST', '/companies', { name: 'Configured sleep acceptance' });
+        const agent = await server.api<{ id: string }>('POST', `/companies/${company.id}/agents`, { name: 'Owned process worker', role: 'general', adapterType: 'process',
+          adapterConfig: { command: process.execPath, args: ['-e', "console.log('sleep-acceptance-useful-work')"], cwd: server.directory }, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true } } });
+        const chatHistory = await server.produceChatHistory();
+        const toolHistory = await produceCompletedToolReview(server, fixture, company.id);
+        const github = await server.prepareGitHub(company.id);
+        await server.api('PATCH', `/tool-connections/${github.connectionId}`, { enabled: true });
+        const githubContinuity = await server.settleGitHub(github);
+        await expect.poll(async () => (await broker.binding())?.bindings.length, { timeout: 30_000 }).toBe(1);
+        await broker.enqueue();
+        await broker.deliver(`http://127.0.0.1:${server.port}`, () => control('connector-events:wake')[CLOUD_CONTROL_HEADER]);
+        // The normally enabled connection owner leases and acknowledges the real sealed event.
+        await expect.poll(async () => {
+          const [delivery] = await fixture.$client`select status from connection_event_deliveries where provider_delivery_id='qualification-delivery'`;
+          return delivery?.status;
+        }, { timeout: 30_000 }).toBe('processed');
+        expect(await broker.pending()).toEqual([]);
+        const brokerBinding = await broker.binding();
+        expect(brokerBinding?.bindings).toHaveLength(1);
+        const key = await server.api<{ id: string; token: string }>('POST', `/agents/${agent.id}/keys`, { name: 'Retained qualification credential' });
+        const issue = await server.api<{ id: string }>('POST', `/companies/${company.id}/issues`, { title: 'Owned completed history', status: 'todo', assigneeAgentId: agent.id });
+        await expect.poll(async () => {
+          const [run] = await fixture.$client`select status from heartbeat_runs where issue_id=${issue.id} order by created_at desc limit 1`;
+          return run?.status;
+        }, { timeout: 30_000 }).toBe('succeeded');
+        await server.api('PATCH', `/issues/${issue.id}`, { status: 'done' });
+        const routine = await server.api<{ id: string }>('POST', `/companies/${company.id}/routines`, { title: 'Harmless future obligation', assigneeAgentId: agent.id });
+        await server.api('POST', `/routines/${routine.id}/triggers`, { kind: 'schedule', cronExpression: (() => { const next = new Date(Date.now() + 24 * 60 * 60_000); return `0 ${next.getUTCHours()} ${next.getUTCDate()} ${next.getUTCMonth() + 1} *`; })(), timezone: 'UTC' });
+        await server.api('GET', '/agents/me', undefined, { Authorization: `Bearer ${key.token}` });
+        const browser = process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' ? await observeMaintenanceBrowser(`http://127.0.0.1:${server.port}`) : undefined;
+        await fixture.$client.end({ timeout: 1 });
+        const lastApiActivity = performance.now();
+        await server.trace();
+        // The real authenticated-use cooldown is part of ordinary behavior.
+        // No fake clock, production timing override, tenant health poll or SQL observer.
+        await delay(apiCooldownMs + 100);
+        await server.settled();
+        const exported = collectorRequests.filter(entry => entry.path === '/v1/traces');
+        expect(exported.some(entry => JSON.stringify(entry.body).includes('sleep-qualification-stimulus'))).toBe(true);
+        expect(collectorRequests.some(entry => entry.path === '/telemetry')).toBe(true);
+        const before = await server.snapshot(), queries = server.proxy.queries.length, transport = server.proxy.transport;
+        const wallStart = performance.now(), quietStartedAt = new Date().toISOString();
+        await delay(quietMs);
+        const elapsedMs = performance.now() - wallStart, after = await server.snapshot(), finalTransport = server.proxy.transport;
+        expect(elapsedMs).toBeGreaterThanOrEqual(quietMs);
+        const sqlQueries = server.proxy.queries.length - queries;
+        expect(sqlQueries).toBe(0);
+        expect(finalTransport.connectionsOpened - transport.connectionsOpened).toBe(0);
+        expect(finalTransport.connectionsOpened - finalTransport.connectionsClosed).toBe(0);
+        expect(after.outgoingHttpRequests - before.outgoingHttpRequests).toBe(0);
+        expect(after.network.nonDatabaseBytesWritten - before.network.nonDatabaseBytesWritten).toBe(0);
+        const quietFinishedAt = new Date().toISOString();
+        const drain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));
+        const capabilities = { incomingWake: await broker.capability(drain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };
+        const read = () => server.api<any>('GET', `/instance/task-drain?idleSleepSafety=1&scheduledWake=domain-deadlines-v1&ownerId=${drain.ownerId}`, undefined, control('task-drain:read', capabilities));
+        const initial = await read(), final = await read();
+        const { parseApiWakeAdmission, authorizeApiWakeAdmission } = await import('../services/idle-api-wake-admission.js');
+        const assertIncomingProof = (report: any, incomingWake: any, ownerId: string) => {
+          expect(report.idleSleepSafety.incomingWake).toEqual(incomingWake);
+          const admission = parseApiWakeAdmission(report.idleSleepSafety.apiWakeAdmission);
+          expect(admission).toMatchObject({ stackId: 'maintenance-stack', ownerId,
+            capabilityGeneration: incomingWake.generation, challenge: incomingWake.apiKeyProof.challenge });
+          expect(authorizeApiWakeAdmission(admission, { stackId: 'maintenance-stack', token: key.token, now: Date.now() })).toBeDefined();
+        };
+        assertIncomingProof(initial, capabilities.incomingWake, drain.ownerId);
+        assertIncomingProof(final, capabilities.incomingWake, drain.ownerId);
+        expect(final.idleSleepSafety.apiWakeAdmission).toEqual(initial.idleSleepSafety.apiWakeAdmission);
+        const proof = final.idleSleepSafety;
+        const receipt = { version: 1, target: 'owned-local-assembled', appSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), cloudSha, startedAt, finishedAt: new Date().toISOString(),
+          configuration, browser, chatHistory, toolHistory, githubContinuity, brokerBinding, brokerBoundary: broker.boundary, configDigest: createHash('sha256').update(JSON.stringify(configuration)).digest('hex'),
+          features: { automaticBackups: true, announcements: true, telemetry: true, otel: true, exportedSpans: exported.length },
+          quiet: { startedAt: quietStartedAt, finishedAt: quietFinishedAt, elapsedMs, clock: 'real', sqlQueries,
+            connectionsOpened: finalTransport.connectionsOpened - transport.connectionsOpened, connectionsRemaining: finalTransport.connectionsOpened - finalTransport.connectionsClosed,
+            nonDatabaseRequests: after.outgoingHttpRequests - before.outgoingHttpRequests, nonDatabaseBytes: after.network.nonDatabaseBytesWritten - before.network.nonDatabaseBytesWritten, observerRequests: [] },
+          eligibility: { observedAt: new Date().toISOString(), backgroundWork: proof.backgroundWork, ownedHold: final.ownerId === drain.ownerId, apiCooldownElapsedMs: performance.now() - lastApiActivity,
+            unchangedGeneration: /^[a-f0-9]{64}$/.test(proof.deadlineProof?.generation ?? '') && initial.idleSleepSafety.deadlineProof?.generation === proof.deadlineProof?.generation }, initial, final,
+          live: { databaseSuspension: 'INCONCLUSIVE', hostSuspension: 'INCONCLUSIVE', backupPersistence: 'INCONCLUSIVE', reason: 'Local actual server with simulated Cloud signer; no deployed provider target authorized' },
+          coverage: { announcements: 'Enabled actual server; closed-browser no request observation. Feed network/cache behavior covered separately by announcement-feed tests.', browser: browser ? 'Actual Chromium foreground/background measured, then closed before server quiet window' : 'Closed; set PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE=1 with built UI and headed Chromium for background/active evidence', broker: 'Retained enabled connection, actual encrypted OAuth vault, actual continuity/binding owners and signed/sealed production broker delivery; host capability from actual ConnectorStore', history: 'Normal task/credential/routine, actual tool review rejection/outbox retirement, actual signed chat ingress completion and endpoint archival' } };
+        await writeFile(path.join(server.directory, 'sleep-configuration-receipt.json'), JSON.stringify(receipt, null, 2));
+        expect(proof.version).toBe(3); expect(proof.backgroundWork).toBe('none');
+        expect(proof.deadlineProof).toMatchObject({ catalog: 'domain_deadlines_v1', generation: expect.stringMatching(/^[a-f0-9]{64}$/) });
+        fixture = createDb(databaseUrl!, { maxConnections: 1 });
+        const [retained] = await fixture.$client`select (select count(*)::int from agent_api_keys where id=${key.id}) as keys, (select count(*)::int from issues where id=${issue.id}) as issues, (select count(*)::int from routines where id=${routine.id}) as routines, (select enabled from tool_connections where id=${github.connectionId}) as github_enabled`;
+        expect(retained).toEqual({ keys: 1, issues: 1, routines: 1, github_enabled: true });
+        await server.api('DELETE', `/instance/task-drain?ownerId=${drain.ownerId}`, undefined, control('task-drain:stop'));
+        const nextIssue = await server.api<{ id: string }>('POST', `/companies/${company.id}/issues`, { title: 'First ordinary producer after quiet', status: 'todo', assigneeAgentId: agent.id }, { Authorization: `Bearer ${key.token}` });
+        await expect.poll(async () => {
+          const [run] = await fixture.$client`select status from heartbeat_runs where issue_id=${nextIssue.id} order by created_at desc limit 1`;
+          return run?.status;
+        }, { timeout: 30_000 }).toBe('succeeded');
+        await server.api('PATCH', `/issues/${nextIssue.id}`, { status: 'done' });
+        const [executions] = await fixture.$client`select count(*)::int as count from heartbeat_runs where issue_id=${nextIssue.id}`;
+        expect(executions.count).toBe(1);
+        await fixture.$client.end({ timeout: 1 });
+        const reactivationApiAt = performance.now();
+        await delay(apiCooldownMs + 100);
+        await server.settled();
+        const resumed = await server.snapshot(), resumedQueries = server.proxy.queries.length, resumedTransport = server.proxy.transport;
+        const resumedStart = performance.now(), resumedStartedAt = new Date().toISOString();
+        await delay(quietMs);
+        const resumedElapsedMs = performance.now() - resumedStart;
+        const resumedEnd = await server.snapshot(), resumedFinalTransport = server.proxy.transport;
+        // Freeze every measurement before signed drain/proof requests do SQL.
+        const resumedQuiet = { startedAt: resumedStartedAt, finishedAt: new Date().toISOString(), elapsedMs: resumedElapsedMs, clock: 'real',
+          sqlQueries: server.proxy.queries.length - resumedQueries,
+          connectionsOpened: resumedFinalTransport.connectionsOpened - resumedTransport.connectionsOpened,
+          connectionsRemaining: resumedFinalTransport.connectionsOpened - resumedFinalTransport.connectionsClosed,
+          nonDatabaseRequests: resumedEnd.outgoingHttpRequests - resumed.outgoingHttpRequests,
+          nonDatabaseBytes: resumedEnd.network.nonDatabaseBytesWritten - resumed.network.nonDatabaseBytesWritten, observerRequests: [] };
+        expect(resumedQuiet.elapsedMs).toBeGreaterThanOrEqual(quietMs);
+        expect(resumedQuiet.sqlQueries).toBe(0);
+        expect(resumedQuiet.connectionsOpened).toBe(0);
+        expect(resumedQuiet.connectionsRemaining).toBe(0);
+        expect(resumedQuiet.nonDatabaseRequests).toBe(0);
+        expect(resumedQuiet.nonDatabaseBytes).toBe(0);
+        const resumedDrain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));
+        const resumedCapabilities = { incomingWake: await broker.capability(resumedDrain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };
+        const readResumed = () => server.api<any>('GET', `/instance/task-drain?idleSleepSafety=1&scheduledWake=domain-deadlines-v1&ownerId=${resumedDrain.ownerId}`, undefined, control('task-drain:read', resumedCapabilities));
+        const resumedInitial = await readResumed(), resumedProof = await readResumed();
+        assertIncomingProof(resumedInitial, resumedCapabilities.incomingWake, resumedDrain.ownerId);
+        assertIncomingProof(resumedProof, resumedCapabilities.incomingWake, resumedDrain.ownerId);
+        expect(resumedProof.idleSleepSafety.apiWakeAdmission).toEqual(resumedInitial.idleSleepSafety.apiWakeAdmission);
+        expect(resumedProof.idleSleepSafety.deadlineProof?.generation).toMatch(/^[a-f0-9]{64}$/);
+        expect(resumedProof.idleSleepSafety.deadlineProof?.generation).toBe(resumedInitial.idleSleepSafety.deadlineProof?.generation);
+        expect(resumedProof.idleSleepSafety.backgroundWork).toBe('none');
+        await writeFile(path.join(server.directory, 'sleep-local-reactivation-receipt.json'), JSON.stringify({
+          version: 1, actualProducer: 'POST company issues with process assignee using the retained opaque key after owned drain release', executions: executions.count,
+          realApiCooldownElapsedMs: performance.now() - reactivationApiAt,
+          quiet: resumedQuiet,
+          realElapsedMs: resumedQuiet.elapsedMs, sqlQueries: resumedQuiet.sqlQueries,
+          networkRequests: resumedQuiet.nonDatabaseRequests,
+          initial: resumedInitial,
+          eligibility: resumedProof.idleSleepSafety,
+          boundary: 'Actual local application reactivation, real cooldown and fresh eligibility; no provider suspension or deployed inbound-wake claim',
+        }, null, 2));
+      } finally { await server.stop(); await fixture.$client.end(); }
+    });
+    } finally { await broker.stop(); }
+  }, 1_800_000);
+});

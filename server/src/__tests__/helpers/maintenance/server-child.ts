@@ -47,7 +47,7 @@ try {
   const server = await startServer();
   const app = server.server.listeners("request")[0] as unknown as { locals: { paperclipDb: Db } };
   process.send?.({ kind: "ready", port: server.listenPort });
-  process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } }) => {
+  process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }; github?: { companyId?: string; connectionId?: string; grantId?: string } }) => {
     try {
       if (message.command === "snapshot" || message.command === "advance" || message.command === "drain" || message.command === "resume" || message.command === "freeze" || message.command === "realtime") {
         if (message.command === "freeze" && bootClock) { clearRealInterval(bootClock); bootClock = realInterval(() => mock.timers.tick(0), 10); }
@@ -60,6 +60,22 @@ try {
         if (message.command === "resume") stopTaskDrain();
         if (fakeClock) mock.timers.tick(0);
         process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now() });
+      } else if (message.command === "prepareGitHub" || message.command === "settleGitHub") {
+        const { prepareGitHubConfiguration, settleGitHubConfiguration } = await import("./github-configuration-producer.js");
+        const input = message.github;
+        if (!input) throw new Error("Missing GitHub fixture identity");
+        const result = message.command === "prepareGitHub"
+          ? await prepareGitHubConfiguration(app.locals.paperclipDb, input.companyId!)
+          : await settleGitHubConfiguration(app.locals.paperclipDb, { connectionId: input.connectionId!, grantId: input.grantId! });
+        process.send?.({ id: message.id, kind: "githubConfiguration", result });
+      } else if (message.command === "produceChatHistory") {
+        const { produceChatHistory } = await import("./chat-history-producer.js");
+        process.send?.({ id: message.id, kind: "chatHistory", result: await produceChatHistory(app.locals.paperclipDb) });
+      } else if (message.command === "trace") {
+        const { getStartupTracer } = await import("../../../instrumentation.js");
+        const span = getStartupTracer("paperclip.sleep-qualification").startSpan("sleep-qualification-stimulus");
+        span.end();
+        process.send?.({ id: message.id, kind: "traceEnded" });
       } else if (message.command === "createOrphanLease") {
         if (!message.orphanLease) throw new Error("Missing orphan lease fixture");
         const { environmentLeases } = await import("@paperclipai/db");

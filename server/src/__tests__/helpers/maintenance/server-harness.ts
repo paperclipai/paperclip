@@ -44,7 +44,33 @@ export async function withMaintenanceProvider<T>(provider: HttpServer, run: (ori
 
 type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number };
 
-export async function startMaintenanceServer(databaseUrl: string, options: { artifactRoot?: string; enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string; connector?: { origin: string; signPrivateKey: string; sealPrivateKey: string }; cloud?: { jwks: string; s3Origin: string; standby: boolean } } = {}) {
+export interface MaintenanceConfiguration {
+  automaticBackups?: { intervalMinutes: number; idleCheckpoint: boolean };
+  announcements?: boolean;
+  telemetryOrigin?: string;
+  otelOrigin?: string;
+  serveUi?: boolean;
+}
+export interface MaintenanceServerOptions {
+  artifactRoot?: string; enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string;
+  connector?: { origin: string; signPrivateKey: string; sealPrivateKey: string; instanceId?: string };
+  cloud?: { jwks: string; s3Origin: string; standby: boolean };
+  configuration?: MaintenanceConfiguration;
+  controlJwks?: string;
+}
+export async function startMaintenanceServer(databaseUrl: string, options: MaintenanceServerOptions = {}) {
+  const configuration = options.configuration;
+  for (const origin of [configuration?.telemetryOrigin, configuration?.otelOrigin]) {
+    if (!origin) continue;
+    const endpoint = new URL(origin);
+    if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+      throw new Error("Maintenance collectors must be explicit loopback HTTP endpoints");
+    }
+  }
+  if (configuration?.automaticBackups && (!Number.isInteger(configuration.automaticBackups.intervalMinutes) || configuration.automaticBackups.intervalMinutes < 1)) {
+    throw new Error("Maintenance backup interval must be a positive integer");
+  }
+  if (configuration && options.clock) throw new Error("Configured acceptance requires the real clock");
   const artifacts = await createMaintenanceArtifacts(options.artifactRoot);
   const { directory, retainedDirectory } = artifacts;
   const reservation = createServer();
@@ -72,13 +98,13 @@ export async function startMaintenanceServer(databaseUrl: string, options: { art
     const configPath = path.join(directory, "config.json");
     await writeFile(configPath, JSON.stringify({
       $meta: { version: 1, updatedAt: new Date().toISOString(), source: "onboard" },
-      database: { mode: "postgres", connectionString: proxy.url, backup: { enabled: false, dir: path.join(directory, "backups") } },
+      database: { mode: "postgres", connectionString: proxy.url, backup: { enabled: Boolean(configuration?.automaticBackups), intervalMinutes: configuration?.automaticBackups?.intervalMinutes ?? 60, dir: path.join(directory, "backups") } },
       logging: { mode: "file", logDir: path.join(directory, "logs") },
-      server: { deploymentMode: "local_trusted", exposure: "private", bind: "loopback", host: "127.0.0.1", port: address.port, serveUi: false },
+      server: { deploymentMode: "local_trusted", exposure: "private", bind: "loopback", host: "127.0.0.1", port: address.port, serveUi: configuration?.serveUi ?? false },
       storage: options.cloud ? { provider: "s3", s3: { bucket: "maintenance-test", region: "us-east-1", endpoint: options.cloud.s3Origin, forcePathStyle: true } }
         : { provider: "local_disk", localDisk: { baseDir: path.join(directory, "storage") } },
       secrets: { provider: "local_encrypted", strictMode: false, localEncrypted: { keyFilePath: path.join(directory, "master.key") } },
-      telemetry: { enabled: false }, updates: { checkEnabled: false },
+      telemetry: { enabled: Boolean(configuration?.telemetryOrigin) }, updates: { checkEnabled: false },
     }), { mode: 0o600 });
     await new Promise<void>(resolve => reservation.close(() => resolve()));
     const child = fork(fileURLToPath(new URL("./server-child.ts", import.meta.url)), [], {
@@ -88,21 +114,25 @@ export async function startMaintenanceServer(databaseUrl: string, options: { art
         PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
         PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
         PAPERCLIP_RUNNER_STATE_DIR: path.join(directory, "durable-sessions"),
-        DATABASE_URL: proxy.url, DATABASE_POOL_MAX: "6", DATABASE_APPLICATION_NAME: "maintenance-integration-test",
+        DATABASE_URL: proxy.url, DATABASE_POOL_MAX: configuration ? "4" : "6", DATABASE_APPLICATION_NAME: "maintenance-integration-test",
         PAPERCLIP_AGENT_JWT_SECRET: randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: randomUUID(),
         PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomUUID(), BETTER_AUTH_SECRET: randomUUID(),
-        CODEX_HOME: path.join(directory, "codex"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false",
-        PAPERCLIP_DB_BACKUP_ENABLED: "false", PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
+        CODEX_HOME: path.join(directory, "codex"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: String(configuration?.announcements ?? false),
+        PAPERCLIP_DB_BACKUP_ENABLED: String(Boolean(configuration?.automaticBackups)), PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
+        ...(configuration?.automaticBackups ? { PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED: configuration.automaticBackups.idleCheckpoint ? "1" : "0" } : {}),
+        ...(configuration?.telemetryOrigin ? { PAPERCLIP_TELEMETRY_ENDPOINT: configuration.telemetryOrigin } : {}),
+        ...(configuration?.otelOrigin ? { OTEL_EXPORTER_OTLP_ENDPOINT: configuration.otelOrigin, OTEL_EXPORTER_OTLP_PROTOCOL: "http/json" } : {}),
         HEARTBEAT_SCHEDULER_ENABLED: String(options.enabled ?? true),
         PAPERCLIP_MAINTENANCE_FAKE_CLOCK: String(options.clock ?? false),
         ...(options.suppressed ? { PAPERCLIP_IN_WORKTREE: "true" } : {}),
         ...(options.githubOrigin ? { PAPERCLIP_MAINTENANCE_GITHUB_ORIGIN: options.githubOrigin } : {}),
         ...(options.connector ? {
-          PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID: "maintenance-connector", PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "test",
+          PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID: options.connector.instanceId ?? "maintenance-connector", PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "test",
           PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: options.connector.signPrivateKey,
           PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY: options.connector.sealPrivateKey,
           PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: options.connector.origin,
         } : {}),
+        ...(options.controlJwks ? { PAPERCLIP_CLOUD_STACK_ID: "maintenance-stack", PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: options.controlJwks } : {}),
         ...(options.cloud ? {
           PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] } }),
           PAPERCLIP_SECRETS_MASTER_KEY: randomBytes(32).toString("hex"),
@@ -139,7 +169,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: { art
       for (const request of requests.values()) request.reject(error);
       requests.clear();
     });
-    async function request<T>(command: string, payload: { ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } } = {}): Promise<T> {
+    async function request<T>(command: string, payload: { ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }; github?: { companyId?: string; connectionId?: string; grantId?: string } } = {}): Promise<T> {
       const id = ++requestId;
       const result = new Promise<T>((resolve, reject) => requests.set(id, { resolve, reject }));
       child.send({ id, command, ...payload });
@@ -182,6 +212,15 @@ export async function startMaintenanceServer(databaseUrl: string, options: { art
         finally { if (options.clock) await request("freeze"); }
       },
       publishBackup: (publication: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }) => request("publishBackup", { publication }),
+      async prepareGitHub(companyId: string) {
+        const result = await request<{ result: { connectionId: string; grantId: string } }>("prepareGitHub", { github: { companyId } });
+        return result.result;
+      },
+      async settleGitHub(input: { connectionId: string; grantId: string }) {
+        return request("settleGitHub", { github: input });
+      },
+      produceChatHistory: () => request("produceChatHistory"),
+      trace: () => request("trace"),
       snapshot: () => request<Snapshot>("snapshot"),
       drain: () => request<Snapshot>("drain"), resume: () => request<Snapshot>("resume"),
       realtime: () => request<Snapshot>("realtime"),
