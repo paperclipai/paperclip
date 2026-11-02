@@ -1716,6 +1716,10 @@ marker is gone. Denied permissions and object locks keep a retry obligation.
 
 The sandbox holds current working files. PostgreSQL records its location,
 writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.
+S3 multipart uploads stream up to four parts concurrently. One producer reads
+the source in order, and bounded stream buffers preserve backpressure. Failed
+uploads cancel and settle their active requests before multipart cleanup.
+Snapshot publication still requires full object hash and size verification.
 Preparation creates a saved baseline, and native finalization saves the stopped
 writer's files before releasing its persistence obligation. Replacing a
 webserver reconnects to the recorded allocation without copying files back to
