@@ -21,71 +21,91 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   );
 }
 
+/** Sleep proof rejects malformed stored inputs rather than borrowing parser fallbacks. */
+export function heartbeatTimerPolicyIsWellFormed(agent: typeof agents.$inferSelect): boolean {
+  const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (!record(agent.runtimeConfig)) return false;
+  const heartbeat = agent.runtimeConfig.heartbeat;
+  if (heartbeat === undefined) return true;
+  if (!record(heartbeat)) return false;
+  for (const key of ["enabled", "wakeOnDemand", "wakeOnAssignment", "wakeOnOnDemand", "wakeOnAutomation",
+    "skipTimerWhenNoActionableWork", "requireActionableTimerWork", "issueOnlyTimer"]) {
+    if (heartbeat[key] !== undefined && typeof heartbeat[key] !== "boolean") return false;
+  }
+  for (const key of ["intervalSec", "maxConcurrentRuns", "maxDailyRuns", "dailyRunLimit", "dailyRunCap", "maxRunsPerDay",
+    "maxDailyCostCents", "dailyCostCentsLimit", "dailySpendCentsLimit", "dailyBudgetCents"]) {
+    const v = heartbeat[key];
+    if (v !== undefined && v !== null && v !== "" && (typeof v !== "number" || !Number.isFinite(v) || v < 0)) return false;
+  }
+  return true;
+}
+
 export function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    const heartbeat = parseObject(runtimeConfig.heartbeat);
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const heartbeat = parseObject(runtimeConfig.heartbeat);
 
-    return {
-      enabled: asBoolean(heartbeat.enabled, false),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
-      // A Dot binding has one external turn. Competing assignments must retain
-      // their queue position instead of claiming a second run that cannot bind.
-      maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
-        ["openai_dot", "grok_bot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
-        ? 1 : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
-      skipTimerWhenNoActionableWork: asBoolean(
-        heartbeat.skipTimerWhenNoActionableWork ??
-          heartbeat.requireActionableTimerWork ??
-          heartbeat.issueOnlyTimer,
-        false,
-      ),
-      maxDailyRuns: normalizeOptionalNonNegativeInteger(
-        heartbeat.maxDailyRuns ??
-          heartbeat.dailyRunLimit ??
-          heartbeat.dailyRunCap ??
-          heartbeat.maxRunsPerDay,
-      ),
-      maxDailyCostCents: normalizeOptionalNonNegativeInteger(
-        heartbeat.maxDailyCostCents ??
-          heartbeat.dailyCostCentsLimit ??
-          heartbeat.dailySpendCentsLimit ??
-          heartbeat.dailyBudgetCents,
-      ),
-    };
-  }
+  return {
+    enabled: asBoolean(heartbeat.enabled, false),
+    intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+    wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
+    // A Dot binding has one external turn. Competing assignments must retain
+    // their queue position instead of claiming a second run that cannot bind.
+    maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
+      ["openai_dot", "grok_bot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
+      ? 1 : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+    skipTimerWhenNoActionableWork: asBoolean(
+      heartbeat.skipTimerWhenNoActionableWork ??
+        heartbeat.requireActionableTimerWork ??
+        heartbeat.issueOnlyTimer,
+      false,
+    ),
+    maxDailyRuns: normalizeOptionalNonNegativeInteger(
+      heartbeat.maxDailyRuns ??
+        heartbeat.dailyRunLimit ??
+        heartbeat.dailyRunCap ??
+        heartbeat.maxRunsPerDay,
+    ),
+    maxDailyCostCents: normalizeOptionalNonNegativeInteger(
+      heartbeat.maxDailyCostCents ??
+        heartbeat.dailyCostCentsLimit ??
+        heartbeat.dailySpendCentsLimit ??
+        heartbeat.dailyBudgetCents,
+    ),
+  };
+}
 
-  function normalizeOptionalNonNegativeInteger(value: unknown) {
-    if (value === null || value === undefined || value === "") return null;
-    const normalized = Math.floor(asNumber(value, 0));
-    return normalized >= 0 ? normalized : null;
-  }
+function normalizeOptionalNonNegativeInteger(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const normalized = Math.floor(asNumber(value, 0));
+  return normalized >= 0 ? normalized : null;
+}
 
-  function currentUtcDayWindow(now = new Date()) {
-    const start = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate(),
-        0,
-        0,
-        0,
-        0,
-      ),
-    );
-    const end = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() + 1,
-        0,
-        0,
-        0,
-        0,
-      ),
-    );
-    return { start, end };
-  }
+function currentUtcDayWindow(now = new Date()) {
+  const start = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      0,
+      0,
+      0,
+      0,
+    ),
+  );
+  const end = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0,
+      0,
+      0,
+      0,
+    ),
+  );
+  return { start, end };
+}
+
 
 
 /** Shared by dispatch and owned, read-only sleep inspections. */

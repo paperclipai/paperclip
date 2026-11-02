@@ -1,3 +1,4 @@
+import type { IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type { VerifiedIdleCapabilities } from "./idle-incoming-wake-capability.js";
@@ -17,7 +18,7 @@ export function createIdleDeadlineInspectionBudget(now: number, expiresAt: numbe
   const elapsedLimit = Math.min(2_000, expiresAt - now - 60_000);
   let queries = 0;
   const check = () => {
-    if (elapsedLimit <= 0 || monotonicNow() - started >= elapsedLimit)
+    if (!Number.isFinite(elapsedLimit) || elapsedLimit <= 0 || monotonicNow() - started >= elapsedLimit)
       throw new IdleDeadlineInspectionBudgetExceeded("Idle deadline inspection exhausted its time budget");
   };
   return { check, beforeQuery() {
@@ -36,6 +37,7 @@ export type IdleDeadlineProofOptions = {
   verifiedCapability?: VerifiedIdleCapabilities;
   quietPluginIds: readonly string[];
   quietPluginGeneration?: string;
+  quietPluginCatalog?: readonly IdlePluginCatalogEntry[];
   scheduledWake?: ScheduledWake;
   passiveGeneration?: string;
 };
@@ -45,7 +47,7 @@ const generation = (state: unknown) => createHash("sha256").update(JSON.stringif
 export function composeIdleDeadlineProof(hold: { ownerId: string; expiresAt: number }, options: IdleDeadlineProofOptions,
   snapshots: { timers: IdleDeadlineSnapshot; jobs: IdleDeadlineSnapshot; traces: IdleDeadlineSnapshot;
     github: IdleDeadlineSnapshot & { connectionIds: string[] } }): IdleDeadlineProof {
-  if (options.verifiedCapability?.deadlineCatalog !== IDLE_DEADLINE_CATALOG || !hold.ownerId
+  if (!Number.isFinite(options.now) || options.verifiedCapability?.deadlineCatalog !== IDLE_DEADLINE_CATALOG || !hold.ownerId
     || !Number.isFinite(hold.expiresAt) || hold.expiresAt <= options.now
     || Object.values(snapshots).some(snapshot => snapshot.blocked)
     || (options.quietPluginIds.length > 0 && !options.quietPluginGeneration)) return { blocked: true };
@@ -53,7 +55,7 @@ export function composeIdleDeadlineProof(hold: { ownerId: string; expiresAt: num
   if (options.scheduledWake) deadlines.push(Date.parse(options.scheduledWake.nextWakeAt));
   if (deadlines.some(at => !Number.isFinite(at) || at <= options.now)) return { blocked: true };
   const proofGeneration = generation([IDLE_DEADLINE_CATALOG, processGeneration, hold,
-    options.quietPluginIds, options.quietPluginGeneration, options.scheduledWake, options.passiveGeneration,
+    options.quietPluginIds, options.quietPluginGeneration, options.quietPluginCatalog, options.scheduledWake, options.passiveGeneration,
     Object.entries(snapshots).map(([owner, snapshot]) => [owner, snapshot.state, snapshot.deadlines])]);
   const githubContinuity = { connectionIds: snapshots.github.connectionIds,
     generation: generation([proofGeneration, snapshots.github.connectionIds]) };
@@ -75,7 +77,7 @@ export async function readIdleDeadlineProof(tx: Pick<Db, "select">, hold: { owne
     const timers = await readIdleAgentTimerSchedule(guarded, options.now, process.env, budget.check);
     budget.check();
     if (timers.blocked) return { blocked: true };
-    const jobs = await readIdlePluginJobSchedule(guarded, options.quietPluginIds, options.now);
+    const jobs = await readIdlePluginJobSchedule(guarded, options.quietPluginIds, options.now, options.quietPluginCatalog);
     budget.check();
     if (jobs.blocked) return { blocked: true };
     const traces = await readIdleProviderTraceSchedule(guarded, options.now);

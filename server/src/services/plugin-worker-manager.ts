@@ -1,3 +1,4 @@
+import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash } from "node:crypto";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
@@ -813,6 +814,7 @@ export interface PluginWorkerManager {
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
     catalogGeneration?: string;
+    catalog?: IdlePluginCatalogEntry[];
   }>;
   releaseIdleSleep?(): void;
   /**
@@ -3889,6 +3891,8 @@ export function createPluginWorkerManager(
   );
 
   const idleWorkerIdentities = new WeakMap<PluginWorkerHandle, string>();
+  const idleWorkerManifests = new WeakMap<PluginWorkerHandle, string>();
+  const idleManagerGeneration = randomUUID();
   let nextIdleWorkerIdentity = 0;
   return {
     onConfigApplied(listener) {
@@ -3904,12 +3908,16 @@ export function createPluginWorkerManager(
         return { backgroundWork: "unknown", pluginIds: [] };
       }
       const backgroundWork = results.includes("present") ? "present" : results.includes("unknown") ? "unknown" : "none";
-      const catalogGeneration = createHash("sha256").update(JSON.stringify(snapshot.map(([id, worker]) => {
+      const catalogGeneration = createHash("sha256").update(JSON.stringify([idleManagerGeneration, snapshot.map(([id, worker]) => {
         let identity = idleWorkerIdentities.get(worker);
         if (!identity) { identity = String(++nextIdleWorkerIdentity); idleWorkerIdentities.set(worker, identity); }
-        return [id, identity];
-      }))).digest("hex");
-      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [], catalogGeneration };
+        return [id, identity, idleWorkerManifests.get(worker)];
+      })])).digest("hex");
+      const catalog = snapshot.flatMap(([pluginId, worker]) => {
+        const manifestGeneration = idleWorkerManifests.get(worker);
+        return manifestGeneration ? [{ pluginId, manifestGeneration }] : [];
+      });
+      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [], catalogGeneration, catalog };
     },
     releaseIdleSleep() {
       for (const worker of workers.values()) worker.releaseIdleSleep?.();
@@ -3938,6 +3946,7 @@ export function createPluginWorkerManager(
         duplexRouteSlots,
         ...options,
       }, () => pruneStartupWorker(handle));
+      idleWorkerManifests.set(handle, pluginIdleManifestGeneration(options.manifest));
       if (existing) retainStartupWorker(existing);
       workers.set(pluginId, handle);
 

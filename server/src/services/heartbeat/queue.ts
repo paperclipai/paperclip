@@ -343,7 +343,36 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-/** Queue admission and dispatch share the service lifecycle callbacks and execution ownership. */
+/** Exact durable timer claim used by ordinary dispatch and restart qualification. */
+export async function claimDueTimerHeartbeatForAgent(
+  db: Db,
+  agent: typeof agents.$inferSelect,
+  now: Date,
+  intervalSec: number,
+) {
+  const dueBefore = new Date(now.getTime() - intervalSec * 1000);
+  const claimed = await db.transaction(async tx => {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+    return tx
+      .update(agents)
+      .set({ lastHeartbeatAt: now, updatedAt: now })
+      .where(and(
+        eq(agents.id, agent.id),
+        eq(agents.companyId, agent.companyId),
+        or(
+          lte(agents.lastHeartbeatAt, dueBefore),
+          and(isNull(agents.lastHeartbeatAt), lte(agents.createdAt, dueBefore)),
+        ),
+      ))
+      .returning({ id: agents.id })
+      .then((rows) => rows[0] ?? null);
+  });
+  if (!claimed) return null;
+  return { wasFirstHeartbeat: !agent.lastHeartbeatAt };
+}
+
+
+/** Queue admission and dispatch share lifecycle callbacks and execution ownership. */
 export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDependencies) {
   const {
     setRunStatus,
@@ -459,31 +488,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
   }
 
-  async function claimDueTimerHeartbeat(
-    agent: typeof agents.$inferSelect,
-    now: Date,
-    intervalSec: number,
-  ) {
-    const dueBefore = new Date(now.getTime() - intervalSec * 1000);
-    const claimed = await db.transaction(async tx => {
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
-      return tx
-        .update(agents)
-        .set({ lastHeartbeatAt: now, updatedAt: now })
-        .where(and(
-          eq(agents.id, agent.id),
-          eq(agents.companyId, agent.companyId),
-          or(
-            lte(agents.lastHeartbeatAt, dueBefore),
-            and(isNull(agents.lastHeartbeatAt), lte(agents.createdAt, dueBefore)),
-          ),
-        ))
-        .returning({ id: agents.id })
-        .then((rows) => rows[0] ?? null);
-    });
-    if (!claimed) return null;
-    return { wasFirstHeartbeat: !agent.lastHeartbeatAt };
-  }
+  const claimDueTimerHeartbeat = (agent: typeof agents.$inferSelect, now: Date, intervalSec: number) =>
+    claimDueTimerHeartbeatForAgent(db, agent, now, intervalSec);
 
   function issueRunPriorityRank(priority: string | null | undefined) {
     switch (priority) {

@@ -18,8 +18,12 @@ export function projectIdleProviderTraceSchedule(rows: IdleProviderTraceRow[], n
       continue;
     }
     const objectRef = objectProviderTraceRef(trace.traceRef);
+    const localRef = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.ndjson$/.test(trace.traceRef);
+    // Local remove writes its tombstone only after both sidecars are absent.
+    // Object remove instead persists debt first and needs the cleanup marker.
+    if (localRef && trace.status === "deleted" && trace.deletedAt) continue;
     if (importingProviderTraceRef(trace.traceRef) || (objectRef && (objectRef[1] !== trace.companyId || objectRef[2] !== trace.runId))
-      || (!objectRef && !/^[a-f0-9-]{36}\.ndjson$/.test(trace.traceRef))
+      || (!objectRef && !localRef)
       || trace.deletedAt || !["complete", "incomplete", "truncated"].includes(trace.status)) return blocked();
     const at = trace.expiresAt.getTime();
     if (!isFutureIdleDeadline(at, now)) return blocked();

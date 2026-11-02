@@ -1,3 +1,4 @@
+import { pluginIdleManifestGeneration } from "./plugin-idle-catalog.js";
 import type { Db } from "@paperclipai/db";
 import { describe, expect, it } from "vitest";
 import { composeIdleDeadlineProof, createIdleDeadlineInspectionBudget, deadlineWorkReplacement, readIdleDeadlineProof,
@@ -65,15 +66,16 @@ describe("domain deadline handoff", () => {
   });
 });
 
-const pluginJob = (): IdlePluginJobRow => ({ job: { id: "job", pluginId: "plugin", jobKey: "daily", status: "active", schedule: "0 * * * *", nextRunAt: new Date(now + 600_000) } as IdlePluginJobRow["job"], plugin: { id: "plugin", status: "ready", manifestJson: { jobs: [{ jobKey: "daily", schedule: "0 * * * *" }] } } as IdlePluginJobRow["plugin"], unsettled: false });
+const pluginJob = (): IdlePluginJobRow => ({ job: { id: "job", pluginId: "plugin", jobKey: "daily", status: "active", schedule: "0 * * * *", nextRunAt: new Date(now + 600_000) } as IdlePluginJobRow["job"], plugin: { id: "plugin", pluginKey: "fixture", version: "1.0.0", apiVersion: 1, status: "ready", manifestJson: { id: "fixture", version: "1.0.0", apiVersion: 1, jobs: [{ jobKey: "daily", schedule: "0 * * * *" }] } } as IdlePluginJobRow["plugin"], unsettled: false });
 it("plugin jobs require exact quiet catalog/declaration and retain unsettled/missing/due work", () => {
   const row = pluginJob();
-  expect(projectIdlePluginJobSchedule([row], ["plugin"], now).deadlines).toEqual([now + 600_000]);
+  const catalog = [{ pluginId: "plugin", manifestGeneration: pluginIdleManifestGeneration(row.plugin!.manifestJson) }];
+  expect(projectIdlePluginJobSchedule([row], ["plugin"], now, catalog).deadlines).toEqual([now + 600_000]);
   expect(projectIdlePluginJobSchedule([row], [], now).blocked).toBe(true);
   for (const edit of [{ unsettled: true }, { job: { ...row.job, nextRunAt: null } }, { job: { ...row.job, nextRunAt: new Date(now) } }])
-    expect(projectIdlePluginJobSchedule([{ ...row, ...edit }], ["plugin"], now).blocked).toBe(true);
+    expect(projectIdlePluginJobSchedule([{ ...row, ...edit }], ["plugin"], now, catalog).blocked).toBe(true);
   row.plugin!.manifestJson.jobs![0].schedule = "*/5 * * * *";
-  expect(projectIdlePluginJobSchedule([row], ["plugin"], now).blocked).toBe(true);
+  expect(projectIdlePluginJobSchedule([row], ["plugin"], now, catalog).blocked).toBe(true);
   row.job.status = "paused";
   expect(projectIdlePluginJobSchedule([row], [], now)).toMatchObject({ blocked: false, deadlines: [] });
 });

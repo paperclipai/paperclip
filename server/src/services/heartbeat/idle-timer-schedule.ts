@@ -1,9 +1,9 @@
 import { agents, companies, type Db } from "@paperclipai/db";
-import { AGENT_STATUSES } from "@paperclipai/shared";
+import { AGENT_STATUSES, COMPANY_STATUSES } from "@paperclipai/shared";
 import { eq, getTableColumns } from "drizzle-orm";
 import { evaluateAgentInvokability } from "../agent-invokability.js";
 import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
-import { createHeartbeatTimerPolicy } from "./timer-policy.js";
+import { createHeartbeatTimerPolicy, heartbeatTimerPolicyIsWellFormed } from "./timer-policy.js";
 import { idleDeadlineRowLimit, isFutureIdleDeadline, type IdleDeadlineSnapshot } from "../idle-deadline-types.js";
 
 /** Normal Cloud scheduling only. Worktree overrides/restore are not a transferable execution authority. */
@@ -26,8 +26,9 @@ export async function readIdleAgentTimerSchedule(tx: Pick<Db, "select">, now: nu
   const deadlines: number[] = [];
   for (const { agent, companyStatus } of rows) {
     checkBudget();
-    if (!AGENT_STATUSES.includes(agent.status as typeof AGENT_STATUSES[number]) || !companyStatus || agent.status === "running") return blocked();
+    if (!AGENT_STATUSES.includes(agent.status as typeof AGENT_STATUSES[number]) || !companyStatus || !COMPANY_STATUSES.includes(companyStatus as typeof COMPANY_STATUSES[number]) || agent.status === "running") return blocked();
     if (companyStatus !== "active") continue;
+    if (!heartbeatTimerPolicyIsWellFormed(agent)) return blocked();
     const policy = owner.parseHeartbeatPolicy(agent);
     if (!Number.isFinite(policy.intervalSec)) return blocked();
     if (!policy.enabled || policy.intervalSec <= 0 || !supportsUnscopedTimerHeartbeat(agent)) continue;
