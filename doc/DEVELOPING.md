@@ -1095,8 +1095,11 @@ allows the ten-second shutdown protocol and client/database cleanup to finish
 before the test runner ends a worker. A shutdown timeout still fails the hook.
 Template publication uses `pg_ctl` to request clean fast shutdown on every
 supported platform and allows thirty seconds for it. A template is never
-published after immediate shutdown or a crash. Cancellation also waits for
-owned cluster-directory cleanup after the test processes and PostgreSQL exit.
+published after immediate shutdown or a crash. Cancelling the shared-server
+command also waits for its owned cluster-directory cleanup after the test
+processes and PostgreSQL exit. Direct worker termination stops PostgreSQL but
+retains its disposable files for inspection; the synchronous exit guard cannot
+await directory removal.
 Stopped cluster directories are removed asynchronously, and cleanup awaits their
 removal. Large suites can leave many relation files; deleting them must not block
 the worker's event loop. The idle-sleep suite uses the existing 90-second fixture
