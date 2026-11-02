@@ -16,6 +16,7 @@ const record = (value: unknown): Record<string, unknown> | null =>
 
 export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: string, now: number): Promise<{
   blocked: boolean;
+  inspectionComplete?: false;
   scheduledWake?: ScheduledWake;
   generation?: string;
 }> {
@@ -56,7 +57,7 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     FROM issues i JOIN companies c ON c.id = i.company_id
     LEFT JOIN agents a ON a.id = i.assignee_agent_id AND a.company_id = i.company_id
     WHERE i.status NOT IN ('done', 'cancelled') ORDER BY i.id LIMIT ${limit + 1}`);
-  if (rows.length > limit) return { blocked: true };
+  if (rows.length > limit) return { blocked: true, inspectionComplete: false };
   let earliest = Infinity;
   for (const row of rows) {
     const policy = record(row.execution_policy);

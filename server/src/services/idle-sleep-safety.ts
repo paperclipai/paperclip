@@ -391,17 +391,17 @@ export async function readIdleSleepSafety(
       if (scheduledRoutines) {
         if (!owned()) return undefined;
         const schedule = await readIdleRoutineSchedule(tx, ownerId!, now());
-        diagnostic?.record("routines.schedule", schedule.blocked ? "present" : "none");
+        diagnostic?.record("routines.schedule", schedule.inspectionComplete === false ? "unknown" : schedule.blocked ? "present" : "none");
         if (schedule.blocked && !diagnostic) return true;
-        found ||= schedule.blocked;
+        found ||= schedule.blocked && schedule.inspectionComplete !== false;
         scheduledWake = schedule.scheduledWake;
       }
       if (scheduledIssueMonitors) {
         if (!scheduledRoutines || !owned()) return undefined;
         const schedule = await readIdleIssueSchedule(tx, ownerId!, now());
-        diagnostic?.record("issues.schedule", schedule.blocked ? "present" : "none");
+        diagnostic?.record("issues.schedule", schedule.inspectionComplete === false ? "unknown" : schedule.blocked ? "present" : "none");
         if (schedule.blocked && !diagnostic) return true;
-        found ||= schedule.blocked;
+        found ||= schedule.blocked && schedule.inspectionComplete !== false;
         scheduledWake = combineIdleSchedules(scheduledWake, schedule.scheduledWake, schedule.generation);
       }
       return found;
