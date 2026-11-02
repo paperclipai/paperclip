@@ -15,9 +15,10 @@ export function createObservedReader(api: Pick<ConnectionApi, "get">, deadlineAt
       while (Date.now() < deadline()) {
         try { return await api.get<T>(route); }
         catch (error) {
-          if (!(error instanceof ConnectionFailure) || !(error.message === "api_request_failed"
-            || /^api_status_(408|429|502|503|504)$/.test(error.message))) throw error;
-          failures.push({ route, code: error.message });
+          if (!(error instanceof ConnectionFailure)) throw error;
+          const code = error.message;
+          if (code === "api_request_failed" || /^api_status_[1-5][0-9]{2}$/.test(code)) failures.push({ route, code });
+          if (!(code === "api_request_failed" || /^api_status_(408|429|502|503|504)$/.test(code))) throw error;
           const remaining = deadline() - Date.now();
           if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining)));
         }
