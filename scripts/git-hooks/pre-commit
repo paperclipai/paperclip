@@ -52,7 +52,15 @@ if ! git cat-file -e ":$TESTFILE" 2>/dev/null; then
 fi
 
 # The file can survive while the fix inside it is reverted.
-if ! git show ":$SERVICE" 2>/dev/null | grep -q "$MARKER"; then
+#
+# Read the blob into a variable FIRST, then match it. A `git show | grep -q`
+# pipeline is WRONG here: `grep -q` exits on the first match, `git show` is
+# killed by SIGPIPE (141), and `pipefail` (set above) turns that into a
+# failed pipeline. The guard then REFUSED EVERY COMMIT in the deployed tree
+# even though the fix was present. Capture-then-match has no pipe, so there
+# is no SIGPIPE to misread as a missing marker.
+service_blob="$(git show ":$SERVICE" 2>/dev/null || true)"
+if [[ "$service_blob" != *"$MARKER"* ]]; then
   refuse "$SERVICE would lose the $MARKER fix in this commit."
 fi
 

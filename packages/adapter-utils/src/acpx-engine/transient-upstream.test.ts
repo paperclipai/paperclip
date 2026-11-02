@@ -29,13 +29,15 @@ describe("classifyTransientUpstreamFailure", () => {
     });
   });
 
-  it("classifies an upstream context-window refusal as transient", () => {
+  it("does not classify an upstream context-window refusal as a transport fault", () => {
+    // A context-window overflow is an upstream refusal, but it is a property
+    // of the ACCUMULATED context, not of the transport. It gets its own error
+    // code so the heartbeat routes it to the re-seed path instead of
+    // replaying the same oversized prompt. See ./context-overflow.ts.
     const message =
       "Internal error: API Error: 400 invalid params, context window exceeds limit (2013)";
-    expect(isTransientUpstreamTransportFailure(message)).toBe(true);
-    expect(classifyTransientUpstreamFailure(message)?.errorCode).toBe(
-      "acpx_transient_upstream",
-    );
+    expect(isTransientUpstreamTransportFailure(message)).toBe(false);
+    expect(classifyTransientUpstreamFailure(message)).toBeNull();
   });
 
   it.each([

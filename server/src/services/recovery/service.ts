@@ -242,6 +242,11 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "codex_transient_upstream",
   "claude_transient_upstream",
   "acpx_transient_upstream",
+  // A context-window overflow is an upstream refusal too. It carries its own
+  // code so the retry can re-seed with a bounded context instead of replaying
+  // the same oversized prompt, but it is still recoverable, so the
+  // infra-continuation ladder must treat it as transient (TON-868).
+  "acpx_transient_upsert",
   "provider_quota",
   "timeout",
 ]);

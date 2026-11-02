@@ -32,11 +32,20 @@ for path in "$SERVICE" "$TESTFILE"; do
 done
 
 # The file can survive while the fix inside it is reverted.
-if git cat-file -e ":$SERVICE" 2>/dev/null && ! git show ":$SERVICE" | grep -q "$MARKER"; then
-  echo "pre-merge-commit: REFUSING the merge." >&2
-  echo "  $SERVICE would lose the $MARKER fix in this merge." >&2
-  echo "  Undo with 'git merge --abort'." >&2
-  exit 1
+#
+# Capture the blob FIRST, then match. A `git show | grep -q` pipeline is
+# WRONG here: `grep -q` exits on the first match, `git show` is killed by
+# SIGPIPE (141), and `pipefail` turns that into a failed pipeline - which
+# reads as "the marker is missing" and refuses the merge spuriously.
+service_blob=""
+if git cat-file -e ":$SERVICE" 2>/dev/null; then
+  service_blob="$(git show ":$SERVICE" 2>/dev/null || true)"
+  if [[ "$service_blob" != *"$MARKER"* ]]; then
+    echo "pre-merge-commit: REFUSING the merge." >&2
+    echo "  $SERVICE would lose the $MARKER fix in this merge." >&2
+    echo "  Undo with 'git merge --abort'." >&2
+    exit 1
+  fi
 fi
 
 exit 0

@@ -23,17 +23,11 @@ const TRANSIENT_UPSTREAM_TRANSPORT_PATTERNS: readonly RegExp[] = [
   /\boverloaded(?:_error)?\b/i,
   /\bserver\s+overloaded\b/i,
   /\bservice\s+unavailable\b/i,
-  // The upstream refused the request because the accumulated conversation no
-  // longer fits the model's context window (MiniMax-M2.7 answers
-  // "400 invalid params, context window exceeds limit (2013)"). This is the
-  // same condition as a stream cut, seen at a different point: either the
-  // upstream rejects the request outright, or it accepts it and then drops the
-  // SSE stream part-way through the response once the window is exceeded. Both
-  // are upstream-side refusals rather than protocol faults, and both are
-  // recoverable by retrying on a fresh session - the retry carries a small
-  // continuation summary instead of the accumulated transcript that blew the
-  // window.
-  /context\s+window\s+exceeds\s+limit/i,
+  // A context-window refusal ("400 invalid params, context window exceeds
+  // limit (2013)") is NOT a transport interruption: it is a property of the
+  // accumulated conversation, and replaying the same context dies
+  // identically. It therefore has its own error code and its own re-seed
+  // path - see ./context-overflow.ts.
 ];
 
 export type TransientUpstreamFailure = {

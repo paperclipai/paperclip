@@ -64,4 +64,27 @@ describe("readHeartbeatRunErrorFamily", () => {
       }),
     ).toBeNull();
   });
+
+  it("maps the context-window overflow code onto the transient_upstream family", () => {
+    // TON-868: the overflow keeps the FAMILY (so the bounded retry ladder
+    // still engages) but carries its own CODE (so the retry re-seeds with a
+    // bounded context instead of replaying the oversized prompt).
+    expect(
+      readHeartbeatRunErrorFamily({
+        errorCode: "acpx_transient_upsert",
+        error: "400 invalid params, context window exceeds limit (2013)",
+        resultJson: null,
+      }),
+    ).toBe("transient_upstream");
+  });
+
+  it("does not classify an auth failure on the overflow code path as transient", () => {
+    expect(
+      readHeartbeatRunErrorFamily({
+        errorCode: "acpx_turn_failed",
+        error: "Invalid API key",
+        resultJson: null,
+      }),
+    ).toBeNull();
+  });
 });

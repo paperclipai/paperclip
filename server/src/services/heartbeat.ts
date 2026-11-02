@@ -213,6 +213,15 @@ import {
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import { CONTEXT_OVERFLOW_ERROR_CODE } from "@paperclipai/adapter-utils/acpx-engine/context-overflow";
+import {
+  boundAncestors,
+  boundContinuationSummary,
+  boundIssueDescription,
+  buildContextReseedSnapshot,
+  readContextReseedDirective,
+  CONTEXT_RESEED_NOTE,
+} from "./context-reseed.js";
 import {
   readPaperclipSkillSyncPreference,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
@@ -419,6 +428,14 @@ export function readHeartbeatRunErrorFamily(
   if (run.errorCode === "acpx_transient_upstream") {
     return "transient_upstream";
   }
+  // A context-window overflow carries its own code (`acpx_transient_upsert`)
+  // but stays in the transient_upstream FAMILY: the request was refused
+  // upstream and a retry CAN recover - but only if the retry re-seeds the
+  // prompt with a bounded context. The family keeps the bounded retry ladder
+  // engaged; the CODE is what selects the re-seed path (TON-868).
+  if (run.errorCode === CONTEXT_OVERFLOW_ERROR_CODE) {
+    return "transient_upstream";
+  }
   // Generic adapter failures that are actually an upstream rate-limit refusal
   // (the adapter returned `adapter_failed` with "Rate limit exceeded" text and
   // no structured family). Classifying them here lets the quota-backoff enqueue
@@ -428,6 +445,22 @@ export function readHeartbeatRunErrorFamily(
     return "provider_quota";
   }
   return null;
+}
+
+/**
+ * True when the run failed with the context-window overflow code.
+ *
+ * Such a run must not be replayed verbatim: the prompt is rebuilt from the
+ * same issue context on every attempt, so the retry overflows again. The
+ * retry is instead marked as a re-seed so the next attempt uses a bounded
+ * context (TON-868).
+ */
+function isContextWindowOverflowRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+) {
+  if (run.errorCode === CONTEXT_OVERFLOW_ERROR_CODE) return true;
+  const resultJson = parseObject(run.resultJson);
+  return resultJson.errorCode === CONTEXT_OVERFLOW_ERROR_CODE;
 }
 
 function isMaxTurnExhaustionRun(
@@ -9151,11 +9184,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const shouldQuarantineWorkspaceForRetry =
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
+    // A context-window overflow is not replayable: the prompt is rebuilt from
+    // the same issue context on every attempt, so retrying it unchanged dies
+    // identically. Mark the retry as a RE-SEED attempt so the next attempt
+    // rebuilds the prompt from a bounded context instead (TON-868).
+    const isContextOverflowRetry = isContextWindowOverflowRun(run);
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason,
       retryReason,
+      ...(isContextOverflowRetry
+        ? buildContextReseedSnapshot({ sourceRunId: run.id, attempt: schedule.attempt })
+        : {}),
       ...(shouldQuarantineWorkspaceForRetry
         ? {
             workspaceValidationRecovery: {
@@ -11442,11 +11483,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueAncestors = issueRef
       ? await issuesSvc.getAncestors(issueRef.id)
       : [];
+    // A re-seed attempt rebuilds the prompt from a BOUNDED context. The
+    // previous attempt overflowed the upstream context window, and replaying
+    // the same accumulated context dies identically - so the retry shrinks the
+    // context instead of replaying it (TON-868).
+    const reseedDirective = readContextReseedDirective(context);
+    const boundedDescription = reseedDirective
+      ? boundIssueDescription(issueRef?.description)
+      : null;
+    const boundedAncestors = reseedDirective ? boundAncestors(issueAncestors) : issueAncestors;
+    const boundedSummaryBody = reseedDirective
+      ? boundContinuationSummary(safeContinuationSummary?.body)
+      : null;
+    // The bounded summary must be built from the REDACTED summary, and the
+    // wake payload must carry that same bounded+redacted body - never the raw
+    // one - or a re-seed would leak quarantined text into the prompt.
+    const effectiveContinuationSummary =
+      continuationSummary && boundedSummaryBody
+        ? {
+            ...continuationSummary,
+            body: boundedSummaryBody.text ?? continuationSummary.body,
+          }
+        : continuationSummary;
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
         key: safeContinuationSummary!.key,
         title: safeContinuationSummary!.title,
-        body: safeContinuationSummary!.body,
+        body: boundedSummaryBody?.text ?? safeContinuationSummary!.body,
         sourceTrust: safeContinuationSummary!.sourceTrust ?? null,
         updatedAt: safeContinuationSummary!.updatedAt.toISOString(),
       };
@@ -11469,7 +11532,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       db,
       companyId: agent.companyId,
       contextSnapshot: context,
-      continuationSummary,
+      continuationSummary: effectiveContinuationSummary,
       issueSummary: issueRef
         ? {
             id: issueRef.id,
@@ -11496,10 +11559,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             identifier: issueRef.identifier,
             title: issueRef.title,
             workMode: issueRef.workMode,
-            description: issueRef.description,
+            description: boundedDescription ? boundedDescription.text : issueRef.description,
           }
         : null,
-      ancestors: issueAncestors,
+      ancestors: boundedAncestors,
       wakeComment: safeWakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
@@ -11509,12 +11572,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
         && Object.keys(parseObject(context.acceptedPlanWakeRouting)).length === 0,
     });
+    // A re-seeded prompt must say so: the agent is looking at a truncated
+    // context and needs to know the issue thread holds the authoritative
+    // state.
+    const finalTaskMarkdown =
+      taskMarkdown && reseedDirective ? `${taskMarkdown}\n\n${CONTEXT_RESEED_NOTE}` : taskMarkdown;
     if (issueRef) {
       context.paperclipIssue = {
         id: issueRef.id,
         identifier: issueRef.identifier,
         title: issueRef.title,
-        description: issueRef.description,
+        description: boundedDescription ? boundedDescription.text : issueRef.description,
         workMode: issueRef.workMode,
       };
     } else {
@@ -11525,8 +11593,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipWakeComment;
     }
-    if (taskMarkdown) {
-      context.paperclipTaskMarkdown = taskMarkdown;
+    if (finalTaskMarkdown) {
+      context.paperclipTaskMarkdown = finalTaskMarkdown;
     } else {
       delete context.paperclipTaskMarkdown;
     }

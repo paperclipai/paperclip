@@ -61,6 +61,7 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+import { classifyContextWindowOverflowFailure } from "./context-overflow.js";
 import { classifyTransientUpstreamFailure } from "./transient-upstream.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -1441,6 +1442,21 @@ function classifyError(
   // An upstream transport interruption (dropped SSE stream, reset socket) is a
   // transient fault, not a deterministic protocol error. Classify it as such so
   // the heartbeat schedules a bounded retry instead of killing the run.
+  // A context-window overflow is checked BEFORE the transport family. It is
+  // an upstream refusal, but a retry that replays the same accumulated
+  // context dies identically - so it needs its own code and its own
+  // (re-seeding) retry path.
+  const contextOverflow =
+    classifyContextWindowOverflowFailure(message) ??
+    classifyContextWindowOverflowFailure(causeMessage) ??
+    null;
+  if (contextOverflow) {
+    return {
+      errorCode: contextOverflow.errorCode,
+      errorFamily: contextOverflow.errorFamily,
+      errorMeta: { category: "context_overflow", ...baseMeta },
+    };
+  }
   const transientUpstream =
     classifyTransientUpstreamFailure(message) ??
     classifyTransientUpstreamFailure(causeMessage) ??
@@ -1858,6 +1874,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       }
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
+      // Detect a context-window overflow as soon as the turn result is known:
+      // the cleanup below must DISCARD the persisted ACP session state, or the
+      // next retry resumes the very conversation that overflowed the window.
+      const terminalContextOverflow =
+        terminal.status === "failed"
+          ? classifyContextWindowOverflowFailure(terminal.error?.message)
+          : null;
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
         const existing = warmHandles.get(prepared.sessionKey);
         if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
@@ -1866,13 +1889,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             key: prepared.sessionKey,
             entry: existing,
             reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-            discardPersistentState: terminal.status === "cancelled" || timedOut,
+            discardPersistentState:
+              terminal.status === "cancelled" || timedOut || Boolean(terminalContextOverflow),
           });
         } else {
           await runtime.close({
             handle: sessionHandle,
             reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-            discardPersistentState: terminal.status === "cancelled" || timedOut,
+            discardPersistentState:
+              terminal.status === "cancelled" || timedOut || Boolean(terminalContextOverflow),
           }).catch(() => {});
         }
       } else if (prepared.mode === "persistent" && warmIdleMs > 0) {
@@ -1933,20 +1958,30 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // session. Reporting it as a deterministic `acpx_turn_failed` made the
       // heartbeat treat it as non-retryable, so a single dropped connection
       // killed the whole run with no recovery (TON-639).
+      const terminalContextOverflowFailure =
+        terminalContextOverflow ??
+        (terminal.status === "failed"
+          ? (classifyContextWindowOverflowFailure(terminalStopReason) ??
+            classifyContextWindowOverflowFailure(errorMessage))
+          : null);
       const terminalTransientUpstream =
-        terminal.status === "failed"
-          ? (classifyTransientUpstreamFailure(terminalStopReason) ??
-            classifyTransientUpstreamFailure(errorMessage))
-          : null;
+        terminalContextOverflowFailure
+          ? null
+          : terminal.status === "failed"
+            ? (classifyTransientUpstreamFailure(terminalStopReason) ??
+              classifyTransientUpstreamFailure(errorMessage))
+            : null;
       return {
         exitCode: terminal.status === "completed" ? 0 : 1,
         signal: timedOut ? "SIGTERM" : null,
         timedOut,
         errorMessage,
         errorCode:
+          terminalContextOverflowFailure?.errorCode ??
           terminalTransientUpstream?.errorCode ??
           (terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null),
-        errorFamily: terminalTransientUpstream?.errorFamily ?? null,
+        errorFamily:
+          terminalContextOverflowFailure?.errorFamily ?? terminalTransientUpstream?.errorFamily ?? null,
         sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -1967,7 +2002,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // The upstream stream was cut mid-response, so the session's last
         // assistant message is truncated. Resuming it would replay the same
         // broken turn, so drop the session and let the retry start clean.
-        clearSession: clearSession || Boolean(terminalTransientUpstream),
+        clearSession: clearSession || Boolean(terminalTransientUpstream) || Boolean(terminalContextOverflowFailure),
       };
     } catch (err) {
       if (timeout) clearTimeout(timeout);
