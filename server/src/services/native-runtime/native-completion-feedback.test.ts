@@ -32,8 +32,8 @@ describe("native final-response feedback", () => {
     } }) as { document: { id: string; latestRevisionId: string }; documentHref: string };
     return { companyId, agentId, issueId, runId, saved };
   }
-  async function publishedFileReport(value: Awaited<ReturnType<typeof fixture>>): Promise<PrpStructuredRunResult> {
-    await db.update(issues).set({ description: "Save a document on this task. Export the results as a CSV." }).where(eq(issues.id, value.issueId));
+  async function publishedFileReport(value: Awaited<ReturnType<typeof fixture>>, objective = "Save a document on this task. Export the results as a CSV."): Promise<PrpStructuredRunResult> {
+    await db.update(issues).set({ description: objective }).where(eq(issues.id, value.issueId));
     const bytes = Buffer.from("category,total\nverified,3\n");
     const authority = new PaperclipRunnerToolAuthority(db, { companyId: value.companyId, agentId: value.agentId,
       issueId: value.issueId, runId: value.runId, workspaceRoot: "/workspace/test", executionTargetKind: "remote", readRemoteTaskFile: async () => bytes });
@@ -233,6 +233,16 @@ describe("native final-response feedback", () => {
         : { ...report, completionClaim: { ...report.completionClaim, criteria: [{ criterionId: "document", status: "satisfied" as const, evidenceRefs: [href!] }] } };
     await expect(nativeCompletionFeedback(db, value.runId, referenced))
       .resolves.toContain("Completion report accepted");
+  });
+  it("accepts its generated document guidance link when the objective requests only a CSV", async () => {
+    const value = await fixture();
+    const report = await publishedFileReport(value, "Export the results as a CSV.");
+    const feedback = await nativeCompletionFeedback(db, value.runId, report);
+    const href = /\[Saved document\]\(([^)]+)\)/u.exec(feedback)?.[1];
+    expect(href).toBe(value.saved.documentHref);
+    await expect(nativeCompletionFeedback(db, value.runId, {
+      ...report, evidence: [...report.evidence, { ref: href! }],
+    })).resolves.toContain("Completion report accepted");
   });
   it("retains foreign task, foreign company, bogus link, and local file guards", async () => {
     const current = await fixture(), otherTask = await fixture(current.companyId), otherCompany = await fixture();
