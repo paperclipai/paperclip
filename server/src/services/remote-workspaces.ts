@@ -21,6 +21,7 @@ import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
@@ -202,7 +203,7 @@ export async function reserveRemoteWorkspace(input: {
         if (prior?.status === "running") {
           const writerIssueId = prior.nativeIssueId ?? prior.issueId ?? prior.contextIssueId;
           const [writerIssue] = writerIssueId ? await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
-            .where(and(eq(issues.companyId, input.companyId), sql`${issues.id}::text = ${writerIssueId}`)) : [];
+            .where(and(eq(issues.companyId, input.companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`)))) : [];
           if (writerIssue) throw new RemoteWorkspaceWriterActiveError(existing.id, {
             runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
             lastActivityAt: prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt,
