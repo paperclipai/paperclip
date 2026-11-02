@@ -31,7 +31,7 @@ export function issueDisplayStatusSql(): SQL<IssueDisplayStatus> {
       SELECT 1 FROM issue_recovery_actions display_recovery
       WHERE display_recovery.company_id = ${companyId}
         AND display_recovery.source_issue_id = ${issueId}
-        AND display_recovery.status = 'active'
+        AND display_recovery.status IN ('active', 'escalated')
     )
     THEN 'monitoring' ELSE ${issues.status} END`;
 }

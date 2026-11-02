@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import request from "supertest";
-import { agents, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { agents, heartbeatRuns, issueRecoveryActions, issues, statusCards } from "@paperclipai/db";
 import { companySearchQuerySchema, createIssueSchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "../services/issue-display-status.js";
 import { issueService } from "../services/issues.js";
 import { companySearchService } from "../services/company-search.js";
+import { statusCardService } from "../services/status-cards.js";
 import { issueRoutes } from "../routes/issues.js";
 import {
   describeEmbeddedPostgres, routeApp,
@@ -51,6 +52,8 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
     expect(result.results[0]?.issue).toMatchObject({ id: f.issueId, status: "in_progress", displayStatus: "monitoring" });
     expect(result.filterOptionCounts.displayStatus?.monitoring).toBe(1);
     expect(result.filterOptionCounts.status.in_progress).toBe(1);
+    const [card] = await ctx.db.insert(statusCards).values({ companyId: f.companyId, interestPrompt: "Watch deployment", mentionedIssueIds: [f.issueId], refreshPolicy: { mode: "manual" } }).returning();
+    expect(await statusCardService(ctx.db).listMentionedIssues(card!)).toEqual([expect.objectContaining({ id: f.issueId, status: "in_progress", displayStatus: "monitoring" })]);
     // Existing agent/API lifecycle filters keep their original meaning.
     expect(await svc.count(f.companyId, { status: "in_progress" })).toBe(1);
     expect(createIssueSchema.safeParse({ title: "Manual monitoring", status: "monitoring" }).success).toBe(false);
@@ -102,6 +105,8 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
   it("keeps recovery and review holds visible and never writes a new lifecycle state", async () => {
     const f = await fixture();
     await ctx.db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "source", ownerType: "board", cause: "process_lost", fingerprint: randomUUID(), nextAction: "Inspect stopped run" });
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
+    await ctx.db.execute(sql`UPDATE issue_recovery_actions SET status = 'escalated' WHERE source_issue_id = ${f.issueId}`);
     expect((await displayStatus(f.issueId)).displayStatus).toBe("in_progress");
     await ctx.db.execute(sql`UPDATE issue_recovery_actions SET status = 'resolved' WHERE source_issue_id = ${f.issueId}`);
     expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");

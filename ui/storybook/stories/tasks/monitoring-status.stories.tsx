@@ -7,6 +7,9 @@ import { IssueDetail } from "@/pages/IssueDetail";
 import { Issues } from "@/pages/Issues";
 import { Search } from "@/pages/Search";
 import { Dashboard } from "@/pages/Dashboard";
+import { Inbox } from "@/pages/Inbox";
+import { UserProfile } from "@/pages/UserProfile";
+import { StatusCardDetailDrawer } from "@/pages/StatusCards/StatusCardDetailDrawer";
 import { PluginLauncherProvider } from "@/plugins/launchers";
 import { StatusIcon } from "@/components/StatusIcon";
 import { IssueStatusBadge } from "@/components/StatusBadge";
@@ -14,6 +17,7 @@ import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { IssueSiblingNavigation } from "@/components/IssueSiblingNavigation";
 import { AgentTaskCard } from "@/components/chat/AgentWorkPanels";
 import { installFixtureApi } from "../../support/capability-gaps/api";
+import { makeStatusCard } from "../../support/capability-gaps/status-cards";
 import { storybookIssues, storybookAgents } from "../../fixtures/paperclipData";
 import { instanceExperimentalSettingsSchema, type Issue } from "@paperclipai/shared";
 
@@ -35,7 +39,7 @@ const rows = [monitored, working, ...storybookIssues.slice(2)];
 function fixtures() {
   return installFixtureApi([
     { path: "/api/workspace-preferences/me", read: () => ({ userId: "user-storybook", coordinatorWorkspaceEnabled: false, updatedAt: null }) },
-    { path: "/api/instance/settings/experimental", read: () => instanceExperimentalSettingsSchema.parse({ enableStreamlinedUi: true }) },
+    { path: "/api/instance/settings/experimental", read: () => instanceExperimentalSettingsSchema.parse({ enableStreamlinedUi: true, enableCombinedInboxTasks: true }) },
 
     { path: "/api/cli-auth/me", read: () => ({ source: "local_implicit", isInstanceAdmin: true, companyIds: [companyId], memberships: [] }) },
     { path: /^\/api\/issues\/[^/]+\/(feedback-votes|browsers|live-runs|attachments|accepted-plan-decompositions)$/, read: () => [] },
@@ -43,6 +47,9 @@ function fixtures() {
     { path: /^\/api\/companies\/[^/]+\/email\/tasks\/[^/]+$/, read: () => null },
 
     { path: `/api/companies/${companyId}/live-runs`, read: () => [] },
+    { path: `/api/companies/${companyId}/users/riley/profile`, read: () => ({ user: { id: "user-storybook", slug: "riley", name: "Riley Board", email: "riley@example.com", image: null, membershipRole: "owner", membershipStatus: "active", joinedAt: monitored.createdAt }, stats: [], daily: [], recentIssues: [monitored, working], recentActivity: [], topAgents: [], topProviders: [] }) },
+    { path: "/api/status-cards/card-gap/updates", read: () => [] },
+    { path: "/api/status-cards/card-gap/dry-run", read: () => ({ cardId: "card-gap", queryVersion: 1, queries: [], mentionedIssues: [monitored] }) },
     { path: `/api/companies/${companyId}/issues`, read: ({ url }) => rows.filter(row => !url.searchParams.has("displayStatus") || url.searchParams.get("displayStatus")!.split(",").includes(row.displayStatus ?? row.status)) },
     { path: `/api/companies/${companyId}/issues/summaries`, read: ({ url }) => rows.filter(row => url.searchParams.get("ids")?.includes(row.id)).map(row => ({ ...row, externalConversationState: null })) },
     { path: `/api/companies/${companyId}/search`, read: () => ({ query: "deployment", normalizedQuery: "deployment", scope: "issues", sort: "relevance", limit: 20, offset: 0, hasMore: false, zeroResults: null,
@@ -68,6 +75,8 @@ function MonitoringPage({ path }: { path: string }) {
     <Route path="issues/:issueId" element={<IssueDetail />} />
     <Route path="search" element={<Search />} />
     <Route path="dashboard" element={<Dashboard />} />
+    <Route path="inbox" element={<Inbox tab="recent" />} />
+    <Route path="users/:userSlug" element={<UserProfile />} />
   </Route></Routes></PluginLauncherProvider>;
 }
 
@@ -84,7 +93,11 @@ export const TaskDetail: Story = { render: () => <MonitoringPage path="/PAP/issu
 export const TaskList: Story = { render: () => <MonitoringPage path="/PAP/issues?view=all" /> };
 export const SearchResults: Story = { render: () => <MonitoringPage path="/PAP/search?q=deployment" /> };
 export const CompanyDashboard: Story = { render: () => <MonitoringPage path="/PAP/dashboard" /> };
+export const InboxRecent: Story = { render: () => <MonitoringPage path="/PAP/inbox" /> };
+export const ProfileRecentTasks: Story = { render: () => <MonitoringPage path="/PAP/users/riley" /> };
+export const StatusCardWatchedTasks: Story = { render: () => <StatusCardDetailDrawer card={makeStatusCard({ mentionedIssueIds: [monitored.id] })} companyId={companyId} open onOpenChange={() => undefined} initialTab="watched" /> };
 export const TaskDetailMobile: Story = { ...TaskDetail, globals: { viewport: { value: "mobile", isRotated: false } }, parameters: { waitForViewport: true } };
+export const TaskDetailLight: Story = { ...TaskDetail, globals: { theme: "light" } };
 export const TaskDetailDark: Story = { ...TaskDetail, globals: { theme: "dark" } };
 export const SharedIndicators: Story = {
   render: () => <div className="mx-auto max-w-3xl space-y-6 p-8">
