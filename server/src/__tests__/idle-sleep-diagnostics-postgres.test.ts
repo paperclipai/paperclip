@@ -5,7 +5,7 @@ import { agentApiKeys, agents, budgetPolicies, chatDeliveries, chatEndpoints, co
   companyTransferRuns, connectionEventDeliveries, createDb, heartbeatRuns, issues,
   routineTriggers, routines, toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 const now = Date.UTC(2026, 10, 2);
@@ -14,13 +14,15 @@ const hold = () => ({ ownerId, draining: true, startedAt: new Date(now - 1000),
   expiresAt: new Date(now + 60_000), activeRuns: 0, pendingWakes: 0 });
 const localNone = async () => "none" as const;
 
-describe("existing-instance sleep blocker diagnostics", () => {
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_IDLE_SLEEP_DIAGNOSTICS_TEST_DATABASE_URL");
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+if (!support.supported) console.warn(`Skipping idle sleep diagnostics Postgres tests: ${support.reason}`);
+(support.supported ? describe : describe.skip)("existing-instance sleep blocker diagnostics", () => {
   let db: Db;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   beforeAll(async () => {
-    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_IDLE_SLEEP_DIAGNOSTICS_TEST_DATABASE_URL");
-    if (!external) temporary = await startEmbeddedPostgresTestDatabase("idle-sleep-diagnostics-");
-    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4 });
+    if (!externalDatabaseUrl) temporary = await startEmbeddedPostgresTestDatabase("idle-sleep-diagnostics-");
+    db = createDb(externalDatabaseUrl ?? temporary!.connectionString, { maxConnections: 4 });
   }, 60_000);
   afterEach(async () => { await db.execute(sql`TRUNCATE companies, plugins, environments CASCADE`); });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
