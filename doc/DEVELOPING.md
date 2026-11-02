@@ -1777,6 +1777,8 @@ workspace wait and scheduled retry path, including for isolated workspaces and
 operator branches. Reservation does not acquire another allocation or change
 the writer's saved files. A stale writer or a stopped writer with unfinished
 saves still requires reconciliation; contention retries cannot clear that fence.
+The wait retains the run's admitted assignment role so reassignment during
+preparation cannot resume the former assignee through the guest-run path.
 
 Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
 for storage, import, retention, and lifecycle regression checks. These checks do

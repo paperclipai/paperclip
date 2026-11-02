@@ -98,6 +98,8 @@ Start the child while its parent is still writing. Verify it waits with one
 scheduled retry and retains its workspace binding without acquiring an allocation.
 Stop the waiting task and verify that the retry cannot execute. A stale writer
 or a stopped writer with unfinished saves must remain fenced.
+Reassign the child during preparation before reservation reports contention;
+retry promotion must cancel the former assignee's run without starting it.
 The [reservation regression](../../server/src/services/remote-workspace-reservation.test.ts)
 and [saved-file lifecycle suite](../../server/src/services/remote-workspaces.integration.test.ts)
 exercise inheritance, access checks, and file continuity with real PostgreSQL.

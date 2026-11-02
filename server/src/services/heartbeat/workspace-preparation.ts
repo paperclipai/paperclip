@@ -107,6 +107,7 @@ export interface HeartbeatWorkspacePreparationInput {
       executionWorkspacePreference: string | null;
     }) | null;
     issueId: string | null;
+    wasIssueAssignee: boolean;
     context: Record<string, unknown>;
     responsibleUserId: string | null;
     previousSessionParams: Record<string, unknown> | null;
@@ -1009,14 +1010,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
             expectedBindingRevision: remoteFreshBinding!.revision },
           recoverySourceRunIds: [remoteFresh.sourceRunId],
         } : {}),
-      }).catch(async error => {
+      }).catch(error => {
         if (!(error instanceof RemoteWorkspaceWriterActiveError)
           || error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS) throw error;
-        const [currentTask] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
-          .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId)));
         throw new WorkspaceBusyDeferral({ holder: error.writer, executionWorkspaceId: error.workspaceId,
           deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
-          wasIssueAssignee: currentTask?.assigneeAgentId === agent.id });
+          wasIssueAssignee: input.task.wasIssueAssignee });
       });
       persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, reserved.id);
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");

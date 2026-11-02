@@ -108,7 +108,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const resolver = createHeartbeatWorkspaceResolver(db);
     const input: HeartbeatWorkspacePreparationInput = {
       run, agent,
-      task: { issueRef: issue, issueId: issue.id, context: { issueId: issue.id, projectId: project.id }, responsibleUserId: null, previousSessionParams: null },
+      task: { issueRef: issue, issueId: issue.id, wasIssueAssignee: true, context: { issueId: issue.id, projectId: project.id }, responsibleUserId: null, previousSessionParams: null },
       policy: {
         trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
         isolatedWorkspacesEnabled: true,
@@ -350,43 +350,18 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(bound.executionWorkspaceId).toBe(workspace.id);
   });
 
-  it("persists an inherited remote writer wait through the public heartbeat path", async () => {
-    const { input, issue, writer, workspace, authority } = await inheritedRemoteFixture("isolated_workspace");
-    const userId = randomUUID();
-    await db.insert(authUsers).values({ id: userId, name: "Workspace owner", email: `${userId}@example.test`,
-      createdAt: new Date(), updatedAt: new Date() });
-    await db.insert(companyMemberships).values({ companyId: issue.companyId, principalType: "user",
-      principalId: userId, status: "active", membershipRole: "owner" });
-    const [environment] = await db.insert(environments).values({ name: `Remote wait ${randomUUID()}`,
-      driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
-    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.run.id));
-    await db.update(agents).set({ adapterType: "paperclip_runner", status: "idle", defaultEnvironmentId: environment.id,
-      adapterConfig: { provider: "codex", model: "gpt-6.1-sol" }, runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } } })
-      .where(eq(agents.id, input.agent.id));
-    await db.update(issues).set({ status: "todo", responsibleUserId: userId,
-      executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
-    const heartbeat = heartbeatService(db);
-    try {
-      const run = await heartbeat.wakeup(input.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
-        requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
-      expect(run).not.toBeNull();
-      await heartbeat.drainActiveRunExecutions();
-      const [deferred] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
-      expect(deferred).toMatchObject({ status: "cancelled", errorCode: "workspace_busy",
-        resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
-          workspaceBusy: { executionWorkspaceId: workspace.id, holderRunId: writer.id } } });
-      const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
-      expect(retries).toHaveLength(1);
-      expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
-      const [bound] = await db.select().from(issues).where(eq(issues.id, issue.id));
-      expect(bound).toMatchObject({ executionRunId: retries[0].id, executionWorkspaceId: workspace.id });
-      expect(bound.status).not.toBe("blocked");
-      expect((await db.select().from(environmentLeases)).filter(lease => lease.heartbeatRunId === run!.id)).toEqual([]);
-      expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
-        .where(eq(executionWorkspaces.id, workspace.id)))[0].metadata)).toEqual(authority);
-      await heartbeat.cancelRun(retries[0].id);
-      expect((await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).not.toContain(retries[0].id);
-    } finally { await heartbeat.drainActiveRunExecutions(); }
+  it("retains admitted ownership when a remote writer wait races with reassignment", async () => {
+    const { input, issue } = await inheritedRemoteFixture("isolated_workspace");
+    const [replacement] = await db.insert(agents).values({ companyId: issue.companyId,
+      name: "New task owner", adapterType: "process" }).returning();
+    input.controllerLease.assertOwned = async () => {
+      await db.update(issues).set({ assigneeAgentId: replacement.id }).where(eq(issues.id, issue.id));
+    };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_busy", wasIssueAssignee: true,
+    });
+    const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(current.assigneeAgentId).toBe(replacement.id);
   });
 
   it("rejects automatic Core services before remote reservation or acquisition", async () => {

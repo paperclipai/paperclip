@@ -84,9 +84,12 @@ claiming the single writer; an unbound task cannot claim that workspace.
 A live writer conflict at atomic reservation uses the existing workspace wait,
 including inherited isolated workspaces and operator branches. The retry retains
 the binding and current admission gates; Stop cancels it. Stale or stopped
-writers with unfinished saves remain fenced. The
+writers with unfinished saves remain fenced. The wait retains the admitted
+assignment role; reassignment during preparation cancels the old assignee's retry.
+The
 [preparation tests](../../server/src/services/heartbeat/workspace-preparation.test.ts)
-cover reservation and persisted heartbeat waits with PostgreSQL; live sandbox
+and [heartbeat tests](../../server/src/__tests__/heartbeat-remote-workspace-busy.test.ts)
+cover reservation and persisted waits with PostgreSQL; live sandbox
 provider acceptance remains separate.
 The [reservation tests](../../server/src/services/remote-workspace-reservation.test.ts)
 exercise that service boundary with real PostgreSQL, including competing children,

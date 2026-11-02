@@ -2733,6 +2733,7 @@ export function heartbeatService(
         task: {
           issueRef,
           issueId,
+          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
           context,
           responsibleUserId,
           previousSessionParams,
