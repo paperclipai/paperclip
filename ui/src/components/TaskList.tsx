@@ -3,7 +3,8 @@ import type { Issue } from "@paperclipai/shared";
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { buildIssueTree } from "../lib/issue-tree";
 import { issueFilterLabel } from "../lib/issue-filters";
-import { allTaskListColumns, defaultTaskListColumns, defaultTaskListSort, sortTaskListItems, type TaskListColumnId, type TaskListSort } from "../lib/task-list";
+import { allTaskListColumns, defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
+import { sortIssues } from "../lib/issue-sort";
 import { timeAgo } from "../lib/timeAgo";
 import { IssueRow, type IssueRowDensity } from "./IssueRow";
 import { IssueGroupHeader } from "./IssueGroupHeader";
@@ -37,7 +38,7 @@ export function includeTaskListAncestors(items: readonly TaskListItem[], matches
 }
 
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey }: {
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, sort: controlledSort, onSortChange }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
   initialColumns?: readonly TaskListColumnId[];
@@ -49,32 +50,29 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   issueLinkState?: unknown;
   /** Company/person/view/filter identity; membership changes do not reset it. */
   collectionKey?: string;
+  sort?: TaskListOrder;
+  onSortChange?: (sort: TaskListSort | undefined) => void;
 }) {
   const localKey = useId();
   const [columns, setColumns] = useState(initialColumns);
   const [columnOrder, setColumnOrder] = useState(allTaskListColumns);
-  const [sort, setSort] = useState<TaskListSort>();
+  const [localSort, setLocalSort] = useState<TaskListSort>();
+  const sort = controlledSort ?? (onSortChange ? undefined : localSort);
+  const setSort = (next: TaskListSort | undefined) => {
+    setLocalSort(next);
+    onSortChange?.(next);
+  };
   const [localCollapsed, setLocalCollapsed] = useState<ReadonlySet<string>>(new Set());
   const collapsed = collapsedIds ?? localCollapsed;
   const setCollapsed = onCollapsedIdsChange ?? setLocalCollapsed;
   const byId = new Map(allItems.map(item => [item.issue.id, item]));
   const visibleById = new Map(items.map(item => [item.issue.id, item]));
-  const sortValue = (issue: Issue, column: TaskListColumnId) => {
+  const ordered = sortIssues(items.map(item => item.issue), taskListOrderToIssueSort(sort ?? defaultTaskListSort), issue => {
     const item = byId.get(issue.id)!;
     const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
-    switch (column) {
-      case "task": return issue.title;
-      case "taskId": return issue.identifier;
-      case "createdBy": return item.createdBy;
-      case "assignee": return item.assignee;
-      case "project": return issue.project?.name;
-      case "parentTask": return parent ? `${parent.identifier} ${parent.title}` : null;
-      case "tags": return issue.labels?.map(label => label.name).sort().join(", ");
-      case "worktree": return issue.currentExecutionWorkspace?.branchName;
-      case "lastUpdated": return new Date(issue.updatedAt).getTime();
-    }
-  };
-  const { roots, childMap } = buildIssueTree(sortTaskListItems(items.map(item => item.issue), sort ?? defaultTaskListSort, sortValue));
+    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null };
+  });
+  const { roots, childMap } = buildIssueTree(ordered);
   const rowIds: string[] = [];
   const collectRows = (issue: Issue) => {
     rowIds.push(issue.id);
@@ -85,7 +83,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   const renderedIds = new Set(rowIds.slice(0, limit));
   const updateColumns = (next: readonly TaskListColumnId[]) => {
     setColumns(next);
-    if (sort && !next.includes(sort.column)) setSort(undefined);
+    if (sort && isTaskListColumnSort(sort) && !next.includes(sort.column)) setSort(undefined);
   };
   const renderBranch = (issue: Issue, depth: number): ReactNode => {
     if (!renderedIds.has(issue.id)) return null;
@@ -128,7 +126,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   }
   return (
     <TaskListViewport visibleColumns={columns} columnOrder={columnOrder} controls={<TaskListColumnSettings visibleColumns={columns} onVisibleColumnsChange={updateColumns} onColumnOrderChange={setColumnOrder} onResetDefaults={() => setSort(undefined)} />}>
-      <TaskListColumnHeader sort={sort} onSortChange={setSort} onColumnOrderChange={setColumnOrder} />
+      <TaskListColumnHeader sort={sort && isTaskListColumnSort(sort) ? sort : undefined} onSortChange={setSort} onColumnOrderChange={setColumnOrder} />
       {items.length === 0 ? emptyState : (
         <div aria-label={`${density} task list`}>
           {[...groups].map(([label, groupRoots]) => groupRoots.some(issue => renderedIds.has(issue.id)) ? (

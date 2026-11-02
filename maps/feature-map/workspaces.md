@@ -83,6 +83,14 @@ or original Git remote. Read-only cross-project referenced folders must fail
 admission. Separate workspaces may run concurrently; shared concurrent writers
 must be rejected.
 
+Repeat remote capture with enough free space for the archive and normalized Git
+metadata, but not another working-tree copy. Verify saved files and Git state
+after restore. A concurrent file change must fail capture without publishing a
+receipt or retaining a partial archive. The
+[portable archive suite](../../server/src/services/remote-workspace-snapshot-archive.test.ts)
+checks the space allowance and concurrent-change boundary; its filesystem quota
+is controlled test input, not a live sandbox qualification.
+
 Create a child that inherits a saved isolated workspace or operator branch.
 Verify it continues the same files after the prior writer saves, including on a
 new allocation. Two bound children must not acquire concurrent writer authority.

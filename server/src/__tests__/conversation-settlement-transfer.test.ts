@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { settleConversationTurnForRun } from "../services/agent-conversations.js";
 
@@ -52,11 +52,11 @@ const support = await getEmbeddedPostgresTestSupport();
   it.each(["response", "interaction", "reset"] as const)("bounds %s settlement reads and retains all saved text and run payloads", async reply => {
     const input = await seed(reply), before = await sourceDigests(input);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns, issues, issueComments }, capture);
     try { expect(await settleConversationTurnForRun(db, input.companyId, input.runId)).toBe(true); }
     finally { capture.flush(); }
-    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && ["heartbeat_runs", "issues", "issue_comments"].includes(String(event.table))
       && (event.operation === "select" || event.operation === "execute"));
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThanOrEqual(4);

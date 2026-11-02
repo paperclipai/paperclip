@@ -133,6 +133,17 @@ fingerprint and RPC company scope for later read-only verification.
 Retained allocations, unfinished runs/accounting/retries, export intents and
 live setup credentials continue to block sleep.
 
+For a reused remote allocation, a completed predecessor can resolve termination
+through the final owner's destruction receipt only when the full host-recorded
+lease handoff chain matches. Company, agent, task, workspace, environment, provider
+and allocation identities must agree. A stopped successor, broken handoff or
+unrelated owner grants no cleanup authority. This resolution does not rewrite
+historical leases, execute remotely or claim that uncollected files were saved.
+The normal agent-file recovery worker retains the no-save outcome and completes
+cleanup after confirmed destruction. A completed cleanup receipt with a stale
+retry deadline is reconciled once through the existing deadline worker. Clearing
+that deadline compares the receipt so a concurrent cleanup obligation is kept.
+
 Pending human-only connection setup can wait asleep when no active enabled
 connection of the requested purpose exists. Available access reblocks sleep so
 the existing reconciliation path can run; answering a setup card continues to

@@ -122,16 +122,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await quiet(); expect(fetchReport).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(deadline - Date.now());
       await vi.waitFor(async () => {
-        await vi.advanceTimersByTimeAsync(1000);
+        // Keep time fixed during database I/O. Advancing it on every poll can
+        // make the first reports due again before the backlog has settled.
+        const next = coordinator!.nextWakeAt();
+        if (next !== null && next < deadline + 60_000) {
+          await vi.advanceTimersByTimeAsync(Math.max(0, next - Date.now()));
+        }
         expect(idleWorkSnapshot().active).toBe(0);
         expect(fetchReport).toHaveBeenCalledTimes(105);
-      }, { timeout: 5000 });
+      }, { interval: 0, timeout: 15_000 });
       expect(fetchReport.mock.calls.map(([call]) => call.id).sort()).toEqual(ids.sort());
       expect((await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.companyId, companyId)))
         .every(row => row.attempts === 1)).toBe(true);
       await quiet();
     } finally { reads.mockRestore(); }
-  });
+  }, 30_000);
   it("leaves configured idle, live calls, old history and unidentified calls quiet", async () => {
     await session({ state: "active", endedAt: null });
     await session({ endedAt: new Date(Date.now() - day - 1000) });

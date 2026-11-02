@@ -30,7 +30,7 @@ Open `/routines`, create one, and inspect `/routines/:routineId` and its edit se
 
 Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
 offer Run now. **View all tasks** opens the Tasks list with **Routine tasks**
-selected, using `/issues?view=all&originKind=routine_execution`. Uncheck the
+selected, using `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc`. Uncheck the
 filter to return to other tasks. **History** records configuration versions, not executions.
 
 ## Driving it with Playwright and the Paperclip CLI

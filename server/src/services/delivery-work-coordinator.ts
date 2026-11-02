@@ -1,4 +1,5 @@
 import { subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "@paperclipai/db/work-signals";
+import { withDatabaseOperation } from "@paperclipai/db";
 import { createWorkScheduler } from "./work-scheduler.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
@@ -70,7 +71,7 @@ export function createDeliveryWorkCoordinator(input: {
         const attempt = new AbortController();
         let runFailed = false;
         controller = attempt;
-        running = Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
+        running = withDatabaseOperation(`delivery.${queue}`, () => Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
           .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending()).then(pending => {
           pendingWork = pending || databaseWorkPending(input.owner, queue);
           if (pendingWork) schedule(task.retryMs);
@@ -98,7 +99,7 @@ export function createDeliveryWorkCoordinator(input: {
           controller = null;
           finish();
           if (dirty) schedule(0);
-        });
+        }));
       }
       function wake() {
         if (workerStopped) return;

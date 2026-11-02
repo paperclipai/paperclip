@@ -822,6 +822,10 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="Monitoring task">
+          <StatusIcon status="in_progress" displayStatus="monitoring" showLabel />
+          <IssueStatusBadge status="in_progress" displayStatus="monitoring" />
+        </SubSection>
         <SubSection title="Idle Slack conversation">
           <StatusIcon status="in_review" externalConversationState="waiting" showLabel />
           <IssueStatusBadge status="in_review" externalConversationState="waiting" />
