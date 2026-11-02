@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 
-type WorkMode = "standard" | "planning" | "ask";
+type WorkMode = "standard" | "planning" | "ask" | "skill_test";
 type ToolDefinition = Record<string, unknown>;
 
 const SEARCH_TOOL = "paperclip_search_assigned_tools";
@@ -21,8 +21,8 @@ const ON_DEMAND_TOOLS: ToolDefinition[] = [
         query: { type: "string", maxLength: 200 },
         offset: { type: "integer", minimum: 0 },
         limit: { type: "integer", minimum: 1, maximum: 20, default: 5, description: "Maximum results per page (1 to 20; default 5)." },
-        schemaTool: { type: "string", description: "Exact inputSchemaRef from a search result." },
-        schemaOffset: { type: "integer", minimum: 0 },
+        schemaTool: { type: "string", description: "Exact inputSchemaRef from a search result. Omit or leave blank for a normal tool search." },
+        schemaOffset: { type: "integer", minimum: 0, description: "Schema chunk offset. A positive offset requires an exact inputSchemaRef in schemaTool." },
       },
       required: ["query"],
     },
@@ -116,13 +116,16 @@ export async function createAssignedMcpTools(input: {
     const offset = args.offset ?? 0;
     const limit = args.limit ?? 5;
     const schemaOffset = args.schemaOffset ?? 0;
+    const hasSchemaTool = typeof args.schemaTool === "string" && args.schemaTool.trim().length > 0;
     if (typeof args.query !== "string" || args.query.length > 200 ||
       typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0 ||
       typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 20 ||
       (args.schemaTool !== undefined && typeof args.schemaTool !== "string") ||
-      typeof schemaOffset !== "number" || !Number.isSafeInteger(schemaOffset) || schemaOffset < 0 ||
-      (args.schemaOffset !== undefined && args.schemaTool === undefined)) {
+      typeof schemaOffset !== "number" || !Number.isSafeInteger(schemaOffset) || schemaOffset < 0) {
       throw new Error("assigned_mcp_tool_invalid_arguments");
+    }
+    if (schemaOffset > 0 && !hasSchemaTool) {
+      throw new Error("assigned_mcp_tool_invalid_arguments: A positive schemaOffset requires an exact inputSchemaRef in schemaTool. Omit schemaTool and schemaOffset to search assigned tools.");
     }
     // Intersect fresh grants with this session's pinned catalog. Revocations
     // take effect immediately; newly assigned tools require a new session.
@@ -135,9 +138,9 @@ export async function createAssignedMcpTools(input: {
       return fresh && permits(tool) && permits(tool, currentWorkMode) &&
         permits(fresh) && permits(fresh, currentWorkMode);
     });
-    if (typeof args.schemaTool === "string") {
+    if (hasSchemaTool) {
       const selected = authorized.find(([name]) => name === args.schemaTool);
-      if (!selected) throw new Error("assigned_mcp_tool_unknown");
+      if (!selected) throw new Error("assigned_mcp_tool_unknown: schemaTool must match an authorized inputSchemaRef. Omit schemaTool to search assigned tools, then use an exact inputSchemaRef from the results.");
       const schema = JSON.stringify(selected[1].parametersSchema);
       const end = schemaOffset + schemaChunkCharacters;
       return {
@@ -145,11 +148,20 @@ export async function createAssignedMcpTools(input: {
         nextSchemaOffset: end < schema.length ? end : null,
       };
     }
-    const matches = authorized.filter(([name, tool]) =>
+    // Keep offsets anchored to the pinned catalog while fresh grants only
+    // decide which entries are returned from that stable sequence.
+    const authorizedNames = new Set(authorized.map(([name]) => name));
+    const matches = [...tools].filter(([, tool]) => permits(tool)).filter(([name, tool]) =>
       terms.every(term => `${name} ${tool.displayName} ${tool.description}`.toLowerCase().includes(term)))
       .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const page: ToolDefinition[] = [];
-    for (const [name, tool] of matches.slice(offset, offset + limit)) {
+    let nextOffset = offset;
+    while (nextOffset < matches.length && page.length < limit) {
+      const [name, tool] = matches[nextOffset]!;
+      if (!authorizedNames.has(name)) {
+        nextOffset += 1;
+        continue;
+      }
       let next = definition(name, tool);
       if (Buffer.byteLength(JSON.stringify([next]), "utf8") > searchPageBytes) {
         // One large schema must not block browsing the tools after it. Expose
@@ -161,8 +173,9 @@ export async function createAssignedMcpTools(input: {
         break;
       }
       page.push(next);
+      nextOffset += 1;
     }
-    return { tools: page, nextOffset: offset + page.length < matches.length ? offset + page.length : null };
+    return { tools: page, nextOffset: nextOffset < matches.length ? nextOffset : null };
   }
 
   return {

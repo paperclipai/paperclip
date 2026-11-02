@@ -11,14 +11,15 @@ async function json(response: APIResponse) {
   return response.json();
 }
 
-for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "message", "queued_retry", "automatic_message"] as const) {
+for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "message", "queued_retry", "automatic_message_on_reactivation"] as const) {
   test(`legacy startup hold: ${action} reaches a new agent response`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const root = await mkdtemp(path.join(os.tmpdir(), "legacy-recovery-browser-"));
     const config = JSON.parse(await readFile(process.env.PAPERCLIP_E2E_SERVER_CONFIG!, "utf8"));
     // Use the running test server's actual port, including fallback allocation.
-    const pid = await readFile(path.join(config.database.embeddedPostgresDataDir, "postmaster.pid"), "utf8");
-    const url = `postgres://paperclip:paperclip@127.0.0.1:${pid.split("\n")[3]}/paperclip`;
+    const url = config.database.mode === "postgres" ? config.database.connectionString
+      : `postgres://paperclip:paperclip@127.0.0.1:${(await readFile(
+        path.join(config.database.embeddedPostgresDataDir, "postmaster.pid"), "utf8")).split("\n")[3]}/paperclip`;
     const db = createDb(url);
     const company = await json(await request.post("/api/companies", { data: { name: `Legacy recovery ${action} ${Date.now()}` } }));
     try {
@@ -37,8 +38,11 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
         title: "Continue after startup failure", description: "Answer the pending follow-up once.",
         status: "backlog", assigneeAgentId: agent.id,
       } }));
+      if (action === "automatic_message_on_reactivation") {
+        await json(await request.patch(`/api/companies/${company.id}`, { data: { status: "paused" } }));
+      }
       const sourceRunId = randomUUID();
-      // Seed the historical incident, then exercise all recovery through the UI.
+      // Seed the historical incident, then exercise ordinary recovery entry points.
       // No adapter.invoke or new dispatch identity exists on this pre-upgrade run.
       await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId: company.id, agentId: agent.id,
         status: "failed", runtimeMode: "legacy", processPid: action === "queued_retry" ? process.pid : 999999999,
@@ -58,7 +62,7 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
         await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user",
           principalId: "original-board", membershipRole: "operator", status: "active" });
       }
-      if (action === "queued_retry" || action === "automatic_message") {
+      if (action === "queued_retry" || action === "automatic_message_on_reactivation") {
         const commentId = randomUUID();
         // Reproduce a real user comment saved while the failed run was active,
         // including queues originally created by a system wake.
@@ -104,8 +108,19 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
           retry.click(),
         ]);
         expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
-      } else if (action === "automatic_message") {
-        // No Retry, duplicate message, or status change: the saved input runs.
+      } else if (action === "automatic_message_on_reactivation") {
+        // This fixture writes history through a separate SQL connection after boot.
+        // Reactivation is the supported producer that makes saved work eligible;
+        // startup reconstruction itself is covered before registration in the PG suite.
+        const pending = await db.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, company.id), eq(agentWakeupRequests.agentId, agent.id),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ));
+        expect(pending).toHaveLength(1);
+        const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, company.id));
+        expect(before).toHaveLength(1);
+        await json(await request.patch(`/api/companies/${company.id}`, { data: { status: "active" } }));
+        // No Retry or duplicate message: the existing saved input runs once.
       } else if (action === "message") {
         await page.getByRole("textbox", { name: "editable markdown" }).fill("Please continue the pending follow-up.");
         await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -133,7 +148,7 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
       expect(runs.filter(run => run.id !== sourceRunId)).toHaveLength(1);
       expect(runs.find(run => run.id === sourceRunId)).toMatchObject({ status: "failed", resultJson: null });
       const prompts = await readFile(path.join(root, "prompts"), "utf8");
-      if (action === "queued_retry" || action === "automatic_message") {
+      if (action === "queued_retry" || action === "automatic_message_on_reactivation") {
         expect(prompts).toContain("Approved");
         await expect(page.getByRole("button", { name: "Interrupt", exact: true })).toHaveCount(0);
       }

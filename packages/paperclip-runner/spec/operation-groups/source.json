@@ -262,12 +262,13 @@
       "owner": "always tools",
       "operationIds": [
         "get_task_history",
-        "report_progress"
+        "report_progress",
+        "send_chat_message"
       ],
       "controlPlaneOperationIds": [
         "append_audit_record"
       ],
-      "realSurface": "issue comment list/get/create routes",
+      "realSurface": "issue comment list/get/create routes and own-agent chat messaging service",
       "mockStateDomains": [
         "task",
         "comments",
@@ -275,8 +276,8 @@
         "idempotency",
         "audit"
       ],
-      "prpEvidence": "bounded read result or idempotent comment-write receipt plus audit reference",
-      "gap": "Active-task binding is unbound; cross-task comment mutation is deliberately outside V1."
+      "prpEvidence": "bounded read result, idempotent progress receipt, or persisted proactive chat comment with source task/run provenance",
+      "gap": "Proactive chat delivery is bound to the running agent and responsible human; arbitrary chat destinations are unsupported. Other comment/history binding gaps remain recorded per operation."
     },
     {
       "id": "se",

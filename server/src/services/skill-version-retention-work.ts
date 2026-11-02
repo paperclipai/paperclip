@@ -43,6 +43,7 @@ export function registerSkillVersionRetentionWork(
   const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.skillVersionRetention, {
     canRun,
     retryMs: 30_000,
+    continuationMs: 1000,
     notificationCoalesceMs: 1000,
     onSettled: changed,
     run: async signal => {

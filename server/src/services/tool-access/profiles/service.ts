@@ -48,7 +48,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
             eq(toolProfileEntries.profileId, profile.id),
           ),
         )
-        .orderBy(asc(toolProfileEntries.createdAt)),
+        .orderBy(asc(toolProfileEntries.createdAt), asc(toolProfileEntries.id)),
       dbClient
         .select()
         .from(toolProfileBindings)
@@ -387,7 +387,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
               inArray(toolProfileEntries.profileId, profileIds),
             ),
           )
-          .orderBy(asc(toolProfileEntries.createdAt)),
+          .orderBy(asc(toolProfileEntries.createdAt), asc(toolProfileEntries.id)),
         db
           .select()
           .from(toolProfileBindings)

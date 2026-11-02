@@ -9,6 +9,7 @@ import {
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
+  resolveManagedBundledPluginKeys,
   type BundledPluginProvisionerDeps,
   type ResolvedBundledPlugin,
 } from "../services/bundled-plugins.js";
@@ -29,6 +30,21 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 // Catalog-root resolution (fail-to-start allowlist)
 // ---------------------------------------------------------------------------
+
+describe("managed bundled plugin selection", () => {
+  it.each([
+    { env: {}, selected: undefined, expected: null },
+    { env: { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-fixture" }, selected: undefined, expected: [] },
+    { env: { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: " " }, selected: undefined, expected: null },
+    { env: { PAPERCLIP_MANAGED_CONFIG: "" }, selected: undefined, expected: [] },
+    { env: { PAPERCLIP_MANAGED_CONFIG: "{}" }, selected: null, expected: [] },
+    { env: { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-fixture" }, selected: ["daytona"], expected: ["daytona"] },
+    { env: {}, selected: ["modal"], expected: ["modal"] },
+    { env: {}, selected: [], expected: [] },
+  ])("uses the canonical Cloud floor and preserves explicit selection: $env / $selected", ({ env, selected, expected }) => {
+    expect(resolveManagedBundledPluginKeys(selected, env)).toEqual(expected);
+  });
+});
 
 describe("resolveBundledPluginInstalls", () => {
   it("resolves the optional CreateOS sandbox provider without making it a self-hosted default", () => {

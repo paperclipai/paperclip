@@ -71,8 +71,8 @@ export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
   if (seen.has("--observability-config") && !seen.has("--gateway-config")) throw new Error("Eval observability requires an explicit controller gateway");
   const candidateIndex = args.indexOf("--candidate-profile");
   const candidateProfile = candidateIndex < 0 ? undefined : args[candidateIndex + 1];
-  if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot") {
-    throw new Error("--candidate-profile must be pi, cursor, or copilot");
+  if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot" && candidateProfile !== "kimi") {
+    throw new Error("--candidate-profile must be pi, cursor, copilot, or kimi");
   }
   const expectedIndex = args.indexOf("--expected-acpx-profile");
   const expectedText = expectedIndex < 0 ? undefined : args[expectedIndex + 1];
@@ -317,7 +317,7 @@ export function boundedEvalSessionUsage(
   }
   const candidate = request.provider === "acpx"
     && request.acpxAgent !== undefined
-    && ["pi", "cursor", "copilot"].includes(request.acpxAgent)
+    && ["pi", "cursor", "copilot", "kimi"].includes(request.acpxAgent)
     && turn.snapshot.config.provider === "acpx"
     && turn.snapshot.config.acpxAgent === request.acpxAgent;
   const measuredTurns = new Set(turn.snapshot.usageLedger?.map((entry) => entry.turnId));

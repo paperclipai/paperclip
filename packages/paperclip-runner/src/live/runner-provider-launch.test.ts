@@ -19,6 +19,41 @@ const environment: RunnerProviderLaunchEnvironment = {
 };
 
 describe("built-in provider launch preparation", () => {
+  it("preserves probe project-instruction suppression through a prepared launch", () => {
+    const selected = runnerProviderLaunchRequirements({ provider: "codex", disableCodexProjectInstructions: true,
+      disableCodexWebSearch: true }, requirements.identity,
+      { model: requirements.model, permissions: "paperclip-runner-workspace-read-only" }, null, "");
+    expect(selected.settings).toHaveProperty("disableCodexProjectInstructions", true);
+    const ordinary = runnerProviderLaunchRequirements({ provider: "codex", disableCodexWebSearch: true },
+      requirements.identity, { model: requirements.model, permissions: "paperclip-runner-workspace-read-only" }, null, "");
+    expect(runnerLaunchRequirementsDigest(selected)).not.toBe(runnerLaunchRequirementsDigest(ordinary));
+    const launch = createRunnerProviderLaunch(selected, { ...environment,
+      options: { codexArgs: ["-c", "project_doc_max_bytes=8192", "app-server"], disableCodexProjectInstructions: false } });
+    expect(launch.args).toEqual(["-c", "project_doc_max_bytes=8192", "-c", "project_doc_max_bytes=0",
+      "-c", 'web_search="disabled"', "app-server"]);
+    const prepared = { configurationId: "probe-policy", requirementsDigest: runnerLaunchRequirementsDigest(selected), provider: launch };
+    expect(() => validatePreparedRunnerLaunch(selected, prepared)).not.toThrow();
+    expect(() => validatePreparedRunnerLaunch(selected, { ...prepared,
+      provider: { ...launch, args: ["-c", 'web_search="disabled"', "app-server"] } }))
+      .toThrow("runner_prepared_launch_requirements_mismatch");
+  });
+
+  it.each([undefined, false])("keeps ordinary project instructions when suppression is %s", disableCodexProjectInstructions => {
+    const selected = runnerProviderLaunchRequirements({ provider: "codex", disableCodexProjectInstructions },
+      requirements.identity, { model: requirements.model }, null, "");
+    expect(selected.settings).not.toHaveProperty("disableCodexProjectInstructions");
+    expect(createRunnerProviderLaunch(selected, environment).args).toEqual(["app-server"]);
+  });
+
+  it("can suppress project instructions without disabling hosted search", () => {
+    const selected = runnerProviderLaunchRequirements({ provider: "codex", disableCodexProjectInstructions: true },
+      requirements.identity, { model: requirements.model }, null, "");
+    const provider = createRunnerProviderLaunch(selected, environment);
+    expect(provider.args).toEqual(["-c", "project_doc_max_bytes=0", "app-server"]);
+    expect(() => validatePreparedRunnerLaunch(selected, { configurationId: "probe", provider,
+      requirementsDigest: runnerLaunchRequirementsDigest(selected) })).not.toThrow();
+  });
+
   it.each([true, false])("binds Grok search policy %s into the prepared descriptor", disabled => {
     const selected = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "grok", grokDisableWebSearch: disabled },
       requirements.identity, { model: "grok-4.7" }, null, "");

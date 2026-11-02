@@ -17,6 +17,22 @@ export function attentionRoutes(db: Db) {
   const router = Router();
   const svc = attentionService(db);
 
+  router.get("/companies/:companyId/attention/summary", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
+    res.json(await svc.summary(companyId, { userId: req.actor.userId, actor: req.actor }));
+  });
+
+  router.get("/companies/:companyId/attention/tasks", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
+    res.json(await svc.taskIndex(companyId, { userId: req.actor.userId, actor: req.actor }));
+  });
+
   router.get("/companies/:companyId/attention/history", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

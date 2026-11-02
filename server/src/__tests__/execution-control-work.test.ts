@@ -383,11 +383,11 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     const due = new Date(Date.now() + 120_000), earlier = new Date(Date.now() + 60_000);
     for (const at of [due, earlier]) {
       await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx.update(heartbeatRuns)
-        .set({ executionControlDeadlineAt: at }).where(eq(heartbeatRuns.id, run.id)));
+        .set({ executionControlDeadlineAt: at }).where(eq(heartbeatRuns.id, run.id)), { companyId });
       await settle(); expect(c.nextWakeAt()).toBe(at.getTime());
     }
     await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx.update(heartbeatRuns)
-      .set({ executionControlDeadlineAt: null }).where(eq(heartbeatRuns.id, run.id)));
+      .set({ executionControlDeadlineAt: null }).where(eq(heartbeatRuns.id, run.id)), { companyId });
     await quiet(c);
   });
   it("delivers a reconciled continuation when marking and resolving commit together", async () => {

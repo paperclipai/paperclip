@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { PluginEnvironmentDriverBaseParams, PluginEnvironmentLease } from "./protocol.js";
+import type { PluginAgentRuntimeIdentity } from "./types.js";
 
 export const MAX_ENVIRONMENT_TASK_FILE_BYTES = 10 * 1024 * 1024;
 const taskFilePath = z.string().min(1).max(2000).refine(value =>
@@ -46,6 +47,7 @@ export const environmentRunnerLaunchRequirementsSchema = z.object({
     claudeEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
     opencodePermissionMode: z.enum(["allow", "ask", "deny"]).optional(),
     disableCodexWebSearch: z.literal(true).optional(),
+    disableCodexProjectInstructions: z.literal(true).optional(),
     managedProfile: z.record(z.string(), z.unknown()).optional(), agentCoreProfile: z.record(z.string(), z.unknown()).optional(),
   }).strict(),
   approvalPolicy: z.enum(["never", "on-request", "untrusted"]), readOnly: z.boolean(),
@@ -134,6 +136,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
     warmTaskVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
+    executionContextVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
@@ -145,6 +148,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     exitCode: z.number().int().optional(),
     /** Provider observed the task and all descendants stopped; terminal phase alone is insufficient. */
     executionStopped: z.boolean().optional(),
+    preparationStopped: z.boolean().optional(),
     /** The provider retains this task's recoverable session state for a later launch. */
     sessionStateAvailable: z.boolean().optional(),
   }).strict(),
@@ -167,6 +171,15 @@ export type PluginEnvironmentPreparedLaunch = z.infer<typeof preparedLaunch>;
 export type PluginEnvironmentTaskOperation = z.infer<typeof environmentTaskOperationSchema>;
 export type PluginEnvironmentTaskResult = z.infer<typeof environmentTaskResultSchema>;
 
+export interface PluginEnvironmentTaskExecutionContext {
+  id: string;
+  deadlineAtMs: number;
+  transport: {
+    instanceSecrets: PluginAgentRuntimeIdentity["instanceSecrets"];
+    configuration: Record<string, unknown>;
+  };
+}
+
 export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDriverBaseParams, "environmentId"> {
   /** Null during cleanup after the environment is deleted. */
   environmentId: string | null;
@@ -181,6 +194,8 @@ export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDrive
   workspace?: import("@paperclipai/shared").WorkspaceProviderBinding;
   fresh?: import("./workspace-provider.js").PluginFreshWorkspace;
   operation: PluginEnvironmentTaskOperation;
+  executionContextSupported?: 1;
+  executionContext?: PluginEnvironmentTaskExecutionContext;
 }
 
 /** An accepted stop is not proof of process termination. */

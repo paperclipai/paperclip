@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - master
+  schedule:
+    # Retry refreshes held by the release-age gate once their versions are old enough.
+    - cron: "23 6 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -14,7 +17,11 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Holds the lockfile bot key. Restrict this environment to master so no
+    # other branch or workflow can mint a token that bypasses master rules.
+    environment: lockfile-refresh
     permissions:
+      actions: read
       contents: write
       pull-requests: write
 
@@ -35,6 +42,34 @@ jobs:
           # Resolution-only installs do not populate the package store. Do not
           # claim the shared cache key with an empty archive before full installs.
           package-manager-cache: false
+
+      # Start from the lockfile the previous run held, so resolution keeps those
+      # versions while their manifests are unchanged and they can age past the
+      # gate. Read it from that run's artifact, not the PR branch: anyone with
+      # write access can push to chore/refresh-lockfile.
+      - name: Reuse versions from a held refresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id="$(
+            gh run list --workflow refresh-lockfile.yml --branch master --status success --limit 20 \
+              --json databaseId,event \
+              --jq '[.[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")][0].databaseId // empty'
+          )"
+          held="$RUNNER_TEMP/held-lock"
+          if [ -z "$run_id" ] || ! gh run download "$run_id" --name held-pnpm-lock --dir "$held" 2>/dev/null; then
+            echo "The previous refresh held nothing. Resolving from master."
+            exit 0
+          fi
+          # Reuse the held lock only while master still has the lock it was
+          # resolved from. A lock change on master, such as a maintainer's
+          # correction, supersedes it.
+          if [ "$(sha256sum < pnpm-lock.yaml)" != "$(cat "$held/source-lock.sha256")" ]; then
+            echo "The lockfile on master changed after run $run_id held its refresh. Resolving from master."
+            exit 0
+          fi
+          cp "$held/pnpm-lock.yaml" pnpm-lock.yaml
+          echo "Resolving from the lockfile held by run $run_id."
 
       - name: Refresh pnpm lockfile
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
@@ -65,6 +100,7 @@ jobs:
           if git diff --quiet -- pnpm-lock.yaml; then
             echo "Lockfile unchanged, nothing to do."
             echo "pr_url=" >> "$GITHUB_OUTPUT"
+            echo "head_sha=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -117,11 +153,11 @@ jobs:
 
           - Pinned pnpm resolution completed with lifecycle scripts disabled.
           - The report proof refresh accepted the reviewed committed baseline.
-          - Required PR checks and reviews must pass before merge.
+          - The workflow rejected changes outside the lock and report proof files.
 
           ## Risks
 
-          Dependency changes require review. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
+          The lockfile bot merges this PR without CI or review when every added package version is at least 3 days old on npm. Otherwise the PR waits for a maintainer, and the daily refresh tries again. The bot merges only the exact commit this workflow generated from manifests already reviewed on master. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
 
           ## Model Used
 
@@ -131,7 +167,7 @@ jobs:
 
           - [x] Thinking path and problem description included
           - [x] Generated lock and matching report proof included
-          - [ ] Required CI checks and reviews pass
+          - [x] Release-age gate decides between bot merge and maintainer review
           PR_BODY
             pr_url="$(gh pr create \
               --head "$BRANCH" \
@@ -142,10 +178,81 @@ jobs:
             echo "PR already exists: $pr_url"
           fi
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Enable auto-merge for lockfile PR
+      # Resolution picks the newest matching version for any added or widened
+      # dependency. Merge without review only when every added version has been
+      # on npm long enough for a hijacked release to be caught and pulled.
+      - name: Check release age of added package versions
+        id: release-age
         if: steps.upsert-pr.outputs.pr_url != ''
+        run: |
+          git show "$GITHUB_SHA:pnpm-lock.yaml" > "$RUNNER_TEMP/base-pnpm-lock.yaml"
+          node .github/scripts/check-lockfile-release-age.mjs \
+            --base "$RUNNER_TEMP/base-pnpm-lock.yaml" \
+            --head pnpm-lock.yaml \
+            --min-age-days 3 \
+            --report "$RUNNER_TEMP/release-age-report.md"
+          cat "$RUNNER_TEMP/release-age-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hold lockfile PR for review
+        if: steps.release-age.outputs.eligible == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.upsert-pr.outputs.pr_url }}
         run: |
-          gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
+          # Keep one report comment per PR instead of adding one on every run.
+          pr_number="${PR_URL##*/}"
+          comment_id="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- lockfile-release-age -->"))) | .id' |
+            head -n 1
+          )"
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+              -F "body=@$RUNNER_TEMP/release-age-report.md" > /dev/null
+          else
+            gh pr comment "$PR_URL" --body-file "$RUNNER_TEMP/release-age-report.md"
+          fi
+          echo "::notice title=Lockfile PR held::Added package versions are too new to merge without review. See $PR_URL"
+
+      - name: Stage held lockfile
+        if: steps.release-age.outputs.eligible == 'false'
+        run: |
+          mkdir -p "$RUNNER_TEMP/held-upload"
+          cp pnpm-lock.yaml "$RUNNER_TEMP/held-upload/pnpm-lock.yaml"
+          sha256sum < "$RUNNER_TEMP/base-pnpm-lock.yaml" > "$RUNNER_TEMP/held-upload/source-lock.sha256"
+
+      - name: Save held lockfile for the next refresh
+        if: steps.release-age.outputs.eligible == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: held-pnpm-lock
+          path: ${{ runner.temp }}/held-upload/
+          if-no-files-found: error
+          retention-days: 7
+
+      # Mint the bypass token only after resolution has finished, so no earlier
+      # step can read it. The lockfile bot is a master ruleset bypass actor in
+      # pull_request mode: it can merge PRs past checks and review, but cannot
+      # push to master directly. See doc/RELEASE-AUTOMATION-SETUP.md.
+      - name: Create lockfile bot token
+        id: bot-token
+        if: steps.release-age.outputs.eligible == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.LOCKFILE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.LOCKFILE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Merge lockfile PR
+        if: steps.release-age.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot-token.outputs.token }}
+          PR_URL: ${{ steps.upsert-pr.outputs.pr_url }}
+          HEAD_SHA: ${{ steps.upsert-pr.outputs.head_sha }}
+        run: |
+          # Merge only the commit this job pushed. Anything else pushed to the
+          # branch since then makes GitHub refuse the merge.
+          gh pr merge "$PR_URL" --squash --admin --delete-branch --match-head-commit "$HEAD_SHA"

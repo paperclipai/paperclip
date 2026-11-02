@@ -813,6 +813,7 @@ async function prepareRuntime(input: {
   durableSeed?: WorkspaceDurableSeedPaths;
   seedCacheDirectory?: string;
   seedCacheCompanyDirectory?: string;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -829,6 +830,7 @@ async function prepareRuntime(input: {
     workspaceRemoteDir: input.target.remoteCwd,
     workspaceInboundMode: input.mode,
     workspaceSnapshotIsolation: "worker",
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.durableSeed,
     workspaceBaseline: input.baseline,
     workspaceGitSnapshot: input.gitSnapshot,
@@ -901,6 +903,7 @@ export async function prepareNativeWorkspaceSync(input: {
   restartRecovery?: NativeRestartRecoveryClaim;
   sameRunRecovery?: boolean;
   resourceDisposition?: NativeWorkspaceResourceDisposition;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -1017,6 +1020,9 @@ export async function prepareNativeWorkspaceSync(input: {
       mode,
       seedCacheCompanyDirectory,
       seedCacheDirectory,
+      workspaceGitIndexRefresh: input.workspaceGitIndexRefresh === true
+        && acquisition === "created" && mode === "host_current"
+        && !input.restartRecovery && !input.sameRunRecovery,
       durableSeed: {
         workspaceArchivePath: seedPaths.workspaceArchivePath,
         gitArchivePath: seedPaths.gitArchivePath,

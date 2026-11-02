@@ -300,7 +300,7 @@ export function manualPrivateSessionPolicy(input: { bucket: string; runId: strin
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(input.bucket) || !/^[1-9][0-9]{0,19}$/.test(input.runId))
     throw new Error("Invalid manual private storage identity");
   const ids = canonicalPrivateManualIds(input.executionIds);
-  if (ids.some(id => !MANUAL_PRIVATE_EXECUTIONS.includes(id)) || input.mode !== "report-write" && ids.length !== 1)
+  if (ids.some(id => !MANUAL_PRIVATE_EXECUTIONS.includes(id) && id !== "chat-features.runner-opencode-deepseek-1017.local.create-backlog") || input.mode !== "report-write" && ids.length !== 1)
     throw new Error("Private archive sessions require one exact cell or the report writer");
   const prefix = `arn:aws:s3:::${input.bucket}/runner-e2e-private/bounded-v1/campaigns/gha-${input.runId}-1/`;
   const cells = ids.map(id => `${prefix}${manualCellKind(id)}.zip`);

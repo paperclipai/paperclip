@@ -3,7 +3,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
-import { taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
+import { taskPluginPanelActivationKey, taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
 import { PluginSlotMount } from "@/plugins/slots";
 import { TaskBrowserPanel } from "./TaskBrowserPanel";
 import {
@@ -41,7 +41,7 @@ import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { AgentArtifactsPanel, AgentTasksPanel } from "@/components/chat/AgentWorkPanels";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
-import { IssuePropertiesArtifactsTab } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
+import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { ArtifactDropzone } from "@/components/artifacts/ArtifactDropzone";
 import { ArtifactUploadButton } from "@/components/artifacts/ArtifactUploadControls";
 import { useIssueArtifactUploads } from "@/hooks/useIssueArtifactUploads";
@@ -101,7 +101,9 @@ import { TaskSkillPanel } from "./TaskSkillPanel";
 
 export interface TaskSidePanelProps {
   issue: Issue;
+  documentEditor?: TaskDocumentEditorOptions;
   pluginPanels?: TaskPluginPanel[];
+  pluginPanelsLoading?: boolean;
   openedPluginPanelKeys?: Set<string>;
   dismissedPluginPanelKeys?: Set<string>;
   openBrowserId?: string | null;
@@ -258,11 +260,13 @@ export function TaskSidePanel(props: TaskSidePanelProps) {
 
 function TaskSidePanelForScope({
   pluginPanels = EMPTY_PLUGIN_PANELS,
+  pluginPanelsLoading = false,
   openedPluginPanelKeys,
   dismissedPluginPanelKeys,
   openBrowserId,
   onBrowserOpened,
   issue,
+  documentEditor,
   accountScope,
   childIssues = [],
   issueLinkState,
@@ -371,22 +375,23 @@ function TaskSidePanelForScope({
   const openedPluginPanels = openedPluginPanelKeys ?? localOpenedPluginPanels.current;
   const localDismissedPluginPanels = useRef(new Set<string>());
   const dismissedPluginPanels = dismissedPluginPanelKeys ?? localDismissedPluginPanels.current;
-  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]), [accountScope, issue.companyId, issue.id]);
+  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => taskPluginPanelActivationKey(panel, accountScope, issue), [accountScope, issue.companyId, issue.id]);
   useEffect(() => {
     const ids = new Set(pluginPanels.map(taskPluginPanelId));
     for (const tab of controller.tabs) {
-      if (tab.payload.kind === "plugin-panel" && !ids.has(tab.id)) controller.closeTab(tab.id);
+      if (!pluginPanelsLoading && tab.payload.kind === "plugin-panel" && !ids.has(tab.id)) controller.closeTab(tab.id);
     }
     for (const panel of pluginPanels) {
+      if (!panel.autoOpen || !panel.runId) continue;
       const key = pluginPanelKey(panel);
       if (dismissedPluginPanels.has(key)) continue;
       const firstArrival = !openedPluginPanels.has(key);
       openedPluginPanels.add(key);
-      if (controller.tabs.some(tab => tab.id === taskPluginPanelId(panel))) continue;
+      if (!firstArrival && controller.tabs.some(tab => tab.id === taskPluginPanelId(panel))) continue;
       if (firstArrival) setLauncherOpen(false);
       controller.openTab(taskPanelPluginTab(panel), firstArrival);
     }
-  }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, controller.tabs, controller.closeTab, controller.openTab]);
+  }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, pluginPanelsLoading, controller.tabs, controller.closeTab, controller.openTab]);
   const browsersQuery = useTaskBrowsers(issue.id);
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
@@ -799,7 +804,7 @@ function TaskSidePanelForScope({
   } else if (activeTab.payload.kind === "plugin-panel") {
     const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === activeTab.id);
     content = panel ? (
-      <PluginSlotMount key={panel.runId} slot={panel.slot} context={{ companyId: issue.companyId, projectId: issue.projectId, entityId: panel.entityId, entityType: "agent" }} />
+      <PluginSlotMount key={taskPluginPanelId(panel)} slot={panel.slot} context={{ companyId: issue.companyId, projectId: issue.projectId, entityId: panel.entityId, entityType: "agent" }} />
     ) : null;
   } else if (activeTab.payload.kind === "properties") {
     content = (
@@ -835,13 +840,20 @@ function TaskSidePanelForScope({
         : <AgentTasksPanel companyId={issue.companyId} agentId={conversationAgentId} excludeIssueId={issue.id} />
     ) : null;
   } else if (activeTab.payload.kind === "artifacts" && conversationAgentId) {
-    content = <AgentArtifactsPanel companyId={issue.companyId} agentId={conversationAgentId} />;
+    content = (
+      <div className="space-y-4">
+        <section aria-label="Conversation documents">
+          <TaskGeneralDocuments issue={issue} documentEditor={documentEditor ?? {}} />
+        </section>
+        <AgentArtifactsPanel companyId={issue.companyId} agentId={conversationAgentId} />
+      </div>
+    );
   } else if (activeTab.payload.kind === "artifacts") {
     content = <TextAttachmentContext.Provider value={(id, title) => {
       markInteracted();
       controller.openTab(taskPanelAttachmentTab(id, title));
       if (viewer.state || viewer.browse) viewer.close();
-    }}><IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
+    }}><IssuePropertiesArtifactsTab issue={issue} documentEditor={documentEditor ?? {}} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
   } else if (activeTab.payload.kind === "issue-document") {
     content = activeTab.payload.documentKey === "plan" && !activeTab.payload.revisionId && !activeTab.payload.documentIssueId ? (
       <IssuePropertiesPlansTab issue={issue} inline={inline} />
@@ -850,6 +862,8 @@ function TaskSidePanelForScope({
         issueId={activeTab.payload.documentIssueId ?? issue.id}
         documentKey={activeTab.payload.documentKey}
         revisionId={activeTab.payload.revisionId}
+        documentIssueId={activeTab.payload.documentIssueId}
+        currentIssueId={issue.id}
         initialDocument={!activeTab.payload.documentIssueId || activeTab.payload.documentIssueId === issue.id ? documentByKey.get(activeTab.payload.documentKey) : undefined}
       />
     );

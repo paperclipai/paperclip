@@ -20,12 +20,17 @@ task, or sends a hidden follow-up.
 
 ## Run the first slice
 
-Follow the installation steps in [README.md](README.md#local-commands). The current
-profile is local native Codex using the catalog's recorded default model and an
+Follow the installation steps in [README.md](README.md#local-commands). The Codex
+subscription profile uses the catalog's recorded default model and an
 explicit `CODEX_AUTH_JSON` login. Load that login privately into the launcher
 environment; do not print it or save it in tracked configuration. The existing
 subscription fixture stages only `auth.json` in the disposable company login slot
 and removes it with the isolated instance.
+
+The local native OpenCode profile uses the current production-qualified model
+and `OPENROUTER_API_KEY` through the existing encrypted company-secret fixture.
+Each of the two journeys has a cell for each original profile. These four cells
+remain unchanged; the TestOps profile below adds one separately named backlog cell.
 
 ```sh
 pnpm test:e2e:runner:typecheck
@@ -33,14 +38,43 @@ pnpm test:e2e:runner:unit
 pnpm test:e2e:runner -- --list --suite chat-features
 pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.create-backlog --max-automatic-retries 0
 pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.delegate-announcement --max-automatic-retries 0
+pnpm test:e2e:runner -- --id chat-features.runner-opencode.local.delegate-announcement --max-automatic-retries 0
 ```
 
-Run creation first and inspect its packaged report before delegation. For initial
+Run creation first and inspect its packaged report before delegation. For the original Codex
 acceptance, run each cell three times against fresh fixtures on the same definition
 revision. Keep every attempt, including failures; a retry does not erase one. A
-fixture or product correction starts a new three-sample measurement. Both cells
+fixture or product correction starts a new three-sample measurement. All cells
 are explicit-only and excluded from `--all`; this does not implement or qualify
 the rest of the YAML inventory.
+
+## OpenCode TestOps integration acceptance
+
+The additional explicit cell
+`chat-features.runner-opencode-deepseek-1017.local.create-backlog` runs the same backlog
+query, public fixture and saved-state oracle on native OpenCode with
+`openrouter/deepseek/deepseek-v4.1-flash-1017`. It requires only the selected
+`OPENROUTER_API_KEY` profile credential. The launcher stores an encrypted secret
+reference for the disposable agents; no key belongs in catalog data or chat.
+This selected model is a qualification candidate. Other OpenCode suites keep
+their existing model, and delegation is not registered for this profile.
+
+```sh
+pnpm test:e2e:runner -- --id chat-features.runner-opencode-deepseek-1017.local.create-backlog --max-automatic-retries 0
+```
+
+Use a separately named TestOps integration-acceptance plan and launch for this
+single cell. It retains one human request, one accounted controller work run,
+120-second turns, a seven-minute attempt, the five-minute stable-state bound
+and zero automatic retries. Morgan is created as fixture context but must not
+execute the saved backlog task. Existing setup probes and unknown usage remain
+reported separately. The original 244-scenario campaign, failed attempts and
+Codex measurements are not reset or regraded by this measurement.
+
+The existing normalized result, JUnit and packaged report carry the outcome to
+the execution integration. Catalog selection and provider-free oracle checks
+do not establish an AWS model pass or a successful TestOps upload. Accept this
+integration only after the real AWS execution and its TestOps result agree.
 
 ## Bounds and grading
 
@@ -59,6 +93,16 @@ probes fall outside heartbeat usage and budget accounting; detailed setup tokens
 and cost are unavailable. These limits are not an absolute inference or cash cap.
 Subscription cost coverage must remain explicit in the report.
 
+An obsolete CEO assignment can leave a cancelled queue entry when the CEO creates
+a task and then assigns it to Morgan. Grader v2 distinguishes that entry from
+provider work only when the dispatch gate records `issue_assignee_changed`, an
+explicitly null start time, no native issue, and its unchanged stale-queue stop
+receipt. The entry must belong to this company and the one task now assigned to
+Morgan. It stays in the full observation and final ledger, with its events and an
+explicit provider-log omission reason. Active, unrelated, or unproved cancellations
+still fail. The three successful work runs, worker output, completion delivery,
+and original deadlines remain required. Backlog creation still permits no task wake.
+
 Because this subscription currently reports unpriced usage, setup explicitly sets
 `unpricedUsagePolicy: allow` on the disposable company and both agents through the
 public budget API and verifies all three policies. The 500-cent hard stops remain
@@ -74,6 +118,8 @@ on failures. Setup evidence records fixture IDs, synthetic brief, readiness and
 saved budgets. Ordinary Product E2E evidence packaging, redaction, cleanup, failure
 classification and dashboards own the result. The definition digest includes the
 query, defaults, flow and grader sources.
+Individual saved-state checks are also recorded when the journey fails, so the
+report shows partial progress without turning it into a passing workflow.
 
 The grader rejects duplicate tasks, wrong owners/projects/companies, early execution,
 missing audit attribution, missing or stale deliverables, extra human nudges and
@@ -134,3 +180,94 @@ in the history. Across the original final-definition batch and this recheck,
 backlog is 5/5 and delegation is 5/6. The local
 `results/chat-feature-recheck/verification.md` records the follow-up evidence;
 its standard dashboard is explicitly scoped to the latest campaign.
+
+## Retired TestOps plans
+
+The one-case **Chat feature evals** plan and three-case
+**Chat completion pilot — OpenCode 1017** plan are retired. Their scenarios are
+included in the [full catalog](#full-catalog-in-testops). Use that plan or select
+cases from it; do not recreate the smoke or pilot plans.
+
+The former `chat-feature-testops.yml` and `chat-completion-testops.yml` workflows
+are removed. Their bootstrap functions reject registration before any API call
+or mutation marker. Shared transport, evidence, export and verification helpers
+remain for the full-catalog workflow and retained historical evidence. Retiring a
+plan does not delete its cases, results, launches or private evidence.
+
+Retained launch helpers encode TestOps name filters as Base64 of UTF-8 JSON in
+`search`. Plain name text returns HTTP 400. Their nonce and once-only guards
+remain unchanged; this transport contract does not restore the retired plans.
+
+## Full catalog in TestOps
+
+The [Chat catalog TestOps workflow](../../.github/workflows/chat-catalog-testops.yml)
+registers all 244 scenarios from the 35 YAML areas in a separate
+**Chat feature catalog — OpenCode 1017 (candidate)** plan. Its source-derived
+manifest is `chat-full-catalog-testops-manifest.json`. This is the active chat
+plan. The former backlog and three-case pilot plans are retired; their cases
+and measured history are preserved.
+Legacy aliases reuse existing TestOps case identities without renaming them.
+
+The catalog contains 236 Agent Chat routes, five browser boundaries, one external
+assistant route and two Slack routes. An execution mapping is not a passing
+measurement. Five implementations declare incomplete coverage. Six routes do not
+produce the generic final PNG required by the unchanged evidence owner. Eighteen
+declare additional credentials and 37 declare external inputs. These groups
+overlap. Exact requirements and limitations appear in each case's preconditions.
+A declared credential does not establish whether its runtime reference exists.
+
+This lane runs the app and fixtures from candidate
+`3b66c3c144360ddf32714a0742fd774b8ceafb16`. Its app and domain definitions are
+unchanged from `de0941835cc8f0d01c982574ee258e110babdbeb`; the successor adds only
+finite TestOps host admission. Trusted selection, evidence transfer and publishing
+use the workflow's immutable master revision. Each result records both revisions.
+A pass qualifies that candidate measurement, not the current master app. Other
+lanes sharing a case retain their own sources. This integration does not merge
+the broad catalog branch or its core fixes, reset earlier campaign ordinals, or
+change the previous 196-of-244 acceptance gate.
+
+Native execution uses OpenCode and
+`openrouter/deepseek/deepseek-v4.1-flash-1017` on the existing AWS fleet. Each case
+keeps its original query, oracle, run counts, clocks, budgets and zero automatic
+retries. Browser boundaries and the external assistant retain their original
+surfaces and may have zero native work runs. The external companion keeps its own
+declared provider requirement. Setup inference and unpriced usage are not free.
+
+Initial setup uses the existing reporting environment:
+
+1. Dispatch reviewed master with `operation=bootstrap`. It reconciles the exact
+   244 cases and the dedicated plan, then registers and binds its own GitHub job.
+   Missing cases use one marked POST each. Existing cases retain their identities
+   and history. Alias conflicts, foreign selections and uncertain writes stop
+   setup. It makes no model call or synthetic test result.
+2. Read the registration receipt. Store its compact `binding` JSON as
+   `CHAT_FULL_CATALOG_TESTOPS_BINDING`. It contains observed plan, job, integration
+   and case IDs plus registered full names, and fits one GitHub environment
+   variable. The job must retain its observed single `Branch/defaultValue`
+   definition for `refs/heads/master`.
+3. Use normal TestOps **Run** for the full plan or a selected subset. The service's
+   actual expected case list controls execution. Do not manually dispatch another
+   evaluation after an uncertain request. Initial route verification uses a small
+   selection and does not qualify all 244 cases.
+
+Each worker executes one case. Selections of up to three cases run serially.
+Larger selections allow eight independent cases and one external-input case at
+once. External-input cases remain serial because they can share QA resources.
+A full run can take hours. Its elapsed time depends on setup and fleet capacity;
+the declared case clocks are not a completion-time guarantee. Each worker and
+report reader has a singleton private-evidence approval and exact-key AWS
+session; the existing eight-cell
+authority limit is unchanged. Reports wait for all selected workers. A
+credential-free job then validates and merges their metadata projections. The
+protected reporter uploads original outcomes and verifies every selected result,
+including paginated selections over 100 cases. Failed originals and failed
+cleanup remain failed beside passed results. Missing originals cannot become
+fabricated measurements or a full-selection pass.
+
+Raw evidence and final PNGs remain in protected storage. Public GitHub artifacts
+and TestOps attachments contain only allowlisted provenance, checks, accounting
+and private-evidence receipts. Raw conversations, screenshots, provider sessions
+and credentials do not enter the public artifact path. Additional credentials
+reach only cases that declare them. External inputs use the existing selected-case
+private-input owner, disposable-resource checks and oracle commitments.
+Unconfigured inputs remain setup blockers.

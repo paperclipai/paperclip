@@ -30,8 +30,8 @@ it.each([["mine", "mine"], ["unread", "unread"], ["blocked", "blocked"], ["recen
     expect(host.textContent).not.toContain("Coordinator tasks");
   } finally { cleanup(); }
 });
-it("keeps organization-scoped task links out of Inbox", () => {
-  const { host, cleanup } = render("/ORG/issues?view=mine&workspace=workspace");
+it.each(["workspace=workspace", "originKind=routine_execution"])("keeps organization-scoped task links out of Inbox: %s", filter => {
+  const { host, cleanup } = render(`/ORG/issues?view=mine&${filter}`);
   try { expect(host.textContent).toContain("Coordinator tasks"); expect(host.textContent).not.toContain("Inbox owner"); }
   finally { cleanup(); }
 });

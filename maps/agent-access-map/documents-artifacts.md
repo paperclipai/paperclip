@@ -16,6 +16,11 @@ for format, permission checks, evidence and maintenance.
 
 Capability ID: `documents-artifacts/documents`.
 
+Document image selection is browser presentation state. It needs no new API or
+agent permission. Agents can share `#document-<key>&image=<one-based-position>`
+links with optional `revision` and `viewer=full` parameters. Existing task,
+document, revision, and image resource read permissions still apply.
+
 Coordinator receipt reads add `GET /api/issues/{id}/documents/{key}/revisions/{revisionId}`.
 It applies the same task-read authorization as document revision history and
 queries exactly one revision under that task/document key. It does not fall back

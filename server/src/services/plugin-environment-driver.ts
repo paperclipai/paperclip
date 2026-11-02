@@ -527,6 +527,7 @@ export async function resumePluginEnvironmentLease(input: {
   config: PluginEnvironmentConfig;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  requestedCwd?: string;
 }): Promise<PluginEnvironmentLease> {
   const { plugin } = await resolvePluginEnvironmentDriver(input);
   return await input.workerManager.call(plugin.id, "environmentResumeLease", {
@@ -537,6 +538,7 @@ export async function resumePluginEnvironmentLease(input: {
     config: input.config.driverConfig,
     providerLeaseId: input.providerLeaseId,
     leaseMetadata: input.leaseMetadata,
+    ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
   });
 }
 

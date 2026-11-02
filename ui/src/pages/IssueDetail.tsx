@@ -1,4 +1,8 @@
+import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
+import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
+import { useConversationHistoryPages, type ConversationHistoryPage } from "@/hooks/useConversationHistoryPages";
 import { taskChatHashAnchor } from "@/components/task-chat/scroll-navigation";
+import { AgentChatReadProvider } from "@/hooks/useAgentChatRead";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorAgentSwitcher } from "@/components/CoordinatorAgentSwitcher";
 import { TaskDecisionRecord } from "@/components/TaskDecisionRecord";
@@ -14,7 +18,7 @@ import { WorkspaceRetryControl } from "../components/WorkspaceRetryButton";
 import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
 import { canManageIssuePrivacy } from "../lib/issuePrivacy";
 import { TextAttachmentContext } from "../context/TextAttachmentContext";
-import { useTaskPluginPanels, taskPluginPanelId } from "@/hooks/useTaskPluginPanels";
+import { useTaskPluginPanels, taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import { useTaskBrowsers, useBrowserArrivals } from "@/hooks/useTaskBrowsers";
 import { WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
 import { DispositionRecoveryProvider } from "../components/DispositionRecoveryNotice";
@@ -382,6 +386,7 @@ import {
   type IssueRecentComments,
   type IssueDocumentSummary,
   type IssueWorkProduct,
+  type Project,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestCheckboxConfirmationInteraction,
@@ -400,6 +405,7 @@ import {
 // (loading/idle), which destabilizes downstream memos and panel keys that
 // depend on it. Reusing one shared reference keeps those values stable.
 const EMPTY_ISSUES: Issue[] = [];
+const EMPTY_PROJECTS: Project[] = [];
 
 type StopAndFinalizeRunError = Error & {
   runCancelledBeforeStatusUpdateFailed?: boolean;
@@ -932,31 +938,6 @@ function ChatBubbleSkeleton({
 }
 
 /**
- * Composer placeholder mirroring TaskChatComposer's docked card (a bordered
- * rounded input area with a plus, a mode chip, and a send affordance) so the
- * foot of the loading state matches the real chat shell.
- */
-function IssueChatComposerSkeleton({ className }: { className?: string }) {
-  return (
-    <div
-      className={cn("rounded-xl border border-input bg-card p-2", className)}
-      data-testid="issue-chat-composer-skeleton"
-    >
-      <div className="min-h-(--sz-48px) space-y-2 px-1 py-1">
-        <Skeleton className="h-3 w-1/2" />
-        <Skeleton className="h-3 w-1/3" />
-      </div>
-      <div className="mt-1 flex items-center gap-2">
-        <Skeleton className="h-8 w-8 rounded-md" />
-        <Skeleton className="h-8 w-24 rounded-md" />
-        <div className="flex-1" />
-        <Skeleton className="h-8 w-8 rounded-md" />
-      </div>
-    </div>
-  );
-}
-
-/**
  * Alternating chat-bubble placeholders for the thread body. Widths and heights
  * vary so the skeleton mirrors a real back-and-forth (TaskChatThreadView)
  * rather than the pre-chat bordered card it replaced.
@@ -996,31 +977,34 @@ function useTaskDetailInterfaceMode(conversationMode = false) {
 
 export function IssueDetailLoadingState({
   headerSeed,
-  titleEditor,
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
-  titleEditor?: React.ReactNode;
 }) {
   const identifier =
     headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
-  const { taskChatShellEnabled } = useTaskDetailInterfaceMode();
+  const { taskChatShellEnabled, streamlinedUiEnabled, coordinatorWorkspaceEnabled, loaded } = useTaskDetailInterfaceMode();
+  const { isMobile } = useSidebar();
+  if (!loaded) {
+    return <div data-testid="task-detail-presentation-loading" role="status" aria-label="Loading conversation" className="flex h-full min-h-0 w-full flex-1 items-center justify-center">
+      <Skeleton aria-hidden="true" className="h-4 w-24" />
+    </div>;
+  }
+  if (taskChatShellEnabled) {
+    return <div data-task-chat-shell="" className="flex h-full min-h-0 w-full flex-1 flex-col">
+      <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorWorkspaceEnabled} />
+    </div>;
+  }
 
   return (
-    <div
-      className={
-        taskChatShellEnabled
-          ? "task-chat-loading-shell mx-auto flex min-h-0 w-full max-w-(--tc-shell-max-w) flex-1 flex-col gap-6"
-          : "max-w-3xl space-y-6"
-      }
-    >
-      <div className="space-y-3" data-testid={titleEditor ? "issue-detail-header" : undefined}>
+    <div className="max-w-3xl space-y-6">
+      <div className="space-y-3">
         <Skeleton className="h-3 w-40" />
 
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           {headerSeed ? (
             <>
               <StatusIcon
-                status={headerSeed.status}
+                status={headerSeed.status} displayStatus={headerSeed.displayStatus}
                 blockerAttention={headerSeed.blockerAttention}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
@@ -1071,9 +1055,9 @@ export function IssueDetailLoadingState({
 
         {headerSeed ? (
           <>
-            {titleEditor ?? <h2 className="text-xl font-bold leading-tight">
+            <h2 className="text-xl font-bold">
               {headerSeed.title}
-            </h2>}
+            </h2>
             <div className="space-y-2">
               <Skeleton className="h-4 w-full max-w-xl" />
               <Skeleton className="h-4 w-(--pct-72)" />
@@ -1087,29 +1071,17 @@ export function IssueDetailLoadingState({
         )}
       </div>
 
-      {taskChatShellEnabled ? (
-        // Chat shell: the thread is the whole surface — alternating bubble
-        // placeholders followed by the docked composer, no tab strip or
-        // properties-card chrome (those don't exist in the chat layout).
-        <div className="flex min-h-0 flex-1 flex-col justify-between gap-6 overflow-hidden">
-          <IssueChatSkeleton />
-          <IssueChatComposerSkeleton />
+      <Skeleton className="h-28 w-full rounded-lg border border-border" />
+
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-8 w-20" />
+          <Skeleton className="h-8 w-20" />
         </div>
-      ) : (
-        <>
-          <Skeleton className="h-28 w-full rounded-lg border border-border" />
+        <IssueChatSkeleton />
+      </div>
 
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Skeleton className="h-8 w-20" />
-              <Skeleton className="h-8 w-20" />
-            </div>
-            <IssueChatSkeleton />
-          </div>
-
-          <IssueSectionSkeleton titleWidth="w-24" rows={3} />
-        </>
-      )}
+      <IssueSectionSkeleton titleWidth="w-24" rows={3} />
     </div>
   );
 }
@@ -1278,10 +1250,12 @@ type IssueDetailChatTabProps = {
   locallyQueuedCommentRunIds: ReadonlyMap<string, string>;
   interactions: IssueThreadInteraction[];
   documents: IssueDocumentSummary[];
+  createdTasks: Issue[];
   workProducts: IssueWorkProduct[];
   attachments: IssueAttachment[];
   hasOlderComments: boolean;
   commentsLoadingOlder: boolean;
+  commentsOlderError?: boolean;
   onLoadOlderComments: () => void;
   onRefreshLatestComments: () => Promise<unknown> | void;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
@@ -1434,10 +1408,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   locallyQueuedCommentRunIds,
   interactions,
   documents,
+  createdTasks,
   workProducts,
   attachments,
   hasOlderComments,
   commentsLoadingOlder,
+  commentsOlderError = false,
   onLoadOlderComments,
   onRefreshLatestComments,
   onWorkModeChange,
@@ -1530,11 +1506,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       : undefined,
   });
   const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
-  const inputFacts = useQuery({
-    queryKey: [...queryKeys.issues.activity(issueQueryRef), "comment-inputs", inputCommentIds],
-    queryFn: () => activityApi.inputFactsForIssue(issueQueryRef, inputCommentIds),
-    enabled: !!issueId && !historyExpanded && inputCommentIds.length > 0,
-  });
+  const inputFacts = useIssueIdBatches(
+    [...queryKeys.issues.activity(issueQueryRef), "comment-inputs"], inputCommentIds,
+    ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
+  );
   const {
     data: liveRuns,
     isFetched: liveRunsFetched,
@@ -1658,7 +1633,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       )) {
         // After a reconnect, several turns may have completed beyond the small
         // window. Reconcile watched runs once against authoritative summaries.
-        recent = await activityApi.runsForIssue(issueQueryRef);
+        recent = conversationMode
+          ? await activityApi.runsByIdsForIssue(issueQueryRef, [...new Set([...previous.map(run => run.runId), ...recent.map(run => run.runId)])])
+          : await activityApi.runsForIssue(issueQueryRef);
         reconciledFullHistory = true;
         const existingRunIds = new Set(recent.map((run) => run.runId));
         previous = previous.filter((run) => existingRunIds.has(run.runId));
@@ -1679,7 +1656,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
     placeholderData: historyExpanded ? queryClient.getQueryData<RecentIssueRunWindow>([...queryKeys.issues.runs(issueQueryRef), "recent-window"])?.runs : undefined,
   });
-  const linkedRuns = Array.isArray(linkedRunHistory) ? linkedRunHistory : linkedRunHistory?.runs;
+  const observedRunIds = useMemo(() => [...new Set([
+    ...comments.flatMap(comment => [comment.createdByRunId, comment.derivedCreatedByRunId]),
+    ...(inputFacts.data ?? []).flatMap(event => [event.runId, event.details?.targetRunId]),
+  ].filter((id): id is string => typeof id === "string" && isUuidLike(id)))].sort(), [comments, inputFacts.data]);
+  const commentRuns = useIssueIdBatches(
+    [...queryKeys.issues.runs(issueQueryRef), "comment-window"], observedRunIds,
+    ids => activityApi.runsByIdsForIssue(issueQueryRef, ids), !!issueId && !!conversationMode && !historyExpanded,
+  );
+  const linkedRuns = useMemo(() => [...new Map([
+    ...(Array.isArray(linkedRunHistory) ? linkedRunHistory : linkedRunHistory?.runs ?? []),
+    ...(conversationMode && !historyExpanded ? commentRuns.data ?? [] : []),
+  ].map(run => [run.runId, run])).values()], [linkedRunHistory, conversationMode, historyExpanded, commentRuns.data]);
   const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true;
   const resolvedActivity = useMemo(
     () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
@@ -1940,6 +1928,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
     }
     const projectedComments = commentsToProject.map((comment) => {
+      if (comment.metadata?.chatMessage) return { ...comment, runId: null };
       const activityMeta = runMetaByCommentId.get(comment.id);
       // Internal run finalization can persist a reply without a separate
       // comment_added activity row. Its durable authoring run is stronger
@@ -2576,7 +2565,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [resolvedActivity],
   );
 
-  const loadOlderButton = hasOlderComments ? (
+  const scrollingHistory = conversationMode ? {
+    hasMore: !!hasOlderComments,
+    loading: commentsLoadingOlder,
+    error: commentsOlderError,
+    load: onLoadOlderComments,
+  } : undefined;
+  const loadOlderButton = !conversationMode && hasOlderComments ? (
     <div className="flex justify-center">
       <Button
         type="button"
@@ -2619,8 +2614,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           <ThreadComponent
             {...(!classicTaskInterfaceEnabled ? {
               compactHistory: !historyExpanded,
-              onExpandHistory,
-              historyControl: !historyExpanded && (hasEarlierMessages || hasEarlierRuns) ? (
+              onExpandHistory: conversationMode ? undefined : onExpandHistory,
+              scrollingHistory,
+              historyControl: conversationMode ? null : !historyExpanded && (hasEarlierMessages || hasEarlierRuns) ? (
                 <Button type="button" variant="ghost" size="sm" onClick={onExpandHistory}>
                   More messages
                 </Button>
@@ -2630,7 +2626,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             interruption={interruption}
             retryPreparing={retryPreparing}
             key={conversationMode ? draftKey : issueId}
-            {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity } : {})}
+            {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity, createdTasks } : {})}
             onOpenSkill={onOpenSkill}
             browsers={browsers}
             onOpenBrowser={onOpenBrowser}
@@ -2644,6 +2640,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               initialMetadataPending ||
               activityPending ||
               linkedRunsPending ||
+              (conversationMode && observedRunIds.length > 0 && commentRuns.isPending) ||
               inputFacts.isLoading ||
               !runtimeSelectionKnown)
             }
@@ -2652,6 +2649,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               activityError ||
               (!historyExpanded && inputFacts.isError) ||
               linkedRunsError ||
+              (conversationMode && commentRuns.isError) ||
               liveRunsError ||
               (activeRunQueryEnabled && activeRunError)
             }
@@ -2660,6 +2658,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               void refetchActivity();
               if (!historyExpanded && inputCommentIds.length) void inputFacts.refetch();
               void refetchLinkedRuns();
+              if (conversationMode && observedRunIds.length) void commentRuns.refetch();
               void refetchLiveRuns();
               if (activeRunQueryEnabled) void refetchActiveRun();
             }}
@@ -3343,11 +3342,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
     enabled: !!issueId,
   });
-  const { historyExpanded, expandHistory, recent: recentComments } = useIssueHistoryWindow(
+  const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
     issueId,
-    Boolean(conversation || classicTaskInterfaceEnabled),
+    // Classic settings can resolve before the personal workspace preference.
+    // Do not persist full-history expansion for a surface we have not chosen.
+    Boolean(!conversation && !coreIssueQuery.data?.conversationAgentId && taskInterfaceSettingsLoaded && classicTaskInterfaceEnabled),
     coreIssueQuery.data,
+    Boolean(conversation || coreIssueQuery.data?.conversationAgentId),
   );
+  const paginatedConversation = Boolean(conversation || coreIssueQuery.data?.conversationAgentId);
   const issueQuery = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issueId!, {
       placeholderIssue: issueHeaderSeed
@@ -3448,13 +3451,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       InfiniteData<IssueComment[], string | null>
     >(issueId ?? "pending"),
   });
+  const earlierChatComments = useConversationHistoryPages(issueId, paginatedConversation, recentComments.data?.oldestCommentId, recentComments.data?.comments ?? []);
   const commentAnchor = location.hash.startsWith("#comment-")
     ? location.hash.slice("#comment-".length)
     : null;
   const linkedCommentId = commentAnchor && isUuidLike(commentAnchor) ? commentAnchor.trim() : null;
   const windowComments = useMemo(
-    () => mergeWindowComments(recentComments.data?.comments ?? [], flattenIssueCommentPages(commentPages?.pages)),
-    [commentPages?.pages, recentComments.data?.comments],
+    () => mergeWindowComments(recentComments.data?.comments ?? [], paginatedConversation
+      ? earlierChatComments.data?.pages.flatMap(page => page.comments) ?? []
+      : flattenIssueCommentPages(commentPages?.pages), acknowledgedComments),
+    [paginatedConversation, earlierChatComments.data?.pages, commentPages?.pages, recentComments.data?.comments, acknowledgedComments],
   );
   const linkedComment = useQuery({
     queryKey: [...queryKeys.issues.comments(issueId!), "linked", linkedCommentId],
@@ -3489,12 +3495,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [issueId]);
 
   useEffect(() => {
-    if (!issue) return;
+    if (!issue || !taskInterfaceSettingsLoaded || !taskRouteReady) return;
     scheduleIssueDetailPaintMeasure(
       ISSUE_DETAIL_HEADER_PAINT_MARK,
       ISSUE_DETAIL_HEADER_MEASURE,
     );
-  }, [issue?.id]);
+  }, [issue?.id, taskInterfaceSettingsLoaded, taskRouteReady]);
 
   useEffect(() => {
     if (!classicTaskInterfaceEnabled || !issue || commentsLoading) return;
@@ -3645,7 +3651,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       createdFromIssueId: issue!.id,
       includeRoutineExecutions: true,
     }),
-    enabled: streamlinedTaskDetailEnabled && !!resolvedCompanyId && !!issue?.id && !tasksTab,
+    enabled: !!resolvedCompanyId && !!issue?.id && !issue.id.startsWith("chat:") && (
+      (taskChatShellEnabled && !conversation) || (streamlinedTaskDetailEnabled && !tasksTab)
+    ),
   });
 
   const {
@@ -3705,7 +3713,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
   // Bounded pool of recently-updated issues to back the `@task` reference picker.
   // The picker filters this list client-side by identifier/title.
-  const { data: mentionIssues = [] } = useQuery({
+  const { data: mentionIssues = EMPTY_ISSUES } = useQuery({
     queryKey: resolvedCompanyId
       ? queryKeys.issues.mentionPool(resolvedCompanyId)
       : ["issues", "mention-pool", "pending"],
@@ -3727,7 +3735,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => authApi.getSession(),
   });
 
-  const { data: projects } = useQuery({
+  const { data: projects = EMPTY_PROJECTS } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -3779,7 +3787,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const fileViewerEnabled =
     instanceExperimentalSettings?.enableExperimentalFileViewer === true;
   const { orderedProjects } = useProjectOrder({
-    projects: projects ?? [],
+    projects,
     companyId: selectedCompanyId,
     userId: currentUserId,
   });
@@ -3924,6 +3932,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
   }, [issue?.id, rawChildIssues]);
+  const threadCreatedTasks = useMemo(() => [
+    ...childIssues.filter((task) => task.parentId === issue?.id),
+    ...(createdTasksQuery.data ?? EMPTY_ISSUES),
+  ], [childIssues, createdTasksQuery.data, issue?.id]);
   const resolvedTasksTab = useMemo(() => {
     if (tasksTab) return tasksTab;
     if (!streamlinedTaskDetailEnabled) return undefined;
@@ -3944,7 +3956,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           issueLinkState={resolvedIssueDetailState ?? location.state}
           subtasks={childIssues}
           createdTasks={createdTasks}
-          projects={projects ?? []}
+          projects={projects}
           isLoading={createdTasksQuery.isLoading || childIssuesLoading}
           hasError={hasError}
           onRetry={() => {
@@ -4061,19 +4073,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     const timeout = window.setTimeout(() => observer.disconnect(), 10_000);
     return () => { observer.disconnect(); window.clearTimeout(timeout); };
   }, [coordinatorWorkspaceEnabled, issue?.id, location.hash, location.key]);
-  const pluginPanels = useTaskPluginPanels(issue, taskChatShellEnabled);
+  const taskPanelAccountScope = coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous";
+  const { panels: pluginPanels, isLoading: pluginPanelsLoading } = useTaskPluginPanels(issue, taskChatShellEnabled);
   const revealedPluginPanels = useRef(new Set<string>());
   const openedPluginPanelKeys = useRef(new Set<string>());
   const dismissedPluginPanelKeys = useRef(new Set<string>());
   useEffect(() => {
     for (const panel of pluginPanels) {
-      const key = JSON.stringify([currentUserId, issue?.id, panel.runId, taskPluginPanelId(panel)]);
+      if (!panel.autoOpen || !panel.runId) continue;
+      const key = taskPluginPanelActivationKey(panel, taskPanelAccountScope, issue!);
       if (revealedPluginPanels.current.has(key)) continue;
       revealedPluginPanels.current.add(key);
+      if (dismissedPluginPanelKeys.current.has(key)) continue;
       openTaskSidePanel();
       if (isMobile) setMobilePropsOpen(true);
     }
-  }, [pluginPanels, currentUserId, issue?.id, openTaskSidePanel, isMobile]);
+  }, [pluginPanels, taskPanelAccountScope, issue?.companyId, issue?.id, openTaskSidePanel, isMobile]);
   const browserQuery = useTaskBrowsers(issue?.id);
   const { openBrowserId, openBrowser: setOpenBrowserId, acknowledgeBrowserOpened: handleBrowserOpened } =
     useBrowserArrivals(currentUserId ?? "anonymous", issue?.id, browserQuery.data);
@@ -4203,28 +4218,29 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }),
     [comments, optimisticComments],
   );
-  const breadcrumbTitle = issue?.title ?? issueId ?? "Task";
+  const breadcrumbTitle = issue?.title ?? issueHeaderSeed?.title ?? "";
   const breadcrumbIdentifier =
-    issue?.identifier ?? issueHeaderSeed?.identifier ?? undefined;
-  const breadcrumbStatus = issue?.status;
+    issue?.identifier ?? issueHeaderSeed?.identifier ?? (issueId && /^[a-z0-9]+-\d+$/i.test(issueId) ? issueId : undefined);
+  const breadcrumbStatus = issue?.status ?? issueHeaderSeed?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
   // depend on status (+ covered state), and its accessible label is derived
   // from the blocker counts — so the key signs over the full blockerAttention,
   // not just `state`, to avoid a stale label when counts change.
   const breadcrumbStatusKey = breadcrumbStatus
-    ? `${breadcrumbStatus}|${issue?.externalConversationState ?? ""}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
-    : undefined;
+    ? `${breadcrumbStatus}|${issue?.displayStatus ?? issueHeaderSeed?.displayStatus ?? ""}|${issue?.externalConversationState ?? ""}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
+    : "loading-task-status";
   const breadcrumbStatusLeading = useMemo(
     () =>
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
+          displayStatus={issue?.displayStatus ?? issueHeaderSeed?.displayStatus}
           externalConversationState={issue?.externalConversationState}
           className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
         />
-      ) : undefined,
+      ) : <span aria-hidden="true" className="size-3 shrink-0" />,
     // `breadcrumbStatusKey` is a complete signature of the inputs below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [breadcrumbStatusKey],
@@ -4301,6 +4317,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           queryKeys.issues.comments(ref),
           (current) => current && { ...current, pages: removeIssueCommentFromPages(current.pages, commentId) },
         );
+        queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current =>
+          current?.filter(comment => comment.id !== commentId),
+        );
+        queryClient.setQueryData<InfiniteData<ConversationHistoryPage, string | null>>(
+          queryKeys.issues.earlierComments(ref), current => current && {
+            ...current, pages: current.pages.map(page => ({ ...page, comments: page.comments.filter(comment => comment.id !== commentId) })),
+          },
+        );
         queryClient.setQueryData<IssueRecentComments>(
           [...queryKeys.issues.comments(ref), "recent"],
           (current) => {
@@ -4352,6 +4376,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 pages: upsertIssueCommentInPages(current.pages, comment),
               }
             : current,
+        );
+        queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current =>
+          current?.map(existing => existing.id === comment.id ? comment : existing),
+        );
+        queryClient.setQueryData<InfiniteData<ConversationHistoryPage, string | null>>(
+          queryKeys.issues.earlierComments(ref), current => current && {
+            ...current, pages: current.pages.map(page => ({ ...page, comments: page.comments.map(existing => existing.id === comment.id ? comment : existing) })),
+          },
         );
         queryClient.setQueryData<IssueRecentComments>(
           [...queryKeys.issues.comments(ref), "recent"],
@@ -5087,6 +5119,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (context?.optimisticCommentId) {
         commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
       }
+      if (paginatedConversation) retainComment(comment);
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
         queryKeys.issues.comments(issueId ?? comment.issueId),
         (current) =>
@@ -5510,6 +5543,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
       }
       if (comment) {
+        if (paginatedConversation) retainComment(comment);
         if (context?.optimisticCommentId)
           commentRenderKeys.current.set(
             comment.id,
@@ -6047,6 +6081,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   useEffect(() => {
     if (!issueId || !issue?.id) return;
+    if (issue.conversationAgentId) return;
     if (lastMarkedReadIssueIdRef.current === issue.id) return;
     lastMarkedReadIssueIdRef.current = issue.id;
     markIssueRead.mutate(issue.id);
@@ -6141,8 +6176,27 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [openIssueGallery],
   );
 
+  const taskDocumentEditor = useMemo<NonNullable<TaskSidePanelProps["documentEditor"]>>(() => ({
+    feedbackVotes,
+    feedbackDataSharingPreference,
+    feedbackTermsUrl: FEEDBACK_TERMS_URL,
+    mentions: mentionOptions,
+    externalReferences: externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined,
+    imageUploadHandler: async (file) => (await uploadAttachment.mutateAsync(file)).contentPath,
+    onVote: async (revisionId, vote, options) => {
+      await feedbackVoteMutation.mutateAsync({
+        targetType: "issue_document_revision", targetId: revisionId, vote,
+        reason: options?.reason, allowSharing: options?.allowSharing,
+        sharingPreferenceAtSubmit: feedbackDataSharingPreference,
+      });
+    },
+    agentMap,
+    userProfileMap,
+  }), [feedbackVotes, feedbackDataSharingPreference, mentionOptions, externalObjectsState.isEnabled,
+    externalObjectsState.markdownReferences, uploadAttachment.mutateAsync, feedbackVoteMutation.mutateAsync, agentMap, userProfileMap]);
+
   useLayoutEffect(() => {
-    if (!panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue) || (taskChatShellEnabled && isMobile)) {
+    if (!taskInterfaceSettingsLoaded || !panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue) || (taskChatShellEnabled && isMobile)) {
       closePanel();
       return;
     }
@@ -6181,14 +6235,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       openPanel(
         <IssueGalleryContext.Provider value={openIssueGallery}>
           <TaskSidePanel
+            documentEditor={taskDocumentEditor}
             pluginPanels={pluginPanels}
+            pluginPanelsLoading={pluginPanelsLoading}
             openedPluginPanelKeys={openedPluginPanelKeys.current}
             dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}
             openBrowserId={openBrowserId}
             onBrowserOpened={handleBrowserOpened}
             key={panelIssue.id}
             {...sharedProps}
-            accountScope={coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous"}
+            accountScope={taskPanelAccountScope}
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
             showSubtasksTab={streamlinedTaskDetailEnabled}
@@ -6210,6 +6266,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     return () => closePanel();
   }, [
     pluginPanels,
+    pluginPanelsLoading,
+    taskPanelAccountScope,
     openBrowserId,
     handleBrowserOpened,
     closePanel,
@@ -6236,7 +6294,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     externalObjectsState.isError,
     externalObjectsState.refetch,
     documentDeepLink,
+    taskInterfaceSettingsLoaded,
     taskChatShellEnabled,
+    taskDocumentEditor,
     currentUserId,
     coordinatorWorkspaceEnabled,
     fileViewerEnabled,
@@ -6694,10 +6754,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const attachmentsInitialLoading =
     attachmentsLoading && attachments === undefined;
-  const loadOlderComments = useCallback(() => {
-    void fetchOlderComments();
-  }, [fetchOlderComments]);
+  const loadOlderComments = useCallback(() => paginatedConversation
+    ? earlierChatComments.load() : fetchOlderComments(), [paginatedConversation, earlierChatComments.load, fetchOlderComments]);
   const refetchLatestComments = useCallback(async () => {
+    if (paginatedConversation) {
+      await recentComments.refetch();
+      return;
+    }
     // Refetch page 0 first so comments that arrived after initial load are
     // visible, then load every remaining older page. The chat thread is
     // paginated and virtualized, so "latest" must be resolved against the
@@ -6727,7 +6790,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       window.requestAnimationFrame(() => resolve());
     });
-  }, [issueId, queryClient, refetchComments]);
+  }, [issueId, queryClient, refetchComments, paginatedConversation, recentComments.refetch]);
   useEffect(() => {
     if (
       !shouldPrefetchOlderComments &&
@@ -7275,17 +7338,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   if (!taskRouteReady || !taskInterfaceSettingsLoaded)
     return (
       <IssueDetailLoadingState
-        titleEditor={taskRouteReady && !issue.conversationAgentId ? (
-          // The account-bound title editor can retain input before the first
-          // session lookup. Presentation-specific controls still wait below.
-          <InlineEditor
-            value={issue.title}
-            onSave={(title) => updateIssue.mutateAsync({ title })}
-            draftKey={`issue:${issue.id}:title`}
-            as="h2"
-            className="text-xl font-semibold leading-normal"
-          />
-        ) : undefined}
         headerSeed={
           loadedIssue
             ? readIssueDetailHeaderSeed(
@@ -7464,7 +7516,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const issueStatusControl = (
     <StatusIcon
-      status={issue.status} externalConversationState={issue.externalConversationState}
+      status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState}
       size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}
@@ -8022,6 +8074,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   return (
     <FileViewerProvider issueId={conversation && !conversation.issue ? "" : issue.id} enabled={fileViewerEnabled}>
+      <AgentChatReadProvider issueId={issue.conversationAgentId && issue.conversationUserId === (currentUserId ?? "local-board") && (!conversation || conversation.issue) ? issue.id : undefined} companyId={issue.companyId} userId={currentUserId}>
       <TextAttachmentContext.Provider value={taskChatShellEnabled ? handleOpenTextAttachment : null}><IssueGalleryContext.Provider value={openIssueGallery}>
         <div
           data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
@@ -8168,35 +8221,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           pane (Artifacts tab) — the center column belongs to the thread. */}
           {taskChatShellEnabled ? null : (
             <IssueDocumentsSection
+              {...taskDocumentEditor}
               issue={issue}
               canDeleteDocuments={Boolean(session?.user?.id)}
               canManageDocumentLocks={Boolean(session?.user?.id)}
-              feedbackVotes={feedbackVotes}
-              feedbackDataSharingPreference={feedbackDataSharingPreference}
-              feedbackTermsUrl={FEEDBACK_TERMS_URL}
-              mentions={mentionOptions}
-              externalReferences={
-                externalObjectsState.isEnabled
-                  ? externalObjectsState.markdownReferences
-                  : undefined
-              }
-              imageUploadHandler={async (file) => {
-                const attachment = await uploadAttachment.mutateAsync(file);
-                return attachment.contentPath;
-              }}
-              onVote={async (revisionId, vote, options) => {
-                await feedbackVoteMutation.mutateAsync({
-                  targetType: "issue_document_revision",
-                  targetId: revisionId,
-                  vote,
-                  reason: options?.reason,
-                  allowSharing: options?.allowSharing,
-                  sharingPreferenceAtSubmit: feedbackDataSharingPreference,
-                });
-              }}
               extraActions={!hasAttachments ? attachmentUploadButton : null}
-              agentMap={agentMap}
-              userProfileMap={userProfileMap}
             />
           )}
 
@@ -8402,7 +8431,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onOpenSkill={handleOpenSkill}
                   browsers={browserQuery.data}
                   onOpenBrowser={(id) => { setOpenBrowserId(id); if (isMobile) setMobilePropsOpen(true); else openTaskSidePanel(); }}
-                  threadHeader={<>{taskChatThreadHeader}<EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} /></>}
+                  threadHeader={<>{taskChatThreadHeader}<EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />
+                    {(childIssuesError || createdTasksQuery.isError) && (
+                      <div role="alert" className="flex items-center gap-2 px-4 text-sm text-destructive">
+                        <span>Could not load created tasks.</span>
+                        <Button variant="ghost" size="sm" onClick={() => {
+                          void refetchChildIssues();
+                          void createdTasksQuery.refetch();
+                        }}>Retry</Button>
+                      </div>
+                    )}
+                  </>}
                   issueBrief={
                     // Suppress the seeded-description bubble for the onboarding first
                     // task: its description is agent instructions, not something the
@@ -8504,10 +8543,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
                   interactions={interactions}
                   documents={issue.documentSummaries ?? []}
+                  createdTasks={threadCreatedTasks}
                   workProducts={workProducts ?? issue.workProducts ?? []}
                   attachments={attachments ?? []}
-                  hasOlderComments={hasOlderComments}
-                  commentsLoadingOlder={commentsLoadingOlder}
+                  hasOlderComments={paginatedConversation && !historyExpanded
+                    ? (earlierChatComments.data ? earlierChatComments.hasNextPage : recentComments.data?.hasMore) ?? false
+                    : hasOlderComments}
+                  commentsOlderError={paginatedConversation && earlierChatComments.isError}
+                  commentsLoadingOlder={paginatedConversation ? earlierChatComments.isFetching : commentsLoadingOlder}
                   onLoadOlderComments={loadOlderComments}
                   onRefreshLatestComments={refetchLatestComments}
                   composerRef={commentComposerRef}
@@ -8797,14 +8840,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     <SheetTitle>Task side panel</SheetTitle>
                   </SheetHeader>
                   <TaskSidePanel
+                    documentEditor={taskDocumentEditor}
                     pluginPanels={pluginPanels}
+                    pluginPanelsLoading={pluginPanelsLoading}
                     openedPluginPanelKeys={openedPluginPanelKeys.current}
                     dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}
                     openBrowserId={openBrowserId}
                     onBrowserOpened={handleBrowserOpened}
                     key={`${issue.id}:mobile`}
                     issue={issue}
-                    accountScope={coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous"}
+                    accountScope={taskPanelAccountScope}
                     childIssues={childIssues}
                     issueLinkState={
                       streamlinedTaskDetailEnabled
@@ -8927,6 +8972,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           <ScrollToBottom />
         </div>
       </IssueGalleryContext.Provider></TextAttachmentContext.Provider>
+      </AgentChatReadProvider>
     </FileViewerProvider>
   );
 }

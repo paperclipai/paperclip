@@ -93,6 +93,24 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.execute(sql`truncate table companies restart identity cascade`);
   });
 
+  it.each([
+    { provider: "codex" }, { provider: "acpx", acpxAgent: "antigravity" }, { provider: "muse" },
+  ])("rejects direct taskless timer wakes for $provider before a run or request can be persisted", async adapterConfig => {
+    const [company] = await db.insert(companies).values({ name: "Timer scope", issuePrefix: "TS" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Ready for a task", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60 } } }).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    const queue = createHeartbeatQueue(db, deps);
+    expect(await queue.enqueueWakeup(agent.id, { source: "timer", reason: "heartbeat_timer", requestedByActorType: "system" })).toBeNull();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0])
+      .toMatchObject({ status: "idle", lastHeartbeatAt: null });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    expect(deps.budgets.getInvocationBlock).not.toHaveBeenCalled();
+  });
+
   async function fixture(status = "running") {
     const [company] = await db.insert(companies).values({ name: "Queue module", issuePrefix: "QM" }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Queue agent", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();

@@ -451,8 +451,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       let entered = false;
       await adapter.withIssueExecutionLock({ companyId: f.companyId, runId: f.runId, now: new Date() }, async (_locked, ports) => {
         entered = true;
-        if (operation === "cancel_wake") await ports.transaction.cancelDeferredWake({ companyId: f.companyId, wakeId, reason: "cancelled", now: new Date() });
-        if (operation === "fail_wake") await ports.transaction.failDeferredWake({ companyId: f.companyId, wakeId, now: new Date() });
+        if (operation === "cancel_wake") await ports.transaction.cancelDeferredWake({ companyId: f.companyId, wakeId, agentId: f.agentId, reason: "cancelled", now: new Date() });
+        if (operation === "fail_wake") await ports.transaction.failDeferredWake({ companyId: f.companyId, wakeId, agentId: f.agentId, now: new Date() });
         return { outcome: { kind: "released" as const }, postCommitEffects: [] };
       });
       expect(entered).toBe(true);

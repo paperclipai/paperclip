@@ -86,7 +86,7 @@ export function AgentTaskCard({ task }: { task: Issue }) {
     >
       <div className="flex min-w-0 items-start gap-2">
         <StatusIcon
-          status={task.status}
+          status={task.status} displayStatus={task.displayStatus}
           blockerAttention={task.blockerAttention}
           className="mt-0.5 shrink-0"
         />

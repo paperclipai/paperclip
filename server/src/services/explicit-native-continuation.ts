@@ -475,7 +475,7 @@ export async function admitExplicitNativeContinuation(input: {
   }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.queuedCommentInterruptId),
     eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
   if (cancelledStartupIds.size) await db.transaction(async tx => {
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId, agentId });
     for (const runId of cancelledStartupIds) {
       await tx.update(nativeRunFinalizations).set({
         phase: "terminal_failure", failureCode: "native_startup_cancelled", nextAttemptAt: null,

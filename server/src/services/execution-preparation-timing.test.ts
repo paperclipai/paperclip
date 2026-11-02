@@ -1,5 +1,6 @@
+import { getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createRunPreparationTiming, measureRunPhase, recordRepositoryObjectCacheDetail, withRunExecutionTiming, withRunWorkspaceFinalizationTiming } from "./execution-preparation-timing.js";
+import { createRunPreparationTiming, measureRunPhase, recordRepositoryObjectCacheDetail, withRunExecutionTiming, withRunWorkspaceFinalizationTiming, withRunResponsePresentationTiming } from "./execution-preparation-timing.js";
 import { ROOT_CONTEXT, trace, SpanStatusCode, type Context } from "@opentelemetry/api";
 import { createHash } from "node:crypto";
 
@@ -44,8 +45,10 @@ it.each([undefined, "", "  "])("does not consult tracing for endpoint %s", async
   try {
     await expect(createRunPreparationTiming("run", "native.controller")("backend_setup", () => 42)).resolves.toBe(42);
     await expect(withRunWorkspaceFinalizationTiming("run", () => 42)).resolves.toBe(42);
+    await expect(withRunResponsePresentationTiming("run", () => 42)).resolves.toBe(42);
     for (const phase of ["execution.usage_startup", "execution.mcp_handoff", "execution.dispatch_admission", "execution.budget_reservation",
-      "skills.inventory", "skills.inventory.wait", "skills.cache.acquire", "skills.version.materialize", "skills.consume"] as const) {
+      "skills.inventory", "skills.inventory.wait", "skills.cache.acquire", "skills.version.materialize", "skills.consume",
+      "workspace_sync.seed_read_copy", "workspace_sync.seed_read_hash", "workspace_sync.seed_read_touch"] as const) {
       const result = {};
       const work = vi.fn(() => {
         recordRepositoryObjectCacheDetail({ outcome: "hit", referenceSupplied: true });
@@ -67,7 +70,10 @@ it.each([undefined, "", "  "])("does not consult tracing for endpoint %s", async
   }
 });
 
-it("parents concurrent deferred copyback phases to their own finalization roots and preserves failure", async () => {
+it.each([
+  [withRunWorkspaceFinalizationTiming, "task.workspace_finalization", "workspace_sync.restore"],
+  [withRunResponsePresentationTiming, "task.response_presentation", "response.transaction"],
+] as const)("parents concurrent deferred phases to their own %s root and preserves failure", async (withTiming, rootName, phase) => {
   const spans: Array<{ name: string; attributes: Record<string, unknown>; context: Context;
     span: { end: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> } }> = [];
   handles.startActiveSpan.mockImplementation((name, options, context, callback) => {
@@ -75,16 +81,16 @@ it("parents concurrent deferred copyback phases to their own finalization roots 
     spans.push({ name, attributes: options.attributes, context, span });
     return callback(span);
   });
-  await Promise.all(["first", "second"].map(runId => withRunWorkspaceFinalizationTiming(runId, async () => {
+  await Promise.all(["first", "second"].map(runId => withTiming(runId, async () => {
     await Promise.resolve();
-    await measureRunPhase("workspace_sync.restore", async () => {});
+    await measureRunPhase(phase, async () => {});
   })));
   for (const runId of ["first", "second"]) {
     const hash = createHash("sha256").update(runId).digest("hex").slice(0, 12);
     const owned = spans.filter(span => span.attributes["paperclip.task.run.run_id"] === hash);
     expect(owned).toHaveLength(2);
-    const root = owned.find(span => span.name === "task.workspace_finalization")!;
-    const child = owned.find(span => span.name === "workspace_sync.restore")!;
+    const root = owned.find(span => span.name === rootName)!;
+    const child = owned.find(span => span.name === phase)!;
     expect(root.context).toBe(ROOT_CONTEXT);
     expect(trace.getSpan(child.context)).toBe(root.span);
     expect(root.span.end).toHaveBeenCalledOnce();
@@ -92,7 +98,7 @@ it("parents concurrent deferred copyback phases to their own finalization roots 
   }
   const original = new Error("private finalization failure");
   const work = vi.fn(() => { throw original; });
-  await expect(withRunWorkspaceFinalizationTiming("failed", work)).rejects.toBe(original);
+  await expect(withTiming("failed", work)).rejects.toBe(original);
   expect(work).toHaveBeenCalledOnce();
   expect(spans.at(-1)!.span.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR });
   expect(spans.at(-1)!.span.end).toHaveBeenCalledOnce();
@@ -140,4 +146,24 @@ it("does not let cache attribute failures replace the operation result", async (
   });
   await expect(withRunExecutionTiming("run", () => measureRunPhase("workspace.checkout.cache_publish", work))).resolves.toBe(42);
   expect(work).toHaveBeenCalledOnce();
+});
+
+it("keeps plugin dispatch beneath its active startup step and gives the worker the dispatch parent", async () => {
+  const parents = new Map<string, Context>();
+  const spans = new Map<string, { end: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> }>();
+  handles.startActiveSpan.mockImplementation((name, _options, parent, callback) => {
+    parents.set(name, parent);
+    const span = { end: vi.fn(), setStatus: vi.fn() };
+    spans.set(name, span);
+    return callback(span);
+  });
+  const step = trace.wrapSpanContext({ traceId: "1".repeat(32), spanId: "2".repeat(16), traceFlags: 1 });
+  const stepContext = trace.setSpan(ROOT_CONTEXT, step);
+  await withRunExecutionTiming("startup", () => runWithRuntimeParent(stepContext, async () => {
+    await measureRunPhase("execution.plugin_dispatch", () => {
+      expect(trace.getSpan(getActiveStepContext()!.parentContext as Context)).toBe(spans.get("execution.plugin_dispatch"));
+    });
+    expect(getActiveStepContext()!.parentContext).toBe(stepContext);
+  }));
+  expect(parents.get("execution.plugin_dispatch")).toBe(stepContext);
 });

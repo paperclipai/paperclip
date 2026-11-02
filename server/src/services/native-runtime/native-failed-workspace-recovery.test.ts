@@ -5,18 +5,17 @@ import { createHeartbeatLifecycle } from "../heartbeat/run-lifecycle.js";
 import { createHeartbeatRunState } from "../heartbeat/run-state.js";
 import { createHeartbeatRunPreparation } from "../heartbeat/run-preparation.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, applyPendingMigrations, environmentLeases, environments, externalAgentHolds, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, environmentLeases, environments, externalAgentHolds, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
 import { markExecutionReconciliation, settleUnrecoverableExecutions, validateExecutionReconciliation } from "../execution-recovery-resolution.js";
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
 import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, preserveOrphanedNativeWorkspace, registerCancelledWorkspacePreservationWork } from "./native-failed-workspace-recovery.js";
-import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
-import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
@@ -61,6 +60,77 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
   const readLease = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0]!;
   const actions = async (issueId: string) => db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+
+  async function seedRestartFailure() {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed", error: null, errorCode: null,
+      runnerProfileJson: { ...f.run.runnerProfileJson, sessionCheckpoint: {
+        terminal: { runTerminalState: "failed", turnTerminalState: "failed" },
+        providerSessionId: "failed-provider-session",
+      } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed", attempt: 1 }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    return f;
+  }
+
+  it.each(["bound", "foreign", "owned"])("pins blocked restart files only for an unowned, bound source: %s", async kind => {
+    const f = await seedRestartFailure();
+    const controller = await currentNativeControllerIdentity();
+    if (kind === "owned") await db.update(nativeRunFinalizations).set({ leaseOwner: "active-controller",
+      leaseExpiresAt: new Date(Date.now() + 60_000), controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+    }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (kind === "foreign") await db.update(environmentLeases).set({ metadata: { ...f.lease.metadata, remoteCwd: "/other" } })
+      .where(eq(environmentLeases.id, f.lease.id));
+
+    expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).toEqual([
+      { kind: kind === "owned" ? "awaiting_evidence" : "blocked", runId: f.runId,
+        reason: kind === "owned" ? "controller_still_alive" : "provider_checkpoint_permanently_failed" },
+    ]);
+    const current = await readRun(f.runId);
+    expect(current.status).toBe(kind === "owned" ? "running" : "failed");
+    expect(current.resultJson).toMatchObject({ originalDiagnostic: true });
+    if (kind === "bound") {
+      expect(current.resultJson).toMatchObject({ workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { leaseIds: [f.lease.id] } });
+      expect(await readLease(f.lease.id)).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure",
+        metadata: { sandboxStopAndRetain: { runId: f.runId, leaseId: f.lease.id } } });
+      expect((await actions(f.issueId)).some(action => action.evidence.workspaceRestoreRecovery)).toBe(true);
+    } else {
+      expect(current.resultJson?.workspaceRestoreRecovery).toBeUndefined();
+      expect(await readLease(f.lease.id)).toMatchObject({ status: "active", leasePolicy: "ephemeral" });
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].attempt).toBe(1);
+  });
+
+  it("rolls back restart terminalization when workspace retention cannot commit", async () => {
+    const f = await seedRestartFailure();
+    const name = sql.identifier(`reject_retention_${f.runId.replaceAll("-", "")}`);
+    await db.execute(sql`create function ${name}() returns trigger language plpgsql as $$
+      begin
+        if new.result_json ? 'workspaceRestoreRecovery' then
+          raise exception 'retention write failed';
+        end if;
+        return new;
+      end;
+    $$`);
+    await db.execute(sql`create trigger ${name} before update on heartbeat_runs for each row execute function ${name}()`);
+    try {
+      await expect(claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).rejects.toThrow();
+      expect(await readRun(f.runId)).toMatchObject({ status: "running", nativePhase: "observed", resultJson: { originalDiagnostic: true } });
+      expect(await readLease(f.lease.id)).toMatchObject({ status: "active", leasePolicy: "ephemeral" });
+      expect(await actions(f.issueId)).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(f.runId);
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toMatchObject({ phase: "observed", attempt: 1 });
+    } finally {
+      await db.execute(sql`drop trigger ${name} on heartbeat_runs`);
+      await db.execute(sql`drop function ${name}()`);
+    }
+  });
 
   describe("cancelled workspace preservation worker", () => {
     const fixtureCompanies = new Set<string>();

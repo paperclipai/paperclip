@@ -1399,8 +1399,8 @@ describe("IssuesList", () => {
     });
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve([backlogIssue]);
-      if (filters?.status === "done") return Promise.resolve([doneIssue]);
+      if (filters?.displayStatus === "backlog") return Promise.resolve([backlogIssue]);
+      if (filters?.displayStatus === "done") return Promise.resolve([doneIssue]);
       return Promise.resolve([]);
     });
 
@@ -1418,13 +1418,13 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        status: "backlog",
+        displayStatus: "backlog",
         limit: 200,
         includeRoutineExecutions: true,
         includeAgentCreatedTasks: false,
       }), { signal: expect.any(AbortSignal) });
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        status: "done",
+        displayStatus: "done",
         limit: 200,
         includeRoutineExecutions: true,
         includeAgentCreatedTasks: false,
@@ -1461,7 +1461,7 @@ describe("IssuesList", () => {
     );
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      if (filters?.displayStatus === "backlog") return Promise.resolve(backlogIssues);
       return Promise.resolve([]);
     });
 
@@ -1565,7 +1565,7 @@ describe("IssuesList", () => {
     );
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve(cappedBacklogIssues);
+      if (filters?.displayStatus === "backlog") return Promise.resolve(cappedBacklogIssues);
       return Promise.resolve([]);
     });
 
@@ -2114,6 +2114,45 @@ describe("IssuesList", () => {
     });
   });
 
+  it.each([true, false])("filters the real list, exposes the checkbox, and scopes search and board reads (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    const routine = createIssue({ id: "routine-result", title: "Routine report", originKind: "routine_execution" });
+    const manual = createIssue({ id: "manual-result", title: "Manual report", originKind: "manual", createdByUserId: "person" });
+    mockIssuesApi.list.mockResolvedValue([routine, manual]);
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[routine, manual]} agents={[]} projects={[]} viewStateKey="paperclip:test-issues"
+      routineTasksOnly enableAgentCreatedVisibilityFilter initialSearch="report"
+      onUpdateIssue={() => undefined}
+    />, container);
+    try {
+      await waitForAssertion(() => {
+        expect(container.textContent).toContain("Routine report");
+        expect(container.textContent).not.toContain("Manual report");
+        expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+          q: "report", originKind: "routine_execution", includeRoutineExecutions: true, includeAgentCreatedTasks: true,
+        }), expect.anything());
+      });
+      const filterButton = () => Array.from(document.body.querySelectorAll("button")).find(button =>
+        button.title.startsWith("Filters:") || button.textContent?.includes("Filters:"));
+      await act(() => filterButton()!.click());
+      await waitForAssertion(() => {
+        const row = Array.from(document.body.querySelectorAll("label")).find(label => label.textContent === "Routine tasks");
+        expect(row?.querySelector('[role="checkbox"]')?.getAttribute("aria-checked")).toBe("true");
+      });
+      await act(() => filterButton()!.click());
+      await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Board view"]')!.click());
+      await waitForAssertion(() => {
+        const columns = mockIssuesApi.list.mock.calls.filter(([, filters]) => filters.displayStatus);
+        expect(columns).toHaveLength(8);
+        for (const [, filters] of columns) expect(filters).toMatchObject({
+          q: "report", originKind: "routine_execution", includeRoutineExecutions: true, includeAgentCreatedTasks: true,
+        });
+      });
+    } finally {
+      act(() => root.unmount()); queryClient.clear();
+    }
+  });
+
   it.each([true, false])("keeps visibility controls and fetching preferences synchronized (streamlined=%s)", async (streamlined) => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
     function PreferenceProbe() {
@@ -2161,14 +2200,14 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("show agent-created tasks"),
+        (label) => label.textContent?.includes("Show agent-created tasks"),
       );
       expect(toggle).not.toBeUndefined();
     });
 
     await act(async () => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("show agent-created tasks"),
+        (label) => label.textContent?.includes("Show agent-created tasks"),
       );
       toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
@@ -2187,7 +2226,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(container.textContent).not.toContain("Routine issue");
       expect(container.querySelector("[data-testid='creation-preference']")?.textContent).toBe("false");
-      const label = Array.from(document.body.querySelectorAll("label")).find((element) => element.textContent?.includes("show agent-created tasks"));
+      const label = Array.from(document.body.querySelectorAll("label")).find((element) => element.textContent?.includes("Show agent-created tasks"));
       const checkbox = label?.querySelector("[role='checkbox'], input[type='checkbox']");
       expect(checkbox).not.toBeNull();
       expect(checkbox instanceof HTMLInputElement ? checkbox.checked : checkbox?.getAttribute("aria-checked") === "true").toBe(false);

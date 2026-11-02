@@ -46,6 +46,18 @@ describe("task hosted search restriction", () => {
   });
 });
 
+describe("Codex probe project-instruction policy", () => {
+  it("preserves explicit suppression alongside the hosted-search restriction", () => {
+    const operation = { ...prepare, requirements: { ...prepare.requirements,
+      settings: { disableCodexProjectInstructions: true, disableCodexWebSearch: true } } };
+    expect(environmentTaskOperationSchema.parse(operation)).toEqual(operation);
+  });
+  it.each([false, null, 0, "true"])("rejects an invalid suppression value %s", disableCodexProjectInstructions => {
+    expect(environmentTaskOperationSchema.safeParse({ ...prepare, requirements: { ...prepare.requirements,
+      settings: { disableCodexProjectInstructions } } }).success).toBe(false);
+  });
+});
+
 describe("implementation-independent GitHub credential broker", () => {
   it("accepts capability data without an executable, script, or filesystem path", () => {
     const operation = { ...prepare, githubBroker: { url: "https://core.example.test/api", token: "runtime-capability" } };

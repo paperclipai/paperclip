@@ -1,40 +1,12 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index b074b7f..d08b8e2 100644
+index c55bccc..2953e8d 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -43,7 +43,7 @@ patchedDependencies:
-     hash: 6st5fzvttegjv64llnfegwwpca
-     path: patches/acpx@0.12.0.patch
-   acpx@0.13.1:
--    hash: j4huaoi2baejrlq7vdcgzlx54m
-+    hash: xh3fclih3ztrbsibpfnxdcx7pe
-     path: patches/acpx@0.13.1.patch
-   embedded-postgres@18.1.0-beta.16:
-     hash: 55uhvnotpqyiy37rn3pqpukhei
-@@ -517,7 +517,7 @@ importers:
-         version: 0.160.0
-       acpx:
-         specifier: 0.13.1
--        version: 0.13.1(patch_hash=j4huaoi2baejrlq7vdcgzlx54m)
-+        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
-       ajv:
-         specifier: ^8.20.0
-         version: 8.20.0
-@@ -1015,7 +1015,7 @@ importers:
-         version: 8.18.0
-       acpx:
-         specifier: 0.13.1
--        version: 0.13.1(patch_hash=j4huaoi2baejrlq7vdcgzlx54m)
-+        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
-       ai:
-         specifier: 7.0.130
-         version: 7.0.130(zod@4.4.3)
-@@ -13900,7 +13900,7 @@ snapshots:
-       - bare-buffer
-       - react-native-b4a
+@@ -5039,6 +5039,7 @@ packages:
+   '@smithy/core@3.35.1':
+     resolution: {integrity: sha512-i4YPS4B6ts7bjn7UwLnGjiZdprOvHvgGobFZsYK3GIY3E5hIqtj0rReU69BcTpGp+fvtraSNXeG1l+jtJvF55w==}
+     engines: {node: '>=18.0.0'}
++    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
  
--  acpx@0.13.1(patch_hash=j4huaoi2baejrlq7vdcgzlx54m):
-+  acpx@0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe):
-     dependencies:
-       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
-       commander: 15.0.0
+   '@smithy/credential-provider-imds@4.5.2':
+     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}

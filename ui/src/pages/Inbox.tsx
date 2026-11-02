@@ -1,3 +1,5 @@
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { describeError } from "../api/errors";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
@@ -832,7 +834,8 @@ export interface InboxSurfaceProps {
 
 export function Inbox(props: InboxSurfaceProps = {}) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
-  return streamlinedUiEnabled ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
+  const coordinator = useCoordinatorPresentation();
+  return streamlinedUiEnabled || coordinator ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
 }
 
 function StreamlinedInbox({
@@ -2481,6 +2484,7 @@ function StreamlinedInbox({
     if (initialSourcesSettled && !listError) setRevealedScope(revealScope);
   }, [initialSourcesSettled, listError, revealScope]);
   const allLoaded = initialSourcesSettled || revealedScope === revealScope;
+  useWarmTaskDetailCode(allLoaded && !listError && tab !== "blocked" && showWorkItemsSection);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
@@ -2918,7 +2922,7 @@ function StreamlinedInbox({
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -3018,7 +3022,7 @@ function StreamlinedInbox({
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                         )
                       ) : undefined}
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}

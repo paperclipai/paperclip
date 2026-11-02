@@ -33,6 +33,7 @@ import { renderPublicCampaignSummary } from "./public-summary-image.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
 import { connectionCheckpoints, type ConnectionEvidence } from "./connection-evidence.js";
 import { githubJourneyCheckpoints, type GitHubReviewJourneyEvidence } from "./github-review-evidence.js";
+import { antigravityEvidenceFixture } from "./antigravity-journey-test-fixtures.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -72,6 +73,13 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
       checkpoints: Object.fromEntries(githubJourneyCheckpoints.map(key => [key, true])),
       cleanup: { endpoint: true, pullRequest: true, branch: true, app: true },
     } satisfies GitHubReviewJourneyEvidence } : {}),
+    // Synthetic campaign calibration must satisfy the same strict retained
+    // contract as a live result; it is never provider qualification evidence.
+    ...(execution.task.flow === "antigravity_agent_journey" ? {
+      issueId: "task", runIds: ["run-first", "run-second"],
+      antigravityJourney: { ...antigravityEvidenceFixture(), outcome: status },
+      screenshots: [{ id: "persisted", label: "Synthetic Antigravity persistence calibration", file: "synthetic-persisted.png", sha256: "a".repeat(64) }],
+    } : {}),
   } satisfies RunnerE2EResult;
 }
 

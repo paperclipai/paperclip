@@ -4,7 +4,7 @@ import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 
 
 
-import { safeCopilotEditTarget } from "./copilot-permission-context.js";
+import { safeAcpxEditTarget } from "./acp-edit-context.js";
 
 export type AcpxPermissionAction = "accept" | "accept_for_session" | "decline" | "cancel";
 export interface NormalizedAcpxPermission {
@@ -39,8 +39,8 @@ export function normalizeAcpxPermission(request: AcpPermissionRequest, options: 
     || (options.provider === "cursor" && !call.toolCallId.trim())) {
     throw new Error("ACP permission request omitted its tool identity");
   }
-  const needsEditContext = options.provider === "copilot" && call.kind === "edit";
-  const target = needsEditContext ? safeCopilotEditTarget(call, options.workingDirectory) : undefined;
+  const needsEditContext = (options.provider === "copilot" || options.provider === "kimi") && call.kind === "edit";
+  const target = needsEditContext ? safeAcpxEditTarget(call, options.workingDirectory) : undefined;
   const bindings = new Map<AcpxPermissionAction, AcpPermissionDecision["outcome"]>();
   const choices: NormalizedAcpxPermission["choices"] = [];
   for (const [key, kind, label] of [

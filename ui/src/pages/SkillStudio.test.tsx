@@ -11,6 +11,7 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillStudio } from "./SkillStudio";
+import { ApiError } from "@/api/client";
 
 const routeState = vi.hoisted(() => ({
   pathname: "/skills/studio/new",
@@ -274,6 +275,7 @@ beforeEach(() => {
     forkedFromSkillId: null,
   });
   mockCompanySkillsApi.file.mockResolvedValue({
+    versionId: "read-version",
     path: "SKILL.md",
     content: "---\nname: Demo Skill\ndescription: Existing\n---\n\n# Demo Skill\n",
     markdown: true,
@@ -568,6 +570,39 @@ describe("SkillStudio editor frontmatter", () => {
     routeState.skillId = "source-skill";
   });
 
+  it.each(["local_path", "managed"] as const)("restores %s history through its supported authoring path", async (sourceType) => {
+    mockCompanySkillsApi.detail.mockResolvedValue(makeSkill({ sourceType, currentVersionId: "head-version" }));
+    mockCompanySkillsApi.versions.mockResolvedValue([{ id: "old-version", revisionNumber: 1, createdAt: new Date() }]);
+    mockCompanySkillsApi.version.mockResolvedValue({ revisionNumber: 1, fileInventory: [
+      { path: "SKILL.md", content: "# Restored" }, { path: "support.txt", content: "support" },
+    ] });
+    if (sourceType === "local_path") {
+      mockCompanySkillsApi.updateFile.mockResolvedValueOnce({ versionId: "first-save" }).mockResolvedValueOnce({ versionId: "second-save" });
+    }
+    const node = await renderStudio();
+    await waitFor(() => expect(buttonsNamed(node, "Version history")[0]).toBeTruthy());
+    await click(buttonsNamed(node, "Version history")[0]!);
+    await waitFor(() => expect(buttonsNamed(document, "Restore as v2")[0]).toBeTruthy());
+    await click(buttonsNamed(document, "Restore as v2")[0]!);
+    await waitFor(() => expect(mockCompanySkillsApi.createVersion).toHaveBeenCalled());
+    if (sourceType === "managed") {
+      expect(mockCompanySkillsApi.updateFile).not.toHaveBeenCalled();
+      expect(mockCompanySkillsApi.createVersion).toHaveBeenCalledWith("company-1", "source-skill", {
+        sourceVersionId: "old-version", expectedVersionId: "head-version", label: "Restored saved version",
+      });
+    } else {
+      expect(mockCompanySkillsApi.updateFile).toHaveBeenNthCalledWith(1, "company-1", "source-skill", "SKILL.md", "# Restored", {
+        executable: false, expectedVersionId: "head-version",
+      });
+      expect(mockCompanySkillsApi.updateFile).toHaveBeenNthCalledWith(2, "company-1", "source-skill", "support.txt", "support", {
+        executable: false, expectedVersionId: "first-save",
+      });
+      expect(mockCompanySkillsApi.createVersion).toHaveBeenCalledWith("company-1", "source-skill", {
+        label: "Restore of v1", expectedVersionId: "second-save",
+      });
+    }
+  });
+
   it("does not show the frontmatter section when the selected markdown file has no frontmatter", async () => {
     mockCompanySkillsApi.file.mockResolvedValueOnce({
       path: "SKILL.md",
@@ -641,6 +676,7 @@ describe("SkillStudio editor frontmatter", () => {
         "source-skill",
         "SKILL.md",
         expect.stringContaining("Edited body"),
+        { expectedVersionId: "read-version" },
       );
     });
     expect(mockCompanySkillsApi.updateFile).toHaveBeenCalledWith(
@@ -648,7 +684,59 @@ describe("SkillStudio editor frontmatter", () => {
       "source-skill",
       "SKILL.md",
       expect.stringContaining("---\nname: Demo Skill"),
+      { expectedVersionId: "read-version" },
     );
+  });
+
+  it("keeps unsaved text on a version conflict and reloads only after confirmation", async () => {
+    mockCompanySkillsApi.updateFile.mockRejectedValueOnce(new ApiError("Skill version changed", 409, {}));
+    const node = await renderStudio();
+    let editor: HTMLTextAreaElement;
+    await waitFor(() => {
+      editor = Array.from(node.querySelectorAll<HTMLTextAreaElement>('[data-testid="markdown-editor"]'))
+        .find(candidate => candidate.value.includes("# Demo Skill"))!;
+      expect(editor).toBeTruthy();
+    });
+    await keyDown(editor!, "E");
+    await click(buttonsNamed(node, "Save").find(button => !button.disabled)!);
+    await waitFor(() => expect(node.textContent).toContain("This skill changed since you opened it"));
+    expect(editor!.value).toContain("Edited body");
+    mockCompanySkillsApi.file.mockResolvedValue({ path: "SKILL.md", content: "# New saved version", versionId: "new-version", markdown: true, editable: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await click(buttonsNamed(node, "Load latest saved file")[0]!);
+    expect(editor!.value).toContain("Edited body");
+    await click(buttonsNamed(node, "Load latest saved file")[0]!);
+    await waitFor(() => expect(node.textContent).not.toContain("This skill changed since you opened it"));
+    expect(Array.from(node.querySelectorAll<HTMLTextAreaElement>('[data-testid="markdown-editor"]')).some(candidate => candidate.value.includes("# New saved version"))).toBe(true);
+    confirm.mockRestore();
+  });
+
+  it("preserves text typed while a confirmed latest-file reload is pending", async () => {
+    mockCompanySkillsApi.updateFile.mockRejectedValueOnce(new ApiError("Skill version changed", 409, {}));
+    const node = await renderStudio();
+    let editor: HTMLTextAreaElement;
+    await waitFor(() => {
+      editor = Array.from(node.querySelectorAll<HTMLTextAreaElement>('[data-testid="markdown-editor"]'))
+        .find(candidate => candidate.value.includes("# Demo Skill"))!;
+      expect(editor).toBeTruthy();
+    });
+    await keyDown(editor!, "E");
+    await click(buttonsNamed(node, "Save").find(button => !button.disabled)!);
+    await waitFor(() => expect(node.textContent).toContain("This skill changed since you opened it"));
+    const latest = { path: "SKILL.md", content: "# New saved version", versionId: "new-version", markdown: true, editable: true };
+    let resolveReload!: (value: typeof latest) => void;
+    mockCompanySkillsApi.file.mockImplementationOnce(() => new Promise(resolve => { resolveReload = resolve; }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await click(buttonsNamed(node, "Load latest saved file")[0]!);
+    await waitFor(() => expect(resolveReload).toBeTypeOf("function"));
+    await keyDown(editor!, "E");
+    const editedDuringReload = editor!.value;
+    resolveReload(latest);
+    await waitFor(() => expect(buttonsNamed(node, "Load latest saved file")[0]!.disabled).toBe(false));
+    expect(editor!.value).toBe(editedDuringReload);
+    expect(node.textContent).toContain("Unsaved");
+    expect(node.textContent).toContain("This skill changed since you opened it");
+    confirm.mockRestore();
   });
 
   it("offers a 'Make a copy' CTA on the read-only banner (PAP-13112)", async () => {

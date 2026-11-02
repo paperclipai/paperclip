@@ -194,6 +194,7 @@ export type IssueListFilters = {
   projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
+  displayStatus?: string;
   projectId?: string;
   parentId?: string;
   assigneeAgentId?: string;
@@ -229,6 +230,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
   const params = new URLSearchParams();
   if (filters?.attention) params.set("attention", filters.attention);
   if (filters?.status) params.set("status", filters.status);
+  if (filters?.displayStatus) params.set("displayStatus", filters.displayStatus);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
   if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));
@@ -377,8 +379,8 @@ export const issuesApi = {
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
   deleteWatchdog: (id: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
-  markRead: (id: string) =>
-    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  markRead: (id: string, throughCommentId?: string) =>
+    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, throughCommentId ? { throughCommentId } : {}),
   markUnread: (id: string) =>
     api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

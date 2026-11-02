@@ -11,9 +11,8 @@ import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { activityService } from "../services/activity.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
 
-const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("chat project tool handoff", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;

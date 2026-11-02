@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url", "catalog", "skills_sh"]);
+export const companySkillSourceTypeSchema = z.enum(["managed", "local_path", "github", "url", "catalog", "skills_sh"]);
 export const companySkillTrustLevelSchema = z.enum(["markdown_only", "assets", "scripts_executables"]);
 export const companySkillCompatibilitySchema = z.enum(["compatible", "unknown", "invalid"]);
 export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh"]);
@@ -144,6 +144,8 @@ export const companySkillDetailSchema = companySkillSchema.extend({
 });
 
 export const companySkillVersionCreateSchema = z.object({
+  sourceVersionId: z.string().guid().optional(),
+  expectedVersionId: z.string().guid().nullable().optional(),
   label: z.string().trim().min(1).nullable().optional(),
 }).default({});
 
@@ -203,6 +205,7 @@ export const companySkillForkPrecheckResultSchema = z.object({
 });
 
 export const companySkillRenameSchema = z.object({
+  expectedVersionId: z.string().guid().nullable().optional(),
   name: z.string().min(1).regex(/^[^\r\n]+$/, "Name must be a single line"),
   slug: z.string().min(1).nullable().optional(),
 });
@@ -267,10 +270,12 @@ export const companySkillAuditResultSchema = z.object({
 
 export const companySkillInstallUpdateSchema = z.object({
   force: z.boolean().optional(),
+  expectedVersionId: z.string().uuid().nullable().optional(),
 }).default({});
 
 export const companySkillResetSchema = z.object({
   force: z.boolean().optional(),
+  expectedVersionId: z.string().uuid().nullable().optional(),
 }).default({});
 
 export const companySkillImportSchema = z.object({
@@ -379,6 +384,7 @@ export const companySkillCreateSchema = z.object({
 });
 
 export const companySkillFileDetailSchema = z.object({
+  versionId: z.string().guid().nullable().optional(),
   encoding: z.enum(["utf8", "base64"]).optional(),
   executable: z.boolean().optional(),
   skillId: z.string().guid(),
@@ -400,6 +406,7 @@ export const companySkillFileUpdateSchema = z.object({
 });
 
 export const companySkillFileDeleteSchema = z.object({
+  expectedVersionId: z.string().guid().nullable().optional(),
   path: z.string().min(1),
   target: z.enum(["file", "folder"]),
 });

@@ -59,6 +59,7 @@ export function createPluginRunnerTaskOwner(input: {
   let failReady!: (error: unknown) => void;
   let confirmStopped: (code: number) => void = () => {};
   let stoppedState: Extract<PluginEnvironmentTaskResult, { kind: "status" }> | undefined;
+  let completed = false;
   let rejectFailure!: (error: unknown) => void;
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
   void failure.catch(() => undefined);
@@ -284,7 +285,10 @@ export function createPluginRunnerTaskOwner(input: {
           }
           await input.onSessionRetained(state);
         }
-        if (submitted) await call({ kind: "complete" });
+        if (submitted) {
+          await call({ kind: "complete" });
+          completed = true;
+        }
       },
       release: async (reason?: "detach") => {
         registrationReleased = true;
@@ -328,6 +332,9 @@ export function createPluginRunnerTaskOwner(input: {
     return bytes;
   };
   return { launcher, registration, driver, readWorkspaceFile,
+    // This is a lease-bound Launcher receipt, not a terminal phase or a sent
+    // stop request. Completion also proves credential/writeback obligations ran.
+    isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||

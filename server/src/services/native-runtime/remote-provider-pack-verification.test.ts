@@ -13,6 +13,7 @@ const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest
 const manifest = (revision: string): ProviderPackIdentity => {
   const payload = {
     compatibility: { opencode: 1, acpx: 1 },
+    contractDigest: sha("contracts"),
     pins: { opencode: "1.18.34", nodeMinimum: "24.11.0" },
     target: { platform: "linux", architecture: "x64" },
     runnerSourceRevision: revision.repeat(40),
@@ -69,16 +70,26 @@ describe("installed provider pack compatibility", () => {
       provider: { kind: "opencode" }, requireExactIdentity: options.requireExactIdentity,
       requireCurrentOpenCodeProxy: options.requireCurrentOpenCodeProxy });
   };
-  it.each(["interface", "platform", "schema", "artifact_path", "digest", "legacy"])("rejects an incompatible %s", async field => {
+  it.each(["interface", "contracts", "platform", "schema", "artifact_path", "digest", "legacy", "legacy_contracts"])("rejects an incompatible %s", async field => {
     let pack = manifest("a");
     if (field === "interface") pack.payload.compatibility!.opencode += 1;
+    if (field === "contracts") pack.payload.contractDigest = sha("other-contracts");
     if (field === "legacy") delete pack.payload.compatibility;
+    if (field === "legacy_contracts") delete pack.payload.contractDigest;
     if (field === "platform") pack.payload.target.architecture = "arm64";
     if (field === "schema") pack.schema = "unknown";
     if (field === "artifact_path") pack.payload.artifacts.nodeCommand.path = "../node";
     pack = reseal(pack);
     if (field === "digest") pack.digest = sha("corrupt");
     await expect(check(pack)).rejects.toThrow("runner_remote_provider_artifact_incompatible");
+  });
+  it("does not reuse image packs when the controller's bundled pack records no contract digest", async () => {
+    const current = manifest("b");
+    delete current.payload.contractDigest;
+    const installed = manifest("a");
+    await expect(verifyRemoteProviderPack({ runner: { execute: vi.fn() }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+      manifest: reseal(current), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true },
+      provider: { kind: "opencode" } })).rejects.toThrow("interface or installation is incompatible");
   });
   it("keeps writable installations at the content-verification boundary", async () => {
     await expect(check(manifest("b"), { immutable: false })).rejects.toThrow("installation is incompatible");
@@ -117,9 +128,26 @@ describe("installed provider pack compatibility", () => {
   it("rejects the published Grok pack from before native effort admission", async () => {
     const profiles = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
     const current = manifest("b"), installed = manifest("a");
-    // Published builtin Grok profile 1. This pack predates grokEffort and
-    // grokDisableWebSearch in session.open; its ACPX interface version is 1.
-    installed.payload.acpxProfileDigests = { grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55" };
+    // Published builtin Grok profile 1 predates grokEffort and grokDisableWebSearch
+    // in session.open. Its launcher bytes equal today's, so its release digest
+    // matches; the pack predates contract digests, so that gate refuses it.
+    const published = "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55";
+    expect(profiles.profiles.grok.commandDigest).toBe(published);
+    installed.payload.acpxProfileDigests = { grok: published };
+    delete installed.payload.contractDigest;
+    current.payload.acpxProfileDigests = { grok: profiles.profiles.grok.commandDigest };
+    const execute = vi.fn();
+    await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+      manifest: reseal(current), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: reseal(installed), immutable: true },
+      provider: { kind: "acpx", agent: "grok" } })).rejects.toThrow("interface or installation is incompatible");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects an installed pack with another Grok release digest", async () => {
+    const profiles = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
+    const current = manifest("b"), installed = manifest("a");
+    // The last source-bound Grok profile digest.
+    installed.payload.acpxProfileDigests = { grok: "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca" };
     current.payload.acpxProfileDigests = { grok: profiles.profiles.grok.commandDigest };
     const execute = vi.fn();
     await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
@@ -138,7 +166,7 @@ describe("installed provider pack compatibility", () => {
       provider: { kind: "acpx" as const, agent: "grok" } };
     await expect(verifyRemoteProviderPack(input)).resolves.toEqual(reseal(installed));
     const historical = manifest("a");
-    historical.payload.acpxProfileDigests = { grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55" };
+    historical.payload.acpxProfileDigests = { grok: "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca" };
     await expect(verifyRemoteProviderPack({ ...input, manifest: reseal(historical),
       installation: { ...input.installation, manifest: reseal(historical) }, requireExactIdentity: true })).resolves.toEqual(reseal(historical));
     expect(execute).not.toHaveBeenCalled();

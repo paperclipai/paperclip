@@ -91,14 +91,14 @@ describe("heartbeat scheduling module boundary", () => {
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HEARTBEAT_SCHEDULING_TEST_DATABASE_URL");
 const postgres = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
     if (external) await applyPendingMigrations(external);
     else database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-scheduling-module");
 
 
-    db = createDb(external ?? database.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0, connectTimeoutSeconds: 0 });
+    db = createDb(external ?? database!.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0, connectTimeoutSeconds: 0 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();
@@ -109,9 +109,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     await db.execute(sql`truncate table companies restart identity cascade`);
   });
 
-  async function fixture() {
+  async function fixture(adapterType = "paperclip_runner") {
     const [company] = await db.insert(companies).values({ name: "Scheduling", issuePrefix: "SCH" }).returning();
-    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Scheduled agent", adapterType: "paperclip_runner", createdAt: dueAt }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Scheduled agent", adapterType, createdAt: dueAt }).returning();
     const [issue] = await db.insert(issues).values({
       companyId: company.id, title: "Check deployment", status: "in_progress", assigneeAgentId: agent.id,
       monitorNextCheckAt: dueAt, monitorAttemptCount: 0, createdAt: dueAt,
@@ -430,7 +430,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
   });
 
   it("combines timer and monitor counts and passes the timer claim receipt to admission", async () => {
-    const f = await fixture();
+    const f = await fixture("process");
     enableTimer(f.deps);
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 2, enqueued: 2, skipped: 0 });
     expect(f.deps.claimDueTimerHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ id: f.agent.id }), now, 60);
@@ -440,7 +440,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
   });
 
   it("does not enqueue a timer after losing its due claim", async () => {
-    const f = await fixture();
+    const f = await fixture("process");
     enableTimer(f.deps);
     await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
     f.deps.claimDueTimerHeartbeat.mockResolvedValue(null);
@@ -449,7 +449,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
   });
 
   it("enforces worktree cutoffs and agent invokability before timer claims", async () => {
-    const f = await fixture();
+    const f = await fixture("process");
     enableTimer(f.deps);
     await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
     f.deps.getWorktreeExecutionCutoff.mockResolvedValue(now);
@@ -461,6 +461,25 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
     await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  it.each([
+    { provider: "codex" }, { provider: "acpx", acpxAgent: "antigravity" }, { provider: "openai_dot" },
+  ])("leaves task-required $provider agents idle between tasks while preserving their due task monitor", async adapterConfig => {
+    const f = await fixture();
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, f.agent.id));
+    enableTimer(f.deps);
+    // Only the task-bound monitor is admitted, even though the generic timer is due.
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledExactlyOnceWith(f.agent.id,
+      expect.objectContaining({ contextSnapshot: expect.objectContaining({ issueId: f.issue.id }) }));
+    expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0])
+      .toMatchObject({ status: f.agent.status, lastHeartbeatAt: f.agent.lastHeartbeatAt });
+    f.deps.enqueueWakeup.mockClear();
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 120_000))).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
   });
 
   it("recovers active goals with stable revision-based admission keys", async () => {

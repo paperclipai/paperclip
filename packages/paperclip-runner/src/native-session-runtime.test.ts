@@ -1245,6 +1245,83 @@ describe("executeNativeSession recovery", () => {
     },
   );
 
+  it.each([
+    { status: "active", code: "semantic_completion_rejected", recoverable: false },
+    { status: "complete", code: "semantic_completion_rejected", recoverable: false },
+    { status: "complete", code: "provider_output_failed", recoverable: false },
+    { status: "active", code: "provider_turn_lost_on_restore", recoverable: true },
+  ] as const)(
+    "preserves session-goal failure priority ($status, $code, recoverable=$recoverable)",
+    async ({ status, code, recoverable }) => {
+      const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+      const activeGoal = {
+        threadId: "provider-recovery", objective: "Finish autonomous work", status: "active" as const,
+        tokenBudget: null, tokensUsed: 100, timeUsedSeconds: 1,
+        createdAt: Date.parse("2026-08-09T00:00:00.000Z"), updatedAt: Date.parse("2026-08-09T00:00:01.000Z"),
+      };
+      const completeGoal = { ...activeGoal, status: "complete" as const };
+      const goal = vi.fn(async () => completeGoal);
+      const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+      const close = vi.fn(async () => {});
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() { return capabilities; },
+        async *events() {
+          yield runnerEvent(1, "session.goal.updated", { goal: activeGoal, workingNow: true });
+          yield runnerEvent(2, "session.failed", {
+            code, recoverable,
+            message: "The turn ended without correcting its rejected completion report.",
+          });
+          yield runnerEvent(3, "session.goal.updated", { goal: { ...activeGoal, status }, workingNow: false });
+          yield runnerEvent(4, "turn.completed");
+          yield runnerEvent(5, "session.goal.snapshot", { goal: completeGoal, workingNow: false });
+        },
+        startTurn, goal,
+        async result() { return null; },
+        async snapshot() {
+          return { backendKind: "mock", sessionId: "driver-recovery", identity,
+            providerSessionId: "provider-recovery", cursor: null, activeTurnId: null,
+            pendingRuntimeRequests: [], goal: activeGoal, lineage: [] };
+        },
+        close,
+      };
+      const appended: PrpEvent[] = [];
+      const completeRun = vi.fn(async () => {});
+      const execution = executeNativeSession({
+        input,
+        backend: {
+          async descriptor() { return { kind: "mock", name: "failed-goal", version: "1", capabilities }; },
+          async openSession() { return session; },
+        },
+        controlPlane: {
+          async openRun() {}, async checkpointSession() {},
+          async appendEvent(event) { appended.push(event); return {
+            cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed",
+          }; },
+          async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+          completeRun,
+        },
+        runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      });
+      if (recoverable) {
+        await expect(execution).resolves.toMatchObject({ result: { reportedWorkDisposition: "done" } });
+        expect(goal).toHaveBeenCalledExactlyOnceWith({ action: "get" });
+        expect(completeRun).toHaveBeenCalledOnce();
+      } else {
+        await expect(execution).rejects.toMatchObject({
+          code: "native_provider_terminal_failed", providerCode: code, recoverable: false,
+        });
+        expect(appended.map(event => event.eventType)).toEqual([
+          "session.goal.updated", "session.failed", "session.goal.updated", "turn.completed",
+        ]);
+        expect(goal).not.toHaveBeenCalled();
+        expect(completeRun).not.toHaveBeenCalled();
+      }
+      expect(startTurn).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+    },
+  );
+
   it("keeps governed-wait discovery synchronous", () => {
     type GovernedWaitResolver = NonNullable<
       ExecuteNativeSessionOptions["resolveGovernedWait"]
@@ -2316,6 +2393,42 @@ describe("executeNativeSession recovery", () => {
       }),
     );
     expect(openRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["synchronous failure", "expired deadline"].flatMap(scenario => [false, true].map(retained => ({ scenario, retained }))))("cleans up startup cancellation after $scenario (retained: $retained)", async ({ scenario, retained }) => {
+    const abort = new AbortController();
+    const remove = vi.spyOn(abort.signal, "removeEventListener");
+    const failure = new Error("synchronous backend failure");
+    const openSession = vi.fn((): Promise<NativeSession> => { throw failure; });
+    const attachRun = vi.fn((): Promise<void> => { throw failure; });
+    const openRun = vi.fn(async () => undefined);
+    const capabilities = { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: `startup-${scenario}`, version: "1", capabilities }; },
+      openSession,
+    };
+    const existingSession: NativeSession = {
+      identity: () => ({ ...identity, runId: "prior-run" }), async capabilities() { return capabilities; }, attachRun,
+      async *events() {}, async startTurn() { throw new Error("unexpected turn"); }, async result() { return null; },
+      async snapshot() { throw new Error("unexpected snapshot"); }, async close() {},
+    };
+    const port: ControlPlanePort = {
+      openRun,
+      async appendEvent() { throw new Error("unexpected event"); },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({ input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      ...(retained ? { existingSession } : {}),
+      startup: { deadlineAtMs: Date.now() + (scenario === "expired deadline" ? -1 : 60_000), signal: abort.signal },
+    })).rejects.toThrow(scenario === "expired deadline" ? retained ? "native_execution_startup_expired" : "native session bootstrap timed out after 0ms" : failure.message);
+    expect(openSession).toHaveBeenCalledTimes(!retained && scenario !== "expired deadline" ? 1 : 0);
+    expect(attachRun).toHaveBeenCalledTimes(retained && scenario !== "expired deadline" ? 1 : 0);
+    expect(openRun).not.toHaveBeenCalled();
+    if (scenario === "synchronous failure") expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    abort.abort(new Error("after completion"));
+    await Promise.resolve();
   });
 
   it("retains late bootstrap cleanup through the next admission", async () => {

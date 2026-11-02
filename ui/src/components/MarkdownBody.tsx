@@ -127,7 +127,7 @@ interface MarkdownBodyProps {
   /** Resolve file links to app routes; null leaves the label without a link. */
   resolveLinkHref?: (href: string) => string | null;
   /** Called when a user clicks an inline image */
-  onImageClick?: (src: string) => void;
+  onImageClick?: (src: string, image: HTMLImageElement) => void;
   /** Keep untrusted decision media inert: image references and diagram source only. */
   mediaMode?: "render" | "reference";
   /**
@@ -1045,8 +1045,21 @@ function MarkdownBodyImpl({
             {...imgProps}
             src={finalSrc}
             alt={alt ?? ""}
-            onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
-            style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
+            role={onImageClick && finalSrc ? "button" : undefined}
+            tabIndex={onImageClick && finalSrc ? 0 : undefined}
+            aria-label={onImageClick && finalSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
+            onClick={onImageClick && finalSrc ? (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onImageClick(finalSrc, e.currentTarget);
+            } : undefined}
+            onKeyDown={onImageClick && finalSrc ? (e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              e.stopPropagation();
+              onImageClick(finalSrc, e.currentTarget);
+            } : undefined}
+            className={cn(imgProps.className, onImageClick && "cursor-pointer")}
           />
         );
       };

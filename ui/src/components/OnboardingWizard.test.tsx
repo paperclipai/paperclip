@@ -2,6 +2,7 @@
 
 import { act, StrictMode } from "react";
 import { buildClaudeLocalConfig } from "../../../packages/adapters/claude-local/src/ui/build-config";
+import { buildCodexRunnerConfig } from "../adapters/codex-local/config-fields";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import type { LocalAiLoginStatus } from "@paperclipai/shared";
 import { createRoot } from "react-dom/client";
@@ -36,15 +37,6 @@ const managedApi = vi.hoisted(() => ({
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
-// Keep the wizard tests focused on binding/model/creation boundaries. The
-// connection component has its own tests; the ordinary-install UI canary
-// exercises its real token storage and default selection.
-vi.mock("./ai-connections/AiConnectionField", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./ai-connections/AiConnectionField")>();
-  return { ...actual, AiConnectionField: (props: { environmentId?: string; onChange: (value: import("@paperclipai/shared").AiConnectionBinding) => void }) => (
-    <button data-environment={props.environmentId} onClick={() => props.onChange({ provider: "github", method: "api_key", mode: "responsible_user" })}>Use saved Copilot connection</button>
-  ) };
-});
 vi.mock("../api/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/auth")>();
   return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
@@ -445,142 +437,98 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     vi.clearAllMocks();
   });
 
-  describe("qualified Copilot onboarding", () => {
-    async function openCopilot(overrides: Record<string, unknown> = {}) {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false, enableNativeRunner: true });
-      mockCompany.companies = [{ id: "c1", name: "Canary", issuePrefix: "CAN" }];
+  describe("first-agent provider choices", () => {
+    async function openProviderChoices(savedOverrides: Record<string, unknown> = {}) {
+      mockCompany.companies = [{ id: "c1", name: "Acme", issuePrefix: "ACM" }];
       mockCompaniesApi.list.mockResolvedValue(mockCompany.companies);
-      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "paperclip_runner" }];
-      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 4, createdCompanyId: "c1", agentName: "Copilot canary", ...overrides }));
-      mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "GPT 5.6 Luna" }]);
-      mockAdapterBuild.buildAdapterConfig.mockImplementation((...args: unknown[]) => {
-        const values = args[0] as { adapterSchemaValues: Record<string, unknown>; model: string };
-        if (!values.model) throw new Error("Copilot requires a selected model");
-        return { ...values.adapterSchemaValues, model: values.model };
-      });
+      mockAdapterRegistry.list = [
+        { type: "claude_local" }, { type: "codex_local" },
+        { type: "paperclip_runner" }, { type: "copilot_runtime", recommended: true },
+        { type: "gemini_local", recommended: true }, { type: "opencode_local" },
+      ];
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({
+        step: 4, createdCompanyId: "c1", agentName: "Ada", ...savedOverrides,
+      }));
       const { root, queryClient } = render();
-      queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableManagedSandboxOnly: false, enableNativeRunner: true });
-      await act(async () => root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>));
+      await renderWizardView(root, queryClient);
       await flushReact();
-      const click = async (label: string) => {
-        const button = [...document.body.querySelectorAll("button")].find((entry) => entry.textContent?.includes(label))!;
-        expect(button).toBeTruthy();
-        await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-        await flushReact();
-      };
-      await click("GitHub Copilot");
-      await flushReact();
-      return { root, click };
+      return root;
     }
 
-    it("keeps Copilot selection available while its setup has no model", async () => {
-      const { root, click } = await openCopilot();
+    it.each([true, false, undefined].flatMap(enableNativeRunner =>
+      (["paperclip", "legacy"] as const).map(defaultRunner => ({ enableNativeRunner, defaultRunner })),
+    ))("offers the same Claude and Codex choices with $defaultRunner availability and native runner setting $enableNativeRunner", async ({ enableNativeRunner, defaultRunner }) => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false, enableNativeRunner });
+      mockAdaptersApi.list.mockResolvedValue(["claude_local", "codex_local"].map(type =>
+        setupAdapterInfo({ type, defaultRunner, supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"] }),
+      ));
+      const root = await openProviderChoices();
       try {
-        expect(mockAgentsApi.create).toHaveBeenCalled();
-        expect(mockAgentsApi.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot" }, metadata: { setupAdapterPending: false } }), "c1");
-        await click("Use saved Copilot connection");
-        await vi.waitFor(() => expect(document.body.querySelector('[aria-label="Copilot model"]')?.textContent).toContain("GPT 5.6 Luna"));
-        const model = document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement;
-        await act(async () => { model.value = "gpt-5.6-luna"; model.dispatchEvent(new Event("change", { bubbles: true })); });
-        await vi.waitFor(() => expect(mockAgentsApi.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ adapterConfig: expect.objectContaining({ model: "gpt-5.6-luna" }) }), "c1"));
+        const sources = [...document.body.querySelectorAll("button[aria-checked]")];
+        expect(sources).toHaveLength(2);
+        expect(sources.map(source => source.textContent)).toEqual([
+          expect.stringContaining("Claude"), expect.stringContaining("OpenAI"),
+        ]);
+        expect(document.body.textContent).not.toContain("GitHub Copilot");
+        expect(document.body.textContent).not.toContain("Windows");
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).runner).toBe("auto");
       } finally { await act(async () => root.unmount()); }
     });
 
-    it("restores the saved Copilot source and model without switching providers", async () => {
-      const setupId = "00000000-0000-4000-8000-000000000085";
-      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "c1", name: "Copilot canary", role: "general",
-        adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
-        pauseReason: "setup", runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } },
-      } as never);
-      const { root, click } = await openCopilot({ adapterType: "paperclip_runner", onboardingCopilot: true, setupAgentId: setupId });
+    it("still hides disabled providers from first-agent setup", async () => {
+      mockAdapterRegistry.disabled = new Set(["claude_local"]);
+      const root = await openProviderChoices();
       try {
-        await vi.waitFor(() => expect((document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement)?.value).toBe("gpt-5.6-luna"));
-        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ adapterType: "paperclip_runner", model: "gpt-5.6-luna" });
-        await click("Connect");
-        expect(mockAgentsApi.hire).toHaveBeenCalledWith("c1", expect.objectContaining({ setupAgentId: setupId, adapterType: "paperclip_runner" }));
+        const sources = [...document.body.querySelectorAll("button[aria-checked]")];
+        expect(sources).toHaveLength(1);
+        expect(sources[0]?.textContent).toContain("OpenAI");
       } finally { await act(async () => root.unmount()); }
     });
 
-    it.each(["choices", "authentication error"])("refreshes Copilot onboarding after reconnecting the same binding with cached %s", async (cachedState) => {
-      const { root, click } = await openCopilot();
+    it("requires a new choice when resuming a Copilot draft", async () => {
+      const root = await openProviderChoices({
+        adapterType: "paperclip_runner", onboardingCopilot: true, model: "copilot-model",
+      });
       try {
-        mockAgentsApi.adapterModels.mockReset();
-        if (cachedState === "authentication error") mockAgentsApi.adapterModels.mockRejectedValueOnce(new Error("Expired token"));
-        else mockAgentsApi.adapterModels.mockResolvedValueOnce([{ id: "old-model", label: "Old account model" }]);
-        await click("Use saved Copilot connection");
-        await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1));
-        mockAgentsApi.adapterModels.mockResolvedValue([{ id: "new-model", label: "New account model" }]);
-        await click("Use saved Copilot connection");
-        await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(2));
-        await vi.waitFor(() => expect(document.body.querySelector('[aria-label="Copilot model"]')?.textContent).toContain("New account model"));
-        expect(document.body.textContent).not.toContain("Old account model");
-        expect(document.body.textContent).not.toContain("Expired token");
-        expect((document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement).value).toBe("");
-      } finally { await act(async () => root.unmount()); }
-    });
-
-    it.each([null, "copilot-daytona"])("discovers models and tests the same saved-token configuration it hires in environment %s", async (environmentId) => {
-      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: environmentId });
-      mockEnvironmentsApi.list.mockResolvedValue(environmentId ? [{ id: environmentId, name: "Daytona", driver: "sandbox", status: "active", config: { provider: "daytona" } }] : []);
-      const { root, click } = await openCopilot();
-      const claudeReadsBeforeCopilot = mockAgentsApi.getClaudeOAuthTokenStatus.mock.calls.length;
-      expect((mockAgentsApi.adapterModels.mock.calls as unknown[][]).some((call) => call[1] === "paperclip_runner")).toBe(false);
-      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
-      await click("Use saved Copilot connection");
-      expect(document.body.querySelector('[data-environment]')?.getAttribute("data-environment") ?? null).toBe(environmentId);
-      expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("c1", "paperclip_runner", { environmentId, provider: "acpx", acpxAgent: "copilot", aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } });
-      const select = document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement;
-      expect(select.value).toBe("");
-      await act(async () => { select.value = "gpt-5.6-luna"; select.dispatchEvent(new Event("change", { bubbles: true })); });
-      await flushReact();
-      await click("Connect");
-      const tested = mockAgentsApi.testEnvironment.mock.calls[0] as unknown as [string, string, { adapterConfig: Record<string, unknown>; aiConnection: unknown }];
-      const hired = mockAgentsApi.hire.mock.calls[0] as unknown[];
-      expect(tested).toMatchObject(["c1", "paperclip_runner", { adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" }, aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } }]);
-      expect(hired).toMatchObject(["c1", { adapterType: "paperclip_runner", adapterConfig: tested[2].adapterConfig, runtimeConfig: { aiConnection: tested[2].aiConnection } }]);
-      expect(mockAgentsApi.getClaudeOAuthTokenStatus.mock.calls.length).toBe(claudeReadsBeforeCopilot);
-      expect(JSON.stringify(hired)).not.toContain("COPILOT_GITHUB_TOKEN");
-      expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" });
-      await act(async () => root.unmount());
-      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
-      mockEnvironmentsApi.list.mockResolvedValue([]);
-    });
-
-    it("reuses an existing Copilot hire after losing its draft id without adopting another Runner", async () => {
-      mockAgentsApi.list.mockResolvedValue([
-        { id: "codex-other", name: "Copilot canary", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } },
-        { id: "copilot-existing", name: "Copilot canary", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" } },
-      ]);
-      const { root, click } = await openCopilot();
-      try {
-        await click("Use saved Copilot connection");
-        const select = document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement;
-        await act(async () => { select.value = "gpt-5.6-luna"; select.dispatchEvent(new Event("change", { bubbles: true })); });
-        await flushReact();
-        await click("Connect");
+        expect(document.body.querySelector('button[aria-checked="true"]')).toBeNull();
+        expect(document.body.textContent).not.toContain("Connect GitHub Copilot");
+        const connect = [...document.body.querySelectorAll("button")].find(button => isArcPrimary(button.textContent?.trim() ?? ""));
+        expect(connect?.disabled).toBe(true);
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
-        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ createdAgentId: "copilot-existing" });
-        expect(document.body.textContent).toContain("Copilot canary is ready to work!");
-      } finally {
-        await act(async () => root.unmount());
-      }
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({
+          adapterType: "claude_local", runner: "auto", model: "",
+        });
+      } finally { await act(async () => root.unmount()); }
     });
 
-    it("refuses an unavailable model after refresh without substituting or hiring", async () => {
-      const { root, click } = await openCopilot();
-      await click("Use saved Copilot connection");
-      const select = document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement;
-      await act(async () => { select.value = "gpt-5.6-luna"; select.dispatchEvent(new Event("change", { bubbles: true })); });
-      await flushReact();
-      mockAgentsApi.adapterModels.mockResolvedValue([{ id: "other-model", label: "Other model" }]);
-      await click("Refresh models");
-      expect(select.value).toBe("gpt-5.6-luna");
-      expect(select.textContent).toContain("gpt-5.6-luna (unavailable)");
-      const primary = [...document.body.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Connect");
-      expect(primary?.disabled).toBe(true);
-      expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
-      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
-      await act(async () => root.unmount());
+    it("clears a saved Gemini model when only Codex is available", async () => {
+      mockAdapterRegistry.disabled = new Set(["claude_local"]);
+      const root = await openProviderChoices({ adapterType: "gemini_local", model: "gemini-model" });
+      try {
+        expect(document.body.querySelector('button[aria-checked="true"]')).toBeNull();
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({
+          adapterType: "codex_local", model: "",
+        });
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it.each([false, true])("explains unavailable onboarding providers and clears an old Copilot draft: %s", async savedCopilot => {
+      mockAdapterRegistry.disabled = new Set(["claude_local", "codex_local"]);
+      const root = await openProviderChoices(savedCopilot ? {
+        adapterType: "paperclip_runner", onboardingCopilot: true, runner: "paperclip", model: "copilot-model",
+      } : {});
+      try {
+        expect(document.body.querySelectorAll("button[aria-checked]")).toHaveLength(0);
+        expect(document.body.textContent).toContain("Claude and Codex are unavailable on this instance.");
+        expect(document.body.textContent).toContain("choose New Agent on the Agents page");
+        const next = [...document.body.querySelectorAll("button")].find(button => isArcPrimary(button.textContent?.trim() ?? ""));
+        expect(next?.disabled).toBe(true);
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+        expect(saved).toMatchObject({ adapterType: "claude_local", runner: "auto", model: "" });
+        expect(saved).not.toHaveProperty("onboardingCopilot");
+      } finally { await act(async () => root.unmount()); }
     });
   });
 
@@ -2514,15 +2462,6 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
 
     it("will not advance on a saved adapter the row does not show", async () => {
-      // The other shape of the same defect, and the one the snap cannot cover.
-      //
-      // The tile row is `recommendedAdapters`; the snap's idea of "visible" is
-      // recommended *plus* the advanced list. An adapter in the second but not
-      // the first — a saved `opencode_local`, say — therefore satisfies the
-      // snap, which leaves it alone, while the row it is supposed to be chosen
-      // in never shows it. Nothing is highlighted, the canvas is shut, and with
-      // the gate on `sourcePicked` the CTA was live: one press hires against an
-      // adapter the customer has not seen on this screen.
       mockAdapterRegistry.list = [setupAdapterInfo({ type: "claude_local" }), { type: "opencode_local" }];
       const { root } = await openStep4({ adapterType: "opencode_local" });
 
@@ -2731,6 +2670,34 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       for (const [, body] of saves.filter(([, body]) => body.adapterConfig)) expect(body.adapterConfig).toMatchObject({ model: "server-model", customSetting: "preserve" });
       expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).model).toBe("server-model");
       await act(async () => root.unmount());
+    });
+
+    it.each([false, true])("migrates a stored Copilot setup without reusing its model or binding, with providers disabled: %s", async providersDisabled => {
+      const setupId = "00000000-0000-4000-8000-000000000095";
+      if (providersDisabled) mockAdapterRegistry.disabled = new Set(["claude_local", "codex_local"]);
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "copilot-model" },
+        runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } },
+        pauseReason: "setup", defaultEnvironmentId: "env-sandbox-1" } as never);
+      const { root } = await openStep4({ adapterType: "paperclip_runner", onboardingCopilot: true, setupAgentId: setupId });
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+        expect(saved).toMatchObject({ adapterType: "claude_local", runner: "auto", model: "", setupAgentId: setupId });
+        expect(saved).not.toHaveProperty("onboardingCopilot");
+        expect(document.body.querySelector('button[aria-checked="true"]')).toBeNull();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        if (!providersDisabled) {
+          await pickSource(/Claude/);
+          const saves = mockAgentsApi.update.mock.calls.filter(([id, body]) => id === setupId && body.adapterConfig);
+          expect(saves.length).toBeGreaterThan(0);
+          for (const [, body] of saves) {
+            expect(body).toMatchObject({ adapterType: "claude_local", runner: "auto" });
+            expect(body.adapterConfig).not.toHaveProperty("acpxAgent", "copilot");
+            expect(body.adapterConfig).not.toHaveProperty("model", "copilot-model");
+            expect(body.runtimeConfig).not.toHaveProperty("aiConnection.provider", "github");
+          }
+        }
+      } finally { await act(async () => root.unmount()); }
     });
 
     it("tests and hires in the restored setup environment instead of the instance default", async () => {
@@ -3874,31 +3841,41 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(document.body.textContent).not.toContain("Start sign-in again");
       }
 
-      it.each(["paperclip", "legacy"] as const)("waits for Claude runner discovery before saved subscription verification (%s)", async defaultRunner => {
+      it.each(providers.flatMap(([adapterType, provider, source]) =>
+        (["paperclip", "legacy"] as const).map(defaultRunner => ({ adapterType, provider, source, defaultRunner })),
+      ))("waits for $adapterType discovery before verification and keeps $defaultRunner routing automatic", async ({ adapterType, provider, source, defaultRunner }) => {
         let finish!: (value: import("../api/adapters").AdapterInfo[]) => void;
         mockAdaptersApi.list.mockReturnValue(new Promise<import("../api/adapters").AdapterInfo[]>(resolve => { finish = resolve; }));
-        mockAdapterBuild.buildAdapterConfig.mockImplementation(values => buildClaudeLocalConfig(values!));
-        const { root, queryClient } = await openStep4({ adapterType: "claude_local" });
+        mockAdapterBuild.buildAdapterConfig.mockImplementation(values => adapterType === "claude_local"
+          ? buildClaudeLocalConfig(values!) : buildCodexRunnerConfig(values!));
+        const { root, queryClient } = await openStep4({ adapterType });
         try {
           await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
-            currentUserId: "user-1", connections: [{ id: "saved", grantId: "grant", companyId: "company-new", provider: "anthropic", method: "subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true }],
+            currentUserId: "user-1", connections: [{ id: "saved", grantId: "grant", companyId: "company-new", provider, method: "subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true }],
           }));
-          await pickSource(/Claude/);
+          await pickSource(source);
           await settle();
           expect(button("Connect").disabled).toBe(true);
           await act(async () => button("Connect").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
           await settle();
           expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
           expect(mockAgentsApi.hire).not.toHaveBeenCalled();
-          await act(async () => finish([setupAdapterInfo({ type: "claude_local", defaultRunner, supportedRunners: ["paperclip", "legacy"] })]));
+          await act(async () => finish([setupAdapterInfo({ type: adapterType, defaultRunner, supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"] })]));
           await settle();
           expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
           expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
           const tested = mockAgentsApi.testEnvironment.mock.calls[0] as unknown as [string, string, { adapterConfig: Record<string, unknown> }];
           const hired = mockAgentsApi.hire.mock.calls[0] as unknown as [string, { adapterConfig: Record<string, unknown> }];
+          expect(mockAdapterBuild.buildAdapterConfig).toHaveBeenCalledWith(expect.objectContaining({ adapterType, runner: "auto", resolvedRunner: defaultRunner }));
+          expect(tested[1]).toBe(adapterType);
+          expect(tested[2]).not.toHaveProperty("runner");
+          expect(hired[1]).toMatchObject({ adapterType, onboardingFirstAgent: true });
+          expect(hired[1]).not.toHaveProperty("runner");
           expect(hired[1].adapterConfig).toEqual(tested[2].adapterConfig);
-          if (defaultRunner === "paperclip") expect(hired[1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
-          else expect(hired[1].adapterConfig.maxTurnsPerRun).toBe(1000);
+          if (adapterType === "claude_local") {
+            if (defaultRunner === "paperclip") expect(hired[1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+            else expect(hired[1].adapterConfig.maxTurnsPerRun).toBe(1000);
+          }
           expect(hired[1].adapterConfig).not.toHaveProperty("resolvedRunner");
         } finally { await act(async () => root.unmount()); }
       });
@@ -4241,14 +4218,17 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
     });
 
-    it("keeps Gemini local login out of managed Claude subscription setup", async () => {
+    it("does not offer Gemini from a saved initial onboarding draft", async () => {
       localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
       mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
       mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
       mockAdapterRegistry.list.push({ type: "gemini_local", recommended: true });
       const { root } = await openStep4({ adapterType: "gemini_local" });
       try {
-        await pickSource(/Gemini|Google|gemini_local/);
+        const sources = [...document.body.querySelectorAll("button[aria-checked]")];
+        expect(sources).toHaveLength(2);
+        expect(sources.some(source => /Gemini|Google|gemini_local/.test(source.textContent ?? ""))).toBe(false);
+        expect(document.body.querySelector('button[aria-checked="true"]')).toBeNull();
         expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
         expect(managedApi.connectLocal).not.toHaveBeenCalled();
         expect(document.body.textContent).not.toContain("claude auth login");
