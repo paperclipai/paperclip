@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -186,13 +186,13 @@ describePostgres("heartbeat run state database wiring", () => {
       stdoutExcerpt: payload, stderrExcerpt: payload,
     }).returning();
     const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
       const state = extracted.createHeartbeatRunState(observed);
       const read = await state.getRunExecutionWait(companyId, run.id);
       capture.flush();
-      const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+      const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
       expect(summary.completedQueries).toBe(2);
       expect(summary.responseValueBytes).toBeLessThan(4096);
       expect(read).toMatchObject({ id: run.id, companyId, agentId: agent.id, status: "cancelled", contextSnapshot: context,
@@ -228,7 +228,7 @@ describePostgres("heartbeat run state database wiring", () => {
       resultJson: { stdout: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
     }).returning();
     const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
       const state = extracted.createHeartbeatRunState(observed);
@@ -236,7 +236,7 @@ describePostgres("heartbeat run state database wiring", () => {
         id: run.id, companyId, scopeKind: "issue", issueId: issue.id, executionWorkspaceId: workspaceId,
       });
       capture.flush();
-      const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+      const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
       expect(summary.completedQueries).toBe(1);
       expect(summary.responseValueBytes).toBeLessThan(1024);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
@@ -260,7 +260,7 @@ describePostgres("heartbeat run state database wiring", () => {
     }).returning();
     const observed = createDb(database.connectionString);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
       const state = extracted.createHeartbeatRunState(observed);
@@ -270,7 +270,7 @@ describePostgres("heartbeat run state database wiring", () => {
         runtimeModeResolvedAt: null, startedAt: run.startedAt, createdAt: run.createdAt,
         contextSnapshot: { issueId: issue.id }, runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } });
       capture.flush();
-      const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+      const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
       expect(summary.completedQueries).toBe(2);
       expect(summary.responseValueBytes).toBeLessThan(2048);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
@@ -321,7 +321,7 @@ describePostgres("heartbeat run state database wiring", () => {
     await state.getRunWorkspaceSettlement(run.id);
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     expect(await state.getRunCleanupState(run.id)).toEqual({
       id: run.id, companyId, agentId: agent.id, runtimeMode: run.runtimeMode,
@@ -334,7 +334,7 @@ describePostgres("heartbeat run state database wiring", () => {
       contextSnapshot: { timerClaimWasFirstHeartbeat: true },
     });
     capture.flush();
-    const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+    const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
     expect(summary.completedQueries).toBe(2);
     expect(summary.responseValueBytes).toBeLessThan(2000);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);

@@ -250,19 +250,32 @@ Initial setup uses the existing reporting environment:
    evaluation after an uncertain request. Initial route verification uses a small
    selection and does not qualify all 244 cases.
 
-Each worker executes one case. Selections of up to three cases run serially.
-Larger selections allow eight independent cases and one external-input case at
-once. External-input cases remain serial because they can share QA resources.
-A full run can take hours. Its elapsed time depends on setup and fleet capacity;
-the declared case clocks are not a completion-time guarantee. Each worker and
-report reader has a singleton private-evidence approval and exact-key AWS
-session; the existing eight-cell
-authority limit is unchanged. Reports wait for all selected workers. A
-credential-free job then validates and merges their metadata projections. The
-protected reporter uploads original outcomes and verifies every selected result,
-including paginated selections over 100 cases. Failed originals and failed
-cleanup remain failed beside passed results. Missing originals cannot become
-fabricated measurements or a full-selection pass.
+Each worker executes one case. Selections of up to three cases allow two cases
+at once. Larger selections allow eight independent cases and one external-input
+case at once. External-input cases remain serial because they can share QA
+resources. A full run can take hours. Its elapsed time depends on setup and fleet
+capacity; the declared case clocks are not a completion-time guarantee.
+
+Each finished worker starts its own protected reader and safe exporter. A
+separate reporting job uploads that case and verifies its result and two JSON
+attachments while other workers continue. The reader has only an exact-key AWS
+session. The worker has only its declared model keys. Only the uploader has the
+TestOps key. The existing eight-cell private authority limit is unchanged.
+
+The exporter freezes each UUID-bearing Allure bundle once. An uncertain upload
+response triggers readback, never an automatic resend. The final job verifies
+complete selected-case coverage and the original statuses without uploading the
+results again. Failed originals and failed cleanup remain failed beside passed
+results. Missing originals cannot become fabricated measurements or a
+full-selection pass. Backend ingestion does not guarantee that an open TestOps
+page refreshes without user action.
+
+The caller and reusable case workflow must both be admitted at their exact
+`refs/heads/master` paths in the existing runner group. Called jobs use their own
+protected environments; the caller passes empty named secret placeholders and
+never inherits or forwards actual model or reporting keys. Streaming runs use
+the fixed `chat-catalog-testops-streaming-v1` serialization group. Runs started
+before this change retain their original batch-reporting flow.
 
 Raw evidence and final PNGs remain in protected storage. Public GitHub artifacts
 and TestOps attachments contain only allowlisted provenance, checks, accounting

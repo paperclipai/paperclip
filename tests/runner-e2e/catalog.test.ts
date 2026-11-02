@@ -408,6 +408,10 @@ describe("runner E2E catalog", () => {
     const suite = runnerSuites.find(
       (candidate) => candidate.id === "daytona-warm-continuity",
     )!;
+    expect(suite.definitionMetadata).toMatchObject({ version: 5,
+      managedSaveReceipt: "latest-paginated-run-log-instruction-save" });
+    expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite,
+      definitionMetadata: { version: 4, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 } }));
     expect(
       suiteDefinitionHash({
         ...suite,
