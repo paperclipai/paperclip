@@ -91,7 +91,7 @@ import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "..
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
-import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { deriveOriginatingActor, ISSUE_STATUSES, ISSUE_DISPLAY_STATUSES, type Issue, type IssueDisplayStatus, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
@@ -127,20 +127,22 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   }
   return null;
 }
-const boardIssueStatuses = ISSUE_STATUSES;
-const issueStatusLabels: Record<IssueStatus, string> = {
+const boardIssueStatuses = [...ISSUE_STATUSES, "monitoring"] as const;
+const issueStatusLabels: Record<IssueDisplayStatus, string> = {
   backlog: "Backlog",
   todo: "Todo",
   in_progress: "In progress",
+  monitoring: "Monitoring",
   in_review: "In review",
   done: "Done",
   blocked: "Blocked",
   cancelled: "Cancelled",
 };
-const progressSegmentClasses: Record<IssueStatus, string> = {
+const progressSegmentClasses: Record<IssueDisplayStatus, string> = {
   backlog: "bg-muted-foreground/40",
   todo: "bg-blue-500",
   in_progress: "bg-yellow-500",
+  monitoring: "bg-(--status-task-monitoring)",
   in_review: "bg-violet-500",
   done: "bg-green-500",
   blocked: "bg-red-500",
@@ -547,7 +549,7 @@ function SubIssueProgressSummaryStrip({
   const targetIssue = target?.issue ?? null;
   const targetPathId = targetIssue?.identifier ?? targetIssue?.id ?? "";
   const targetState = targetIssue ? withIssueDetailHeaderSeed(issueLinkState, targetIssue) : undefined;
-  const statusEntries = ISSUE_STATUSES
+  const statusEntries = ISSUE_DISPLAY_STATUSES
     .map((status) => ({ status, count: summary.countsByStatus[status] ?? 0 }))
     .filter((entry) => entry.count > 0);
 
@@ -863,7 +865,7 @@ export function IssuesList({
           ...searchFilters,
           ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
           projectId,
-          status,
+          displayStatus: status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
           ...creationRequestFilters,
         }, { signal }).then((rows) => rows as Issue[]),
@@ -1230,7 +1232,7 @@ export function IssuesList({
       return [{ key: "__all", label: null as string | null, items: filtered }];
     }
     if (viewState.groupBy === "status") {
-      const groups = groupBy(filtered, (i) => i.status);
+      const groups = groupBy(filtered, (i) => i.displayStatus ?? i.status);
       return issueStatusOrder
         .filter((s) => groups[s]?.length)
         .map((s) => ({ key: s, label: issueFilterLabel(s), items: groups[s]! }));
@@ -1604,7 +1606,7 @@ export function IssuesList({
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
     if (groupKey) {
-      if (viewState.groupBy === "status") defaults.status = groupKey;
+      if (viewState.groupBy === "status") defaults.status = groupKey === "monitoring" ? "todo" : groupKey;
       else if (viewState.groupBy === "priority") defaults.priority = groupKey;
       else if (viewState.groupBy === "assignee" && groupKey !== "__unassigned") {
         if (groupKey.startsWith("__user:")) defaults.assigneeUserId = groupKey.slice("__user:".length);
@@ -2008,7 +2010,7 @@ export function IssuesList({
                       : [...viewState.collapsedGroups, group.key],
                   });
                 }}
-                trailing={(
+                trailing={group.key === "monitoring" ? undefined : (
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -2187,7 +2189,7 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -2214,7 +2216,7 @@ export function IssuesList({
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
                                 <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />

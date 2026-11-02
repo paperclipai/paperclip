@@ -525,3 +525,9 @@ Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7
 Verification: `not-run` — Compare eligible owner/admin ordinary denied with explicit read/audit+notice; ordinary operator/agent/foreign denied, grants unchanged.
 
 Gaps: Local implicit/instance admin bypass cannot establish ordinary two-user private isolation.
+
+Task reads expose optional read-only `displayStatus`. `monitoring` describes a
+scheduled ordinary monitor wait; it is not accepted as a writable task `status`.
+Existing lifecycle `status` filters retain their meaning. Board collection and
+search readers can use the separate `displayStatus` filter before pagination.
+Agents keep using the existing monitor and semantic completion tools.

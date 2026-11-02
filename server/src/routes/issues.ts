@@ -8379,6 +8379,7 @@ export function issueRoutes(
       title: row.title,
       identifier: row.identifier,
       status: row.status as IssueSummary["status"],
+      displayStatus: row.displayStatus,
       updatedAt: row.updatedAt,
       externalConversationState: row.externalConversationState,
     }));
@@ -8619,6 +8620,7 @@ export function issueRoutes(
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
+      displayStatus: req.query.displayStatus as string | string[] | undefined,
       assigneeAgentId,
       participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
@@ -8869,6 +8871,7 @@ export function issueRoutes(
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
+      displayStatus: req.query.displayStatus as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: countUuidFilters.participantAgentId,
       assigneeUserId: req.query.assigneeUserId as string | undefined,

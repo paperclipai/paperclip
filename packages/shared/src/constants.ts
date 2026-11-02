@@ -198,6 +198,12 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+/** Read-only task presentation. Monitoring never grants execution authority. */
+export const ISSUE_DISPLAY_STATUSES = [
+  "backlog", "todo", "in_progress", "monitoring", "in_review", "done", "blocked", "cancelled",
+] as const;
+export type IssueDisplayStatus = (typeof ISSUE_DISPLAY_STATUSES)[number];
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",

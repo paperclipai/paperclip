@@ -31,7 +31,7 @@ export function sortIssues(issues: readonly Issue[], sort: IssueSort, context: (
   }
   const value = (issue: Issue): string | number | null | undefined => {
     switch (sort.sortField) {
-      case "status": return issueStatusOrder.indexOf(issue.status);
+      case "status": return issueStatusOrder.indexOf(issue.displayStatus ?? issue.status);
       case "priority": return issuePriorityOrder.indexOf(issue.priority);
       case "title": return issue.title;
       case "created": return new Date(issue.createdAt).getTime();

@@ -112,6 +112,22 @@ The issue is actively owned work.
 
 For agent-owned issues, `in_progress` should not be allowed to become a silent dead state.
 
+### Monitoring presentation
+
+An agent-owned `in_progress` task displays **Monitoring** with a blue clock while
+it has a persisted ordinary monitor deadline and no active run, execution or
+checkout lock, review participant, or active recovery action. The persisted
+status remains `in_progress`. Monitor admission, checkout, finalization, recovery,
+and agent lifecycle filters keep their existing contracts. Review, blocked,
+terminal, and provider-quota recovery states keep their own presentation.
+
+Task reads expose optional, read-only `displayStatus`. Board task collections and
+search can filter by `displayStatus`; filtering happens before pagination and
+counts. Existing `status` filters retain their lifecycle meaning. Monitoring is
+not a manually selectable task status or a board drag target. An overdue check
+retains its visible deadline warning; the label does not attest that a provider
+is running or that a check succeeded.
+
 ### `blocked`
 
 The issue cannot proceed until something external changes.
@@ -861,6 +877,15 @@ A new user message can continue a terminal native run whose process fields were 
 The task thread exposes the guarded Retry action for failed or timed-out conversation runs and native preparation cancelled before provider startup when the never-started proof is verified. The server projects this eligibility on the recovery notice and rechecks it on Retry. Cleanup quarantine retains its inspection path, and non-conversation reconciliation gates remain enforced. Pending decisions, active execution, pause, budget, dependency, and ownership gates remain in force. A refused Retry reports its reason inline and remains available for another attempt. When a newer linked-human GitHub message was saved but its admission was skipped by a budget or agent-availability gate, ordinary task Retry selects that unstarted message before considering the older failed run. The existing chat task-Retry owner snapshots the complete pending batch, including eligible skipped input, into a new admission generation bound to the canonical processed deliveries, comments, principal, session generation, admitted instruction snapshots, and task Retry intent. It retains the original skipped receipt and failed result unchanged. A terminal failed publication of that old result also remains history for a distinct selected request; pending or uncertain publication still holds work, and the old output is never replayed. Board Retry refusals expose only stable allowlisted authority categories, never source payloads, identifiers, or credential fingerprints. Admission rechecks source integrity and current access, then uses the normal new-user-turn continuation proof: a committed failed result can remain history only after controller, successor, process, workspace, and exact remote-termination guards pass. Unknown ownership stays deferred; Retry cannot certify it. The existing chat retry queue owns delivery and bounded infrastructure retries; a committed receipt settles a lost acknowledgment without another execution. An accepted saved-input receipt discharges only its matching unadmitted-input gate, allowing later genuine conversation or tree-resume wakes without replaying the skipped request.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
+
+A successful connected run can still have newer admitted input waiting behind it.
+Task Retry resumes that input's existing durable chat receipt through the inbound
+owner, instead of replaying the successful run as a failed attempt. The original
+actor, source, result, and publication history remain intact. Duplicate clicks
+follow one canonical receipt. Current board permission, task ownership, source
+authorization, and prior execution cleanup are rechecked before normal admission;
+pause, budget, approval, and dependency gates remain effective. Completion or
+newer execution supersedes an unadmitted retry.
 
 A valid recovery action must name:
 
