@@ -3,7 +3,7 @@ import type { ConnectionApi } from "../connection-target.js";
 
 export type JourneyOutcome = "passed" | "failed" | "blocked" | "unsupported";
 export type JourneyId = "task-properties" | "task-create" | "project-task-context" | "task-document-persistence" | "ask-question" | "cloud-onboarding"
-  | "question-answer-resume" | "task-search-filter" | "followup-while-running" | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect" | "hire-delegate-reuse" | "file-input-answer" | "inbox-triage" | "routine-scheduled-run";
+  | "question-answer-resume" | "task-search-filter" | "followup-while-running" | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect" | "hire-delegate-reuse" | "file-input-answer" | "inbox-triage" | "routine-scheduled-run" | "completion-delivery";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";
@@ -84,6 +84,7 @@ export interface JourneyContext {
   agent?: { id: string; name: string; provider: string; model: string; runtimeMode: "native" | "legacy" };
   fixtures?: {
     backlogTask?: PreparedBacklogTask;
+    completionWorker?: { id: string; name: string; provider: string; model: string; runtimeMode: "native" };
     reviewService?: { connectionId: string; name: string; marker: string; invocationCount(): number };
   };
 }
