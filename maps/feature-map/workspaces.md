@@ -102,6 +102,10 @@ Their filesystem transport is local test execution, not live sandbox/provider pr
 The Files panel must label **Live workspace** or **Saved copy** with its save
 time. Confirm browse, preview, and download agree. A missing allocation with
 unsaved work must report unavailability rather than show an old save as current.
+After a final save clears dirty state and writer authority, Files must read the
+current committed saved version even while the old allocation is still recorded
+or its read transport is unavailable. Confirm the original bytes and Saved copy
+label; a new writer or dirty state must retain the live-read requirement.
 Close must retain dirty/unfinished work and reject custom cleanup/teardown
 commands; a clean saved workspace can release compute while retaining files.
 Manual runtime commands, jobs, repairs, and service starts must reject remote

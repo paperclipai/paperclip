@@ -1728,6 +1728,13 @@ host, sandbox, or Git remote. Files changed since the last save still depend on
 the live sandbox: losing that allocation can lose those edits. There is no
 periodic workspace backup in this release.
 
+Files reads use the current committed saved version when remote authority is
+clean and has no active writer, even while its old allocation remains recorded.
+The saved loader verifies the company, workspace, snapshot, and archive before
+reading. Dirty or writer-owned authority uses the live allocation and cannot
+substitute an older save if that allocation is unavailable. Reads retain their
+authority-change fence and remove private saved-file copies after use.
+
 Existing local task workspaces require an explicit import. Run from a source
 checkout with the deployment's database, S3, and key configuration loaded:
 
