@@ -24,7 +24,7 @@ never start a server or depend on a tenant filesystem.
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
 | `file-input-answer` | Native agent; one work run; synthetic CSV uploaded through the composer | Verify original uploaded bytes, independently calculated accepted-row count and units, a run-attributed task document after reload, and preservation of the input attachment. The task prompt contains neither the random file reference nor the answers |
-| `routine-scheduled-run` | Create a routine in the browser; enable its minute schedule; verify one native execution and saved document; pause and observe the next schedule boundary with no new work. | 1 |
+| `routine-scheduled-run` | Native agent; one work run; an owned project and routine | Browser-create a routine, enable its minute schedule, verify one scheduled invocation and run-attributed saved output, then pause and observe the next schedule boundary with no new work |
 | `inbox-triage` | Signed-in board user; a fresh self-assigned task; zero model runs | Mark an unread task read, archive it through Mine, reload both views, verify unchanged work status, then observe a real Blocked transition resurface it through the normal archive policy |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
 | `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
