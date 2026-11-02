@@ -9,7 +9,7 @@ export function ActivityList({ events, label = "Recent activity", density = "com
   label?: string;
   density?: "comfortable" | "compact";
   rowClassName?: (event: ActivityEvent) => string | undefined;
-} & Pick<ActivityRowProps, "agentMap" | "userProfileMap" | "entityNameMap" | "entityTitleMap">) {
+} & Pick<ActivityRowProps, "agentMap" | "userProfileMap" | "pluginNameMap" | "entityNameMap" | "entityTitleMap">) {
   return <ul className="task-summary-list activity-list" aria-label={label}>
     {events.map(event => <li key={event.id}><ActivityRow {...directories} event={event} appearance="refreshed" density={density} className={rowClassName?.(event)} /></li>)}
   </ul>;

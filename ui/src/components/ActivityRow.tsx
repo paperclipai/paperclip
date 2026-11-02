@@ -26,6 +26,7 @@ export interface ActivityRowProps {
   event: ActivityEvent;
   agentMap: Map<string, Agent>;
   userProfileMap?: Map<string, CompanyUserProfile>;
+  pluginNameMap?: Map<string, string>;
   entityNameMap: Map<string, string>;
   entityTitleMap?: Map<string, string>;
   className?: string;
@@ -33,7 +34,7 @@ export interface ActivityRowProps {
   density?: "comfortable" | "compact";
 }
 
-export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className, appearance = "default", density = "comfortable" }: ActivityRowProps) {
+export function ActivityRow({ event, agentMap, userProfileMap, pluginNameMap, entityNameMap, entityTitleMap, className, appearance = "default", density = "comfortable" }: ActivityRowProps) {
   const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
@@ -54,7 +55,10 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const pluginName = event.actorType === "plugin"
+    ? pluginNameMap?.get(event.actorId)?.trim() || (event.actorId ? `Plugin (${event.actorId.slice(0, 8)})` : "Plugin")
+    : null;
+  const actorName = actor?.name ?? pluginName ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
   const actorAvatarUrl = userProfile?.image ?? null;
   const avatar = event.actorType === "agent" ? (
     <AgentAvatar agent={actor} name={actorName} size={24} className="@xl:self-center" />
