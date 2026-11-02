@@ -285,6 +285,7 @@ const quarantinedRuntimeExposurePorts = new Set<number>();
  */
 const exposurePortPairClaims = new ExposurePortPairClaims();
 let runtimeReconstructionComplete = false;
+let runtimeStopsInFlight = 0;
 let runtimeReconstructionEpoch = 0;
 let runtimeReconciliation: ReturnType<typeof reconstructRuntimeServices> | null = null;
 
@@ -292,7 +293,7 @@ let runtimeReconciliation: ReturnType<typeof reconstructRuntimeServices> | null 
  * registry process, an allocation being published, or unfinished exposure cleanup. */
 export function readWorkspaceRuntimeIdleWork(): IdleLocalWork {
   if (!runtimeReconstructionComplete || runtimeReconciliation !== null) return "unknown";
-  return runtimeServicesById.size || runtimeProvisionByWorkspace.size || runtimeControlStartByOwner.size
+  return runtimeStopsInFlight || runtimeServicesById.size || runtimeProvisionByWorkspace.size || runtimeControlStartByOwner.size
     || runtimeReplacementClaimsByReuseKey.size || quarantinedRuntimeExposurePorts.size
     || exposurePortPairClaims.activePorts().size
     || [...inFlightAllocatedPorts.values()].some(until => until > Date.now()) ? "present" : "none";
@@ -7174,7 +7175,21 @@ async function cleanupRecordExposure(
   await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
 }
 
+async function withRuntimeStopWork<T>(stop: () => Promise<T>): Promise<T> {
+  runtimeStopsInFlight += 1;
+  try { return await stop(); }
+  catch (error) {
+    runtimeReconstructionComplete = false;
+    runtimeReconstructionEpoch += 1;
+    throw error;
+  } finally { runtimeStopsInFlight -= 1; }
+}
+
 async function stopRuntimeService(serviceId: string) {
+  return withRuntimeStopWork(() => stopRuntimeServiceRecord(serviceId));
+}
+
+async function stopRuntimeServiceRecord(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
@@ -8315,7 +8330,11 @@ export async function releaseRuntimeServicesForRun(runId: string) {
   }
 }
 
-export async function stopRuntimeServicesForExecutionWorkspace(input: {
+export async function stopRuntimeServicesForExecutionWorkspace(input: Parameters<typeof stopRuntimeServicesForExecutionWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForExecutionWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForExecutionWorkspaceOwned(input: {
   db?: Db;
   executionWorkspaceId: string;
   workspaceCwd?: string | null;
@@ -8370,7 +8389,11 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   }
 }
 
-export async function stopRuntimeServicesForProjectWorkspace(input: {
+export async function stopRuntimeServicesForProjectWorkspace(input: Parameters<typeof stopRuntimeServicesForProjectWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForProjectWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForProjectWorkspaceOwned(input: {
   db?: Db;
   projectWorkspaceId: string;
   runtimeServiceId?: string | null;

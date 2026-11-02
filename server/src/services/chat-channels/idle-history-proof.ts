@@ -44,6 +44,15 @@ function completedAction(a: string): string {
 export const idleChatHistoryChecks = [
   { reason: "chat_deliveries", query: `SELECT 1 FROM chat_deliveries d WHERE (
     EXISTS (SELECT 1 FROM chat_endpoints e WHERE e.id = d.endpoint_id AND e.company_id = d.company_id)
+    AND jsonb_typeof(d.normalized_event) = 'object'
+    AND d.normalized_event->>'providerEventId' = d.provider_event_id
+    AND d.normalized_event->>'kind' = d.event_kind
+    AND d.event_kind IN ('mention', 'message', 'direct_message', 'message_updated', 'message_deleted', 'message_restored',
+      'reaction_added', 'reaction_removed', 'action', 'modal_submitted', 'modal_closed', 'slash_command', 'file_shared', 'installation', 'uninstallation', 'unknown')
+    AND (d.state <> 'processed' OR d.event_kind NOT IN ('mention', 'message', 'direct_message')
+      OR EXISTS (SELECT 1 FROM chat_actions consumed WHERE consumed.delivery_id = d.id
+        AND consumed.company_id = d.company_id AND consumed.endpoint_id = d.endpoint_id
+        AND consumed.kind = 'inbound_wakeup' AND (${completedAction('consumed')})))
     AND d.next_attempt_at IS NULL AND (d.state = 'failed' OR (d.state IN ('processed', 'filtered') AND d.processed_at IS NOT NULL))
     AND (d.conversation_id IS NULL OR EXISTS (SELECT 1 FROM chat_conversations c WHERE c.id = d.conversation_id
       AND c.company_id = d.company_id AND c.endpoint_id = d.endpoint_id))
@@ -68,12 +77,14 @@ export const idleChatHistoryChecks = [
       JOIN issues source ON source.id = h.conversation_id AND source.company_id = h.company_id
       WHERE h.task_id = d.task_id AND h.company_id = d.company_id
         AND source.conversation_agent_id = h.agent_id
-        AND (d.status <> 'delivered' OR (d.status_version = task.status_version AND task.status = 'done'
+        AND (d.status <> 'delivered' OR (d.status_version <= task.status_version
           AND EXISTS (SELECT 1 FROM issue_comments c WHERE c.id = d.response_comment_id
-            AND c.company_id = d.company_id AND c.issue_id = h.conversation_id AND c.author_agent_id = h.agent_id))))
+            AND c.company_id = d.company_id AND c.issue_id = h.conversation_id AND c.author_agent_id = h.agent_id
+            AND c.created_by_run_id = d.target_run_id))))
     AND (d.target_run_id IS NULL AND d.status <> 'delivered' OR EXISTS (
       SELECT 1 FROM heartbeat_runs r JOIN chat_task_handoffs h ON h.task_id = d.task_id
       WHERE r.id = d.target_run_id AND r.company_id = d.company_id AND r.agent_id = h.agent_id
+        AND h.company_id = d.company_id AND r.context_snapshot->>'conversationSessionGeneration' = h.session_generation::text
         AND (r.native_issue_id = h.conversation_id OR r.context_snapshot->>'issueId' = h.conversation_id::text)
         AND ${finishedIdleRun('r')}))) IS NOT TRUE` },
 ] as const;

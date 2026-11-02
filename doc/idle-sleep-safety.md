@@ -114,8 +114,9 @@ same closed session. Decision success requires the selected option's full effect
 manifest, matching ordinal/type/target receipts and audit records. The owning
 dismissal, explicit recovery stop and reviewed archive paths have separate proofs.
 Their continuation and archive-notification outboxes remain independent barriers.
-Failed company transfers remain resumable. Completed/cancelled transfers still
-block while their registered local spool contains cleanup work.
+Failed company transfers remain resumable. Completed transfers require their
+recorded manifest, exact part receipts and matching counts. Completed/cancelled
+transfers still block while their registered local spool contains cleanup work.
 
 Waiting agent conversations can be passive containers under both ordinary and
 scheduled inspection. The same narrow proof requires the exact conversation
@@ -504,8 +505,9 @@ operation by itself. Multiple replicas require shared fencing. The protocol
 does not make existing in-memory-only debt survive an unplanned process crash.
 
 Related public PR #13413 adds runtime-service controller requirements and uses
-the same `purpose: "idle"` / `ownerId` vocabulary. This report conservatively
-blocks all retained runtime-service state instead of approving such services.
+the same `purpose: "idle"` / `ownerId` vocabulary. Retained stopped local-process
+rows use the domain and process-reconstruction proof described above; live,
+uncertain and adapter-managed runtime resources remain blockers.
 
 ## Muse maintenance
 
