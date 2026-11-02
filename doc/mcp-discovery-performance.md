@@ -138,3 +138,61 @@ seven samples of ten resolutions. It reports actual query and returned-row
 counts, process CPU, and elapsed time. The installation dependency returns an
 empty list for this fixture, which has no installed connections. It does not
 measure provider work, whole-run latency, or hosted performance.
+
+
+## Local profile comparison on 2026-11-02
+
+The profile and app-attention paths were re-profiled together after
+[#18681](https://github.com/paperclipai/paperclip/pull/18681) and
+[#18673](https://github.com/paperclipai/paperclip/pull/18673). Both fixes replace
+nested selector scans with indexes that live for one computation.
+
+The comparison used Node 24.22.2 on macOS arm64. Service modules were compiled
+as ES modules for Node 24 before measurement. No TypeScript loader ran during
+measurement. All variants used the same database, fixture, and database client.
+Only the service and projection implementation changed between variants.
+The fixture had 200 profiles, 1,900 active tools, 695 removed tools, 76,000
+rules, and 12 agents. Complete ordered responses matched before timing.
+
+Baseline: `1f8f2e195f4897cd1c237bdc068de95780ab0c3c`. The pending-review fix was
+`fd59c0183ce64c44696f79604516f4d51ca5662b`. The summary fix was
+`e20165b6eb871c29e504a3837e8fe92a17ef969f`; its later benchmark helper change
+does not change production code. Five unprofiled samples alternated order,
+with forced GC before each operation. Values below are medians.
+[All samples](benchmarks/2026-11-02-profile-projection.json) retain each measurement
+and the pending-review-only treatment.
+
+| Service | Baseline CPU | Combined CPU | Baseline elapsed | Combined elapsed |
+| --- | ---: | ---: | ---: | ---: |
+| `listProfiles` | 3,561 ms | 419 ms | 3,382 ms | 251 ms |
+| `listAppsNeedingAttention` | 2,631 ms | 301 ms | 2,568 ms | 190 ms |
+
+Each version made seven queries per service. Profile listing returned 78,114
+database rows; app attention returned 78,101. These counts did not change.
+The gains came from less JavaScript work after the reads.
+
+Separate Inspector CPU captures used a 1 ms sampling interval. The baseline
+showed `profileCoversCatalogScope` and `summarizeProfile` as major CPU costs.
+Their repeated scans were absent from the combined capture. Residual work
+included pending projection, row conversion, and garbage collection.
+Profile capture time was excluded from the timing samples above.
+
+A separate process also sent simple HTTP requests every 20 ms while each
+real service operation ran. The local liveness handler shared the service's
+Node event loop. There was at most one outstanding probe request. Across
+three alternating trials, the median largest probe delay fell from 4,261 ms
+to 73 ms during profile listing, and from 2,487 ms to 69 ms during app
+attention. All 55 probe requests completed without error.
+
+These are synthetic service measurements on a shared developer machine.
+They are not a full application build, a browser test, or hosted acceptance.
+The liveness handler is a minimal test handler, not the application's health
+route. Workload, JIT warmup, and host activity affect absolute timings. The
+comparison does not establish a page-load percentage or production capacity.
+Use a matched deployment window to confirm the effect on user requests.
+
+Both benchmark scripts use the test database helper. Set
+`PAPERCLIP_TEST_POSTGRES_ADMIN_URL` to use a local PostgreSQL server; otherwise
+they create and remove an embedded test database. The helper creates a unique
+disposable database and removes it afterward. Benchmark setup and fixture
+insertion are outside the timing samples.

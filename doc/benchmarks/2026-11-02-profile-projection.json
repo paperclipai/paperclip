@@ -1,0 +1,525 @@
+{
+  "measurements": [
+    {
+      "kind": "environment",
+      "node": "v24.22.2",
+      "platform": "darwin",
+      "arch": "arm64",
+      "build": "esbuild transpiled ES modules, node24 target; no runtime TypeScript loader",
+      "baseline": "1f8f2e195f4897cd1c237bdc068de95780ab0c3c",
+      "pending": "fd59c0183ce64c44696f79604516f4d51ca5662b",
+      "summary": "e20165b6eb871c29e504a3837e8fe92a17ef969f",
+      "fixture": {
+        "profiles": 200,
+        "activeTools": 1900,
+        "removedTools": 695,
+        "rules": 76000,
+        "agents": 12
+      },
+      "repeats": 5,
+      "caveat": "Local synthetic service workload, shared developer host; not hosted page-load acceptance"
+    },
+    {
+      "kind": "correctness",
+      "owner": "profiles",
+      "completeOutputEquality": true
+    },
+    {
+      "kind": "correctness",
+      "owner": "attention",
+      "completeOutputEquality": true
+    },
+    {
+      "kind": "timing",
+      "round": 0,
+      "owner": "profiles",
+      "label": "baseline",
+      "wallMs": 5676.236667000001,
+      "cpuMs": 5020.067,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 0,
+      "owner": "profiles",
+      "label": "pending",
+      "wallMs": 2224.808917000002,
+      "cpuMs": 2225.449,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 0,
+      "owner": "profiles",
+      "label": "combined",
+      "wallMs": 322.88162499999817,
+      "cpuMs": 487.479,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 0,
+      "owner": "attention",
+      "label": "baseline",
+      "wallMs": 3772.987416,
+      "cpuMs": 3683.505,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 0,
+      "owner": "attention",
+      "label": "pending",
+      "wallMs": 264.64154100000087,
+      "cpuMs": 456.441,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 0,
+      "owner": "attention",
+      "label": "combined",
+      "wallMs": 237.73920799999905,
+      "cpuMs": 301.424,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 1,
+      "owner": "profiles",
+      "label": "combined",
+      "wallMs": 303.33379200000127,
+      "cpuMs": 311.886,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 1,
+      "owner": "profiles",
+      "label": "pending",
+      "wallMs": 2202.492875,
+      "cpuMs": 2055.025,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 1,
+      "owner": "profiles",
+      "label": "baseline",
+      "wallMs": 5002.322082999999,
+      "cpuMs": 4887.871,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 1,
+      "owner": "attention",
+      "label": "combined",
+      "wallMs": 189.82600000000093,
+      "cpuMs": 388.537,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 1,
+      "owner": "attention",
+      "label": "pending",
+      "wallMs": 169.21199999999953,
+      "cpuMs": 237.725,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 1,
+      "owner": "attention",
+      "label": "baseline",
+      "wallMs": 2573.478209000001,
+      "cpuMs": 2635.307,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 2,
+      "owner": "profiles",
+      "label": "baseline",
+      "wallMs": 3242.5911669999987,
+      "cpuMs": 3347.775,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 2,
+      "owner": "profiles",
+      "label": "pending",
+      "wallMs": 1613.763583,
+      "cpuMs": 1780.609,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 2,
+      "owner": "profiles",
+      "label": "combined",
+      "wallMs": 250.8646249999947,
+      "cpuMs": 458.289,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 2,
+      "owner": "attention",
+      "label": "baseline",
+      "wallMs": 2140.3228329999984,
+      "cpuMs": 2201.734,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 2,
+      "owner": "attention",
+      "label": "pending",
+      "wallMs": 188.50675000000047,
+      "cpuMs": 375.855,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 2,
+      "owner": "attention",
+      "label": "combined",
+      "wallMs": 159.5709579999966,
+      "cpuMs": 221.95,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 3,
+      "owner": "profiles",
+      "label": "combined",
+      "wallMs": 199.59029200000077,
+      "cpuMs": 236.678,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 3,
+      "owner": "profiles",
+      "label": "pending",
+      "wallMs": 1356.2044170000008,
+      "cpuMs": 1384.725,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 3,
+      "owner": "profiles",
+      "label": "baseline",
+      "wallMs": 3381.573375,
+      "cpuMs": 3560.928,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 3,
+      "owner": "attention",
+      "label": "combined",
+      "wallMs": 209.34529200000543,
+      "cpuMs": 425.355,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 3,
+      "owner": "attention",
+      "label": "pending",
+      "wallMs": 168.27354199999536,
+      "cpuMs": 238.529,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 3,
+      "owner": "attention",
+      "label": "baseline",
+      "wallMs": 2567.841790999999,
+      "cpuMs": 2630.53,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 4,
+      "owner": "profiles",
+      "label": "baseline",
+      "wallMs": 3257.576792,
+      "cpuMs": 3388.365,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 4,
+      "owner": "profiles",
+      "label": "pending",
+      "wallMs": 1241.0060000000012,
+      "cpuMs": 1407.957,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 4,
+      "owner": "profiles",
+      "label": "combined",
+      "wallMs": 228.07941699999355,
+      "cpuMs": 419.49,
+      "queries": 7,
+      "rows": 78114,
+      "resultCount": 200
+    },
+    {
+      "kind": "timing",
+      "round": 4,
+      "owner": "attention",
+      "label": "baseline",
+      "wallMs": 1985.8187919999982,
+      "cpuMs": 2048.813,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 4,
+      "owner": "attention",
+      "label": "pending",
+      "wallMs": 183.34241699999984,
+      "cpuMs": 362.421,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "timing",
+      "round": 4,
+      "owner": "attention",
+      "label": "combined",
+      "wallMs": 154.38895899999625,
+      "cpuMs": 211.644,
+      "queries": 7,
+      "rows": 78101
+    },
+    {
+      "kind": "profile",
+      "owner": "profiles",
+      "label": "baseline",
+      "durationMs": 3390.958,
+      "samples": 2646
+    },
+    {
+      "kind": "profile",
+      "owner": "profiles",
+      "label": "pending",
+      "durationMs": 1422.292,
+      "samples": 1094
+    },
+    {
+      "kind": "profile",
+      "owner": "profiles",
+      "label": "combined",
+      "durationMs": 272.416,
+      "samples": 173
+    },
+    {
+      "kind": "profile",
+      "owner": "attention",
+      "label": "baseline",
+      "durationMs": 2513.917,
+      "samples": 1966
+    },
+    {
+      "kind": "profile",
+      "owner": "attention",
+      "label": "pending",
+      "durationMs": 240.584,
+      "samples": 147
+    },
+    {
+      "kind": "profile",
+      "owner": "attention",
+      "label": "combined",
+      "durationMs": 225.167,
+      "samples": 132
+    }
+  ],
+  "responsiveness": [
+    {
+      "kind": "responsiveness",
+      "round": 0,
+      "owner": "profiles",
+      "label": "baseline",
+      "operationMs": 4503.967542000002,
+      "completedHealthRequests": 7,
+      "maxHealthMs": 4261.041292,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 0,
+      "owner": "profiles",
+      "label": "combined",
+      "operationMs": 267.78220800000054,
+      "completedHealthRequests": 6,
+      "maxHealthMs": 94.23495800000092,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 0,
+      "owner": "attention",
+      "label": "baseline",
+      "operationMs": 3037.9472499999974,
+      "completedHealthRequests": 4,
+      "maxHealthMs": 2889.2811250000013,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 0,
+      "owner": "attention",
+      "label": "combined",
+      "operationMs": 202.835667000003,
+      "completedHealthRequests": 4,
+      "maxHealthMs": 63.91675000000032,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 1,
+      "owner": "profiles",
+      "label": "combined",
+      "operationMs": 208.13466699999844,
+      "completedHealthRequests": 5,
+      "maxHealthMs": 64.60041600000113,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 1,
+      "owner": "profiles",
+      "label": "baseline",
+      "operationMs": 4810.549416999998,
+      "completedHealthRequests": 5,
+      "maxHealthMs": 4679.035334,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 1,
+      "owner": "attention",
+      "label": "combined",
+      "operationMs": 180.45908299999792,
+      "completedHealthRequests": 4,
+      "maxHealthMs": 76.33862500000032,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 1,
+      "owner": "attention",
+      "label": "baseline",
+      "operationMs": 2604.7285840000004,
+      "completedHealthRequests": 4,
+      "maxHealthMs": 2487.2651669999977,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 2,
+      "owner": "profiles",
+      "label": "baseline",
+      "operationMs": 3303.667999999998,
+      "completedHealthRequests": 5,
+      "maxHealthMs": 3171.587083999999,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 2,
+      "owner": "profiles",
+      "label": "combined",
+      "operationMs": 211.1917089999988,
+      "completedHealthRequests": 5,
+      "maxHealthMs": 72.97550000000047,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 2,
+      "owner": "attention",
+      "label": "baseline",
+      "operationMs": 2059.917916999999,
+      "completedHealthRequests": 3,
+      "maxHealthMs": 1957.7453339999956,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    },
+    {
+      "kind": "responsiveness",
+      "round": 2,
+      "owner": "attention",
+      "label": "combined",
+      "operationMs": 193.3309999999983,
+      "completedHealthRequests": 3,
+      "maxHealthMs": 69.46595900000102,
+      "errors": [],
+      "scope": "Separate-process HTTP probe to a minimal liveness handler in the same Node event loop as the real service; not the full application health route"
+    }
+  ],
+  "responsiveness_limit": "Minimal local HTTP liveness handler on the same event loop as real database-backed service operations, not the assembled application health route."
+}
