@@ -9,7 +9,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases,
-  environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, sandboxCreationOperations,
+  environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, plugins, sandboxCreationOperations,
 } from "@paperclipai/db";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
@@ -28,11 +28,13 @@ import { createHeartbeatRunControl } from "../services/heartbeat/run-control.js"
 import { executionControlSchedule } from "../services/execution-control-work.js";
 import { claimNativeRestartRecoveries } from "../services/native-runtime/native-restart-recovery.js";
 import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
-import { createPluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { createPluginWorkerManager, type PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 
-import { createOwnedSandbox, recordSandboxCreationResource, recoverSandboxCreations } from "../services/sandbox-creation-operations.js";
+import { createOwnedSandbox, queueSandboxCreationCleanup, recordSandboxCreationResource, recoverSandboxCreations } from "../services/sandbox-creation-operations.js";
 import { environmentService } from "../services/environments.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { createHeartbeatRecovery, type HeartbeatRecoveryDependencies } from "../services/heartbeat/recovery.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
 
@@ -609,6 +611,67 @@ rl.on("line",line=>{const m=JSON.parse(line);
       leaseOwner: f.request.leaseOwner, controllerGeneration: 1 })).rejects.toThrow("lost authority");
     expect((await f.reload()).runnerProfileJson?.nativeStartupContext).toBeDefined();
     if (winner === "cleanup") expect(readNativeStartupCleanup(await f.reload())).toMatchObject({ state: "pending" });
+  });
+
+  it("requires exact task Stop proof when retrying cleanup of a never-dispatched replacement", async () => {
+    const f = await fixture(true), original = await f.lease(), pluginId = randomUUID();
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-abandoned-task", version: "1", status: "ready",
+      manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
+    await db.update(environments).set({ companyId, config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } })
+      .where(eq(environments.id, original.environmentId!));
+    const fresh = await createOwnedSandbox(db, { companyId, environmentId: original.environmentId!, heartbeatRunId: f.request.runId,
+      issueId: original.issueId, provider: original.provider!, pluginId, driverKey: "tasks", config: {}, requestKey: original.providerLeaseId!,
+      metadata: { driver: "plugin", pluginId, pluginKey: pluginId, driverKey: "tasks", runnerTaskLease: true, agentId,
+        runnerTaskCreationContextId: f.request.contextId } }, async () => ({ providerLeaseId: "late-never-dispatched" }));
+    await queueSandboxCreationCleanup(db, { id: String(fresh.metadata!.creationOperationId), companyId,
+      environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId });
+    const creation = async () => (await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId))))[0]!;
+    const replacement = async () => (await environmentService(db).getLeaseById((await creation()).leaseId!))!;
+    expect((await replacement()).metadata?.runnerTaskDispatched).not.toBe(true);
+    await requestNativeStartupCleanup(db, { ...f.request, leaseId: original.id });
+    await f.stopReceipt({}, true);
+    let proof: "void" | "running" | "foreign" | "exact" = "void";
+    const calls: string[] = [];
+    const workers = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentTask", "environmentReleaseLease"] }),
+      drainStartup: vi.fn(async () => undefined),
+      call: async (_plugin: string, method: string, params: any) => {
+        calls.push(method === "environmentTask" ? params.operation.kind : method);
+        if (method === "environmentReleaseLease") return undefined;
+        if (params.operation.kind === "status") return proof === "void" ? undefined : {
+          kind: "status", taskId: proof === "foreign" ? "another-task" : params.taskId,
+          phase: proof === "running" ? "running" : "cancelled", executionStopped: proof !== "running",
+        };
+        return { kind: "accepted", taskId: params.taskId };
+      },
+    } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workers });
+    const recovery = createHeartbeatRecovery(db, { ...callbacks(db), environmentRuntime: runtime,
+      environmentsSvc: environmentService(db), runtimeEnv: {}, activeRunExecutionPromises: new Set<Promise<void>>(),
+      acknowledgeRemoteStop: async () => undefined, resumeRemoteStopComments: async () => undefined,
+    } as unknown as HeartbeatRecoveryDependencies);
+    const stopDeps = callbacks(db);
+    stopDeps.verifyStartupCleanup = run => verifyNativeStartupCleanup(db, run, async () => {});
+    const control = createHeartbeatRunControl(db, stopDeps);
+    for (const missing of ["void", "running", "foreign"] as const) {
+      proof = missing;
+      const swept = await recovery.sweepPendingCleanupLeases({ explicitRetry: { companyId, runId: f.request.runId, actorId: "operator" } });
+      const cancelled = await control.cancelRunInternal(f.request.runId, "Startup cleanup retry").then(() => true, () => false);
+      const lease = await replacement();
+      expect({ destroyed: swept.destroyed, status: lease.status, verifiedReceipt: hasRemoteTerminationReceipt(lease),
+        creationState: (await creation()).state, cancelled, leaseOwner: (await f.owner()).leaseOwner }).toEqual({
+        destroyed: 0, status: "pending_cleanup", verifiedReceipt: false, creationState: "cleanup_pending", cancelled: false, leaseOwner: f.request.leaseOwner,
+      });
+    }
+    proof = "exact";
+    expect((await recovery.sweepPendingCleanupLeases({ explicitRetry: { companyId, runId: f.request.runId, actorId: "operator" } })).destroyed).toBe(1);
+    expect(calls).toContain("stop");
+    expect(calls).toContain("status");
+    expect(calls).toContain("complete");
+    expect(workers!.drainStartup).toHaveBeenCalledWith(f.request.contextId);
+    expect(hasRemoteTerminationReceipt(await replacement())).toBe(true);
+    expect((await creation()).state).toBe("resolved");
+    expect(await control.cancelRunInternal(f.request.runId, "Startup cleanup retry")).toMatchObject({ status: "cancelled" });
+    expect((await f.owner()).leaseOwner).toBeNull();
   });
 
 });

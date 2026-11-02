@@ -105,12 +105,15 @@ export async function queueSandboxCreationCleanup(db: Db, input: {
     if (["attached", "cleanup_pending", "resolved"].includes(operation.state)) return;
     if (operation.state !== "pending") throw new Error("Sandbox creation cleanup ownership changed");
     await notifyEnvironmentCleanup(tx, { companyId: operation.companyId, runId: operation.runId });
+    const contextId = operation.metadata.runnerTaskLease === true && typeof operation.metadata.runnerTaskCreationContextId === "string"
+      ? operation.metadata.runnerTaskCreationContextId : null;
     const lease = await environmentService(tx as unknown as Db).insertPendingCleanupLease({
       companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
       heartbeatRunId: operation.runId, issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId,
       provider: operation.provider, providerLeaseId: input.providerLeaseId,
       metadata: { ...operation.metadata, creationOperationId: operation.id, environmentId: operation.originalEnvironmentId,
-        providerMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {}, runnerTaskRetiring: true },
+        providerMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {}, runnerTaskRetiring: true,
+        ...(contextId ? { runnerTaskStartupCleanup: { contextId, requiresPreparationStop: false } } : {}) },
       failureReason: "interrupted_task_creation",
     });
     await tx.update(sandboxCreationOperations).set({ state: "cleanup_pending", leaseId: lease.id, updatedAt: new Date(),
