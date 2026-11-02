@@ -48,12 +48,8 @@ export async function runCommandWithDiagnostics(
     const stderr = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string"
       ? error.stderr.trim()
       : "";
-    const stdout = error && typeof error === "object" && "stdout" in error && typeof error.stdout === "string"
-      ? error.stdout.trim() : "";
-    const message = error instanceof Error ? error.message : String(error);
-    const diagnostics = [stderr && !message.includes(stderr) ? stderr : "", stdout ? `Build stdout tail:\n${stdout.slice(-6000)}` : ""].filter(Boolean);
-    if (diagnostics.length === 0) throw error;
-    throw new Error(`${message}\n${diagnostics.join("\n")}`, { cause: error });
+    if (!stderr || (error instanceof Error && error.message.includes(stderr))) throw error;
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stderr}`, { cause: error });
   }
 }
 

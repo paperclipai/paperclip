@@ -128,32 +128,6 @@ describe("managed install commands", () => {
     expect(reconcileStagedWorkspaceVersions(source, staged, versions)).toBe(false);
   });
 
-  it("stages real skills for server and both local adapters", () => {
-    const checkout = path.join(root, "checkout");
-    const sourceSkills = path.join(checkout, "skills", "paperclip");
-    fs.mkdirSync(sourceSkills, { recursive: true });
-    fs.writeFileSync(path.join(sourceSkills, "SKILL.md"), "expected skill content");
-    const packages = [
-      { dir: "server", name: "@paperclipai/server" },
-      { dir: "packages/adapters/claude-local", name: "@paperclipai/adapter-claude-local" },
-      { dir: "packages/adapters/codex-local", name: "@paperclipai/adapter-codex-local" },
-    ];
-    for (const entry of packages) {
-      const target = path.join(checkout, entry.dir);
-      fs.mkdirSync(path.join(target, "skills"), { recursive: true });
-      fs.writeFileSync(path.join(target, "package.json"), JSON.stringify({ files: ["dist", "skills"] }));
-      fs.writeFileSync(path.join(target, "skills", "package-owned.txt"), "keep");
-    }
-    prepareGitInstallSkills(checkout, packages);
-    for (const entry of packages) {
-      const target = path.join(checkout, entry.dir, "skills");
-      expect(fs.readFileSync(path.join(target, "paperclip", "SKILL.md"), "utf8")).toBe("expected skill content");
-      expect(fs.readFileSync(path.join(target, "package-owned.txt"), "utf8")).toBe("keep");
-    }
-    fs.rmSync(path.join(checkout, "skills"), { recursive: true });
-    expect(() => prepareGitInstallSkills(checkout, packages)).toThrow("Missing root skills directory");
-  });
-
   it("preserves Hermes task bridge and existing skill files when merging root skills", () => {
     const checkout = path.join(root, "checkout");
     const sharedSkill = path.join(checkout, "skills", "paperclip");
@@ -170,13 +144,28 @@ describe("managed install commands", () => {
     fs.mkdirSync(path.join(hermesDir, "skills", "paperclip"), { recursive: true });
     fs.writeFileSync(path.join(hermesDir, "skills", "paperclip", "SKILL.md"), "Hermes override");
     fs.writeFileSync(path.join(hermesDir, "package.json"), JSON.stringify({ files: ["dist", "skills"] }));
-    const packages = [{ dir: "packages/adapters/hermes", name: "@paperclipai/hermes-paperclip-adapter" }];
+    const packages = [
+      { dir: "server", name: "@paperclipai/server" },
+      { dir: "packages/adapters/claude-local", name: "@paperclipai/adapter-claude-local" },
+      { dir: "packages/adapters/codex-local", name: "@paperclipai/adapter-codex-local" },
+      { dir: "packages/adapters/hermes", name: "@paperclipai/hermes-paperclip-adapter" },
+    ];
+    for (const { dir } of packages.slice(0, -1)) {
+      const target = path.join(checkout, dir);
+      fs.mkdirSync(target, { recursive: true });
+      fs.writeFileSync(path.join(target, "package.json"), JSON.stringify({ files: ["skills"] }));
+    }
     prepareGitInstallSkills(checkout, packages);
     prepareGitInstallSkills(checkout, packages);
     expect(fs.readFileSync(path.join(hermesBridge, "SKILL.md"), "utf8")).toBe("Hermes instructions");
     expect(fs.readFileSync(path.join(hermesBridge, "paperclip-task.mjs"), "utf8")).toBe("Hermes helper");
     expect(fs.readFileSync(path.join(hermesDir, "skills", "paperclip", "SKILL.md"), "utf8")).toBe("Hermes override");
     expect(fs.readFileSync(path.join(hermesDir, "skills", "new-shared-skill", "SKILL.md"), "utf8")).toBe("new shared instructions");
+    for (const { dir } of packages.slice(0, -1)) {
+      expect(fs.readFileSync(path.join(checkout, dir, "skills", "paperclip", "SKILL.md"), "utf8")).toBe("shared instructions");
+    }
+    fs.rmSync(path.join(checkout, "skills"), { recursive: true });
+    expect(() => prepareGitInstallSkills(checkout, packages)).toThrow("Missing root skills directory");
   });
 
   it("hydrates a bundled Postgres native package before activation", async () => {
@@ -319,11 +308,6 @@ describe("managed install commands", () => {
   it("includes child-process stderr in command failures", async () => {
     await expect(runCommandWithDiagnostics(process.execPath, ["-e", "process.stderr.write('unsupported workspace dependency\\n'); process.exit(1)"]))
       .rejects.toThrow("unsupported workspace dependency");
-  });
-
-  it("preserves a bounded build stdout tail on otherwise opaque failures", async () => {
-    await expect(runCommandWithDiagnostics(process.execPath, ["-e", "process.stdout.write('WORKSPACE_BUILD_MARKER\\n'); process.exit(1)"]))
-      .rejects.toThrow("WORKSPACE_BUILD_MARKER");
   });
 
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
