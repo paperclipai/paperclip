@@ -2480,6 +2480,13 @@ accessible repository work products do not require an attachment. Publication
 failure calls for continued work or a concrete blocker, not a human confirmation
 that the task is complete.
 
+Native completion reports can cite the relative task-document links returned by
+the server. Each link must resolve to this company's current task and an attached
+document whose current revision has a matching native publication receipt.
+The same server-owned link projection supplies completion guidance and evidence
+validation. A published document link can accompany a requested file, but it
+does not replace that file's verified delivery evidence.
+
 For an explicit file output in the current request, an empty report, a
 verification-only reference, or an unregistered URL cannot satisfy delivery.
 The report must cite an attachment verified by the current run's durable
