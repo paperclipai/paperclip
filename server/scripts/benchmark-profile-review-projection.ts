@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
-import { createDb, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
+import { createDb, type Db } from "@paperclipai/db";
+import { startEmbeddedPostgresTestDatabase } from "../src/__tests__/helpers/embedded-postgres.js";
 import { createToolProfileService } from "../src/services/tool-access/profiles/service.js";
 import { createToolAppAttention } from "../src/services/tool-access/catalog/attention.js";
 import { createProfileProjectionFixture } from "../src/__tests__/helpers/tool-profile-projection-fixture.js";

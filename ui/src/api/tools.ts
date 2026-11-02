@@ -34,6 +34,7 @@ import type {
   ToolProfileEntrySelectorType,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileConfiguration,
   ToolProfileNewToolReviewDecision,
   ToolProfileNewToolsReview,
   ToolProfileNewToolsReviewResult,
@@ -42,6 +43,7 @@ import type {
   ReorderToolPolicies,
   AppDefinition,
   ToolAppsAttentionResponse,
+  ToolConnectionReviewCounts,
   ToolConnectionActivityResponse,
   ToolConnectionLifecycleEventType,
   ToolConnectionTestAgentsResponse,
@@ -333,6 +335,8 @@ export const toolsApi = {
       `/companies/${companyId}/tools/apps/${connectionId}/finish`,
       input,
     ),
+  getConnectionReviewCounts: (connectionId: string) =>
+    api.get<ToolConnectionReviewCounts>(`/tool-connections/${connectionId}/review-counts`),
   listAppsAttention: (companyId: string) =>
     api.get<ToolAppsAttentionResponse>(`/companies/${companyId}/tools/apps/attention`),
   listApplications: (companyId: string) =>
@@ -480,6 +484,8 @@ export const toolsApi = {
     ),
 
   // --- Profiles ---
+  listConnectionProfileConfiguration: (connectionId: string) =>
+    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
   getProfileNewTools: (profileId: string) =>

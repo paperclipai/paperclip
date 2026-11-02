@@ -12,6 +12,7 @@ import { pluginRegistryService } from "./plugin-registry.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
+import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 
 export async function pluginEnvironmentSupportsTasks(db: Db, workers: PluginWorkerManager, lease: { companyId: string; metadata: Record<string, unknown> | null }) {
   const metadata = lease.metadata ?? {};
@@ -230,11 +231,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   }
   if (warmAttachment && operation.kind === "prepare") {
     const i = operation.requirements.identity;
+    const startup = context?.pluginSupported ? { contextId: context.id, deadlineAtMs: context.deadlineAtMs, runId: i.runId } : undefined;
     const marked = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
       runnerTaskPriorIdentity: { runnerId: prior!.runnerInstanceId, leaseId: prior!.environmentLeaseId, runId: prior!.runId,
         sessionId: prior!.normalizedSessionId, turnId: prior!.turnId, itemId: prior!.itemId },
       runnerTaskIdentity: { runnerId: i.runnerInstanceId, leaseId: i.environmentLeaseId, runId: i.runId,
         sessionId: i.normalizedSessionId, turnId: i.turnId, itemId: i.itemId },
+      ...(startup ? { runnerTaskStartup: startup } : {}),
     })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active"),
       sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(savedIdentity)}::jsonb`)).returning({id:environmentLeases.id});
@@ -341,6 +344,17 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         return snapshot.credential;
       });
     }
+    const executionContext = context?.pluginSupported && ["describe", "prepare", "check_project_auth", "connection"].includes(operation.kind) ? await context.projection({ pluginId: plugin.id,
+      leaseId: lease.id, taskId, environmentId: environment!.id }, async () => {
+      try {
+        const [identity, configuration] = await Promise.all([
+          pluginAgentRuntimeIdentity(db, plugin.id, input.companyId, run!.agentId),
+          pluginRegistryService(db).getConfig(plugin.id, input.companyId),
+        ]);
+        if (!identity) throw new Error("Missing transport binding");
+        return { instanceSecrets: identity.instanceSecrets, configuration: configuration?.configJson ?? {} };
+      } catch { throw new Error("Plugin task transport unavailable"); }
+    }) : undefined;
     const params = {
       driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
       issueId: lease.issueId, config: driverConfig,
@@ -348,10 +362,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       lease: { providerLeaseId: lease.providerLeaseId, metadata: lease.metadata ?? undefined },
       ...(workspaceBinding ? { workspace: workspaceBinding } : {}),
       ...(freshWorkspace && scopesProjects ? { fresh: freshWorkspace } : {}), operation,
+      executionContextSupported: 1 as const,
+      ...(executionContext ? { executionContext } : {}),
     };
     const timeout = operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now()))
-      : 15_000;
+      : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now()) : 15_000;
     const result = await callWorker("environmentTask", params, timeout);
+    if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
     if (operation.kind === "read_file") {
       const [current] = await db.select({ lease: environmentLeases, run: heartbeatRuns }).from(environmentLeases)
