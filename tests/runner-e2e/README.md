@@ -848,7 +848,11 @@ Runner Codex additionally proves stable native session, provider session,
 runner instance, PID, and process-start identity. The ordinary warm cell uses
 managed instructions and edits AGENT_HOME on every turn: a growing memory file,
 an unchanged 8 MiB binary, and a deletion. Public API reads independently verify
-the canonical bytes after every turn. Native checkpoint receipts must show only
+the canonical bytes after every turn. Save receipts come from the latest
+`instruction_save` event in the complete, paginated run log. Missing receipts,
+later failed saves, or events from another run fail the check; a successful run
+summary cannot replace this evidence. Definition version 5 preserves earlier
+results under their original receipt lookup. Native checkpoint receipts must show only
 the changed memory file transferred on turns 2 and 3; the PID oracle remains strict.
 The journal stress cell retains fixed external instructions as a control. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the

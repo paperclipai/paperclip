@@ -1852,7 +1852,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaWarmContinuityTask],
     expectedMatrixSize: 2,
-    definitionMetadata: { version: 4, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 },
+    definitionMetadata: { version: 5, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024,
+      managedSaveReceipt: "latest-paginated-run-log-instruction-save" },
   },
   {
     id: "daytona-journal-continuity",
