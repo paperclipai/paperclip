@@ -32,12 +32,12 @@ export function executionPartition(selection, context, jobRunId) {
   const matrix = executionMatrix(selection, context, jobRunId);
   if (context.catalog !== 'full') reject('catalog');
   const small = matrix.include.length <= 3;
-  const native = { include: matrix.include.filter(row => small || !row.external) };
-  const external = { include: matrix.include.filter(row => !small && row.external) };
+  const native = { include: matrix.include.filter(row => !row.external) };
+  const external = { include: matrix.include.filter(row => row.external) };
   const size = [matrix, native, external, selection.cases.map(row => row.executionId)]
     .reduce((sum, value) => sum + JSON.stringify(value).length * 2, 0);
   if (size > 1_000_000) reject('matrix_size');
-  return { matrix, native, external, parallelism: small ? '2' : '8' };
+  return { matrix, native, external, parallelism: small ? external.include.length ? '1' : '2' : '8' };
 }
 async function readOwned(file, root, limit) {
   const absolute = path.resolve(file), base = await realpath(root);

@@ -110,7 +110,8 @@ test('native and external partitions preserve exact selections, bounded overlapp
     assert.equal(new Set(merged).size, rows.length);
     assert.deepEqual(merged.sort(), rows.map(row => row.executionId).sort());
     if (rows.length <= 3) {
-      assert.equal(partition.parallelism, '2'); assert.equal(partition.external.include.length, 0);
+      assert.equal(partition.parallelism, rows.some(row => row.externalInput) ? '1' : '2');
+      assert.equal(partition.external.include.length, rows.filter(row => row.externalInput).length);
     } else {
       assert.equal(partition.parallelism, '8'); assert.ok(partition.external.include.every(row => row.external));
     }
@@ -244,4 +245,16 @@ test('partial verification retains the exact current-result jobrun binding', asy
   const base = api(), wrong = await base.get('/api/testresult/2000'); wrong.jobRun.id = 78;
   const f = api({ '/api/testresult/2000': wrong });
   await assert.rejects(verifyPilotCaseUpload(f.get, selection, context, selected[0].executionId, [exported[0]]), /result_mismatch/);
+});
+
+test('small external selections remain in the serial external lane while native overlap stays bounded', () => {
+  const external = selected.filter(row => row.externalInput).slice(0, 2);
+  assert.equal(external.length, 2);
+  for (const rows of [external, [selected.find(row => !row.externalInput), ...external]]) {
+    const partition = executionPartition({ ...selection, cases: rows }, context, '77');
+    assert.deepEqual(partition.external.include.map(row => row.executionId), external.map(row => row.executionId));
+    assert.ok(partition.native.include.every(row => !row.external));
+    assert.equal(partition.parallelism, '1');
+    assert.equal(partition.native.include.length + partition.external.include.length, rows.length);
+  }
 });
