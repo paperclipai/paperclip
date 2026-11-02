@@ -74,7 +74,7 @@ API: `present` — GET /api/companies/{companyId}/issues; optional view=compact.
 
 Agent access: `partial` — REST/call_api full query; CLI issue list exposes status/agent/project and local --match on one fetched page; native search_tasks query up to 500 characters, statuses, limit 1..200 (default 50), and a nextCursor in ascending task-ID order. Responses expose effective limit, returnedCount and hasMore. Exhaust nextCursor with the same filters before treating an inventory as complete. Each page checks current access; concurrent task changes require a fresh scan. Project/label/workspace knobs remain REST-only.
 
-Policy: Company/read privacy filtering and inaccessible edge redaction; task-bridge company list denied. Default 500, maximum 1000, offset>=0, sortField updated|id, sortDir asc|desc, afterId. Supports status/assignee/participant/project/workspace/parent/descendant/label/origin/text/date and routine/plugin/blocker query groups. includeAgentCreatedTasks=false filters independent roots before search/pagination; omission retains agent/API behavior. includeParticipatedTasks and user me filters require board identity. Compact ETag is actor-private; 429 is not empty results.
+Policy: Company/read privacy filtering and inaccessible edge redaction; task-bridge company list denied. Default 500, maximum 1000, offset>=0, sortField updated|created|id, sortDir asc|desc, afterId. Supports status/assignee/participant/project/workspace/parent/descendant/label/origin/text/date and routine/plugin/blocker query groups. includeAgentCreatedTasks=false filters independent roots before search/pagination; omission retains agent/API behavior. includeParticipatedTasks and user me filters require board identity. Compact ETag is actor-private; 429 is not empty results.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [issues.ts](../../server/src/services/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue.ts](../../cli/src/commands/client/issue.ts), [issues-list-query-parsing.test.ts](../../server/src/__tests__/issues-list-query-parsing.test.ts), [issues-creation-visibility.test.ts](../../server/src/__tests__/issues-creation-visibility.test.ts), [issue-list-assignee-filter-routes.test.ts](../../server/src/__tests__/issue-list-assignee-filter-routes.test.ts), [private-json-etag.test.ts](../../server/src/__tests__/private-json-etag.test.ts). No live execution claimed.
 
@@ -120,7 +120,10 @@ Agent access: `not-applicable` — no agent layout API; permitted underlying tas
 
 Policy: IssuesList loads/saves browser preferences by company/collection, with separate agent-created visibility. The Tasks page also owns a routine-only
 checkbox and `originKind=routine_execution` URL state; it uses the existing
-company-scoped task-list origin filter before pagination. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
+company-scoped task-list origin filter before pagination. Sort controls write
+`sortField` and `sortDir` to the URL; explicit URL sorting overrides browser
+preferences. `created` sorting runs on the server before pagination, with ID as
+a stable tie-breaker. The routines task link requests `created` descending. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [IssuesList.tsx](../../ui/src/components/IssuesList.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx). No live execution claimed.
 

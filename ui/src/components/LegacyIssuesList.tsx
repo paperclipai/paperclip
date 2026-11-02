@@ -1,3 +1,4 @@
+import type { IssueSort, IssueSortField } from "../lib/issue-sort";
 import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
@@ -149,7 +150,7 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 
 /* ── View state ── */
 
-export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type { IssueSortField } from "../lib/issue-sort";
 export type BoardCardDensity = "auto" | "compact" | "comfortable";
 export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
 export type BoardColumnPageSize = KanbanColumnPageSize;
@@ -469,6 +470,9 @@ interface IssuesListProps {
   initialWorkspaces?: string[];
   routineTasksOnly?: boolean;
   onRoutineTasksOnlyChange?: (checked: boolean) => void;
+  /** URL sorting overrides the saved collection preference when supplied. */
+  sort?: IssueSort;
+  onSortChange?: (sort: IssueSort) => void;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   searchWithinLoadedIssues?: boolean;
@@ -687,6 +691,8 @@ export function IssuesList({
   initialWorkspaces,
   routineTasksOnly,
   onRoutineTasksOnlyChange,
+  sort,
+  onSortChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -762,7 +768,11 @@ export function IssuesList({
     getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
   );
   // The Tasks URL owns this filter; other collections keep their saved state.
-  const viewState = useMemo(() => routineTasksOnly === undefined ? savedViewState : { ...savedViewState, routineTasksOnly }, [savedViewState, routineTasksOnly]);
+  const viewState = useMemo(() => ({
+    ...savedViewState,
+    ...sort,
+    ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
+  }), [savedViewState, sort, routineTasksOnly]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
@@ -804,15 +814,21 @@ export function IssuesList({
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     if (patch.routineTasksOnly !== undefined) onRoutineTasksOnlyChange?.(patch.routineTasksOnly);
+    if (patch.sortField !== undefined || patch.sortDir !== undefined) {
+      onSortChange?.({
+        sortField: patch.sortField ?? viewState.sortField,
+        sortDir: patch.sortDir ?? viewState.sortDir,
+      });
+    }
     setViewState((prev) => {
-      const next = { ...prev, ...patch };
+      const next = { ...prev, ...sort, ...patch };
       saveTaskCollectionPreferences({
         companyId: selectedCompanyId ?? "__unscoped__", collectionKey: viewStateKey,
         legacyViewStorageKey: scopedKey, legacyColumnsStorageKey: getIssueColumnsStorageKey(scopedKey),
       }, { viewState: next, columns: visibleIssueColumns });
       return next;
     });
-  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange]);
+  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange, onSortChange, sort, viewState.sortField, viewState.sortDir]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
