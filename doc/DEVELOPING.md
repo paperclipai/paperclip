@@ -1097,6 +1097,9 @@ Template publication uses `pg_ctl` to request clean fast shutdown on every
 supported platform and allows thirty seconds for it. A template is never
 published after immediate shutdown or a crash. Cancellation also waits for
 owned cluster-directory cleanup after the test processes and PostgreSQL exit.
+Stopped cluster directories are removed asynchronously, and cleanup awaits their
+removal. Large suites can leave many relation files; deleting them must not block
+the worker's event loop.
 
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
 without an administrative URL get their own embedded Postgres cluster. The first such suite on a host builds

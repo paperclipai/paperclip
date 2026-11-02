@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -5,6 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } from "./client.js";
 import {
   createEmbeddedPostgresLogBuffer,
@@ -124,7 +126,7 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
   try {
     return await createEmbeddedPostgresTestInstanceAt(dataDir);
   } catch (error) {
-    cleanupEmbeddedPostgresTestDirs(dataDir);
+    await cleanupEmbeddedPostgresTestDirs(dataDir);
     throw error;
   }
 }
@@ -162,16 +164,24 @@ function databaseConnectionStringFor(port: number): string {
   return `postgres://${EMBEDDED_POSTGRES_USER}:${EMBEDDED_POSTGRES_PASSWORD}@127.0.0.1:${port}/paperclip`;
 }
 
-function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
-  fs.rmSync(dataDir, { recursive: true, force: true });
+async function cleanupEmbeddedPostgresTestDirs(dataDir: string): Promise<void> {
+  if (process.platform !== "win32") {
+    try {
+      await promisify(execFile)("/bin/rm", ["-rf", "--", dataDir], { maxBuffer: 64 * 1024 });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  await fs.promises.rm(dataDir, { recursive: true, force: true });
 }
 
 async function stopEmbeddedPostgresBounded(
   instance: EmbeddedPostgresInstance | null,
-  cleanupFn?: () => void,
+  cleanupFn?: () => Promise<void>,
 ): Promise<void> {
   await instance?.stop();
-  cleanupFn?.();
+  await cleanupFn?.();
 }
 
 // Upper bound on start attempts. `getAvailablePort` uses a check-then-use probe:
