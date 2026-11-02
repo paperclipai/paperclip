@@ -9,7 +9,7 @@ const context = { GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_REF: 'refs/
   GITHUB_RUN_ATTEMPT: '1', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123',
   GITHUB_WORKFLOW_REF: 'paperclipai/paperclip/.github/workflows/chat-feature-testops.yml@refs/heads/master' };
 
-test('actual metadata bootstrap caller creates no result or agent and reuses exact case/plan', async t => {
+test('actual retired singleton caller refuses plan recreation and creates no result', async t => {
   const temporary = await realpath(await mkdtemp(path.join(tmpdir(), 'testops-bootstrap-')));
   t.after(() => rm(temporary, { recursive: true }));
   const state = path.join(temporary, 'state'), requests = [];
@@ -30,9 +30,10 @@ test('actual metadata bootstrap caller creates no result or agent and reuses exa
     return response({ id: 8, projectId: 1, name: planName, testCasesCount: 1, treeSelection: { leafsInclude: [91], inverted: false } });
   };
   assert.equal(await run({ ...context, RUNNER_TEMP: temporary, CHAT_TESTOPS_STATE_ROOT: state,
-    CHAT_TESTOPS_OPERATION: 'bootstrap', GITHUB_EVENT_PATH: eventPath, ALLURE_JOB_RUN_ID: '9', ALLURE_TOKEN: 'SYNTHETIC_API_TOKEN' }, fetchImpl), 0);
-  const plan = JSON.parse(await readFile(path.join(state, 'plan.json')));
-  assert.equal(plan.actualResult, null);
+    CHAT_TESTOPS_OPERATION: 'bootstrap', GITHUB_EVENT_PATH: eventPath, ALLURE_JOB_RUN_ID: '9', ALLURE_TOKEN: 'SYNTHETIC_API_TOKEN' }, fetchImpl), 1);
+  const failure = JSON.parse(await readFile(path.join(state, 'failure.json')));
+  assert.equal(failure.code, 'testops_plan_retired');
+  await assert.rejects(readFile(path.join(state, 'plan.json')), { code: 'ENOENT' });
   assert.equal(requests.filter(value => value.method === 'POST').length, 1, 'only auth token exchange; no case/plan write');
   await assert.rejects(readFile(path.join(state, 'allure-results.json')), { code: 'ENOENT' });
 });

@@ -49,7 +49,7 @@ const diagnosticCodes = new Set(['untrusted_chat_testops_context', 'testops_toke
   'testops_case_alias_conflict', 'testops_plan_name_conflict', 'testops_plan_identity_invalid',
   'testops_integration_identity_invalid', 'testops_bootstrap_identity_invalid', 'testops_plan_without_matching_case',
   'testops_created_case_identity_invalid', 'testops_created_plan_identity_invalid', 'testops_plan_scope_mismatch',
-  'testops_operation_invalid', 'testops_output_invalid', 'untrusted_public_testops_context', 'chat_testops_identity_missing',
+  'testops_plan_retired', 'testops_operation_invalid', 'testops_output_invalid', 'untrusted_public_testops_context', 'chat_testops_identity_missing',
   'chat_testops_case_mismatch', 'chat_testops_plan_mismatch', 'chat_testops_plan_job_mismatch', 'chat_testops_job_mismatch',
   'chat_testops_job_id_mismatch', 'chat_testops_job_type_mismatch', 'chat_testops_job_parameters_shape_mismatch',
   'chat_testops_job_parameters_limit', 'chat_testops_job_url_mismatch', 'chat_testops_jobrun_mismatch', 'chat_testops_launch_mismatch', 'chat_testops_selection_mismatch', 'chat_testops_parameter_mismatch', 'chat_testops_nonce_invalid', 'chat_testops_nonce_conflict', 'chat_testops_catalog_incomplete', 'chat_testops_launch_admission', 'chat_testops_github_http', 'chat_testops_integration_mismatch', 'chat_testops_upload_mismatch', 'chat_testops_upload_unverified']);
@@ -135,32 +135,10 @@ export async function inspectChatMetadata(api) {
   return { projectId: 1, caseConflict: cases.size > 1, cases: [...cases.values()], plans: plans.map(value => ({ id: value.id, name: planName, count: value.testCasesCount })), integrations };
 }
 
-export async function ensureChatPlan(api, inspected, markOnce) {
-  if (inspected.projectId !== 1 || inspected.plans.length > 1) fail('testops_bootstrap_identity_invalid');
-  if (inspected.caseConflict === true || inspected.cases.length > 1) fail('testops_case_alias_conflict');
-  let selected = inspected.cases[0], plan = inspected.plans[0];
-  if (plan && !selected) fail('testops_plan_without_matching_case');
-  if (!selected || !plan) await markOnce();
-  if (!selected) {
-    const created = await api('/api/testcase', 'POST', { projectId: 1, name: 'Create a task backlog through chat', fullName,
-      automated: true, description: 'Canonical scenario: tasks.create-backlog. Readiness and recorded outcomes remain separate.',
-      expectedResult: 'The real agent creates the requested backlog; public Product E2E assertions and cleanup must pass.' });
-    if (!id(created?.id) || created.projectId !== 1 || created.fullName !== fullName) fail('testops_created_case_identity_invalid');
-    selected = { id: created.id, fullName, automated: created.automated === true };
-  }
-  if (!plan) {
-    const created = await api('/api/testplan', 'POST', { projectId: 1, name: planName,
-      treeSelection: { inverted: false, leafsInclude: [selected.id] } });
-    if (!id(created?.id) || created.projectId !== 1 || created.name !== planName) fail('testops_created_plan_identity_invalid');
-    plan = { id: created.id, name: planName };
-  }
-  const actual = await api(`/api/testplan/${plan.id}`);
-  if (actual.projectId !== 1 || actual.name !== planName || actual.testCasesCount !== 1
-    || actual.treeSelection?.inverted === true || !same(actual.treeSelection?.leafsInclude, [selected.id])
-    || (actual.treeSelection?.groupsInclude?.length ?? 0) > 0 || (actual.treeSelection?.leafsExclude?.length ?? 0) > 0) fail('testops_plan_scope_mismatch');
-  return { projectId: 1, case: selected, plan: { id: plan.id, name: planName, count: 1 },
-    caseUrl: `${endpoint}/project/1/test-cases/${selected.id}`, planUrl: `${endpoint}/testplan/${plan.id}`,
-    actualResult: null, note: 'Plan preparation is not an executed measurement or a passing result.' };
+// Kept as an explicit retirement boundary for callers of the former smoke lane.
+// Catalog registration owns the shared cases; deleting the old plan must persist.
+export async function ensureChatPlan() {
+  fail('testops_plan_retired');
 }
 
 

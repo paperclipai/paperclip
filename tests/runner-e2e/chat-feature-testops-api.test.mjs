@@ -31,64 +31,14 @@ test('multiple alias identities, foreign project and incomplete metadata stop be
   await assert.rejects(inspectChatMetadata(async () => ({ content: [], totalPages: 11, totalElements: 1100, number: 0 })), /catalog_incomplete/);
 });
 
-test('existing exact plan reuses case and plan without a write', async () => {
-  const result = await ensureChatPlan(async route => { assert.equal(route, '/api/testplan/8'); return plan; },
-    await inspectChatMetadata(inspectApi()), () => assert.fail('must not mark or write'));
-  assert.equal(result.case.id, 91);
-  assert.equal(result.plan.id, 8);
-  assert.equal(result.actualResult, null);
-});
-
-test('bootstrap creates only the missing exact plan after exclusive marker and reads back scope', async () => {
-  const calls = [];
-  const result = await ensureChatPlan(async (route, method, body) => {
-    calls.push({ route, method, body });
-    if (method === 'POST') { assert.equal(calls[0].route, 'MARK'); assert.deepEqual(body, { projectId: 1, name: planName, treeSelection: { inverted: false, leafsInclude: [91] } }); }
-    return plan;
-  }, { projectId: 1, cases: [caseRow], plans: [] }, async () => calls.push({ route: 'MARK' }));
-  assert.equal(calls.filter(row => row.method === 'POST').length, 1);
-  assert.equal(result.plan.count, 1);
-});
-
-test('empty project bootstrap links the genuinely created case into only the new plan', async () => {
-  const calls = [];
-  const createdCase = { ...caseRow, id: 92 };
-  const createdPlan = { ...plan, treeSelection: { inverted: false, leafsInclude: [92] } };
-  const result = await ensureChatPlan(async (route, method, body) => {
-    calls.push({ route, method, body });
-    assert.equal(calls[0].route, 'MARK');
-    if (route === '/api/testcase') {
-      assert.equal(body.projectId, 1); assert.equal(body.fullName, fullName); assert.equal(body.automated, true);
-      return createdCase;
-    }
-    if (route === '/api/testplan') {
-      assert.deepEqual(body, { projectId: 1, name: planName, treeSelection: { inverted: false, leafsInclude: [92] } });
-      return createdPlan;
-    }
-    assert.equal(route, '/api/testplan/8'); assert.equal(method, undefined); return createdPlan;
-  }, { projectId: 1, cases: [], plans: [] }, async () => calls.push({ route: 'MARK' }));
-  assert.equal(result.case.id, 92); assert.equal(result.plan.id, 8);
-  assert.deepEqual(calls.map(call => call.route), ['MARK', '/api/testcase', '/api/testplan', '/api/testplan/8']);
-});
-
-test('known conflicting plan stops before creating an otherwise missing case or marker', async () => {
-  await assert.rejects(ensureChatPlan(() => assert.fail('no API write or read needed'),
-    { projectId: 1, cases: [], plans: [plan] }, () => assert.fail('must not mark')), /plan_without_matching_case/);
-});
-
-test('new case is created only after alias reconciliation; an uncertain mutation is never resent', async () => {
-  let writes = 0, markers = 0;
-  await assert.rejects(ensureChatPlan(async (_route, method) => {
-    assert.equal(method, 'POST'); writes++; throw new Error('uncertain transport');
-  }, { projectId: 1, cases: [], plans: [] }, async () => { markers++; }), /uncertain/);
-  assert.equal(writes, 1); assert.equal(markers, 1);
-});
-
-test('existing broad or conflicting plan never expands or changes its scope', async () => {
-  for (const actual of [{ ...plan, testCasesCount: 2 }, { ...plan, treeSelection: { leafsInclude: [92] } },
-    { ...plan, treeSelection: { leafsInclude: [91], inverted: true } }, { ...plan, projectId: 2 }]) {
-    await assert.rejects(ensureChatPlan(async (_route, method) => { assert.equal(method, undefined); return actual; },
-      { projectId: 1, cases: [caseRow], plans: [plan] }, () => assert.fail('no writes')), /scope_mismatch/);
+test('retired singleton bootstrap cannot recreate an absent plan or mutate retained metadata', async () => {
+  for (const inspected of [
+    { projectId: 1, cases: [], plans: [] },
+    { projectId: 1, cases: [caseRow], plans: [] },
+    { projectId: 1, cases: [caseRow], plans: [plan] },
+  ]) {
+    await assert.rejects(ensureChatPlan(() => assert.fail('retired route must not call the API'), inspected,
+      () => assert.fail('retired route must not mark a mutation')), /testops_plan_retired/);
   }
 });
 
