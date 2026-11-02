@@ -51,19 +51,32 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
   check("routine-browser-created", saved.companyId === company.id && saved.title === title && saved.projectId === project.id
     && saved.assigneeAgentId === agent.id && saved.createdByUserId === user.id && saved.createdByAgentId === null
     && saved.description === prompt && saved.concurrencyPolicy === "always_enqueue" && saved.triggers.length === 0);
-  const trigger = await api.post<Row>(`${route}/triggers`, { kind: "schedule", label: `QA schedule ${campaignId}`,
+  const createdTrigger = await api.post<Row>(`${route}/triggers`, { kind: "schedule", label: `QA schedule ${campaignId}`,
     cronExpression: "* * * * *", timezone: "America/Chicago", enabled: false });
+  const trigger = createdTrigger.trigger;
+  if (!trigger?.id || trigger.companyId !== company.id || trigger.routineId !== routine.id || trigger.kind !== "schedule"
+    || trigger.cronExpression !== "* * * * *" || trigger.timezone !== "America/Chicago" || trigger.enabled !== false) {
+    throw new JourneyError("failed", "routine_schedule_fixture_mismatch");
+  }
   const triggerRoute = `/api/routine-triggers/${trigger.id}`;
+  const readTrigger = async () => {
+    const detail = await api.get<Row>(route);
+    const matching = detail.triggers?.filter((row: Row) => row.id === trigger.id);
+    if (!Array.isArray(matching) || matching.length !== 1 || matching[0].companyId !== company.id || matching[0].routineId !== routine.id) {
+      throw new JourneyError("failed", "routine_trigger_readback_mismatch");
+    }
+    return matching[0] as Row;
+  };
   const runs = () => api.get<ScheduledInvocation[]>(`${route}/runs`);
   let pausedAt = 0;
   try {
     await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/triggers`, { waitUntil: "domcontentloaded" });
     const enabledAt = Date.now();
     await page.getByRole("button", { name: "Enable trigger", exact: true }).click();
-    await expect.poll(async () => (await api.get<Row>(triggerRoute)).enabled).toBe(true);
+    await expect.poll(async () => (await readTrigger()).enabled).toBe(true);
     const first = await waitFor(options.deadlineAt, runs, rows => rows.length > 0 && Boolean(rows[0]?.linkedIssueId), "scheduled_invocation_missing");
     await page.getByRole("button", { name: "Pause trigger", exact: true }).click();
-    await expect.poll(async () => (await api.get<Row>(triggerRoute)).enabled).toBe(false);
+    await expect.poll(async () => (await readTrigger()).enabled).toBe(false);
     pausedAt = Date.now();
     const task = await api.get<ScheduledTask & { title: string }>(`/api/issues/${first[0]!.linkedIssueId}`);
     await session.own({ kind: "issue", name: task.title, id: task.id, journeyId });
@@ -89,6 +102,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       && document.body?.trim() === expectedBody && document.createdByAgentId === agent.id && document.createdByUserId === null
       && revision.documentId === document.id && revision.body?.trim() === expectedBody && revision.createdByAgentId === agent.id
       && revision.createdByRunId === state.taskRuns[0]!.id);
+    if (typeof state.currentIssue.identifier !== "string" || !state.currentIssue.identifier) throw new JourneyError("failed", "routine_task_identifier_missing");
     await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/runs`, { waitUntil: "domcontentloaded" });
     await page.reload();
     await expect(page.getByRole("link", { name: state.currentIssue.identifier, exact: false }).first()).toBeVisible();
@@ -97,7 +111,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       return value.rows[0]?.status === "completed" && value.now >= Math.floor(Math.max(pausedAt, completedAt) / 60_000) * 60_000 + 65_000;
     }, "routine_pause_not_observed");
     check("routine-history-preserved", scheduledInvocationMatches(final.rows, await api.get(taskRoute), expected));
-    check("routine-pause-prevented-next-run", schedulePauseMatches({ enabled: (await api.get<Row>(triggerRoute)).enabled,
+    check("routine-pause-prevented-next-run", schedulePauseMatches({ enabled: (await readTrigger()).enabled,
       pausedAt, completedAt, observedUntil: final.now, first, final: final.rows }));
     await page.goto(`${api.origin}/${company.issuePrefix}/issues/${state.currentIssue.identifier}`, { waitUntil: "domcontentloaded" });
     await page.reload();

@@ -1,5 +1,5 @@
 /** Closed, target-independent success requirements used by dispatch and retained evidence. */
-export const agentJourneyRuns = { "routine-scheduled-run": 1, "file-input-answer": 1, "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
+export const agentJourneyRuns = { "completion-delivery": 3, "repository-continuation": 2, "routine-scheduled-run": 1, "file-input-answer": 1, "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
   "followup-while-running": 2, "protected-actions": 4, "create-skill-studio": 1, "stop-redirect": 3, "question-answer-resume": 3, "hire-delegate-reuse": 7 } as const;
 
 export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
@@ -9,6 +9,8 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   return (count as number) >= minimum && (count as number) <= maximum;
 }
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
+  "completion-delivery": ["completion-delegated-task-attributed", "completion-worker-output-attributed", "completion-one-user-request", "completion-three-bound-turns", "completion-worker-done", "completion-output-saved", "completion-source-response", "completion-source-correlated", "completion-result-access", "completion-result-reopened", "configured-model-and-environment"],
+  "repository-continuation": ["repository-configured-source-bound", "repository-first-commit-verified", "repository-original-files-saved", "repository-followup-stored-once", "repository-same-workspace-retained", "repository-second-commit-verified", "repository-original-and-result-reopened", "configured-model-and-environment"],
   "routine-scheduled-run": ["routine-browser-created", "routine-scheduler-created-execution", "routine-result-attributed", "routine-history-preserved", "routine-pause-prevented-next-run", "routine-result-reopened", "configured-model-and-environment"],
   "inbox-triage": ["inbox-read-persisted", "inbox-archive-persisted", "inbox-archive-preserved-task-status", "inbox-relevant-activity-resurfaced", "no-agent-work"],
   "file-input-answer": ["input-upload-bytes-preserved", "input-content-used-correctly", "input-result-attributed-to-run", "input-result-reopened", "original-input-retained", "configured-model-and-environment"],
