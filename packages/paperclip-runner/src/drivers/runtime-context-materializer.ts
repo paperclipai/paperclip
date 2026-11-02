@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
@@ -309,6 +309,64 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   }
 }
 
+/**
+ * `PAPERCLIP_CODEX_PROVIDERS` mirrors the `[model_providers.*]` section of
+ * `config.toml`. Translate the JSON into that TOML so a compatible endpoint
+ * reaches Codex exactly as the connection probe verified it.
+ */
+export function codexCustomProviderToml(
+  environment: Record<string, string | undefined> | undefined,
+): string {
+  const raw = environment?.PAPERCLIP_CODEX_PROVIDERS;
+  if (typeof raw !== "string" || raw.trim().length === 0) return "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return "";
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.providers)) return "";
+  const providers: Record<string, unknown> = {};
+  for (const [providerId, entry] of Object.entries(parsed.providers)) {
+    if (!isRecord(entry) || providerId.trim().length === 0) continue;
+    providers[providerId] = expandProviderEnvPlaceholders(entry, environment);
+  }
+  if (Object.keys(providers).length === 0) return "";
+  const document: Record<string, unknown> = { model_providers: providers };
+  const selected = typeof parsed.model_provider === "string" ? parsed.model_provider.trim() : "";
+  // A selector that points at no emitted table would make Codex fail with an
+  // error that never mentions the env var; leave the choice to Codex instead.
+  if (selected && selected in providers) document.model_provider = selected;
+  return `${stringifyToml(document)}\n`;
+}
+
+function expandProviderEnvPlaceholders(
+  value: unknown,
+  environment: Record<string, string | undefined> | undefined,
+): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
+      const entry = environment?.[name];
+      return entry === undefined || entry.length === 0 ? match : entry;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => expandProviderEnvPlaceholders(entry, environment));
+  }
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = expandProviderEnvPlaceholders(entry, environment);
+    }
+    return out;
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
 async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
   if (!sourceHome?.trim()) return "";
@@ -339,13 +397,18 @@ export async function prepareIsolatedCodexHome(input: {
   sourceCodexHome?: string | null;
   nativeMcp?: NativeMcpLaunchBinding | null;
   apiKey?: string | null;
+  environment?: Record<string, string | undefined>;
 }): Promise<void> {
   await materializeNativeRuntimeSkills(
     input.context,
     join(input.codexHome, "skills"),
   );
 
-  const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
+  // A compatible endpoint arrives as `PAPERCLIP_CODEX_PROVIDERS`, the same
+  // contract the Codex harness probe reads. Emit it as `[model_providers.*]`
+  // tables so the endpoint the probe accepted is the endpoint the run uses.
+  const customProviderConfig = codexCustomProviderToml(input.environment);
+  const providerConfig = customProviderConfig || await managedCodexProviderConfig(input.sourceCodexHome);
   const configPath = join(input.codexHome, "config.toml");
   await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   await chmod(input.codexHome, 0o700);
