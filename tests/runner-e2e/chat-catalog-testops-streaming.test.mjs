@@ -218,7 +218,7 @@ test('the real CLI prepares without TestOps credentials and retains closed faile
   }
 });
 
-test('source host admission follows only the fixed same-commit callee with empty caller secret placeholders', async () => {
+test('source host admission follows only the fixed same-commit callee with exact named caller secret references', async () => {
   const { parse } = await import('yaml');
   const { paidWorker } = await import('./chat-completion-testops-host-control.mjs');
   const main = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8'));
@@ -227,7 +227,7 @@ test('source host admission follows only the fixed same-commit callee with empty
   for (const change of [
     value => { value.jobs.chat.uses = 'foreign/repository/workflow.yml@master'; },
     value => { value.jobs.chat.secrets = 'inherit'; },
-    value => { value.jobs.chat_external.secrets.ALLURE_TOKEN = '${{ secrets.ALLURE_TOKEN }}'; },
+    value => { value.jobs.chat_external.secrets.ALLURE_TOKEN = ''; },
     value => { value.jobs.chat.with.selection_sha256 = 'arbitrary'; },
   ]) { const mutant = structuredClone(main); change(mutant); assert.throws(() => paidWorker(mutant, callee), /boundary/); }
   const wrong = structuredClone(callee); wrong.jobs.chat.environment = 'runner-e2e-testops-reporting';
