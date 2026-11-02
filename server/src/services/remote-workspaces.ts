@@ -15,7 +15,7 @@ import {
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { getStorageService, type StorageService } from "../storage/index.js";
 import { loadConfig } from "../config.js";
-import { conflict, forbidden, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
@@ -130,6 +130,17 @@ async function currentWorkspace(tx: Transaction, companyId: string, workspaceId:
   return workspace;
 }
 
+export class RemoteWorkspaceWriterActiveError extends HttpError {
+  constructor(
+    readonly workspaceId: string,
+    readonly writer: {
+      runId: string; agentId: string; issueId: string; issueIdentifier: string | null; lastActivityAt: Date;
+    },
+  ) {
+    super(409, "The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+  }
+}
+
 export async function reserveRemoteWorkspace(input: {
   db: Db; companyId: string; issueId: string; runId: string; agentId: string; environmentId: string;
   projectId: string | null; projectWorkspaceId: string | null; existingWorkspaceId: string | null;
@@ -182,8 +193,21 @@ export async function reserveRemoteWorkspace(input: {
       )).limit(1);
       if (uncertain) throw conflict("The prior provisioning operation needs verification before this workspace can run again.", { code: "remote_workspace_provision_unverified" });
       if (authority.writerRunId && authority.writerRunId !== input.runId) {
-        const [prior] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+        const [prior] = await tx.select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
+          issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+          contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
+          lastOutputAt: heartbeatRuns.lastOutputAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+        }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, authority.writerRunId)));
+        if (prior?.status === "running") {
+          const writerIssueId = prior.nativeIssueId ?? prior.issueId ?? prior.contextIssueId;
+          const [writerIssue] = writerIssueId ? await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
+            .where(and(eq(issues.companyId, input.companyId), sql`${issues.id}::text = ${writerIssueId}`)) : [];
+          if (writerIssue) throw new RemoteWorkspaceWriterActiveError(existing.id, {
+            runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
+            lastActivityAt: prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt,
+          });
+        }
         const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
           eq(environmentLeases.heartbeatRunId, authority.writerRunId)));
         const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)

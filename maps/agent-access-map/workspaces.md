@@ -81,6 +81,13 @@ An inherited isolated workspace or operator branch can be reserved through the
 task's current persisted binding. The original source task remains provenance.
 Reservation checks task/run, binding, trust, and retained source visibility before
 claiming the single writer; an unbound task cannot claim that workspace.
+A live writer conflict at atomic reservation uses the existing workspace wait,
+including inherited isolated workspaces and operator branches. The retry retains
+the binding and current admission gates; Stop cancels it. Stale or stopped
+writers with unfinished saves remain fenced. The
+[preparation tests](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+cover reservation and persisted heartbeat waits with PostgreSQL; live sandbox
+provider acceptance remains separate.
 The [reservation tests](../../server/src/services/remote-workspace-reservation.test.ts)
 exercise that service boundary with real PostgreSQL, including competing children,
 private sources, foreign companies, and closed records. This is automated evidence,
