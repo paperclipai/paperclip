@@ -88,6 +88,8 @@ export const queryKeys = {
     actionRequests: (companyId: string, status: string) =>
       ["tools", companyId, "action-requests", status] as const,
     gateways: (companyId: string) => ["tools", "gateways", companyId] as const,
+    connectionProfileConfiguration: (companyId: string, connectionId: string) =>
+      ["tools", companyId, "profiles", "connection-configuration", connectionId] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
     profileNewTools: (profileId: string) =>
       ["tools", "profiles", profileId, "new-tools"] as const,

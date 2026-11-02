@@ -13,7 +13,8 @@ export function paidWorker(definition, called) {
       || job.with?.target_sha !== '${{ needs.authorize.outputs.target_sha }}'
       || job.with?.selection_artifact_id !== '${{ needs.select.outputs.artifact_id }}'
       || job.with?.selection_sha256 !== '${{ needs.select.outputs.selection_sha256 }}'
-      || JSON.stringify(job.secrets) !== JSON.stringify({ OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ALLURE_TOKEN: '' })) {
+      || JSON.stringify(job.secrets) !== JSON.stringify({ OPENROUTER_API_KEY: '${{ secrets.OPENROUTER_API_KEY }}',
+        ANTHROPIC_API_KEY: '${{ secrets.ANTHROPIC_API_KEY }}', ALLURE_TOKEN: '${{ secrets.ALLURE_TOKEN }}' })) {
       throw new Error('Workflow caller boundary mismatch');
     }
   }
