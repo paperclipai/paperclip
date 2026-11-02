@@ -67,7 +67,7 @@ export function settledAgentWorkCondition(liveRunIds: ReadonlySet<string>, now: 
           OR COALESCE(l.metadata, '{}'::jsonb) ?| ARRAY['nativeWorkspaceExportResume', 'sandboxStopAndRetain']))
     AND NOT EXISTS (SELECT 1 FROM agent_wakeup_requests w
       WHERE w.company_id = ${agents.companyId} AND w.agent_id = ${agents.id}
-        AND (${sql.raw(finishedIdleWake("w"))}) IS NOT TRUE)
+        AND (${sql.raw(finishedIdleWake("w", { ignoreCostAccounting: true, settledCancelledRetry: true }))}) IS NOT TRUE)
     AND NOT EXISTS (SELECT 1 FROM agent_instruction_working_copies c
       WHERE c.company_id = ${agents.companyId} AND c.agent_id = ${agents.id}
         AND (c.state NOT IN ('saved', 'unchanged', 'resolved', 'unavailable', 'conflict')

@@ -1,10 +1,12 @@
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 
-/** Fixed SQL aliases only. These predicates do not accept request input. */
-export function finishedIdleRun(alias: string, options: {
+export type FinishedIdleRunOptions = {
   ignoreCostAccounting?: boolean;
   settledCancelledRetry?: boolean;
-} = {}): string {
+};
+
+/** Fixed SQL aliases only. These predicates do not accept request input. */
+export function finishedIdleRun(alias: string, options: FinishedIdleRunOptions = {}): string {
   const retrySettled = options.settledCancelledRetry
     ? ` OR (${alias}.status = 'cancelled' AND ${alias}.started_at IS NULL)`
     : "";
@@ -16,13 +18,13 @@ export function finishedIdleRun(alias: string, options: {
     AND (${alias}.scheduled_retry_at IS NULL OR ${alias}.scheduled_retry_at <= ${alias}.finished_at${retrySettled})${accounting}`;
 }
 
-export function finishedIdleWake(alias: string): string {
+export function finishedIdleWake(alias: string, options: FinishedIdleRunOptions = {}): string {
   return `${alias}.finished_at IS NOT NULL AND (
     ${alias}.status IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out')
     OR (${alias}.status = 'coalesced' AND EXISTS (
       SELECT 1 FROM heartbeat_runs wake_target WHERE wake_target.id = ${alias}.run_id
         AND wake_target.company_id = ${alias}.company_id AND wake_target.agent_id = ${alias}.agent_id
-        AND ${finishedIdleRun('wake_target')})))`;
+        AND ${finishedIdleRun('wake_target', options)})))`;
 }
 
 export function completedAgentUnblockRequest(issue: string): string {
