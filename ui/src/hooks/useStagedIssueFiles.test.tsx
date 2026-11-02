@@ -65,6 +65,15 @@ describe("staged task file recovery", () => {
     await act(async () => current.setFiles([image]));
     await act(async () => root.render(<Harness />));
     expect(container.textContent).toBe("reference.png");
-    expect(writeStagedIssueFiles).toHaveBeenCalledWith(JSON.stringify(["user-a", "company-a"]), [image]);
+    expect(writeStagedIssueFiles).toHaveBeenCalledWith(JSON.stringify(["user-a", "company-a"]), [image], []);
+  });
+
+  it("deletes only files removed from this mounted draft", async () => {
+    await act(async () => root.render(<Harness />));
+    await act(async () => current.setFiles([image]));
+    await act(async () => current.setFiles([]));
+    expect(writeStagedIssueFiles).toHaveBeenLastCalledWith(JSON.stringify(["user-a", "company-a"]), [], [image.id]);
+    await act(async () => current.setFiles([image]));
+    expect(writeStagedIssueFiles).toHaveBeenLastCalledWith(JSON.stringify(["user-a", "company-a"]), [image], []);
   });
 });

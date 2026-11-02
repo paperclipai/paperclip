@@ -183,6 +183,50 @@ test("an older image draft retains the rich editor", async ({ page, request }) =
   await expect(fixture.composer.locator("textarea")).toHaveCount(0);
 });
 
+test("two open tabs retain their staged images when either tab saves or creates a task", async ({ page, request, context }) => {
+  await setup(page, request, false);
+  const second = await context.newPage();
+  await second.goto(page.url());
+  const dialogs = [page, second].map((tab) => tab.getByRole("dialog", { name: "New task", exact: true }));
+  for (const [index, tab] of [page, second].entries()) {
+    await tab.getByRole("button", { name: "New Task", exact: true }).first().click();
+    await dialogs[index]!.getByRole("textbox", { name: "editable markdown", exact: true }).fill(`Keep tab ${index + 1}'s image.`);
+    await expect(dialogs[index]!.getByRole("button", { name: "Create task", exact: true })).toBeEnabled();
+  }
+  const savedNames = () => page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("paperclip:issue-draft-files", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<string[]>((resolve, reject) => {
+        const tx = db.transaction("files", "readonly");
+        const request = tx.objectStore("files").getAll();
+        tx.oncomplete = () => resolve(request.result.flat().map((item: { file: File }) => item.file.name).sort());
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  });
+  for (const [index, tab] of [page, second].entries()) {
+    const chooser = await openAttachmentChooser(tab, dialogs[index]!);
+    await chooser.setFiles({ ...files[1]!, name: `tab-${index + 1}.png` });
+    await expect(dialogs[index]!.getByRole("img", { name: `tab-${index + 1}.png`, exact: true })).toBeVisible();
+    await expect.poll(savedNames).toEqual(index === 0 ? ["tab-1.png"] : ["tab-1.png", "tab-2.png"]);
+  }
+  await dialogs[0]!.getByRole("button", { name: "Create task", exact: true }).click();
+  await expect(dialogs[0]!).toBeHidden();
+  await expect.poll(savedNames).toEqual(["tab-2.png"]);
+  await second.reload();
+  await second.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await expect(dialogs[1]!.getByRole("img", { name: "tab-2.png", exact: true })).toBeVisible();
+  await dialogs[1]!.getByRole("textbox", { name: "editable markdown", exact: true }).fill("Create the remaining tab's image.");
+  await dialogs[1]!.getByRole("button", { name: "Create task", exact: true }).click();
+  await expect(dialogs[1]!).toBeHidden();
+  await expect.poll(savedNames).toEqual([]);
+  await second.close();
+});
+
 async function upload(
   page: Page,
   fixture: Awaited<ReturnType<typeof setup>>,

@@ -34,13 +34,20 @@ export async function readStagedIssueFiles(key: string): Promise<StagedIssueFile
   });
 }
 
-export async function writeStagedIssueFiles(key: string, files: StagedIssueFile[]): Promise<void> {
+export async function writeStagedIssueFiles(key: string, files: StagedIssueFile[], removedIds: string[]): Promise<void> {
   const db = await openDatabase();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction("files", "readwrite");
     const store = transaction.objectStore("files");
-    if (files.length) store.put(files, key);
-    else store.delete(key);
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const removed = new Set(removedIds);
+      const saved = (request.result ?? []) as StagedIssueFile[];
+      const merged = new Map(saved.filter(file => !removed.has(file.id)).map(file => [file.id, file]));
+      for (const file of files) merged.set(file.id, file);
+      if (merged.size) store.put([...merged.values()], key);
+      else store.delete(key);
+    };
     transaction.oncomplete = () => resolve();
     transaction.onabort = () => reject(transaction.error);
     transaction.onerror = () => reject(transaction.error);

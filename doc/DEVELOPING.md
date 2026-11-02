@@ -4024,6 +4024,11 @@ under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
 
+New-task staged file bytes are stored in IndexedDB for the account and company.
+Writes merge the selected files with the current saved list in one read/write
+transaction. Removal and successful creation delete only the files that the
+mounted draft removed. Other open tabs keep their saved files across reloads.
+
 Successful pending-record writes have the same readable size range as browser
 storage. In particular, a large task description cannot silently drop its
 creation key on reload. Reselected text documents recover their original
