@@ -16,6 +16,7 @@ export const WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES: readonly string[] = [
   "todo",
   "in_progress",
   "in_review",
+  "ready_for_qa",
   "blocked",
 ];
 
