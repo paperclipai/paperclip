@@ -19,12 +19,15 @@ function boundIssue(run: typeof heartbeatRuns.$inferSelect): string | null {
 }
 
 /** Both transports share authorization, persistence and replay; no task state is changed. */
+export function submitAgentCommentary(db: Db, actor: CommentaryActor, value: unknown, authorizeNative?: (tx: Db) => Promise<unknown>): Promise<AgentCommentaryAcknowledgement>;
+export function submitAgentCommentary(db: Db, actor: CommentaryActor, value: unknown, authorizeNative: ((tx: Db) => Promise<unknown>) | undefined, options: { receiptOnly: true }): Promise<AgentCommentaryAcknowledgement | null>;
 export async function submitAgentCommentary(
   db: Db,
   actor: CommentaryActor,
   value: unknown,
   authorizeNative?: (tx: Db) => Promise<unknown>,
-): Promise<AgentCommentaryAcknowledgement> {
+  options?: { receiptOnly: true },
+): Promise<AgentCommentaryAcknowledgement | null> {
   const parsed = submitAgentCommentarySchema.safeParse(value);
   if (!parsed.success) throw badRequest("Feedback requires a kind, nonempty body of at most 524288 characters, and a retry key of at most 240 characters; no other fields are accepted");
   if (![actor.companyId, actor.agentId, actor.runId].every(isUuidLike)) {
@@ -64,9 +67,13 @@ export async function submitAgentCommentary(
         eq(agentCommentary.companyId, actor.companyId), eq(agentCommentary.runId, actor.runId), eq(agentCommentary.idempotencyKey, input.idempotencyKey),
       ));
       if (prior) {
-        if (prior.payloadHash !== payloadHash) throw conflict("Feedback retry key was already used with different content");
+        if (prior.payloadHash !== payloadHash) {
+          if (options?.receiptOnly) return { result: null, publication: null };
+          throw conflict("Feedback retry key was already used with different content");
+        }
         return { result: { id: prior.id, kind: prior.kind, createdAt: prior.createdAt.toISOString(), replayed: true }, publication: null };
       }
+      if (options?.receiptOnly) return { result: null, publication: null };
       const body = redactSensitiveText(await createRunSecretRedactionRegistry(scopedDb).redactForRun(actor.companyId, actor.runId, input.body));
       const [row] = await tx.insert(agentCommentary).values({
         companyId: actor.companyId, agentId: actor.agentId, runId: actor.runId,

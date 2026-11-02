@@ -932,6 +932,50 @@ describe("sandbox managed runtime", () => {
     expect(await git(host, ["diff", "--cached", "--name-only"])).toBe("");
   });
 
+  it("restores a separately fetched shallow branch whose boundary the host lacks", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-shallow-restore-"));
+    cleanupDirs.push(root);
+    const host = path.join(root, "host");
+    const remote = path.join(root, "remote");
+    const origin = path.join(root, "origin");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "tracked.txt"), "base\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "base"]);
+    const baseline = await git(host, ["rev-parse", "HEAD"]);
+    await git(root, ["clone", host, origin]);
+    await git(origin, ["config", "user.name", "Paperclip Test"]);
+    await git(origin, ["config", "user.email", "test@paperclip.dev"]);
+    for (const content of ["published", "review fix"]) {
+      await writeFile(path.join(origin, "tracked.txt"), content);
+      await git(origin, ["commit", "-am", content]);
+    }
+    const publishedHead = await git(origin, ["rev-parse", "HEAD"]);
+    const prepared = await prepareSandboxManagedRuntime({
+      ...sandboxRuntimeInput(sandboxSpec("shallow", remote), "test-adapter", makeFilesystemClient(), host),
+      workspaceRestoreRetryDelaysMs: [],
+    });
+    // Like checking out a PR in a fresh task workspace: only its tip is fetched,
+    // and the sandbox still has its independent original shallow boundary.
+    await git(remote, ["fetch", "--depth=1", origin, publishedHead]);
+    await git(remote, ["checkout", "--detach", "FETCH_HEAD"]);
+    await writeFile(path.join(remote, "evidence.txt"), "saved result\n");
+    await writeFile(path.join(host, "local-only.txt"), "concurrent host work\n");
+
+    await prepared.restoreWorkspace();
+
+    expect(await readFile(path.join(host, "tracked.txt"), "utf8")).toBe("review fix");
+    expect(await readFile(path.join(host, "evidence.txt"), "utf8")).toBe("saved result\n");
+    expect(await readFile(path.join(host, "local-only.txt"), "utf8")).toBe("concurrent host work\n");
+    expect(await git(host, ["cat-file", "-t", publishedHead])).toBe("commit");
+    // Imported shallow history must not truncate the host's existing history.
+    expect(await git(host, ["rev-parse", "HEAD^"])).toBe(baseline);
+    expect(await git(host, ["fsck", "--connectivity-only"])).not.toContain("missing");
+  });
+
   it("restores a sandbox reset to an ancestor with the matching clean working tree", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-reset-"));
     cleanupDirs.push(rootDir);
@@ -4244,7 +4288,7 @@ describe("sandbox git-bundle export transport", () => {
     expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(true);
   });
 
-  it("retries the full bundle through the native branch when the delta misses its prerequisite", async () => {
+  it.each([[false, false, false], [true, false, false], [false, true, false], [false, false, true]])("restores native bundles with concurrent work %s, oversized transfer %s, oversized source %s", async (concurrentHostCommit, oversizedTransfer, oversizedSource) => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bundle-retry-"));
     cleanupDirs.push(rootDir);
@@ -4268,19 +4312,61 @@ describe("sandbox git-bundle export transport", () => {
     const stagedBase = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
 
     const client = makeTransportClient(true, capture);
+    let shallowProgressCalls = 0, completedShallowRead = false;
+    if (oversizedTransfer) {
+      const read = client.readFile.bind(client);
+      client.readFile = async (remotePath, options) => {
+        if (remotePath.endsWith("git-shallow.txt")) {
+          shallowProgressCalls++;
+          await options?.onProgress?.(0, 64 * 1024 + 1);
+          completedShallowRead = true;
+        }
+        return read(remotePath, options);
+      };
+    }
+    let sourceCapChecks = 0;
+    if (oversizedSource) {
+      const run = client.run.bind(client);
+      client.run = async (command, options) => {
+        if (command.includes("git-shallow.txt") && command.includes("wc -c")) sourceCapChecks++;
+        return run(command, options);
+      };
+    }
     const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     await commitInSandbox(remoteWorkspaceDir);
     const sandboxHead = await git(remoteWorkspaceDir, ["rev-parse", "HEAD"]);
 
+    if (oversizedSource) await writeFile(path.join(remoteWorkspaceDir, ".git", "shallow"), `${sandboxHead}\n`.repeat(2000));
+
     // The host drops below the staged base commit and prunes it. The delta
     // bundle names that boundary commit as a prerequisite the host no longer
     // holds, so the import fails and forces the full-bundle retry.
     await git(localWorkspaceDir, ["reset", "--hard", firstCommit]);
+    if (concurrentHostCommit) {
+      await writeFile(path.join(localWorkspaceDir, "host-only.txt"), "concurrent host commit\n");
+      await git(localWorkspaceDir, ["add", "host-only.txt"]);
+      await git(localWorkspaceDir, ["commit", "-m", "host work after reset"]);
+    }
+    const hostHead = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
     await git(localWorkspaceDir, ["reflog", "expire", "--expire=now", "--all"]);
     await git(localWorkspaceDir, ["gc", "--prune=now"]);
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${stagedBase}^{commit}`])).rejects.toThrow();
 
+    if (oversizedSource) {
+      await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "WORKSPACE_RESTORE_INVALID_GIT_METADATA" });
+      expect(sourceCapChecks).toBe(1);
+      expect(capture.readFilePaths.some(p => p.endsWith("git-shallow.txt"))).toBe(false);
+      expect(await git(localWorkspaceDir, ["rev-parse", "HEAD"])).toBe(hostHead);
+      return;
+    }
+    if (oversizedTransfer) {
+      await expect(prepared.restoreWorkspace()).rejects.toThrow("byte limit");
+      expect(shallowProgressCalls).toBe(1);
+      expect(completedShallowRead).toBe(false);
+      expect(await git(localWorkspaceDir, ["rev-parse", "HEAD"])).toBe(hostHead);
+      return;
+    }
     await prepared.restoreWorkspace();
 
     // Two bundle exports rode native file mappings: the delta attempt and the
@@ -4293,6 +4379,13 @@ describe("sandbox git-bundle export transport", () => {
     // The full bundle was self-contained: the host repository now holds the
     // sandbox head commit.
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${sandboxHead}^{commit}`])).resolves.toBe("");
+    if (concurrentHostCommit) {
+      expect(await readFile(path.join(localWorkspaceDir, "host-only.txt"), "utf8")).toBe("concurrent host commit\n");
+      expect(await readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).toBe("from sandbox\n");
+      expect((await git(localWorkspaceDir, ["rev-list", "--parents", "-1", "HEAD"])).split(" ").slice(1))
+        .toEqual([hostHead, sandboxHead]);
+      expect(await git(localWorkspaceDir, ["fsck", "--connectivity-only"])).not.toContain("missing");
+    }
   });
 
   it("reports the real transferred bytes for the native git-history export and workspace restore", async () => {

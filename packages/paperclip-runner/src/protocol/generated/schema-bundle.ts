@@ -1374,6 +1374,18 @@ export const providerDescriptorSchema = {
         "xhigh",
         "max"
       ]
+    },
+    "grokEffort": {
+      "enum": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "grokDisableWebSearch": {
+      "type": "boolean"
     }
   },
   "allOf": [
@@ -1723,6 +1735,46 @@ export const providerDescriptorSchema = {
             "const": null
           }
         }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokDisableWebSearch"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
       }
     }
   ],
@@ -3333,6 +3385,75 @@ export const usageSchema = {
     "runDeltaAvailable": {
       "type": "boolean"
     },
+    "runDeltaBasis": {
+      "const": "run"
+    },
+    "reconciliation": {
+      "type": "object",
+      "required": [
+        "reason",
+        "receivedTurnId",
+        "cumulative",
+        "priorOrigin"
+      ],
+      "properties": {
+        "reason": {
+          "const": "accounting_reconciliation_required"
+        },
+        "receivedTurnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 240
+        },
+        "cumulative": {
+          "$ref": "#/$defs/measurement"
+        },
+        "priorOrigin": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "runnerInstanceId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+            "itemId"
+          ],
+          "properties": {
+            "runnerInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "normalizedSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "turnId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "itemId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "runDelta": {
       "$ref": "#/$defs/measurement"
     }
@@ -4653,6 +4774,7 @@ export const eventSchema = {
         "workspace.diff.recorded",
         "workspace.file.referenced",
         "auth.credentials.updated",
+        "runtime.activity.recorded",
         "harness.starting",
         "harness.ready",
         "harness.exited",
@@ -5290,6 +5412,47 @@ export const eventSchema = {
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ],
   "additionalProperties": true
@@ -5376,6 +5539,7 @@ export const eventV2Schema = {
         "workspace.diff.recorded",
         "workspace.file.referenced",
         "auth.credentials.updated",
+        "runtime.activity.recorded",
         "harness.starting",
         "harness.ready",
         "harness.exited",
@@ -5582,6 +5746,47 @@ export const eventV2Schema = {
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ],
   "additionalProperties": true
@@ -5762,7 +5967,8 @@ export const eventV3Schema = {
         "external_provider.dispatch_requested",
         "external_provider.operation_settled",
         "external_provider.input_available",
-        "auth.credentials.updated"
+        "auth.credentials.updated",
+        "runtime.activity.recorded"
       ]
     },
     "schemaVersion": {
@@ -6275,6 +6481,47 @@ export const eventV3Schema = {
           },
           "payload": {
             "$ref": "https://paperclip.dev/schemas/prp/v1/auth-credentials.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
           }
         }
       }

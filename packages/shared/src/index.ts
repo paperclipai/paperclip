@@ -70,6 +70,7 @@ export type {
   ConnectionSearchResultItem,
   ConnectionsSearchResult,
   ConnectionRequestResult,
+  ConnectionRequiredUserAction,
   ConnectionIntentSetupOptions,
   ConnectionIntentSetupConnection,
   CompleteConnectionIntentInput,
@@ -165,8 +166,13 @@ export {
 } from "./responsible-user-denial.js";
 export type {
   AttentionDecisionVerb,
+  DecisionHistoryItem,
+  DecisionHistoryQuery,
+  DecisionHistoryPage,
   AttentionDetailImage,
   AttentionFeed,
+  AttentionSummary,
+  AttentionTaskIndex,
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,
@@ -783,6 +789,7 @@ export type {
   CompanySkillListQuery,
   CompanySkillCategoryCount,
   CompanySkillVersion,
+  CompanySkillVersionSummary,
   CompanySkillVersionCreateRequest,
   CompanySkillStarResult,
   CompanySkillComment,
@@ -889,6 +896,7 @@ export type {
   AgentDetail,
   ClearAgentErrorResponse,
   AgentPermissions,
+  AgentProjectAccess,
   AgentPublicIdentity,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
@@ -927,6 +935,7 @@ export type {
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
+  ProjectGitAuthorization,
   ProjectCodebase,
   ProjectCodebaseOrigin,
   ProjectGoalRef,
@@ -990,6 +999,7 @@ export type {
   WorkspaceFileAvailabilityResult,
   WorkspaceFileContent,
   WorkspaceFileContentEncoding,
+  WorkspaceFileSource,
   WorkspaceFileListDirectoryItem,
   WorkspaceFileListFileItem,
   WorkspaceFileListItem,
@@ -1124,12 +1134,15 @@ export type {
   IssueRelation,
   IssueRelationIssueSummary,
   IssueExecutionPolicy,
+  RequiredQualityReview,
+  QualityReviewBinding,
   IssueExecutionState,
   IssueExecutionStage,
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
   IssueExecutionDecision,
   IssueComment,
+  IssueRecentComments,
   IssueQueuedCommentEntry,
   IssueQueuedCommentProtocol,
   IssueQueuedCommentQueue,
@@ -1160,6 +1173,9 @@ export type {
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,
   RequestConfirmationIssueDocumentTarget,
+  RequestConfirmationIssueAttachmentTarget,
+  ConversationTaskHandoff,
+  ConversationTaskHandoffPage,
   RequestConfirmationCustomTarget,
   RequestConfirmationTarget,
   RequestConfirmationPayload,
@@ -1266,6 +1282,8 @@ export type {
   AgentWakeupRequest,
   InstanceSchedulerHeartbeatAgent,
   LiveEvent,
+  LiveDeliveryClientMessage,
+  LiveDeliveryServerMessage,
   DashboardRunActivityDay,
   DashboardSummary,
   TimelineActorType,
@@ -1607,7 +1625,8 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
-export { WORKSPACE_READINESS_STATES } from "./types/index.js";
+export { WORKSPACE_READINESS_STATES, WORKSPACE_SOURCE_VERIFICATION_REASONS,
+  type WorkspaceSourceVerificationFailure, type WorkspaceSourceInspection } from "./types/index.js";
 export {
   COMPANY_SEARCH_EXTRACT_KINDS,
   COMPANY_SEARCH_EXTRACT_SCOPES,
@@ -1879,8 +1898,10 @@ export {
   wakeAgentSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  addAgentProjectAccessSchema,
   type CreateAgent,
   type BuiltInAgentProvision,
   type BuiltInAgentReset,
@@ -1954,6 +1975,7 @@ export {
   updateIssueSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  requiredQualityReviewSchema,
   issueExecutionMonitorPolicySchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
@@ -1972,6 +1994,8 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  sendChatMessageSchema,
+  markIssueReadSchema,
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
   issueThreadInteractionContinuationPolicySchema,
@@ -1989,6 +2013,7 @@ export {
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
   requestConfirmationIssueDocumentTargetSchema,
+  requestConfirmationIssueAttachmentTargetSchema,
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,
@@ -2791,7 +2816,7 @@ export { restoreAgentInstructionSchema } from "./validators/agent.js";
 export type { AgentInstructionCandidate } from "./types/agent.js";
 export { resolveAgentInstructionCandidateSchema, type ResolveAgentInstructionCandidate } from "./validators/agent.js";
 
-export { isHeartbeatRunVisibleInMine } from "./heartbeat-inbox.js";
+export { isHeartbeatRunVisibleInMine, latestFailedRunsByAgent } from "./heartbeat-inbox.js";
 export * from "./browser-use.js";
 
 export * from "./types/skill-source.js";
@@ -2818,6 +2843,7 @@ export * from "./agent-avatar-upload.js";
 
 export type { DotBinding, DotInvitation, DotConnection, DotPairing } from "./dot-invitations.js";
 export { agentHarnessType, agentRuntimeSettingsHarness, agentRunner, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, type AgentRunnerChoice, type AgentRunner, type AgentRunnerAvailability } from "./agent-runner.js";
+export { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "./runner-configuration-warnings.js";
 export { EXTERNAL_AGENT_TOOL_GUIDANCE, DOT_AGENT_TOOL_GUIDANCE, GROK_BOT_AGENT_TOOL_GUIDANCE } from "./external-agent-guidance.js";
 
 export { AGENT_LIFECYCLE_STATES, type AgentLifecycleState, type AgentLifecycleOperation } from "./types/agent-lifecycle.js";
@@ -2841,3 +2867,15 @@ export * from "./prompt-injection-prevention.js";
 
 export * from "./workspace-provider.js";
 export * from "./workflows.js";
+export { updateWorkspacePreferenceSchema, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
+export * from "./agent-configuration.js";
+export {
+  remoteWorkspaceSourceSchema,
+  remoteWorkspaceAuthoritySchema,
+  remoteWorkspaceRunReferenceSchema,
+  readRemoteWorkspaceAuthority,
+  readRemoteWorkspaceRunReference,
+  type RemoteWorkspaceSource,
+  type RemoteWorkspaceAuthority,
+  type RemoteWorkspaceRunReference,
+} from "./remote-workspace.js";

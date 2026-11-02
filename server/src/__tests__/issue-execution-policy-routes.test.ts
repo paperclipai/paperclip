@@ -19,7 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
-  triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
+  triggerIssueMonitor: vi.fn(async (): Promise<{ outcome: "triggered" } | { outcome: "skipped"; reason: string }> => ({ outcome: "triggered" })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
@@ -1157,11 +1157,11 @@ describe("issue execution policy routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("triggers a scheduled monitor immediately from the dedicated route", async () => {
+  it.each(["in_progress", "blocked"])("triggers a scheduled monitor on an %s task from the dedicated route", async (status) => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
-      status: "in_progress",
+      status,
       assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       assigneeUserId: null,
       createdByUserId: "local-board",
@@ -1192,6 +1192,20 @@ describe("issue execution policy routes", () => {
         agentId: null,
       }),
     );
+  });
+
+  it.each(["execution_reconciliation_required", "monitor_dispatch_deferred", "monitor_replaced"])("does not claim success for a skipped monitor check: %s", async (reason) => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status: "blocked",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+    });
+    mockHeartbeatService.triggerIssueMonitor.mockResolvedValueOnce({ outcome: "skipped", reason });
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/monitor/check-now").send({});
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ details: { code: "issue_monitor_check_deferred", reason } });
+    if (reason === "monitor_replaced") expect(res.body.error).toContain("monitor changed");
+    expect(res.body.ok).toBeUndefined();
   });
 
   it("lets a board user create a child issue with a scheduled monitor", async () => {

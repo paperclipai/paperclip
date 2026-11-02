@@ -1,10 +1,12 @@
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
+import { CoordinatorTasks } from "./CoordinatorTasks";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
-import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Navigate, useLocation, useNavigate, useSearchParams } from "@/lib/router";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -36,6 +38,7 @@ import {
   taskView,
   type TaskViewKey,
 } from "../lib/task-views";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -96,9 +99,21 @@ export function Issues() {
   const designSandbox = useDesignSandbox();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
+  const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
+  const [params] = useSearchParams();
+  const location = useLocation();
+  const requestedView = normalizeTaskViewKey(params.get(TASK_VIEW_PARAM));
+  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId"].some(param => params.getAll(param).some(Boolean));
+  // Saved merged-Inbox URLs retain their original surface inside Coordinator.
+  // Its effective Combined Inbox setting is off, so these routes do not loop.
+  if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && taskView(requestedView).surface === "inbox") {
+    const next = new URLSearchParams(params); next.delete(TASK_VIEW_PARAM);
+    const search = next.toString();
+    return <Navigate to={`/inbox/${taskView(requestedView).inboxTab}${search ? `?${search}` : ""}${location.hash}`} replace />;
+  }
   // The merged surface is Combined Inbox + Task List only. With the flag off, and always in
   // the legacy shell, Tasks is the plain task list and Inbox keeps its pages.
-  return designSandbox ? <DesignSandboxTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
+  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
 }
 
 function StreamlinedTasks() {
@@ -171,8 +186,7 @@ function OrganizationIssues({
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
-  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fetchNextPageInFlightRef = useRef(false);
 
   const urlSearch = searchParams.get("q") ?? "";
@@ -184,6 +198,19 @@ function OrganizationIssues({
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, "paperclip:issues-view");
+  const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
+  const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
+  const originKind = routineTasksOnly ? "routine_execution" : undefined;
+  const handleRoutineTasksOnlyChange = useCallback((checked: boolean) => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current);
+      if (syncedSearch) next.set("q", syncedSearch);
+      else next.delete("q");
+      if (checked) next.set("originKind", "routine_execution");
+      else next.delete("originKind");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams, syncedSearch]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
@@ -257,17 +284,20 @@ function OrganizationIssues({
       participantAgentId ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
-      "compact",
+      streamlinedUiEnabled ? "index" : "compact",
       "with-routine-executions",
-      showAgentCreatedTasks,
+      includeAgentCreatedTasks,
+      originKind,
       "infinite",
       issuePageSize,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
+      projection: streamlinedUiEnabled ? "index" : undefined,
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
-      includeAgentCreatedTasks: showAgentCreatedTasks,
+      includeAgentCreatedTasks,
+      originKind,
       limit: issuePageSize,
       offset: pageParam,
       sortField: "updated",
@@ -292,13 +322,8 @@ function OrganizationIssues({
     });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
-    },
-  });
+  // Optimistic, rolls back with a readable toast, and resends after an outage.
+  const updateIssue = useUpdateIssueMutation({ companyId: selectedCompanyId });
 
   if (!selectedCompanyId) {
     return (
@@ -331,10 +356,12 @@ function OrganizationIssues({
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
       enableAgentCreatedVisibilityFilter
+      routineTasksOnly={routineTasksOnly}
+      onRoutineTasksOnlyChange={handleRoutineTasksOnlyChange}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter || originKind ? { participantAgentId, workspaceId: workspaceIdFilter, originKind } : undefined}
     />
   );
 }

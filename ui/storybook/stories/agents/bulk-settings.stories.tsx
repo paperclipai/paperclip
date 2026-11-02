@@ -120,7 +120,7 @@ export const ConnectionJourney: Story = { play: async ({ canvasElement }) => {
   await expect(await screen.findByText("1 other selected agent won’t change.")).toBeVisible();
   await userEvent.click(screen.getByRole("checkbox", { name: "Change connection" }));
   await userEvent.click(await screen.findByRole("combobox", { name: "Connection" }));
-  await userEvent.click(screen.getByRole("option", { name: "OpenAI · Production" }));
+  await userEvent.click(screen.getByRole("option", { name: /^OpenAI · Production ·/ }));
   await expect(screen.getByRole("button", { name: "Update 4 agents" })).toBeEnabled();
   await userEvent.click(screen.getByRole("button", { name: "Update 4 agents" }));
   await expect(await within(canvasElement).findByText("Updated 4 Codex agents.")).toBeVisible();
@@ -131,7 +131,7 @@ export const RetryJourney: Story = { args: { failOne: true }, play: async ({ can
   const screen = await selectCodex(canvasElement);
   await userEvent.click(await screen.findByRole("checkbox", { name: "Change connection" }));
   await userEvent.click(await screen.findByRole("combobox", { name: "Connection" }));
-  await userEvent.click(screen.getByRole("option", { name: "OpenAI · Production" }));
+  await userEvent.click(screen.getByRole("option", { name: /^OpenAI · Production ·/ }));
   await expect(screen.getByRole("button", { name: "Update 4 agents" })).toBeEnabled();
   await userEvent.click(screen.getByRole("button", { name: "Update 4 agents" }));
   await expect(await screen.findByText("3 updated · 1 couldn’t be saved")).toBeVisible();

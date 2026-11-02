@@ -6,6 +6,7 @@ import { createOAuthDiscovery } from "../oauth/discovery.js";
 import { oauthConfig } from "../oauth/metadata.js";
 import { projectedConnectionHeaders } from "../connection-methods.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
+import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { GOOGLE_WORKSPACE_SERVICES, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, type GoogleWorkspaceService } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "../../connection-permission-errors.js";
 import { mcpDiscoveryHttpFailure, withMcpConnectionFailure } from "../../mcp-connection-failure.js";
@@ -426,6 +427,12 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections provide runtime authentication, not tool actions");
+    const restConnector = restConnectorFor(connection);
+    if (restConnector) {
+      const headers = credentialHeaders ?? await resolveCredentialHeaders(connection, actor);
+      await restConnector.client(connection, headers, (url, init) => requestRemoteHttpEndpoint(new URL(url), init)).probe();
+      return restConnector.tools;
+    }
     const nativeProvider = nativeProviderCatalogFor(connection);
     if (nativeProvider) {
       const headers = credentialHeaders ?? await resolveCredentialHeaders(connection, actor);

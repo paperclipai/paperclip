@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspace-sync";
 import type { Db } from "@paperclipai/db";
 
 const sync = vi.hoisted(() => ({ resume: vi.fn() }));
@@ -54,6 +55,13 @@ describe("native workspace finalization without a manual export repair", () => {
     sync.resume.mockRejectedValueOnce(new Error(message));
     const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(), runId: "run", environmentRuntime: {} as never });
     expect(result).toMatchObject({ status: "failed", exitCode: 1, stderr: `${code}\n` });
+  });
+
+  it("fails copyback for invalid Git metadata instead of successfully omitting saved files", async () => {
+    sync.resume.mockRejectedValueOnce(new GitShallowMetadataError("Git shallow metadata exceeds its byte limit"));
+    const result = await resumeNativeWorkspaceFinalization({ db: fixtureDb(), runId: "run", environmentRuntime: {} as never });
+    expect(result).toMatchObject({ status: "failed", exitCode: 1, stderr: "workspace_sync_out_unrecoverable\n" });
+    expect(sync.resume).toHaveBeenCalledOnce();
   });
 
   it("does not treat a missing workspace reference as an omitted unsafe archive", async () => {

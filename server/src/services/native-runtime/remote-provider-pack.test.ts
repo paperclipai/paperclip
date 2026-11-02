@@ -25,6 +25,14 @@ describe("remote provider verification", () => {
     await expect(runRemoteProviderVerification(execute, "pack")).rejects.toThrow("runner_remote_provider_artifact_incompatible: pack failed (exitCode=1");
     expect(execute).toHaveBeenCalledOnce();
   });
+  it("retains a bounded redacted rejection from a combined-output transport", async () => {
+    const execute = vi.fn().mockResolvedValue({ ...ok, exitCode: 1,
+      stdout: "Error: manifest mismatch\nANTHROPIC_API_KEY=secret-fixture-value", stderr: "" });
+    const failure = await runRemoteProviderVerification(execute, "pack").catch(error => error);
+    expect(failure.message).toContain("manifest mismatch");
+    expect(failure.message).not.toContain("secret-fixture-value");
+    expect(execute).toHaveBeenCalledOnce();
+  });
   it("recovers a transport exception and propagates cancellation", async () => {
     const execute = vi.fn().mockRejectedValueOnce(new Error("connection unavailable")).mockResolvedValueOnce(ok);
     await expect(runRemoteProviderVerification(execute, "pack")).resolves.toEqual(ok);

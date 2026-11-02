@@ -75,6 +75,8 @@ export const chatGitHubRegistrations = pgTable(
       manifestClaimId?: string;
       identityLeaseId?: string;
       identityLeaseExpiresAt?: string;
+      browserSessionId?: string;
+      identitySessionId?: string;
       identityStateHash?: string;
       identityExpiresAt?: string;
       identityRedemptionId?: string;
@@ -157,6 +159,9 @@ export const chatGitHubReviews = pgTable(
   },
   (t) => [
     unique("chat_github_reviews_company_id_uq").on(t.companyId, t.id),
+    index("chat_github_reviews_projection_work_idx").on(t.id).where(sql`${t.state} in ('queued', 'running')
+      and ${t.assessment} is null
+      and ${t.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`),
     foreignKey({
       columns: [t.companyId, t.endpointId],
       foreignColumns: [chatEndpoints.companyId, chatEndpoints.id],

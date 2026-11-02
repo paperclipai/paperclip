@@ -44,6 +44,9 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
       fresh: freshWorkspaceSchema.optional(),
     })
     .strict(),
+  // Verify the retained workspace and flush run writes. This does not certify
+  // remote recoverability or authorize removal; dirty work is valid output.
+  z.object({ kind: z.literal("finalize"), binding: workspaceProviderBindingSchema }).strict(),
   z
     .object({
       kind: z.literal("inspect"),
@@ -81,6 +84,8 @@ export const workspaceProviderResultSchema = z.discriminatedUnion("kind", [
       remotelyRecoverable: z.boolean().nullable(),
     })
     .strict(),
+  // Return only after retained files are durable and their identity is verified.
+  z.object({ kind: z.literal("finalized"), headSha: sha.nullable(), branchName: z.string().nullable() }).strict(),
   // Return only after removal is confirmed. Busy, failed and uncertain operations must throw.
   z.object({ kind: z.literal("removed") }).strict(),
 ]);
@@ -105,7 +110,7 @@ export const pluginWorkspaceParamsSchema = z
     operation: workspaceProviderOperationSchema,
   })
   .strict();
-/** Run and agent are optional context. Storage operations never require an execution lease. */
+/** Finalization receives the originating run/agent context; maintenance remains agent-independent. */
 export type PluginWorkspaceParams = z.infer<typeof pluginWorkspaceParamsSchema>;
 
 export function parseWorkspaceProviderResult(
@@ -118,7 +123,7 @@ export function parseWorkspaceProviderResult(
       ? "prepared"
       : params.operation.kind === "inspect"
         ? "inspection"
-        : "removed";
+        : params.operation.kind === "finalize" ? "finalized" : "removed";
   if (result.kind !== expected)
     throw new Error("Workspace provider returned the wrong operation result");
   if (

@@ -55,7 +55,7 @@ describe("personal Muse control plane",()=>{
   afterAll(async()=>{vi.unstubAllEnvs();await museReceiver(db).stop();if(externalDatabaseUrl)await closeRegisteredClients(externalDatabaseUrl);await temporary?.cleanup();});
   async function fixture(ready=true) {
     const operatorId=randomUUID();await db.insert(authUsers).values({id:operatorId,name:"Muse authorizer",email:operatorId+"@example.test",createdAt:new Date(),updatedAt:new Date()});
-    const [company]=await db.insert(companies).values({name:"Muse control",issuePrefix:"MU"+randomBytes(3).toString("hex")}).returning();
+    const [company]=await db.insert(companies).values({name:"Muse control",issuePrefix:"MU"+operatorId.replaceAll("-","")}).returning();
     const [agent]=await db.insert(agents).values({companyId:company.id,name:"Muse",role:"engineer",status:"active",adapterType:"paperclip_runner",adapterConfig:{provider:"muse",allowUnmeteredProvider:true,lifecycle:"per_turn"},permissions:{canCreateTasks:true}}).returning();
     await db.insert(companyMemberships).values([{companyId:company.id,principalType:"user",principalId:operatorId,membershipRole:"owner",status:"active"},{companyId:company.id,principalType:"agent",principalId:agent.id,membershipRole:"member",status:"active"}]);
     const ticket=randomBytes(32).toString("base64url");const [binding]=await db.insert(bindings).values({companyId:company.id,agentId:agent.id,operatorId,ticketHash:museCredentialHash(ticket),ticketExpiresAt:new Date(Date.now()+600000)}).returning();
@@ -2132,6 +2132,37 @@ describe("personal Muse control plane",()=>{
       await f.port.settle({sourceEventId:randomUUID(),payload:{binding:f.ref,requestId,outcome:{status:"accepted"}}});
       const [resolved]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.id,held.id));expect(resolved.workerUnknown).toBe(true);expect(resolved.nativeEffectsUnknown).toBe(false);expect(resolved.releasedAt).toBeNull();
     }finally{await detach();}
+  });
+
+  it("notifies maintenance when a real Muse finish receipt commits", async () => {
+    const f = await active();
+    const events: string[] = [];
+    let unsubscribe = () => {};
+    try {
+      await f.broker.act(f.subject, { version: 1, command: "accept", assignmentId: f.assignment.id, requestId: randomUUID() });
+      unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, event => events.push(event));
+      await f.broker.act(f.subject, { version: 1, command: "finish", assignmentId: f.assignment.id, requestId: randomUUID(), result: {} });
+      expect(events).toContain("intent");
+      expect(events.at(-1)).toBe("settled");
+      expect((await db.select().from(assignments).where(eq(assignments.id, f.assignment.id)))[0].acceptedResultAt).not.toBeNull();
+    } finally { unsubscribe(); await f.detach(); }
+  });
+
+  it("does not rewrite settled Muse terminal history", async () => {
+    const f = await active();
+    try {
+      await f.broker.act(f.subject, { version: 1, command: "accept", assignmentId: f.assignment.id, requestId: randomUUID() });
+      await f.broker.act(f.subject, { version: 1, command: "finish", assignmentId: f.assignment.id, requestId: randomUUID(), result: {} });
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+      await f.broker.reconcileTerminalAssignments(f.company.id, f.agent.id, f.binding.id);
+      const version = async () => (await db.select({ version: sql<string>`${assignments}.xmin::text` })
+        .from(assignments).where(eq(assignments.id, f.assignment.id)))[0].version;
+      const settled = await version();
+      await f.broker.reconcileTerminalAssignments(f.company.id, f.agent.id, f.binding.id);
+      expect(await version()).toBe(settled);
+      const [hold] = await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId, f.assignment.id));
+      expect(hold).toMatchObject({ workerUnknown: false, nativeEffectsUnknown: false, releasedAt: expect.any(Date) });
+    } finally { await f.detach(); }
   });
 
   it("makes identical native result replay idempotent after finish and finalization",async()=>{

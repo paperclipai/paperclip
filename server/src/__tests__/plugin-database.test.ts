@@ -227,6 +227,30 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
+  it.each([
+    { packagePath: null, packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: true },
+    { packagePath: "/app/packages/plugins/sandbox-providers/boxd", packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: true },
+    { packagePath: "/home/operator/plugins/fake-boxd", packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: false },
+    { packagePath: null, packageName: "@acme/plugin-boxd", driverKey: "boxd", allowed: false },
+    { packagePath: null, packageName: "@paperclipai/plugin-boxd", driverKey: "daytona", allowed: false },
+  ])("confines the boxd fallback credential to its trusted worker: $packageName / $packagePath / $driverKey", ({ allowed, driverKey, ...installation }) => {
+    const env = buildPluginWorkerEnv({
+      ...installation,
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey }],
+      },
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: { BOXD_API_KEY: "boxd-token", DAYTONA_API_KEY: "daytona-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ...(allowed ? { BOXD_API_KEY: "boxd-token" } : {}),
+    });
+  });
+
   it("passes a first-party sandbox provider's documented credential env var to its own worker", () => {
     const env = buildPluginWorkerEnv({
       manifest: {

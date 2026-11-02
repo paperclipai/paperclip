@@ -152,6 +152,9 @@ describe("tool OAuth over local HTTP", () => {
       expect(calls.filter((call) => call.path === "/register")).toHaveLength(1);
 
       const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+      const consentedAt = grant.providerTenant?.oauth?.consentedAt;
+      expect(consentedAt).toEqual(expect.any(String));
+      expect(Number.isFinite(Date.parse(consentedAt!))).toBe(true);
       await db.update(connectionGrants).set({ providerTenant: {
         ...grant.providerTenant,
         oauth: { ...grant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
@@ -174,6 +177,7 @@ describe("tool OAuth over local HTTP", () => {
       expect(exchanges[1].authorization).toBe(tokenCall.authorization);
       const [persistedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
       expect(persistedGrant.providerTenant?.oauth).not.toHaveProperty("refreshLease");
+      expect(persistedGrant.providerTenant?.oauth?.consentedAt).toBe(consentedAt);
       expect(Date.parse(persistedGrant.providerTenant!.oauth!.accessTokenExpiresAt!)).toBeGreaterThan(Date.now());
       expect(JSON.stringify(persistedGrant)).not.toMatch(/fixture-(access|refresh|secret)/);
       await first.checkHealth(connection.id, { actorType: "user", actorId: userId });

@@ -45,6 +45,15 @@ The instruction root identifies host files that the trusted worker can package
 through its existing filesystem access. This API grants no arbitrary path reads.
 Never expose instance secrets through UI data, logs, plugin state, or agent files.
 
+Use `ctx.agents.getRuntimeIdentity(agentId, companyId)` for freshness checks.
+It returns only the revision, agent ID, company ID, status, lifecycle state and
+version, and this plugin's current instance secrets. It uses the same ownership,
+capability, and company checks as `getRuntime`. Each call reads current state;
+it does not cache grants or secrets. It does not resolve instruction files,
+company reporting relationships, skills, or connection assignments. Read the full
+runtime once to obtain synchronization inputs, then use the identity reader to
+fence effects against changes.
+
 Re-read current state before external effects. A queued event can be older than
 the returned revision. Fence stale revisions at the destination and use its
 conditional writes. Current configuration is desired state, not a frozen run

@@ -18,6 +18,12 @@ const secureUrl = z.string().url().refine(value => {
 }, "Expected a credential-free WSS URL");
 
 const credentialValue = z.string().min(1).max(65_536).refine(value => !value.includes("\0"));
+const githubBroker = z.object({ url: z.string().url().max(2000).refine(value => {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+}, "Expected a credential-free HTTP broker URL"), token: credentialValue }).strict();
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
@@ -39,6 +45,8 @@ export const environmentRunnerLaunchRequirementsSchema = z.object({
     acpxPermissionModePinned: z.boolean().optional(), piThinkingLevel: z.enum(["off", "low", "high", "max"]).optional(),
     claudeEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
     opencodePermissionMode: z.enum(["allow", "ask", "deny"]).optional(),
+    disableCodexWebSearch: z.literal(true).optional(),
+    disableCodexProjectInstructions: z.literal(true).optional(),
     managedProfile: z.record(z.string(), z.unknown()).optional(), agentCoreProfile: z.record(z.string(), z.unknown()).optional(),
   }).strict(),
   approvalPolicy: z.enum(["never", "on-request", "untrusted"]), readOnly: z.boolean(),
@@ -54,7 +62,9 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("describe") }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), token: credentialValue, model: z.string().min(1).max(1024).optional() }).strict(),
   z.object({ kind: z.literal("prepare"), requirements: environmentRunnerLaunchRequirementsSchema,
+    githubBroker: githubBroker.optional(),
     recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
+    priorIdentity: durableIdentity.optional(), accountIdentity: z.string().min(1).max(1024).optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
   }).strict(),
   z.object({
@@ -83,7 +93,10 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
       maxOutboxBytes: z.number().int().positive(), p0ReserveBytes: z.number().int().positive(),
       maxRuntimeMs: z.number().int().nonnegative().optional(), maxLifetimeMs: z.number().int().nonnegative().optional(),
       reconnectGraceMs: z.number().int().nonnegative().optional(),
-      lifecyclePolicy: z.object({ mode: z.literal("per_turn"), idleTimeoutMs: z.null() }).strict(),
+      lifecyclePolicy: z.discriminatedUnion("mode", [
+        z.object({ mode: z.literal("per_turn"), idleTimeoutMs: z.null() }).strict(),
+        z.object({ mode: z.literal("warm"), idleTimeoutMs: z.number().int().positive().max(86_400_000) }).strict(),
+      ]),
     }).strict().optional(),
   }).strict(),
   z.object({ kind: z.literal("check_project_auth"), configurationId: providerId.max(1024),
@@ -115,15 +128,17 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict(),
   z.object({ kind: z.literal("state"), taskId: providerId, state: z.record(z.string(), z.unknown()) }).strict(),
-  z.object({ kind: z.literal("prepared"), taskId: providerId, launch: preparedLaunch }).strict(),
+  z.object({ kind: z.literal("prepared"), taskId: providerId, launch: preparedLaunch, projectAuthCheckAtSubmit: z.literal(true).optional() }).strict(),
   z.object({ kind: z.literal("credentials"), taskId: providerId, /** Null proves that cancellation fenced admission before the task could start. It must not mean an unavailable export. */
     credential: environmentTaskCredentialSchema.nullable() }).strict(),
   z.object({ kind: z.literal("description"), taskId: providerId,
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
+    warmTaskVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
+    githubCredentialBrokerVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,

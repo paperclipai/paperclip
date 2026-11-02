@@ -273,6 +273,7 @@ export type {
   PluginIssueSummariesClient,
   PluginAgentsClient,
   PluginAgentRuntimeState,
+  PluginAgentRuntimeIdentity,
   PluginAgentConnectionAssignments,
   PluginAgentRuntimeSkill,
   PluginAccessClient,

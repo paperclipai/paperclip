@@ -8,7 +8,10 @@ import type { ArtifactSubject } from "./kinds";
  * soft shadow (`.artifact-print`, index.css). A print is sized to fit a box
  * while keeping the picture's ratio, so a leading picture never grows past
  * the stack it stands in. The ratio comes with the subject when known and
- * from the loaded picture otherwise; until then the print is 4:3.
+ * from the loaded picture otherwise; until then the print is 4:3. When the
+ * picture (or a video's metadata) cannot be loaded — the file is gone, or
+ * not a picture after all — the print reports it through onMediaError and
+ * the caller shows the icon sheet in its place.
  */
 export interface PrintSize {
   width: number;
@@ -35,16 +38,31 @@ export function useImageAspect(known: number | null | undefined): [number | null
   return [known && known > 0 ? known : loaded, onLoad];
 }
 
+/**
+ * Whether the picture at `source` (or a video's metadata) could not be
+ * loaded. The failure is remembered by source rather than as a flag, so a
+ * front that moves on to another picture (a stack's newest artifact) gets a
+ * fresh chance, and nothing is fetched to find out.
+ */
+export function usePreviewFailure(source: string | null): [boolean, () => void] {
+  const [failedSource, setFailedSource] = useState<string | null>(null);
+  const onError = useCallback(() => setFailedSource(source), [source]);
+  return [source !== null && failedSource === source, onError];
+}
+
 export function ArtifactPrint({
   subject,
   size,
   onMediaLoad,
+  onMediaError,
   style,
 }: {
   subject: ArtifactSubject;
   /** Sized by the caller (a stack fits it to its own box); on its own it fits the single box. */
   size?: PrintSize;
   onMediaLoad?: (event: SyntheticEvent<HTMLImageElement | HTMLVideoElement>) => void;
+  /** The picture (or the video's metadata) could not be loaded; the caller shows another face. */
+  onMediaError?: (event: SyntheticEvent<HTMLImageElement | HTMLVideoElement>) => void;
   style?: CSSProperties;
 }) {
   const [ownAspect, onOwnLoad] = useImageAspect(subject.aspect);
@@ -67,6 +85,7 @@ export function ArtifactPrint({
             onOwnLoad(event);
             onMediaLoad?.(event);
           }}
+          onError={onMediaError}
         />
       ) : (
         <img
@@ -78,6 +97,7 @@ export function ArtifactPrint({
             onOwnLoad(event);
             onMediaLoad?.(event);
           }}
+          onError={onMediaError}
         />
       )}
       {subject.kind === "video" ? (

@@ -1,9 +1,13 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTarballFromDirectory } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
+import { prepareIsolatedCodexHome, releaseMaterializedNativeRuntimeSkills, resolveRunnerdCodexSkillInputs } from "../../vendor/paperclip-runner/testing.js";
 
 function deferred() {
   let resolve!: () => void;
@@ -13,7 +17,15 @@ function deferred() {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  function writable(path: string) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) {
+      chmodSync(path, 0o700);
+      for (const entry of readdirSync(path)) writable(join(path, entry));
+    }
+  }
+  for (const root of roots.splice(0)) { writable(root); rmSync(root, { recursive: true, force: true }); }
 });
 
 function fixture(options: { transport?: "sandbox" | "ssh"; concurrent?: boolean } = {}) {
@@ -52,7 +64,156 @@ function fixture(options: { transport?: "sandbox" | "ssh"; concurrent?: boolean 
   return { input, root, calls, stageFile, stageDirectory, execute };
 }
 
+async function filesystemFixture() {
+  const f = fixture();
+  const source = f.input.runtimeContext!.source;
+  f.input.isolatedCodexSkills = { workspaceRoot: f.root };
+  mkdirSync(source.instructions.bundle.rootPath);
+  writeFileSync(join(source.instructions.bundle.rootPath, "AGENTS.md"), "Agent instructions\n");
+  mkdirSync(source.skills[0]!.bundle.rootPath);
+  writeFileSync(join(source.skills[0]!.bundle.rootPath, "SKILL.md"), "---\nname: test\ndescription: Selected skill\n---\nUse a native confirmation.\n");
+  mkdirSync(join(source.skills[0]!.bundle.rootPath, "scripts"));
+  writeFileSync(join(source.skills[0]!.bundle.rootPath, "scripts", "selected.sh"), "#!/bin/sh\nprintf selected\\n\n", { mode: 0o755 });
+  await prepareIsolatedCodexHome({ context: source, codexHome: join(f.root, "codex-home") });
+  const remote = join(f.root, "remote", "codex-home");
+  f.input.persistenceDirectories = [{ name: "codex-home", location: "filesystem", targetPath: remote }];
+  f.input.stageFile = async ({ sourcePath, targetPath }) => {
+    if (!targetPath.startsWith(f.root)) return;
+    mkdirSync(dirname(targetPath), { recursive: true });
+    cpSync(sourcePath, targetPath);
+  };
+  f.input.stageDirectory = vi.fn(async ({ sourcePath, targetPath }) => {
+    if (!targetPath.startsWith(f.root)) return;
+    // Native sandbox transfer archives omit the source root and mkdir the
+    // destination without applying the mapping mode. Exercise those actual
+    // tar/filesystem semantics rather than forcing the requested mode here.
+    const archivePath = join(f.root, "native-transfer.tar");
+    await createTarballFromDirectory({ localDir: sourcePath, archivePath });
+    execFileSync("sh", ["-c", 'umask 022; mkdir -p "$1" && tar -xf "$2" -C "$1"', "native-directory-transfer", targetPath, archivePath]);
+  });
+  f.input.runner.execute = async ({ command, args }) => {
+    try {
+      const stdout = execFileSync(command, args, { encoding: "utf8", stdio: "pipe" });
+      return { exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stdout: stdout.toString(), stderr: "" };
+    } catch {
+      return { exitCode: 1, signal: null, pid: null, startedAt: null, timedOut: false, stdout: "", stderr: "fixture command rejected" };
+    }
+  };
+  return { ...f, source, remote };
+}
+
 describe("remote launch asset staging", () => {
+  it("delivers the selected Codex skills to the same discoverable path used by explicit turn input", async () => {
+    const f = await filesystemFixture();
+    await stageRemoteLaunchAssets(f.input);
+    const [skill] = resolveRunnerdCodexSkillInputs([
+      { type: "skill", name: "test", path: join(f.source.skills[0]!.bundle.rootPath, "SKILL.md") },
+    ], f.source, f.remote);
+    expect(existsSync(skill!.path)).toBe(true);
+    expect(readFileSync(skill!.path, "utf8")).toContain("Use a native confirmation.");
+    const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+    for (const relative of ["SKILL.md", "scripts/selected.sh"]) {
+      expect(digest(join(f.remote, "skills", "test", relative))).toBe(digest(join(f.root, "codex-home", "skills", "test", relative)));
+    }
+    expect(statSync(skill!.path).mode & 0o777).toBe(0o444);
+    expect(statSync(join(f.remote, "skills", "test")).mode & 0o222).toBe(0);
+    expect(statSync(join(f.remote, "skills", "test", "scripts", "selected.sh")).mode & 0o777).toBe(0o555);
+    expect(statSync(join(f.remote, "skills")).mode & 0o777).toBe(0o700);
+  });
+
+  it("replaces stale and revoked skills on resume while retaining provider history", async () => {
+    const f = await filesystemFixture();
+    await stageRemoteLaunchAssets(f.input);
+    writeFileSync(join(f.remote, "conversation.json"), "saved provider conversation");
+    mkdirSync(join(f.remote, "skills", "ambient"));
+    writeFileSync(join(f.remote, "skills", "ambient", "SKILL.md"), "unassigned");
+    await releaseMaterializedNativeRuntimeSkills(join(f.root, "codex-home", "skills"));
+    f.source.skills = [];
+    f.input.runtimeContext!.target.skills = [];
+    await prepareIsolatedCodexHome({ context: f.source, codexHome: join(f.root, "codex-home") });
+    await stageRemoteLaunchAssets(f.input);
+    expect(readdirSync(join(f.remote, "skills"))).toEqual([]);
+    expect(readFileSync(join(f.remote, "conversation.json"), "utf8")).toBe("saved provider conversation");
+  });
+
+  it("delivers flat and nested selected packages without flattening their paths", async () => {
+    const f = await filesystemFixture();
+    const nestedRoot = join(f.root, "nested-skill");
+    mkdirSync(nestedRoot);
+    const body = "---\nname: nested\ndescription: Nested selected skill\n---\nKeep the nested package.\n";
+    writeFileSync(join(nestedRoot, "SKILL.md"), body);
+    f.source.skills.push({ ...f.source.skills[0]!, key: "nested", runtimeName: "group/nested",
+      bundle: { ...f.source.skills[0]!.bundle, rootPath: nestedRoot } });
+    f.input.runtimeContext!.target.skills = f.source.skills.map((skill, index) => ({ ...skill,
+      bundle: { ...skill.bundle, rootPath: `/session/filesystem/context/skills/${index}-digest` } }));
+    await releaseMaterializedNativeRuntimeSkills(join(f.root, "codex-home", "skills"));
+    await prepareIsolatedCodexHome({ context: f.source, codexHome: join(f.root, "codex-home") });
+    await stageRemoteLaunchAssets(f.input);
+    expect(readFileSync(join(f.remote, "skills", "test", "SKILL.md"), "utf8")).toContain("Use a native confirmation.");
+    expect(readFileSync(join(f.remote, "skills", "group", "nested", "SKILL.md"), "utf8")).toBe(body);
+    expect(statSync(join(f.remote, "skills", "group", "nested", "SKILL.md")).mode & 0o222).toBe(0);
+  });
+
+  it.each(["symlink", "ambient", "writable"] as const)("rejects an unsafe selected source projection before clearing retained skills: %s", async kind => {
+    const f = await filesystemFixture();
+    mkdirSync(join(f.remote, "skills"), { recursive: true });
+    writeFileSync(join(f.remote, "skills", "retained"), "not touched before valid admission");
+    const home = join(f.root, "codex-home", "skills");
+    if (kind === "ambient") {
+      mkdirSync(join(home, "unassigned"));
+      writeFileSync(join(home, "unassigned", "SKILL.md"), "unassigned", { mode: 0o444 });
+    } else if (kind === "writable") chmodSync(join(home, "test", "SKILL.md"), 0o644);
+    else {
+      chmodSync(join(home, "test"), 0o700);
+      symlinkSync(join(f.root, "outside"), join(home, "test", "link"));
+    }
+    await expect(stageRemoteLaunchAssets(f.input)).rejects.toThrow("runner_remote_codex_skills_invalid");
+    expect(readFileSync(join(f.remote, "skills", "retained"), "utf8")).toBe("not touched before valid admission");
+  });
+
+  it.each([false, true])("rejects a retained skills-root symlink without touching its target (dangling: %s)", async dangling => {
+    const f = await filesystemFixture();
+    mkdirSync(f.remote, { recursive: true });
+    const outside = join(f.root, "outside");
+    if (!dangling) { mkdirSync(outside); writeFileSync(join(outside, "keep"), "untouched"); }
+    symlinkSync(outside, join(f.remote, "skills"));
+    await expect(stageRemoteLaunchAssets(f.input)).rejects.toThrow("runner_remote_codex_skills_reset_failed");
+    expect(lstatSync(join(f.remote, "skills")).isSymbolicLink()).toBe(true);
+    if (!dangling) expect(readFileSync(join(outside, "keep"), "utf8")).toBe("untouched");
+  });
+
+  it.each(["sandbox", "ssh"] as const)("rejects a redirected retained ancestor before writing launch assets: %s", async transport => {
+    const f = await filesystemFixture();
+    f.input.transport = transport;
+    const outside = join(f.root, "outside");
+    mkdirSync(join(outside, "codex-home", "skills"), { recursive: true });
+    writeFileSync(join(outside, "codex-home", "skills", "keep"), "untouched");
+    symlinkSync(outside, join(f.root, "retained-filesystem"));
+    f.input.persistenceDirectories = [{ name: "codex-home", location: "filesystem", targetPath: join(f.root, "retained-filesystem", "codex-home") }];
+    await expect(stageRemoteLaunchAssets(f.input)).rejects.toThrow("runner_remote_codex_skills_reset_failed");
+    expect(readFileSync(join(outside, "codex-home", "skills", "keep"), "utf8")).toBe("untouched");
+    expect(existsSync(join(outside, "codex-home", "config.toml"))).toBe(false);
+  });
+
+  it("allows an explicitly authorized workspace alias while checking its owned descendants", async () => {
+    const f = await filesystemFixture();
+    const actual = join(f.root, "authorized-workspace");
+    mkdirSync(actual);
+    const alias = join(f.root, "authorized-alias");
+    symlinkSync(actual, alias);
+    f.input.isolatedCodexSkills = { workspaceRoot: alias };
+    f.input.persistenceDirectories = [{ name: "codex-home", location: "filesystem", targetPath: join(alias, "codex-home") }];
+    await stageRemoteLaunchAssets(f.input);
+    expect(readFileSync(join(actual, "codex-home", "skills", "test", "SKILL.md"), "utf8")).toContain("Use a native confirmation.");
+  });
+
+  it("does not project skills for a preconfigured home or another provider", async () => {
+    const f = await filesystemFixture();
+    f.input.isolatedCodexSkills = undefined;
+    await stageRemoteLaunchAssets(f.input);
+    expect(existsSync(join(f.remote, "skills"))).toBe(false);
+  });
+
   it("retains serial paths, private launch modes and immutable context modes without an opt-in", async () => {
     const f = fixture();
     await stageRemoteLaunchAssets(f.input);

@@ -300,10 +300,12 @@ describe("company decision service", () => {
     const url = `/api/companies/${f.companyId}/decision-model`;
     expect((await request(app).get(url)).body.canManage).toBe(true);
     expect((await request(app).get(`/api/companies/${other.companyId}/decision-model`)).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "alice")));
     actor = { type: "board", userId: "alice", source: "session", companyIds: [f.companyId], memberships: [{ companyId: f.companyId, status: "active", membershipRole: "viewer" }] };
     expect((await request(app).get(url)).body).toEqual({ canManage: false, settings: null, choices: [] });
     expect((await request(app).put(url).send(f.config)).status).toBe(403);
     expect((await request(app).post(`${url}/test`).send({ actor: { type: "system" } })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "alice")));
     actor = f.context.actor;
     await f.service.configure(f.companyId, "alice", { ...f.config, enabled: false });
     expect((await request(app).post(`${url}/test`).send({ state: "untrusted", actor: { type: "system" }, model: "untrusted" })).body).toEqual({ status: "unavailable", reason: "disabled" });

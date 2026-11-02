@@ -8,9 +8,60 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { assertSelectedWorkspaceTrust, runRetainsIssueIdentity, taskRepositoryRunColumns, taskRepositoryResponsibleUserMatches } from "./task-repository-acquisition.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isDeepStrictEqual } from "node:util";
+import { ProjectAccessDeniedError } from "./project-access-denial.js";
 import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection } from "@paperclipai/shared";
+import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/** Read the project requirements of the next selected workspace, without
+ * admitting execution or moving files. Batch only the tasks needing a denial
+ * presentation; this adds at most three bounded reads, not queries per task. */
+export async function taskWorkspaceProjectRequirements(db: Db, companyId: string, issueIds: string[]) {
+  const result = new Map<string, { projectIds: string[]; available: boolean }>();
+  if (!issueIds.length) return result;
+  const tasks = await db.select({ id: issues.id, projectId: issues.projectId,
+    executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId,
+    workspaceSelection: issues.workspaceSelection, workspacePendingSelection: issues.workspacePendingSelection,
+    workspaceBindingRevision: issues.workspaceBindingRevision,
+  }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+  const selections = tasks.map(task => {
+    const pending = task.workspacePendingSelection;
+    const intent = pending?.intent ?? (!task.executionWorkspaceId ? task.workspaceSelection : null);
+    const parsed = intent ? taskWorkspaceSelectionSchema.safeParse(intent.selection) : null;
+    const selection = parsed?.success ? parsed.data : null;
+    const available = (!pending || pending.expectedBindingRevision === task.workspaceBindingRevision)
+      && (!parsed || parsed.success);
+    const workspaceId = selection ? selection.kind === "existing" ? selection.workspaceId : null : task.executionWorkspaceId;
+    return { task, selection, available, workspaceId };
+  });
+  const workspaceIds = [...new Set(selections.flatMap(row => row.workspaceId ? [row.workspaceId] : []))];
+  const workspaces = workspaceIds.length ? await db.select({ id: executionWorkspaces.id,
+    projectId: executionWorkspaces.projectId, projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+    selectable: sql<boolean>`${taskWorkspaceSelectableCondition()}`,
+  }).from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, workspaceIds))) : [];
+  const workspaceMap = new Map(workspaces.map(workspace => [workspace.id, workspace]));
+  const sources = selections.map(row => {
+    const workspace = row.workspaceId ? workspaceMap.get(row.workspaceId) : undefined;
+    const sourceId = row.selection
+      ? row.selection.kind === "configured_source" ? row.selection.projectWorkspaceId : workspace?.projectWorkspaceId
+      : workspace?.projectWorkspaceId ?? row.task.projectWorkspaceId;
+    return { ...row, workspace, sourceId };
+  });
+  const sourceIds = [...new Set(sources.flatMap(row => row.sourceId ? [row.sourceId] : []))];
+  const sourceRows = sourceIds.length ? await db.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId })
+    .from(projectWorkspaces).where(and(eq(projectWorkspaces.companyId, companyId), inArray(projectWorkspaces.id, sourceIds))) : [];
+  const sourceMap = new Map(sourceRows.map(source => [source.id, source]));
+  for (const row of sources) {
+    const source = row.sourceId ? sourceMap.get(row.sourceId) : undefined;
+    result.set(row.task.id, {
+      projectIds: [...new Set([row.task.projectId, row.workspace?.projectId, source?.projectId].filter((id): id is string => Boolean(id)))],
+      available: row.available && (!row.workspaceId || Boolean(row.workspace)) && (!row.sourceId || Boolean(source))
+        && (row.selection?.kind !== "existing" || row.workspace?.selectable === true),
+    });
+  }
+  return result;
+}
 
 export async function assertTaskWorkspaceSourceProjectAccess(
   db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string | null,
@@ -19,7 +70,12 @@ export async function assertTaskWorkspaceSourceProjectAccess(
   const decision = await measureRunPhase("workspace.access.authorization", () => accessService(db as Db).decide({
     actor, action: "project:read", resource: { type: "project", companyId, projectId },
   }));
-  if (!decision.allowed) throw forbidden(decision.explanation);
+  if (!decision.allowed) {
+    if (actor.type === "agent" && decision.reason === "deny_low_trust_boundary") {
+      throw new ProjectAccessDeniedError(projectId);
+    }
+    throw forbidden(decision.explanation);
+  }
 }
 
 export async function assertExecutionWorkspaceRecordAccess(

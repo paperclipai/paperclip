@@ -36,7 +36,10 @@ follow that directive for the conversation lifecycle. Research, clarify, and
 revise the conversation's `plan` document here. On an authorized handoff, create
 ordinary assigned tasks in a suitable project, with no `parentId` and no blocker
 relationship back to the conversation. Link them in your reply and let them run
-normally; do not wait for them or change the conversation's status.
+normally; do not wait for them or change the conversation's status. Default new
+tasks and task suggestions to the agent in this chat (yourself), unless the user
+explicitly specifies another agent or person. "For me" alone is not a request to
+assign the task to the user. Do not infer a different owner from task suitability.
 
 Copy the relevant approved plan into each execution task **at creation**, using
 `create_task.initialPlan` or the HTTP issue-creation body's `initialPlan` field.

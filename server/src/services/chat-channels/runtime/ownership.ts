@@ -1,3 +1,4 @@
+import { receiverLeaseKey as leaseKeyForProvider } from "./receiver-policy.js";
 import type { EndpointRow, DbTransaction, RuntimeContext, InboundRuntimeContext } from "../runtime-types.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, lte } from "drizzle-orm";
@@ -17,12 +18,12 @@ type OwnershipOptions = {
   discordGatewayOwnerships: Map<string, DiscordGatewayOwnership>;
   discordGatewayStopTasks: Set<Promise<void>>;
   isShuttingDown: () => boolean;
+  onStopped?: (endpointId: string) => void;
   readonly discordGatewayLeaseTtlMs?: number;
   readonly discordGatewayLeaseRenewalIntervalMs?: number;
   readonly discordGatewayLeaseWaitMs?: number;
   readonly renewDiscordGatewayLease?: (input: { companyId: string; credentialFingerprint: string; endpointId: string; expiresAt: Date; generation: number; leaseKey: string; token: string }) => Promise<boolean>;
 };
-const DISCORD_GATEWAY_LEASE_KEY = "discord_gateway_runtime";
 const DISCORD_GATEWAY_LEASE_TTL_MS = 15_000;
 const DISCORD_GATEWAY_LEASE_WAIT_MS = 20_000;
 const DISCORD_GATEWAY_LEASE_POLL_MS = 100;
@@ -73,7 +74,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
 
   async function stopDiscordGatewayOwnership(
     ownership: DiscordGatewayOwnership,
-    removeRuntime = true,
+    stopOptions: { removeRuntime?: boolean; notifyStopped?: boolean } = {},
   ): Promise<void> {
     if (ownership.stopPromise) return ownership.stopPromise;
     ownership.stopping = true;
@@ -81,12 +82,9 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
       clearInterval(ownership.renewTimer);
       ownership.renewTimer = null;
     }
-    if (discordGatewayOwnerships.get(ownership.endpointId) === ownership) {
-      discordGatewayOwnerships.delete(ownership.endpointId);
-    }
     ownership.stopPromise = (async () => {
       if (
-        removeRuntime &&
+        stopOptions.removeRuntime !== false &&
         ownership.context.endpointRuntime &&
         runtime.get(ownership.endpointId) === ownership.context.endpointRuntime
       ) {
@@ -104,6 +102,10 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
       // The listener is stopped before the lease is released. A standby can
       // therefore acquire immediately without overlapping Gateway sessions.
       await releaseDiscordGatewayLeaseRow(ownership);
+      if (discordGatewayOwnerships.get(ownership.endpointId) === ownership) {
+        discordGatewayOwnerships.delete(ownership.endpointId);
+      }
+      if (!options.isShuttingDown() && stopOptions.notifyStopped !== false) options.onStopped?.(ownership.endpointId);
     })();
     discordGatewayStopTasks.add(ownership.stopPromise);
     void ownership.stopPromise.finally(() => {
@@ -304,7 +306,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
     context: RuntimeContext,
     waitForOwnership: boolean,
   ): Promise<DiscordGatewayOwnership | null> {
-    const receiverLeaseKey = endpoint.provider === "imessage-photon" ? "photon_receiver_runtime" : DISCORD_GATEWAY_LEASE_KEY;
+    const receiverLeaseKey = leaseKeyForProvider(endpoint.provider)!;
     const local = discordGatewayOwnerships.get(endpoint.id);
     if (
       local &&

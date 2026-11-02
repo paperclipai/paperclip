@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
@@ -19,13 +20,15 @@ import type {
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
 import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
-import { TaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   isInitialHydrating: false,
   hydratedRunIds: undefined as Set<string> | undefined,
+  truncatedRunIds: new Set<string>(),
 }));
 const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -35,6 +38,7 @@ const nativeTranscriptState = vi.hoisted(() => ({
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
+  legacyReadLimits: [] as (number | undefined)[],
   native: [] as unknown[][],
 }));
 const sidebarState = vi.hoisted(() => ({ isMobile: false }));
@@ -51,12 +55,14 @@ const editorCallbacks = vi.hoisted(() => ({ change: (_value: string) => {} }));
 const streamlinedState = vi.hoisted(() => ({ enabled: true }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
-  useLiveRunTranscripts: ({ runs }: { runs: unknown[] }) => {
+  useLiveRunTranscripts: ({ runs, logReadLimitBytes }: { runs: unknown[]; logReadLimitBytes?: number }) => {
     transcriptHookRuns.legacy.push(runs);
+    transcriptHookRuns.legacyReadLimits.push(logReadLimitBytes);
     return {
       transcriptByRun: new Map(transcriptState.transcriptByRun),
       isInitialHydrating: transcriptState.isInitialHydrating,
       hydratedRunIds: transcriptState.hydratedRunIds,
+      truncatedRunIds: transcriptState.truncatedRunIds,
     };
   },
 }));
@@ -122,11 +128,13 @@ beforeEach(() => {
   transcriptState.transcriptByRun.clear();
   transcriptState.isInitialHydrating = false;
   transcriptState.hydratedRunIds = undefined;
+  transcriptState.truncatedRunIds.clear();
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
   nativeTranscriptState.hydratedRunIds = undefined;
   nativeTranscriptState.terminalHydratedRunIds = undefined;
   transcriptHookRuns.legacy.length = 0;
+  transcriptHookRuns.legacyReadLimits.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
   planState.data = null;
@@ -155,10 +163,17 @@ function render(ui: ReactElement) {
   flushSync(() =>
     root!.render(
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider>{ui}</ThemeProvider>
+        <ThemeProvider><TooltipProvider>{ui}</TooltipProvider></ThemeProvider>
       </QueryClientProvider>,
     ),
   );
+}
+
+async function settleThreadLayout() {
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  });
 }
 
 describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
@@ -346,9 +361,7 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   render(<TaskChatThread {...props} initialHistoryPending={false} />);
   const composer = container.querySelector('[data-testid="mock-editor"]');
   expect(composer).not.toBeNull();
-  await act(async () => {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
   expect(container.querySelector('[data-testid="task-chat-composer-dock"]')?.hasAttribute("inert")).toBe(false);
@@ -359,6 +372,104 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   ).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
+});
+
+it.each([true, false])("coordinates compact cards before first reveal and retains content during refresh (mobile=%s)", async (mobile) => {
+  sidebarState.isMobile = mobile;
+  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), historyControl: <button>More messages</button>, onAdd: async () => {} };
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending={false} />);
+  await settleThreadLayout();
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.textContent).toContain("Thread message 1");
+  expect(container.textContent).toContain("More messages");
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  expect(editor).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+});
+
+it("keeps revealed history scrollable while metadata for another page is pending", async () => {
+  function Readiness() { return <span data-testid="history-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "paged-chat", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  render(<TaskChatThread {...props} />);
+  await settleThreadLayout();
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
+});
+
+it("waits for a same-task comment target before applying its scroll position without hiding the thread", async () => {
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "linked-task", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  const show = (hash: string, pending: boolean) => render(
+    <TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+      <TaskChatThread {...props} initialHistoryPending={pending} />
+    </TaskChatScrollNavigation.Provider>,
+  );
+  show("", false);
+  await settleThreadLayout();
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  show("#comment-older", true);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+  show("#comment-older", false);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+});
+
+it("positions an available comment after the reveal deadline even if unrelated metadata is stalled", async () => {
+  vi.useFakeTimers();
+  try {
+    function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+    render(<TaskChatScrollNavigation.Provider value={{ key: "available-target", hash: "#comment-comment-1", restore: false }}>
+      <TaskChatThread issueId="available-target" comments={createLongThreadComments()} onAdd={async () => {}} initialHistoryPending threadHeader={<Readiness />} />
+    </TaskChatScrollNavigation.Provider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
+it("bounds the scroll wait for a same-task target that never arrives", async () => {
+  const props = { issueId: "stalled-target", comments: createLongThreadComments(), onAdd: async () => {} };
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const show = (hash: string, pending: boolean) => render(<TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+    <TaskChatThread {...props} initialHistoryPending={pending} threadHeader={<Readiness />} />
+  </TaskChatScrollNavigation.Provider>);
+  show("", false);
+  await settleThreadLayout();
+  vi.useFakeTimers();
+  try {
+    show("#comment-unavailable", true);
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
+it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
+  const onExpandHistory = vi.fn();
+  if (logBytes > 32_000) transcriptState.truncatedRunIds.add("legacy-run");
+  const props = {
+    issueId: "single-legacy-run", comments: [], onAdd: async () => {}, onExpandHistory,
+    linkedRuns: [{ runId: "legacy-run", agentId: "agent", status: "succeeded", adapterType: "claude_local", runtimeMode: "legacy" as const, createdAt: "2025-01-01T10:00:00Z", startedAt: "2025-01-01T10:00:00Z", logBytes }],
+  };
+  render(<TaskChatThread {...props} compactHistory />);
+  expect(container.textContent).not.toContain("More messages");
+  const outputControl = [...container.querySelectorAll("button")].find((button) => button.textContent === "More run output");
+  expect(Boolean(outputControl)).toBe(logBytes > 32_000);
+  expect(transcriptHookRuns.legacyReadLimits.at(-1)).toBe(32_000);
+  if (outputControl) {
+    act(() => outputControl.click());
+    expect(onExpandHistory).toHaveBeenCalledOnce();
+    render(<TaskChatThread {...props} compactHistory={false} />);
+    expect(container.textContent).not.toContain("More run output");
+    expect(transcriptHookRuns.legacyReadLimits.at(-1)).toBeUndefined();
+  }
 });
 
 it("defers initial history for a saved conversation with its own draft key", () => {
@@ -375,6 +486,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const onAttachImage = vi.fn().mockReturnValue(new Promise(resolve => { resolveUpload = resolve; }));
   const props = { comments: [], onAdd, onAttachImage, conversationMode: true, draftKey: "agent-chat:company:agent" };
   render(<TaskChatThread {...props} issueId="" />);
+  await settleThreadLayout();
   const composer = container.querySelector('[data-testid="mock-editor"]');
   const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
   const file = new File(["notes"], "chat-notes.txt", { type: "text/plain" });
@@ -390,7 +502,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
   await act(async () => { resolveUpload({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: file.name }); });
   render(<TaskChatThread {...props} issueId="persisted-chat" initialHistoryPending={false} />);
-  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   const chip = container.querySelector('[data-testid="task-chat-composer-attachments"] [data-slot="attachment"]');
   expect(chip?.getAttribute("data-state")).toBe("done");
   const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
@@ -401,7 +513,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
 });
 
-it("shows Thinking during admission and clears it when the saved follow-up enters backoff", async () => {
+it("shows Queued during admission and clears it when the saved follow-up enters backoff", async () => {
   const pending = { id: "optimistic-recovery", companyId: "company", issueId: "issue", authorType: "user" as const,
     authorAgentId: null, authorUserId: "board", body: "Confirm the existing result.", presentation: null, metadata: null,
     createdAt: new Date(), updatedAt: new Date(), clientStatus: "pending" as const };
@@ -414,7 +526,7 @@ it("shows Thinking during admission and clears it when the saved follow-up enter
     agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
   show(false);
   expect(container.textContent).toContain("Confirm the existing result.");
-  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).toContain("Queued");
   show(true);
   expect(container.textContent).not.toContain("Thinking");
   expect(container.textContent).not.toContain("Working");
@@ -422,17 +534,19 @@ it("shows Thinking during admission and clears it when the saved follow-up enter
 
 it.each((["task", "legacy"] as const).flatMap(surface =>
   ([null, "failed", "resolved"] as const).map(previousState => ({ surface, previousState })),
-))("keeps $surface admission Thinking through an old $previousState projection until acknowledgement", async ({ surface, previousState }) => {
+))("keeps $surface admission identity through an old $previousState projection and comment acknowledgement", async ({ surface, previousState }) => {
   let acknowledge!: () => void;
-  const onAdd = vi.fn(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>(resolve => { acknowledge = resolve; }));
   const refresh = vi.fn();
   const Component = surface === "task" ? TaskChatThread : IssueChatThread;
-  render(<Component comments={[]} issueId="issue" issueAssigneeAgentId="agent"
-    issueStatus="todo" onAdd={onAdd} onRefreshLatestComments={refresh}
+  const props = { comments: [], issueId: "issue", issueAssigneeAgentId: "agent", issueStatus: "todo", onAdd,
+    onRefreshLatestComments: refresh,
+    agentMap: new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]]) };
+  render(<Component {...props}
     interruption={previousState ? { intentId: "previous-intent", responsibility: "system", state: previousState,
       nextRetryAt: null, canRetry: previousState === "failed", userAction: null,
       sourceRunIds: ["previous-run"], observedRunId: "previous-run" } : null}
-    agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
+    />);
   await act(async () => { editorCallbacks.change("Save this note."); });
   const send = surface === "task"
     ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
@@ -442,16 +556,121 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
   try {
     await act(async () => { send!.click(); });
     expect(onAdd).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("Thinking");
+    expect(container.textContent).toContain("Queued");
+    const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+    render(<Component {...props} composerDisabledReason="Could not load task pause state." />);
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(container.textContent).toContain("Taking longer than usual");
     expect(refresh).toHaveBeenCalledTimes(1);
     await act(async () => { acknowledge(); });
-    expect(container.textContent).not.toContain("Thinking");
-    expect(container.textContent).not.toContain("Taking longer than usual");
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+    expect(container.textContent).toContain("Taking longer than usual");
+    render(<Component {...props} interruption={{ intentId: "new-intent", responsibility: "system", state: "retry_scheduled",
+      nextRetryAt: new Date(Date.now() + 30_000).toISOString(), canRetry: true, userAction: null,
+      sourceRunIds: [], observedRunId: null }} />);
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBeNull();
   } finally {
     vi.useRealTimers();
   }
+});
+
+it.each((["task", "legacy"] as const).flatMap(surface =>
+  [-300_000, 0, 300_000].map(clockOffset => ({ surface, clockOffset })),
+))("keeps an existing $surface thread's responder mounted with clock offset $clockOffset", async ({ surface, clockOffset }) => {
+  const serverTime = new Date("2026-01-02T00:00:00Z").getTime();
+  vi.spyOn(Date, "now").mockReturnValue(serverTime + clockOffset);
+  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
+  let acknowledge!: () => void;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const prior = { id: "prior-reply", companyId: "company", issueId: "issue", authorType: "agent" as const,
+    authorAgentId: "agent", authorUserId: null, body: "Here is the previous answer.", presentation: null, metadata: null,
+    createdAt: new Date("2026-01-01"), updatedAt: new Date("2026-01-01") };
+  const props = { issueId: "issue", issueStatus: "in_progress", currentUserId: "board", issueAssigneeAgentId: "agent", onAdd,
+    comments: [prior], agentMap: new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]]) };
+  render(<Component {...props} />);
+  await act(async () => { editorCallbacks.change("Please check again."); });
+  const send = surface === "task" ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
+    : [...container.querySelectorAll<HTMLButtonElement>('[data-testid="issue-chat-composer"] button')].find(button => button.textContent === "Send");
+  await act(async () => { send!.click(); });
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  const identity = container.querySelectorAll('[data-testid="task-chat-agent-identity"]');
+  const responder = identity[identity.length - 1];
+  const avatar = responder?.querySelector("img");
+  expect(responder?.textContent).toBe("Worker");
+  expect(avatar).not.toBeNull();
+  const saved = { ...prior, id: "saved-message", authorType: "user" as const, authorAgentId: null, authorUserId: "board",
+    body: "Please check again.", clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(serverTime), updatedAt: new Date(serverTime) };
+  render(<Component {...props} comments={[prior, saved]} />);
+  await act(async () => { acknowledge(); });
+  expect(container.contains(responder)).toBe(true);
+  expect(responder.querySelector("img")).toBe(avatar);
+  render(<Component {...props} comments={[prior, saved]} linkedRuns={[{
+    runId: "older-run", agentId: "agent", status: "succeeded", createdAt: "2026-01-01", startedAt: "2026-01-01",
+  }]} />);
+  expect(container.contains(responder)).toBe(true);
+  render(<Component {...props} comments={[prior, saved]} linkedRuns={[{
+    runId: "new-run", agentId: "agent", status: "succeeded", createdAt: new Date(serverTime + 1), startedAt: new Date(serverTime + 1),
+  }]} />);
+  expect(container.contains(responder)).toBe(false);
+});
+
+it.each((["task", "legacy"] as const).flatMap(surface => [
+  ...(["paused", "pending_approval", "terminated"] as const).map(status => ({ surface, reason: status, status, orgChainHealth: undefined })),
+  ...(["missing_manager", "terminated_ancestor", "cycle"] as const).map(reason => ({ surface, reason, status: "idle" as const,
+    orgChainHealth: { status: "invalid_org_chain", reason } as Agent["orgChainHealth"] })),
+]))("does not show startup work with $reason in $surface chat", async ({ surface, status, orgChainHealth }) => {
+  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>().mockResolvedValue(undefined);
+  const agentMap = new Map([["agent", { id: "agent", name: "Worker", status, orgChainHealth, adapterType: "paperclip_runner" } as Agent]]);
+  const props = { issueId: "issue", comments: [], issueStatus: "todo", issueAssigneeAgentId: "agent", agentMap, onAdd };
+  render(<Component {...props} />);
+  await act(async () => { editorCallbacks.change("Save a note for later."); });
+  const send = surface === "task" ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
+    : [...container.querySelectorAll<HTMLButtonElement>('[data-testid="issue-chat-composer"] button')].find(button => button.textContent === "Send");
+  await act(async () => { send!.click(); });
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBeNull();
+  expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Taking longer than usual");
+});
+
+it.each([null, "previous-agent"].flatMap(previousAgentId => ["paperclip_runner", "process"].map(adapterType => ({ previousAgentId, adapterType }))))("keeps the selected responder mounted across reassignment, acknowledgement and $adapterType startup (previous=$previousAgentId)", async ({ previousAgentId, adapterType }) => {
+  let acknowledge!: () => void;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const props = {
+    issueId: "issue", issueStatus: "in_review", currentUserId: "board", comments: [], onAdd, enableReassign: true,
+    suggestedAssigneeValue: "agent:next-agent",
+    reassignOptions: [{ id: "agent:next-agent", label: "Next worker" }, { id: "agent:previous-agent", label: "Previous worker" }],
+    agentMap: new Map([
+      ["previous-agent", { id: "previous-agent", name: "Previous worker", adapterType: "paperclip_runner" } as Agent],
+      ["next-agent", { id: "next-agent", name: "Next worker", adapterType } as Agent],
+    ]),
+  };
+  render(<TaskChatThread {...props} issueAssigneeAgentId={previousAgentId} currentAssigneeValue={previousAgentId ? `agent:${previousAgentId}` : "user:board"} />);
+  if (previousAgentId) {
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+    await act(async () => document.querySelector('[data-assignee-identity="agent:next-agent"]')!.closest("button")!.click());
+  }
+  await act(async () => editorCallbacks.change("Please check this."));
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+  expect(onAdd.mock.calls[0]?.[2]).toEqual({ assigneeAgentId: "next-agent", assigneeUserId: null });
+  const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+  expect(identity?.textContent).toBe("Next worker");
+  const saved = { id: "saved-message", companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorAgentId: null, authorUserId: "board", body: "Please check this.", presentation: null, metadata: null,
+    clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(), updatedAt: new Date() };
+  render(<TaskChatThread {...props} comments={[saved]} issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" />);
+  await act(async () => acknowledge());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  expect(container.textContent).toContain("Queued");
+  // Choosing a recipient for the next draft does not change the sent request.
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+  await act(async () => document.querySelector('[data-assignee-identity="agent:previous-agent"]')!.closest("button")!.click());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  const live = { ...nativeRunningRun(), runtimeMode: adapterType === "paperclip_runner" ? "native" as const : "legacy" as const, adapterType, agentId: "next-agent", agentName: "Next worker" };
+  render(<TaskChatThread {...props} comments={[saved]} issueStatus="in_progress" issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" activeRun={live} liveRuns={[live]} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
 });
 
 it("prepares comment-link history and its composer before reveal", async () => {
@@ -472,7 +691,7 @@ it("prepares comment-link history and its composer before reveal", async () => {
   expect(row).not.toBeNull();
   expect(row?.closest('[inert]')).not.toBeNull();
   show(false);
-  await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('[data-thread-anchor="comment-1"]')).toBe(row);
@@ -535,13 +754,65 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     nativeTranscriptState.hydratedRunIds = new Set();
   });
 
-  it("reveals comments while a scheduled retry has no transcript to hydrate", () => {
+  it("opens saved compact replies without fetching their completed run and loads output on expansion", async () => {
+    const props = {
+      issueId: "saved-compact-task", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: "succeeded", startedAt: retryRun.createdAt }],
+      comments: [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} initialHistoryPending />);
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    render(<TaskChatThread {...props} initialHistoryPending={false} />);
+    await settleThreadLayout();
+    expect(container.textContent).toContain("Saved investigation result");
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    act(() => editorCallbacks.change("Keep this draft"));
+    const output = [...container.querySelectorAll("button")].find(button => button.textContent === "More run output");
+    expect(output).toBeDefined();
+    act(() => output!.click());
+    expect(props.onExpandHistory).toHaveBeenCalledOnce();
+    render(<TaskChatThread {...props} compactHistory={false} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+    expect(editor?.textContent).toBe("Keep this draft");
+  });
+
+  it.each(["running", "failed", "no-reply", "placeholder", "chat", "yielded", "no-presentation", "progress"])("hydrates compact output when it is required (%s)", (scenario) => {
+    const props = {
+      issueId: "required-output", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      conversationMode: scenario === "chat",
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: ["running", "failed"].includes(scenario) ? scenario : "succeeded", startedAt: retryRun.createdAt,
+        resultJson: scenario === "yielded" ? { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded" } }
+          : scenario === "no-presentation" ? { presentationDecision: { schema: "paperclip.run_presentation_decision.v1", commentId: null } }
+          : scenario === "progress" ? { semanticToolReceipts: { progress: { operationId: "report_progress", result: { commentId: "saved-answer" } } } } : {} }],
+      comments: scenario === "no-reply" ? [] : [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: scenario === "placeholder" ? "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log)." : "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+  });
+
+  it("retains a live transcript after the saved reply arrives", () => {
+    const props = { issueId: "live-to-saved", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }], comments: createLongThreadComments() };
+    render(<TaskChatThread {...props} />);
+    render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]}
+      comments={[...props.comments, { ...props.comments[3], authorType: "agent", authorAgentId: "agent-1", runId: "live-run", body: "Just saved" }]} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "live-run" }]);
+  });
+
+  it("reveals comments while a scheduled retry has no transcript to hydrate", async () => {
     renderThread({
       issueId: "issue-1",
       comments: createLongThreadComments(),
       onAdd: async () => {},
       linkedRuns: [retryRun],
     });
+    await settleThreadLayout();
 
     expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
     expect(
@@ -613,9 +884,7 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
         ts: "2026-08-25T18:00:01.000Z",
       }]);
       render(<TaskChatThread {...props} />);
-      await act(async () => {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      });
+      await settleThreadLayout();
 
       expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
       expect(
@@ -1075,7 +1344,7 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
   });
 
-  it.each([false, true])("keeps the runner identity and activity mounted through startup (mobile=%s)", (mobile) => {
+  it.each([false, true])("keeps the runner identity and activity mounted through startup (mobile=%s)", async (mobile) => {
     sidebarState.isMobile = mobile;
     const run = nativeRunningRun();
     const comment = {
@@ -1090,13 +1359,23 @@ describe("TaskChatThread runtime transcript selection", () => {
       currentUserId: "board", issueAssigneeAgentId: "agent-1",
       agentMap: new Map([["agent-1", { id: "agent-1", name: "Runner", adapterType: "paperclip_runner", icon: "code" } as Agent]]),
     };
+    renderThread({ ...props, comments: [] });
+    await act(async () => { editorCallbacks.change(comment.body); });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click();
+    });
     renderThread({ ...props, comments: [{ ...comment, clientStatus: "pending" }] });
     const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
     const header = container.querySelector('[data-testid="task-chat-runner-identity-row"]');
     const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
     expect(identity?.textContent).toBe("Runner");
     expect(identity?.querySelector("svg, img")).not.toBeNull();
-    expect(activity?.textContent).toBe("Thinking");
+    expect(activity?.textContent).toBe("Queued");
+
+    renderThread(props);
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+    expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
 
     for (const startup of [
       { ...run, runtimeMode: undefined, status: "queued", startedAt: null },
@@ -1107,7 +1386,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
       expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
-      expect(activity?.textContent).toBe("Thinking");
+      expect(activity?.textContent).toBe(startup.status === "queued" ? "Queued" : "Thinking");
       expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();
       expect(container.textContent).not.toContain("run started");
     }
@@ -1272,7 +1551,8 @@ describe("TaskChatThread runtime transcript selection", () => {
   });
 
 
-  it.each(["matching", "document_only", "absent", "other_revision"] as const)("reports a restore failure with %s saved-plan evidence", (evidence) => {
+  it.each((["matching", "document_only", "absent", "other_revision"] as const).flatMap(evidence =>
+    ["restore_unsafe_archive", "restore_invalid_metadata"].map(code => [evidence, code] as const)))("reports %s saved-plan evidence for %s without offering another provider turn", (evidence, code) => {
     if (evidence !== "absent") planState.data = planDocument();
     renderThread({
       issueId: "issue-1",
@@ -1285,7 +1565,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         runId: "restore-run", runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed",
         agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
         createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
-        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
+        resultJson: { workspaceRestoreFailure: code, workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
           ...(evidence === "document_only" ? { savedPlanRevisionId: "revision-3" } : {}),
         },
       }],
@@ -1375,6 +1655,33 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).toContain("Use the connection card below to continue.");
     expect(container.textContent).not.toContain("The selected AI account is unavailable");
     expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it.each(["timestamp", "resolved-review"].flatMap(owner => [false, true].map(coordinator => ({ owner, coordinator }))))("keeps a saved Plan visible while its completed output is deferred ($owner, Coordinator=$coordinator)", async ({ owner, coordinator }) => {
+    const runId = "saved-plan-run";
+    planState.data = planDocument({ updatedAt: new Date("2026-08-25T18:00:02.000Z") });
+    nativeTranscriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.terminalHydratedRunIds = new Set();
+    const props = {
+      issueId: "issue-1", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      comments: [{ ...createLongThreadComments()[3], id: "saved-plan-reply", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "The saved Plan is ready.", runId }],
+      interactions: owner === "resolved-review" ? [planReviewInteraction("accepted", "revision-3", runId)] : [],
+      linkedRuns: [{ runId, runtimeMode: "native" as const, status: "succeeded", agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:03.000Z" }],
+    };
+    const show = (compactHistory: boolean) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} compactHistory={compactHistory} />
+    </CoordinatorPresentation.Provider>);
+    show(true);
+    await settleThreadLayout();
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.textContent).toContain("Preview the Plan");
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    show(false);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
   });
 
   it("projects the saved Plan inline at its native write_document boundary", () => {
@@ -3525,7 +3832,7 @@ describe("TaskChatThread composer alignment", () => {
 
     const dock = container
       .querySelector('[data-testid="mock-editor"]')
-      ?.closest("div.sticky") as HTMLElement | null;
+      ?.closest('[data-testid="task-chat-composer-dock"]') as HTMLElement | null;
 
     expect(dock?.className).toContain("w-full");
     expect(dock?.className).toContain("max-w-(--tc-shell-max-w)");
@@ -4220,7 +4527,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it.each(["run-1", null])("offers legacy interruption only with a live target (%s)", (targetRunId) => {
+  it.each(["run-1", null])("offers Interrupt for a live legacy queue and Send for a stopped queue (%s)", (targetRunId) => {
     const onInterruptQueued = vi.fn(async () => {});
     renderThread({
       comments: [
@@ -4255,14 +4562,11 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     const interrupt = container.querySelector<HTMLButtonElement>(
       '[data-testid="task-chat-queued-interrupt-queued-prp-1"]',
     );
-    if (targetRunId) {
-      expect(interrupt).not.toBeNull();
-      flushSync(() => interrupt!.click());
-      expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
-    } else {
-      expect(interrupt).toBeNull();
-      expect(onInterruptQueued).not.toHaveBeenCalled();
-    }
+    expect(interrupt).not.toBeNull();
+    expect(interrupt!.textContent).toBe(targetRunId ? "Interrupt" : "Send");
+    expect(onInterruptQueued).not.toHaveBeenCalled();
+    flushSync(() => interrupt!.click());
+    expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
   });
 
   it("cancels an optimistic queued row locally before server acknowledgement", async () => {
@@ -4309,26 +4613,22 @@ describe("TaskChatThread Paperclip Runner queue", () => {
   });
 });
 
-describe("TaskChatThread mobile composer dock (PAP-495)", () => {
-  it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
+describe("TaskChatThread mobile composer dock", () => {
+  it("scrolls messages independently of the composer on mobile", () => {
     sidebarState.isMobile = true;
 
     renderThread({
-      comments: [],
+      comments: createLongThreadComments(),
       onAdd: async () => {},
       draftKey: "task-chat-draft:issue-mobile",
     });
 
-    const dock = container
-      .querySelector('[data-testid="mock-editor"]')
-      ?.closest("div.sticky") as HTMLElement | null;
-
+    const dock = container.querySelector('[data-testid="task-chat-composer-dock"]');
+    const scroller = container.querySelector('[data-testid="task-chat-scroller"]');
     expect(dock).not.toBeNull();
-    // Bottom offset comes from --tc-composer-bottom (Layout raises it to the nav
-    // height while the nav is on screen) — NOT the raw safe-area dock, which is
-    // what let the nav occlude the action row before PAP-495.
-    expect(dock?.className).toContain("bottom-(--tc-composer-bottom)");
-    expect(dock?.className).not.toContain("bottom-(--sz-calc-8)");
+    expect(scroller).not.toBeNull();
+    expect(scroller?.textContent).toContain("Thread message 1");
+    expect(scroller?.contains(dock)).toBe(false);
   });
 });
 

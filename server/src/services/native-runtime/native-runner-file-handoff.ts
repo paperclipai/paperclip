@@ -1,3 +1,4 @@
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
@@ -298,7 +299,7 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
   );
 }
 
-async function readVerifiedWorkspaceFile(
+export async function readVerifiedWorkspaceFile(
   binding: NativeRunnerFileHandoffBinding,
   input: NativeRunnerFileHandoffInput,
 ): Promise<VerifiedWorkspaceFile> {
@@ -1141,14 +1142,11 @@ async function assertCurrentBinding(
 export async function prepareNativeRunnerFileHandoff(input: {
   readonly db: Db;
   readonly binding: NativeRunnerFileHandoffBinding;
-  readonly deliverable: NativeRunnerFileHandoffInput;
+  readonly verifiedFile: VerifiedWorkspaceFile;
   readonly storage?: StorageService;
 }): Promise<PreparedNativeRunnerFileHandoff> {
   const { statusVersion } = await assertCurrentBinding(input.db, input.binding);
-  const verified = await readVerifiedWorkspaceFile(
-    input.binding,
-    input.deliverable,
-  );
+  const verified = input.verifiedFile;
 
   const [existing] = await input.db
     .select({
@@ -1268,7 +1266,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
     ) {
       throw new Error("paperclip_runner_file_handoff_origin_not_persisted");
     }
-    await input.db
+    await input.db.transaction(async tx => {
+      await notifyIssueRecovery(tx, { companyId: input.binding.companyId });
+      await tx
       .update(issueWorkProducts)
       .set({ title: verified.title, updatedAt: new Date() })
       .where(
@@ -1279,6 +1279,7 @@ export async function prepareNativeRunnerFileHandoff(input: {
           eq(issueWorkProducts.createdByRunId, input.binding.runId),
         ),
       );
+    });
     const comment = await issueService(input.db).addComment(
       input.binding.issueId,
       `Prepared ${verified.title} for this response.`,

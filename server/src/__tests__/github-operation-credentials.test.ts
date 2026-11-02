@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 import { createNativeGitHubAccess } from "../services/native-runtime/native-github-access.js";
 import express from "express";
 import request from "supertest";
@@ -6,6 +8,7 @@ import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import { errorHandler } from "../middleware/index.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -31,8 +34,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   initializeRunIdentity,
-  reserveSteeredIdentity,
-  acceptSteeredIdentity,
+  captureRunIdentity,
 } from "../services/run-identity.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import {
@@ -49,167 +51,95 @@ const vault = vi.hoisted(() => ({
   resolveSecretValue: vi.fn(async () => "test-dedicated-token"),
 }));
 vi.mock("../services/secrets.js", () => ({ secretService: () => vault }));
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_CREDENTIAL_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "operation-time GitHub credential resolution",
   () => {
-    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
+    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined,
       db: ReturnType<typeof createDb>;
     beforeAll(async () => {
       vi.stubEnv(
         "PAPERCLIP_AGENT_JWT_SECRET",
         "test-github-broker-signing-secret",
       );
-      database = await startEmbeddedPostgresTestDatabase(
+      if (!external) database = await startEmbeddedPostgresTestDatabase(
         "paperclip-github-operation-",
       );
-      db = createDb(database.connectionString);
+      db = createDb(external ?? database!.connectionString);
     }, 30_000);
     afterAll(async () => {
+      await db?.$client.end({ timeout: 1 });
       await database?.cleanup();
       vi.unstubAllEnvs();
     }, 60_000);
-    async function seed() {
-      const companyId = randomUUID(),
-        agentId = randomUUID(),
-        runId = randomUUID(),
-        issueId = randomUUID();
-      await db.insert(companies).values({
-        id: companyId,
-        name: companyId,
-        issuePrefix: companyId.slice(0, 8),
+    const { seed, grant, switchTo } = githubCredentialsFixture(() => db);
+    it.each(["config", "transportConfig"] as const)("reads only current GitHub identity connections via %s", async location => {
+      const input = await seed(), selected = await grant(input, "A");
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, selected.connectionId));
+      await db.update(toolConnections).set({ config: {}, transportConfig: {}, [location]: { sourceTemplateKey: "github" } })
+        .where(eq(toolConnections.id, selected.connectionId));
+      const payload = "unrelated-connection-config🙂".repeat(10_000);
+      const irrelevant = [null, true, 42, ["github"], { name: "github" }, "GitHub", " github ", "other"].map(sourceTemplateKey => {
+        const id = randomUUID();
+        return { id, companyId: input.companyId, applicationId: connection.applicationId, name: id, uid: id,
+          transport: "mcp_remote" as const, config: { sourceTemplateKey, payload }, transportConfig: { sourceTemplateKey } };
       });
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Shared",
-        role: "engineer",
-        adapterType: "codex_local",
-      });
-      await db
-        .insert(issues)
-        .values({ id: issueId, companyId, title: "Identity test" });
-      await db.insert(heartbeatRuns).values({
-        id: runId,
-        companyId,
-        agentId,
-        status: "running",
-        contextSnapshot: { issueId },
-      });
-      await db.insert(companyMemberships).values(
-        ["A", "B"].map((principalId) => ({
-          companyId,
-          principalType: "user",
-          principalId,
-          status: "active",
-          membershipRole: "member",
-        })),
-      );
-      await initializeRunIdentity(db, {
-        companyId,
-        runId,
-        responsibleUserId: "A",
-        cause: "instruction",
-      });
-      return { companyId, agentId, runId, issueId };
-    }
-    async function grant(
-      input: Awaited<ReturnType<typeof seed>>,
-      user: string,
-      dedicated = false,
-    ) {
-      const applicationId = randomUUID(),
-        connectionId = randomUUID(),
-        secretId = randomUUID(),
-        definitionId = randomUUID(),
-        id = randomUUID();
-      await db.insert(toolApplications).values({
-        id: applicationId,
-        companyId: input.companyId,
-        name: applicationId,
-        type: "mcp_http",
-      });
-      await db.insert(toolConnections).values({
-        id: connectionId,
-        companyId: input.companyId,
-        applicationId,
-        name: connectionId,
-        uid: connectionId,
-        transport: "mcp_remote",
-        status: "active",
-        enabled: true,
-        credentialPolicy: dedicated ? "per_agent" : "per_user",
-        config: { sourceTemplateKey: "github" },
-      });
-      await db.insert(toolConnectionInstalls).values({
-        companyId: input.companyId,
-        connectionId,
-        targetType: "agent",
-        targetId: input.agentId,
-      });
-      if (!dedicated)
-        await db.insert(userSecretDefinitions).values({
-          id: definitionId,
-          companyId: input.companyId,
-          key: definitionId,
-          name: "Test GitHub",
+      await db.insert(toolConnections).values(irrelevant);
+      const observed = createDb(external ?? database!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(observed, { toolConnections }, capture);
+      try {
+        expect(await resolveManagedGitHubIdentitySelection(observed, input.companyId, { agentId: input.agentId, responsibleUserId: "A" }))
+          .toMatchObject({ configured: true, grant: { id: selected.id } });
+        capture.flush();
+        const reads = events.filter(event => event.table === "tool_connections" && event.operation === "select");
+        expect(reads).toHaveLength(1);
+        expect(reads[0].rows).toBe(1);
+        expect(reads[0].responseValueBytes).toBeLessThan(8192);
+        await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, selected.connectionId));
+        expect((await resolveManagedGitHubIdentitySelection(observed, input.companyId, { agentId: input.agentId, responsibleUserId: "A" })).grant)
+          .toBeUndefined();
+        await db.update(toolConnections).set({ [location]: { sourceTemplateKey: "other" } }).where(eq(toolConnections.id, selected.connectionId));
+        expect(await resolveManagedGitHubIdentitySelection(observed, input.companyId, { agentId: input.agentId, responsibleUserId: "A" }))
+          .toEqual({ configured: false });
+        expect(await resolveManagedGitHubIdentitySelection(observed, randomUUID(), { agentId: input.agentId, responsibleUserId: "A" }))
+          .toEqual({ configured: false });
+        const saved = await db.select().from(toolConnections).where(eq(toolConnections.companyId, input.companyId));
+        for (const row of irrelevant) expect(saved.find(candidate => candidate.id === row.id)?.config).toEqual(row.config);
+      } finally { capture.flush(); await observed.$client.end(); }
+    });
+
+    it("resolves current GitHub credentials without transferring execution snapshots", async () => {
+      const input = await seed(), selected = await grant(input, "A");
+      const payload = "github-credential-saved-input🙂".repeat(25_000);
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: input.issueId, prompt: payload },
+        runnerProfileJson: { nativeExecutionInput: { savedInput: payload }, savedInput: payload },
+        resultJson: { stdout: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
+      }).where(eq(heartbeatRuns.id, input.runId));
+      const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+      const observed = createDb(external ?? database!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+      try {
+        expect(await resolveGitHubOperationCredentials(observed, input)).toMatchObject({
+          status: "available", login: "A", grantId: selected.id,
         });
-      await db.insert(companySecrets).values({
-        id: secretId,
-        companyId: input.companyId,
-        key: secretId,
-        name: `Test token ${secretId}`,
-        scope: dedicated ? "company" : "user",
-        ownerUserId: dedicated ? null : user,
-        userSecretDefinitionId: dedicated ? null : definitionId,
-      });
-      await db.insert(connectionGrants).values({
-        id,
-        companyId: input.companyId,
-        connectionId,
-        kind: dedicated ? "agent" : "user",
-        subjectUserId: dedicated ? null : user,
-        subjectAgentId: dedicated ? input.agentId : null,
-        status: "active",
-        credentialSecretRefs: [
-          {
-            secretId,
-            configPath: "oauth.access_token",
-            versionSelector: "latest",
-          },
-        ],
-        providerTenant: {
-          github: {
-            userId: user,
-            login: user,
-            installationCount: 1,
-            repositoryCount: 1,
-            repositorySelection: "selected",
-            installationIds: ["1"],
-            installationOwnerLogins: [user],
-          },
-        },
-      });
-      return { id, connectionId, secretId, definitionId };
-    }
-    async function switchTo(
-      input: Awaited<ReturnType<typeof seed>>,
-      user: string,
-    ) {
-      const id = randomUUID();
-      await db.insert(issueComments).values({
-        id,
-        companyId: input.companyId,
-        issueId: input.issueId,
-        authorUserId: user,
-        body: "Next instruction",
-      });
-      const context = await reserveSteeredIdentity(db, {
-        ...input,
-        messageId: id,
-      });
-      await acceptSteeredIdentity(db, context!);
-    }
+        capture.flush();
+        const reads = events.filter(event => event.table === "heartbeat_runs" && event.operation === "select");
+        expect(reads.length).toBeGreaterThan(0);
+        expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(8192);
+        expect(JSON.stringify(events)).not.toContain("github-credential-saved-input");
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)))[0]).toEqual(before);
+        const full = await captureRunIdentity(observed, input);
+        expect(full.run.runnerProfileJson).toEqual(before.runnerProfileJson);
+        expect(full.run.resultJson).toEqual(before.resultJson);
+        expect(full.run.contextSnapshot).toEqual(before.contextSnapshot);
+        await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, selected.id));
+        expect(await resolveGitHubOperationCredentials(observed, input)).toMatchObject({ status: "unavailable" });
+      } finally { capture.flush(); await observed.$client.end(); }
+    });
+
     it("resolves A → B → A without retaining tokens, and records only redacted diagnostics", async () => {
       const input = await seed();
       await grant(input, "A");
@@ -232,6 +162,42 @@ const support = await getEmbeddedPostgresTestSupport();
         .from(runIdentityContexts)
         .where(eq(runIdentityContexts.runId, input.runId));
       expect(JSON.stringify(history)).not.toContain("test-token-");
+    });
+    it("writes the GitHub summary only when it changes", async () => {
+      const input = await seed();
+      const selected = await grant(input, "A");
+      const update = vi.spyOn(db, "update");
+      const summaryWrites = () => update.mock.calls.filter(([table]) => table === runIdentityContexts).length;
+      const stored = async () => (await db.select().from(runIdentityContexts)
+        .where(eq(runIdentityContexts.runId, input.runId)))[0].github;
+      try {
+        expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "available", grantId: selected.id });
+        expect(summaryWrites()).toBe(1);
+        expect(await stored()).toMatchObject({ status: "available", login: "A", grantId: selected.id });
+        for (let call = 0; call < 3; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "available", grantId: selected.id });
+        }
+        expect(summaryWrites()).toBe(1);
+        await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, selected.id));
+        for (let call = 0; call < 2; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "unavailable" });
+        }
+        expect(summaryWrites()).toBe(2);
+        expect(await stored()).toMatchObject({ status: "unavailable" });
+        await db.update(issues).set({ executionPolicy: { authorizationPolicy: { trustPreset: LOW_TRUST_REVIEW_PRESET,
+          trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, companyId: input.companyId, rootIssueId: input.issueId,
+            issueIds: [input.issueId], allowedAgentIds: [input.agentId], allowedToolClasses: ["git.read", "github.pr.read"] } } } })
+          .where(eq(issues.id, input.issueId));
+        for (let call = 0; call < 2; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+            status: "unavailable", reason: expect.stringContaining("low-trust"),
+          });
+        }
+        expect(summaryWrites()).toBe(3);
+        expect(await stored()).toMatchObject({ status: "unavailable", reason: expect.stringContaining("low-trust") });
+      } finally {
+        update.mockRestore();
+      }
     });
     it("returns no credential for unconnected users, removed membership, or ambiguous personal accounts", async () => {
       const input = await seed();

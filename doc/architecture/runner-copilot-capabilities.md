@@ -1,21 +1,22 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current integration (2026-10-17): **Copilot profile v21 remains pending** with
-digest `sha256:1dad3d26d91e66c6f911dbfa43e7963f36c0bbf0d7709f4bbb568029a8b4b46a`.
-It binds the shared provider completion contract, direct driver, production sidecar, and controller
-continuation resolver. Installation verification requires this generated v21
-identity. The permission policy, executable closure, and qualification gate are
-unchanged. This source declaration supplies no new paid qualification.
+## Current profile identity
 
-Historical integration (2026-10-15): **Copilot profile v20 remained pending** with
-digest `sha256:7fa710c697582b1b4d85cdf833178b1940656cb6efb44ac4d356b2f27e6b3d4b`.
-Its immutable declaration remains available for decoding historical checkpoints;
-it is no longer the current launch identity.
+Copilot runs as **profile 92** on `@github/copilot` 1.0.88. Its `commandDigest`
+attests the upstream release: the package version and the complete patched
+distribution closure for each qualified platform. It does not bind Paperclip
+source or the shared ACPX layer. Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. `generate:acpx-profiles` writes the digest to `acpx-profiles.json`,
+and `check:acpx-profiles` refuses drift. Launch and recovery admission require
+the exact current profile and digest. Saved inputs with an earlier profile
+version still decode, so recovery can refuse them.
 
-Both profile v19 identities remain historical: upstream credential-observer
-`sha256:38abf359adeef43f1f19230245c6e2051c55fdd79571882ef6f00b7cb2958d93` and Muse
-`sha256:2fec061f29f9cac4f6aa70f9329e1b27ce0c9cf4825030fdbb78979ced9bc201`.
-Neither is the current launch identity.
+## Profile chronology
+
+Until 2026-10-30, these digests hashed Paperclip source files, so each change
+to a bound file advanced the profile version. The dated sections below record
+that period; their profile versions and digests are not current.
 
 Historical integration (2026-10-10): **Copilot profile v18 remained pending** with
 digest `sha256:5e79c2b1a42b98a545bafe9e93f8c6b6c423bec1c18dc1f0a3cf48477b757389`.

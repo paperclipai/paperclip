@@ -2,9 +2,10 @@ import type { TaskInterruptionPresentation } from "@paperclipai/shared";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { useSecondTick } from "../hooks/useSecondTick";
+import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
 
 /** One ordinary interruption surface. Technical records remain in diagnostics. */
-export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className }: {
+export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName }: {
   presentation: TaskInterruptionPresentation | null | undefined;
   canRetry: boolean;
   onRetry: () => void;
@@ -12,8 +13,14 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   takingLonger?: boolean;
   error?: Error | null;
   className?: string;
+  issueId?: string;
+  agentName?: string;
+  projectName?: string;
 }) {
   useSecondTick(presentation?.state === "retry_scheduled");
+  if (presentation?.projectAccess && !optimistic && !takingLonger) return <TaskProjectAccessNotice
+    access={presentation.projectAccess} issueId={issueId} agentName={agentName} projectName={projectName}
+    canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
   if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{error.message}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
