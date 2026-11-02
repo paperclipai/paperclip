@@ -544,6 +544,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #turnReasoningMode: OpenCodeReasoningMode = "default";
   #emptyResponseRecovery: { turnId: string; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
   #emptyResponseAckTimer: ReturnType<typeof setTimeout> | undefined;
+  #interruptedTurnId: string | null = null;
   #pendingToolCalls = 0;
   readonly #runningNativeToolParts = new Set<string>();
   #abort = new AbortController();
@@ -695,6 +696,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#turnStartSourceSeq = this.#sourceSequence;
     this.#turnReasoningMode = reasoningMode;
     this.#emptyResponseRecovery = null;
+    this.#interruptedTurnId = null;
     this.#runningNativeToolParts.clear();
     this.#emit("turn.submitted", {
       envelopeSchema: this.#taskEnvelope.schema,
@@ -765,13 +767,16 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   #failEmptyResponse(turnId: string, message: string): void {
-    if (this.#closed || this.#activeTurnId !== turnId || this.#result !== null || this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return;
+    if (this.#closed || this.#activeTurnId !== turnId || this.#interruptedTurnId === turnId || this.#result !== null || this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return;
     this.#emit("turn.failed", { status: "failed", error: { code: "opencode_empty_response", message, retryable: false } }, { turnId });
     this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
     this.#activeTurnId = null;
   }
 
   #recoverEmptyResponse(turnId: string): boolean {
+    // An intentional pause needs the provider's idle fact, not another model
+    // request. The native session loop still requires that terminal evidence.
+    if (this.#interruptedTurnId === turnId) return false;
     if (this.#result !== null || this.#pendingRuntimeRequests.size > 0) return false;
     if (this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return true;
     const recovery = this.#emptyResponseRecovery;
@@ -800,13 +805,18 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
-    await this.#completionSettlement;
+    const turnId = this.#activeTurnId;
     if (
       input.turnId &&
-      this.#activeTurnId &&
-      input.turnId !== this.#activeTurnId
+      turnId &&
+      input.turnId !== turnId
     )
       throw new Error("stale OpenCode turn");
+    if (!turnId) return;
+    this.#interruptedTurnId = turnId;
+    this.#clearEmptyResponseAckTimer();
+    await this.#completionSettlement;
+    if (this.#activeTurnId !== turnId) return;
     await api(
       this.#fetch,
       this.#runtime,
