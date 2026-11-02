@@ -389,7 +389,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     f.deps.runLogStore.finalize.mockRejectedValueOnce(new Error("secondary log cleanup failure"));
     if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
     else await f.completion.failRun(f.failure(error));
-    expect(await read(f.run.id)).toMatchObject({ status: "failed", error: providerFailure.message,
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "PRP command session.open failed",
       resultJson: { providerFailure } });
   });
 

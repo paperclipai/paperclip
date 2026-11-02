@@ -31,6 +31,7 @@ describe("durable native provider capacity retry", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID(), agentId = randomUUID(), otherAgentId = randomUUID();
+  const providerDisplayMessage = "Distinctive upstream explanation for the task display only.";
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
     temporary = await startEmbeddedPostgresTestDatabase("native-capacity-retry-");
@@ -62,7 +63,7 @@ describe("durable native provider capacity retry", () => {
     };
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
     const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
-      category: "overloaded", message: NATIVE_PROVIDER_OVERLOADED_MESSAGE, retryability: "transient" };
+      category: "overloaded", message: providerDisplayMessage, retryability: "transient" };
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1", runId, normalizedSessionId: native.normalizedSessionId, turnId: native.turnId,
       sourceInstanceId: native.runnerInstanceId, sourceEventId: "overload", sourceSeq: 1, sourceKind: "runner", eventType: "turn.failed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
@@ -117,6 +118,7 @@ describe("durable native provider capacity retry", () => {
         // Exhaustion ends automatic recovery, so Sentry receives the failure.
         expect(sentry.captureRunFailure).toHaveBeenCalledOnce();
         expect(sentry.captureRunFailure.mock.calls[0]![0]).toMatchObject({ runId, runStatus: "failed" });
+        expect(JSON.stringify(sentry.captureRunFailure.mock.calls)).not.toContain(providerDisplayMessage);
         expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", unblockDescriptor: { action: expect.stringContaining("Automatic retries exhausted") } });
         break;
       }

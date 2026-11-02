@@ -10097,8 +10097,8 @@ async function executePaperclipNativeSessionWithinScope(
         sourceFailureCode === "native_event_replay_conflict";
       const providerFailure = providerFailureFromError(error);
       const message = redactIdentityText(
-        providerFailure?.message ?? (error instanceof Error ? error.message : String(error)),
-      ).slice(0, 4_000);
+        error instanceof Error ? error.message : String(error),
+      ).slice(0, 2_000);
       const sanitizedStderrTail = redactIdentityText(message).slice(-4_096);
       const remoteRunnerRecovery = readRemoteRunnerRecoveryError(error);
       // Set inside the transaction only when the write below genuinely
@@ -10560,7 +10560,7 @@ async function executePaperclipNativeSessionWithinScope(
     errorMessage:
       native.terminal.runTerminalState === "succeeded"
         ? null
-        : providerExplanation?.message ?? providerFailure?.errorMessage ?? `Native session ${native.terminal.runTerminalState}`,
+        : providerFailure?.errorMessage ?? `Native session ${native.terminal.runTerminalState}`,
     ...(providerFailure ? { errorCode: providerFailure.errorCode } : {}),
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,

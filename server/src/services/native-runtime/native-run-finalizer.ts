@@ -1620,8 +1620,7 @@ export async function finalizeNativeRun(input: {
       const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? recoveredExecutionFailureMetadata() : sql`'{}'::jsonb`}`;
-      const projectedError = providerExplanation ? sql`coalesce(${heartbeatRuns.error}, ${providerExplanation.message})`
-        : providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+      const projectedError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
         : clearExecutionFailure ? sql`null` : heartbeatRuns.error;
       const projectedErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
         : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode;

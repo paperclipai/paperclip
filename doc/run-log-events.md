@@ -99,7 +99,8 @@ startup/turn phase, and available status, code, request ID, or retry time. Provi
 adapters extract these fields; arbitrary exception objects, request bodies,
 headers, environment variables, and stacks are excluded. Unknown categories retain
 their explanation. The cause stays in company-scoped run records and the run log;
-it is not added to first-party Telemetry or Observability attributes. Startup
+it is not added to first-party Telemetry, Observability attributes, or Sentry
+failure reports. The reportable run error keeps its existing generic text. Startup
 receipts retain it across controller restart before any provider turn exists.
 
 Completed OpenCode builtin `bash` parts preserve the numeric process exit from
