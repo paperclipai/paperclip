@@ -1,3 +1,4 @@
+import { makeDirectoryTreeRemovable } from "./directory-cleanup.js";
 /** Credential-free full-server overlap characterization. No model or Runner
  * continuity is claimed. Requires an explicitly selected disposable S3 service.
  * node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/rolling-deployment-smoke.ts */
@@ -208,7 +209,7 @@ try {
   proxy.routeTo(b.origin);
   await delay(500);
   await a.stop({ requireGraceful: true });
-  await rm(a.home, { recursive: true, force: true });
+  await makeDirectoryTreeRemovable(a.home); await rm(a.home, { recursive: true });
   await delay(1_000);
   report.handoffElapsedMs = Math.round(performance.now() - switchedAt);
   if (browser) await check("Existing browser reconnects and opens an old lazy chunk after A removal", async () => {
@@ -270,7 +271,7 @@ try {
       if (fixture.seeded) assert.equal((await api(b.origin, `${route}?path=AGENTS.md`)).content, "Durable original");
     }
   });
-  await b.stop({ requireGraceful: true }); await rm(b.home, { recursive: true, force: true });
+  await b.stop({ requireGraceful: true }); await makeDirectoryTreeRemovable(b.home); await rm(b.home, { recursive: true });
   const c = await start("C", false); proxy.routeTo(c.origin);
   await check("Fresh C restores files after both homes are deleted, even with adoption opt-in disabled", async () => {
     assert.equal((await api(c.origin, `${fileRoute}?path=reference.txt`)).content, content);

@@ -121,7 +121,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       if (signalsCleanup) await notifyDirectoryCleanup(tx, { companyId: row.companyId, runId: row.runId });
       if (signalsCollection) await notifyInstructionCollection(tx, { companyId: row.companyId, runId: row.runId });
       const [updated] = await tx.update(copies).set({ ...values, updatedAt: new Date() }).where(and(
-        scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash),
+        scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash), eq(copies.localRoot, row.localRoot),
         sql`${copies.receipt}->>'retainedByRunId' IS NOT DISTINCT FROM ${typeof row.receipt?.retainedByRunId === "string" ? row.receipt.retainedByRunId : null}`,
         requireDue ? or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())) : undefined, condition,
       )).returning();

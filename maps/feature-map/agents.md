@@ -85,14 +85,28 @@ resource allocation waits for approval.
 ### `agent-configuration`
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
+The agent nav has two sections: **Agent** (Overview, Identity at
+`/agents/:agentId/identity`, Harness / Runtime, Secrets & variables,
+Permissions / Trust, Advanced) and **Audit** (Activity, Runs, Costs, Budgets),
+which render inside the agent, filtered to it. Skills, Tools, Channels, API Keys
+and Revisions are not in the nav but still open by URL. Edit the name and title
+in place in the header (Enter or blur saves, Escape cancels); while a tab has
+unsaved changes, the header refuses the edit and asks to save or discard first.
+Assign task is the header's one button (Finish setup while setup is pending);
+Run now, Pause/Resume, Clear error, **Agent history** (a dialog listing
+revisions with a confirmed Restore), Duplicate, Copy ID, Reset sessions and
+Terminate are in the actions menu. On Identity, **Advanced settings** →
+**Load profile** switches to an external root only when the root directory and
+entry file already exist; otherwise the server refuses and the panel shows why.
 
 Open **Advanced** at `/agents/:agentId/advanced` for the compact agent
 [YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
 runtime setting, and adapter key; save, reload, and check the ordinary settings
-and Revisions. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
+and Agent history. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
 and a concurrent settings edit. Errors must retain the draft; stale saves return
-a conflict. Unchanged secret markers must preserve their stored values. Navigating
-away with a draft must show the existing unsaved-change guard. **Reload saved**
+a conflict. Unchanged secret markers must preserve their stored values. Following
+a link away from a draft must open the Discard unsaved changes? dialog; Back/Forward
+keeps the browser confirmation. **Reload saved**
 discards the draft. Also edit instruction text, skill pins, direct tool installs,
 channel settings/resources, permissions/trust/project boundaries, secret operations,
 and API key operations. Verify each result in its owning tab. Revision restore is
@@ -132,12 +146,13 @@ Use the roster’s organization view; `/org` redirects to the roster in the stre
 
 ### `personal-primary-agent`
 
-Open an agent profile and choose **Set as my primary**. Inspect its crown on the
-profile/roster and its position in the Agents sidebar, then open a new task or Chat.
+Open an agent profile and choose the outlined crown beside its name (**Set as my
+primary**). Inspect the filled crown on the profile, the crown on the roster and
+its position in the Agents sidebar, then open a new task or Chat.
 
 ### `agent-api-keys`
 
-Open `/agents/:agentId/api-keys` → **API Keys** with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
+Open `/agents/:agentId/api-keys` → **API Keys** (by URL; it is not in the agent nav) with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
 
 ### `managed-agent-cli`
 
@@ -274,9 +289,10 @@ Manual: Inspect a manager and report, change the relationship through the offere
 
 ### `personal-primary-agent`
 
-Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx)
+Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx),
+[the profile crown](../../ui/src/components/primary-agent/PrimaryAgentPresentation.test.tsx)
 and [primary-agent routes](../../server/src/__tests__/primary-agent.test.ts)
-cover selection, company/user scope, and request contracts.
+cover selection, replacement confirmation, company/user scope, and request contracts.
 
 Manual: Select an available agent, reload, and inspect the retained personal choice.
 Replace it and verify confirmation is required. Leave or terminate the selected

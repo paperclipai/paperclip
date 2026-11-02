@@ -328,6 +328,17 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(await coordinators(run.id)).toHaveLength(0);
   });
 
+  it("rejects resolved legacy execution on an ephemeral server before runtime admission", async () => {
+    const { input, run } = await fixture("process");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    expect(input.nativeRuntimeResolution.kind).toBe("legacy");
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("warm Paperclip Runner");
+    expect((await read(run.id)).runtimeMode).toBe("legacy");
+    expect(await coordinators(run.id)).toHaveLength(0);
+    expect(input.onNativeLifecycleSelected).not.toHaveBeenCalled();
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+  });
+
   it.each(["warm", "per_turn"] as const)("checks resolved %s policy for ephemeral admission", async mode => {
     const { input, run } = await fixture();
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
