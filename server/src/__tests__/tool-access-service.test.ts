@@ -20831,6 +20831,62 @@ describe("projectedConnectionHeaders", () => {
       expect(projectedConnectionHeaders(connection as typeof toolConnections.$inferSelect)).toEqual({});
     }
   });
+
+  it("projects custom headers from connection config", () => {
+    const connection = {
+      transport: "mcp_remote",
+      config: {
+        url: "https://fixture.example/mcp",
+        headers: {
+          Authorization: "Bearer custom-token",
+          "X-Custom-Header": "header-value",
+        },
+      },
+    } as typeof toolConnections.$inferSelect;
+    expect(projectedConnectionHeaders(connection)).toEqual({
+      Authorization: "Bearer custom-token",
+      "X-Custom-Header": "header-value",
+    });
+  });
+
+  it("projects custom headers from transportConfig with config precedence", () => {
+    const connection = {
+      transport: "mcp_remote",
+      config: {
+        headers: {
+          Authorization: "Bearer config-token",
+        },
+      },
+      transportConfig: {
+        headers: {
+          Authorization: "Bearer transport-token",
+          "X-From-Transport": "yes",
+        },
+      },
+    } as typeof toolConnections.$inferSelect;
+    expect(projectedConnectionHeaders(connection)).toEqual({
+      Authorization: "Bearer config-token",
+      "X-From-Transport": "yes",
+    });
+  });
+
+  it("filters out unsafe or forbidden headers from projection", () => {
+    const connection = {
+      transport: "mcp_remote",
+      config: {
+        headers: {
+          Host: "evil.example",
+          Connection: "close",
+          "Content-Length": "123",
+          "X-Safe-Header": "valid-value",
+          "X-Invalid-CRLF": "bad\r\nvalue",
+        },
+      },
+    } as typeof toolConnections.$inferSelect;
+    expect(projectedConnectionHeaders(connection)).toEqual({
+      "X-Safe-Header": "valid-value",
+    });
+  });
 });
 
 describe("normalizeConnectionMethodConfig", () => {

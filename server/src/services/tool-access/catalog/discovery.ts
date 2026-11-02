@@ -147,16 +147,18 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       }
     } else {
       response = await sendToolsList(headers);
-      // `tools/list` is read-only, so a 400 can safely be retried after the MCP
+      // `tools/list` is read-only, so a 400 or 401 can safely be retried after the MCP
       // initialize handshake. Stateful servers such as Supabase require the
-      // returned Mcp-Session-Id on every non-initialization request.
-      if (response.status === 400) {
+      // returned Mcp-Session-Id on every non-initialization request, and servers
+      // that guard uninitialized sessions may return 401.
+      if (response.status === 400 || response.status === 401) {
         try {
           const sessionHeaders = await initializeMcpHttpSession({
             send: sendRemote,
             headers,
             requestId: "paperclip-catalog-refresh",
           });
+          await response.body?.cancel().catch(() => undefined);
           response = await sendToolsList(sessionHeaders);
           usedInitializedSession = response.ok;
         } catch {

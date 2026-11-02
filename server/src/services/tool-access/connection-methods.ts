@@ -8,6 +8,8 @@ import {
   resolveConnectionMethodServerUrl,
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
+  isSafeMcpRemoteHeaderName,
+  isSafeMcpRemoteHeaderValue,
   mcpRemoteHeaderRejectionMessage,
 } from "@paperclipai/shared";
 import { badRequest, unprocessable } from "../../errors.js";
@@ -207,6 +209,33 @@ export function normalizeConnectionMethodConfig(
 export function projectedConnectionHeaders(
   connection: ConnectionSettings,
 ): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  const configHeaders = asRecord(connection.config?.headers);
+  for (const [key, value] of Object.entries(configHeaders)) {
+    if (
+      typeof value === "string" &&
+      value.length > 0 &&
+      isSafeMcpRemoteHeaderName(key) &&
+      isSafeMcpRemoteHeaderValue(value)
+    ) {
+      headers[key] = value;
+    }
+  }
+
+  const transportHeaders = asRecord(connection.transportConfig?.headers);
+  for (const [key, value] of Object.entries(transportHeaders)) {
+    if (
+      typeof value === "string" &&
+      value.length > 0 &&
+      headers[key] === undefined &&
+      isSafeMcpRemoteHeaderName(key) &&
+      isSafeMcpRemoteHeaderValue(value)
+    ) {
+      headers[key] = value;
+    }
+  }
+
   const sourceTemplateKey =
     typeof connection.config.sourceTemplateKey === "string"
       ? connection.config.sourceTemplateKey
@@ -214,7 +243,6 @@ export function projectedConnectionHeaders(
   const app = sourceTemplateKey
     ? getConnectableAppDefinition(sourceTemplateKey)
     : null;
-  const headers: Record<string, string> = {};
   if (app) {
     const method = connectionMethodForConnection(app, connection);
     // Non-transport settings do not participate in header projection. In
