@@ -91,7 +91,11 @@ Cold-open verification: load Mine with the task-index response delayed while
 approvals/runs resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
-100-row index, with parent/run context by ID; sidebar badges use the count endpoint.
+100-row index. Missing parents use the same index projection for their captions;
+parents already in the index are reused. Failed-run tasks still load rich row
+context by ID, including when they are also parents or already indexed, so resolved
+interruptions stay hidden. The initial reveal waits for both context sources.
+Sidebar badges use the count endpoint.
 Coordinator desktop and mobile navigation share `/attention/summary` for the
 outstanding count. Needs You owns its complete feed; Tasks → Needs attention
 owns a compact complete task-ID index. Navigation reuses either page response. Coordinator keeps the optimized Inbox even when

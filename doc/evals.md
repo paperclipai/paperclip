@@ -57,8 +57,9 @@ OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
 state/provenance checks. A separately selected native OpenCode/DeepSeek1017
-backlog cell measures TestOps integration acceptance with the same oracle and
-original bounds. Its source registration is not an AWS or TestOps pass. The
+backlog cell supplied historical TestOps integration acceptance with the same
+oracle and original bounds. Its former smoke plan and the three-case completion
+pilot are retired; their cases and measurements remain in history. The
 [full-catalog TestOps lane](../tests/runner-e2e/CHAT-FEATURES.md#full-catalog-in-testops)
 maps all 244 YAML scenarios into a separate candidate-scoped plan. Its app and
 fixtures use a preserved immutable catalog revision; trusted workflow helpers run

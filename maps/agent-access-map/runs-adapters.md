@@ -214,7 +214,9 @@ use the server-owned authenticated relay. The provider sees bounded
 then uses pinned aliases. Search describes its 1–20 page limit and default of 5
 in the tool and parameter descriptions. It intersects fresh grants and work modes; calls
 retain the run's original gateway policy, validation, approvals, revocation and
-audit path. Prompt arguments cannot select gateway authority. Assigned gateway
+audit path. Blank schema references perform normal discovery; positive schema
+offsets require an exact reference, and unavailable references explain how to
+search again. Prompt arguments cannot select gateway authority. Assigned gateway
 launch credentials stay on the controller. Former direct-catalog OpenCode
 checkpoints refresh; other provider fingerprints stay unchanged. The
 [projection controls](../../server/src/services/native-runtime/assigned-mcp-tools.test.ts)
@@ -317,6 +319,18 @@ The new bridge surface does not qualify retry, cancellation, workspace repair or
 session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
+
+Fresh remote Retry preparation retains the admitted strategy in its saved
+fingerprint. An unchanged follow-up must not report strategy drift; actual policy
+changes retain the replacement guard. This changes no retry, session-reset,
+workspace or credential authority. The
+[preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+uses PostgreSQL and controlled runtime acquisition. Live provider resumption
+remains a separate check in the [session recipe](../feature-map/runs-adapters.md#session).
+
+Older strategy fingerprints retain their existing guard until an explicitly
+admitted fresh recovery. A remote Git row alone does not authorize rewriting its
+configuration history or bypassing a real policy change.
 
 Scoped source evidence: restart preparation transfers its lease renewal to the
 native executor after the executor acquires its own reference. Completion stops

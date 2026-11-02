@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 
 describe("formatEmbeddedPostgresError", () => {
+  it("identifies semaphore exhaustion without recommending SQL lock changes", () => {
+    const error = formatEmbeddedPostgresError(new Error(), {
+      fallbackMessage: "startup failed",
+      recentLogs: ["FATAL: could not create semaphores: No space left on device", "DETAIL: semget(123, 17, 03600)"],
+    });
+    expect(error.message).toContain("operating-system semaphores");
+    expect(error.message).toContain("integration tests must not be skipped");
+    expect(error.message).toContain("not disk exhaustion or a SQL lock limit");
+  });
   it("adds a shared-memory hint when initdb logs expose the real cause", () => {
     const error = formatEmbeddedPostgresError("Postgres init script exited with code 1.", {
       fallbackMessage: "Failed to initialize embedded PostgreSQL cluster",
