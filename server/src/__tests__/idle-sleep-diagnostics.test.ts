@@ -13,11 +13,15 @@ const hold = (): IdleSleepDrainStatus => ({ ownerId, draining: true, startedAt: 
 const localNone = async () => "none" as const;
 const collect = { collectDiagnostics: true } as const;
 
-function database(present: string[] = [], change?: (row: Record<string, unknown>) => unknown) {
+function database(present: string[] = [], change?: (row: Record<string, unknown>) => unknown,
+  schedules?: { routines?: unknown[]; issues?: unknown[] }) {
   let keys: string[] = [];
   const execute = vi.fn(async (statement: SQL) => {
     const query = new PgDialect().sqlToQuery(statement).sql;
     if (query.startsWith("SET LOCAL")) return [];
+    if (query.includes("FROM routine_triggers t JOIN routines r")) return schedules?.routines ?? [];
+    if (query.includes("FROM issues i JOIN companies c")) return schedules?.issues ?? [];
+    if (query.includes("WHERE status NOT IN ('active', 'paused', 'archived')")) return [{ blocked: false }];
     if (query.endsWith(" AS blocked")) return [{ blocked: present.length > 0 }];
     keys = [...query.matchAll(/ AS "([^"]+)"(?=, EXISTS |$)/g)].map(match => match[1]!);
     const row = Object.fromEntries(keys.map(key => [key, present.includes(key)]));
@@ -58,6 +62,55 @@ describe("owned idle sleep diagnostics", () => {
       expect(result.diagnostics?.checks.filter(check => check.state === "present"), key)
         .toEqual([{ reason: key, state: "present" }]);
     }
+  });
+
+  const routine = { id: "trigger", routine_id: "routine", company_id: "company", kind: "schedule",
+    setup_pending: false, cron_expression: "*/15 * * * *", timezone: "UTC", scoped: true,
+    next_run_at: new Date(now + 600_000), routine_updated: new Date(now), trigger_updated: new Date(now) };
+  const issue = { id: "issue", company_id: "company", status: "backlog", updated_at: new Date(now),
+    assignee_agent_id: "agent", assignee_user_id: null, checkout_run_id: null, execution_run_id: null,
+    execution_policy: null, execution_state: null, unblock_descriptor: null, conversation_agent_id: null,
+    monitor_next_check_at: null, monitor_wake_requested_at: null, monitor_attempt_count: 0,
+    company_status: "active", company_updated: new Date(now), agent_status: "idle", agent_updated: new Date(now),
+    scoped: true, unsafe_dependencies: false, dependency_ready: false, untouched_onboarding: false,
+    response_driven_wait: false, unblock_request_finished: false, response_wait_generation: null };
+  const scheduledRead = (f: ReturnType<typeof database>, diagnostics = true) => readIdleSleepSafety(f.db, hold,
+    () => now, ownerId, localNone, undefined, undefined, true, true, diagnostics ? collect : undefined);
+
+  it.each(["routines", "issues"] as const)("marks an overflowing %s inspection unknown without relaxing ordinary eligibility", async family => {
+    const f = database([], undefined, { [family]: Array(10_001).fill(family === "routines" ? routine : issue) });
+    expect(await scheduledRead(f, false)).toEqual({ version: 1, backgroundWork: "present" });
+    const result = await scheduledRead(f);
+    expect(result.backgroundWork).toBe("unknown");
+    expect(result.diagnostics?.complete).toBe(false);
+    expect(result.diagnostics?.checks).toContainEqual({ reason: `${family}.schedule`, state: "unknown" });
+  });
+
+  it.each(["routines", "issues"] as const)("fully inspects a %s catalog at the 10,000-row bound", async family => {
+    const f = database([], undefined, { [family]: Array(10_000).fill(family === "routines" ? routine : issue) });
+    const result = await scheduledRead(f);
+    expect(result.backgroundWork).toBe("none");
+    expect(result.diagnostics?.complete).toBe(true);
+    expect(result.diagnostics?.checks).toContainEqual({ reason: `${family}.schedule`, state: "none" });
+  });
+
+  it.each(["routines", "issues"] as const)("retains an actual %s blocker as known work", async family => {
+    const f = database([], undefined, { [family]: [family === "routines" ? { ...routine, next_run_at: new Date(now) }
+      : { ...issue, status: "todo" }] });
+    const result = await scheduledRead(f);
+    expect(result.backgroundWork).toBe("present");
+    expect(result.diagnostics?.complete).toBe(true);
+    expect(result.diagnostics?.checks).toContainEqual({ reason: `${family}.schedule`, state: "present" });
+  });
+
+  it.each(["routines", "issues"] as const)("keeps known durable work present alongside an incomplete %s inspection", async family => {
+    const f = database(["heartbeat_runs"], undefined, { [family]: Array(10_001).fill(family === "routines" ? routine : issue) });
+    const result = await scheduledRead(f);
+    expect(result.backgroundWork).toBe("present");
+    expect(result.diagnostics?.complete).toBe(false);
+    expect(result.diagnostics?.checks).toEqual(expect.arrayContaining([
+      { reason: "heartbeat_runs", state: "present" }, { reason: `${family}.schedule`, state: "unknown" },
+    ]));
   });
 
   it("preserves ordinary local and plugin short circuits and response shape", async () => {

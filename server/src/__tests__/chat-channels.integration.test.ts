@@ -4175,10 +4175,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .toEqual({ next: null, active: 0 });
         expect(f.responseWrites).toHaveLength(baseline);
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
-        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        const readStacks: string[] = [], select = db.select;
+        const reads = vi.spyOn(db, "select").mockImplementation((...args) => {
+          if (readStacks.length < 5) readStacks.push(new Error("Unexpected idle database read").stack ?? "Stack unavailable");
+          return Reflect.apply(select, db, args);
+        }), writes = vi.spyOn(db, "transaction");
         try {
           await vi.advanceTimersByTimeAsync(120_000);
-          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          expect(reads, readStacks.join("\n\n")).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
           expect(f.responseWrites).toHaveLength(baseline);
         } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
         const settlePresentation = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
