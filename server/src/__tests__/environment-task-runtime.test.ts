@@ -71,22 +71,36 @@ describe("plugin-provided Runner execution", () => {
     if (preparationStopped) { expect(result).toEqual({ value: true, error: null }); expect(operations).toEqual(["stop", "status", "complete"]); }
     else { expect(result.error?.message).toContain("termination is unconfirmed"); expect(fixture.sets).toContainEqual(expect.objectContaining({ status: "pending_cleanup", cleanupStatus: "failed" })); }
   });
-  it("keeps legacy payloads passive without capability or transport activation", async () => {
+  it("negotiates the transient context without reading transport for an older plugin", async () => {
     const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
     const workers = worker();
     workers.call.mockImplementation(async (...args: any[]) => { args[5]?.(); return { kind: "description", taskId: "attempt-1", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } }; });
     try {
-      for (const executionContext of [undefined, context]) {
-        await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId,
-          operation: { kind: "describe" }, ...(executionContext ? { executionContext } : {}) });
-        const sent = workers.call.mock.calls.at(-1) as unknown as any[];
-        expect(sent[2]).not.toHaveProperty("executionContextSupported");
-        expect(sent[2]).not.toHaveProperty("executionContext");
-        if (!executionContext) expect(sent).toHaveLength(4);
-      }
+      await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: { kind: "describe" }, executionContext: context });
+      const sent = workers.call.mock.calls[0] as unknown as any[];
+      expect(sent[2]).toMatchObject({ executionContextSupported: 1 });
+      expect(sent[2].executionContext).toBeUndefined();
       expect(state.identity).not.toHaveBeenCalled();
       expect(state.config).not.toHaveBeenCalled();
       expect(context.pending).toBe(false);
+    } finally { context.finish(); }
+  });
+  it("shares one transport lookup across the supported startup operations", async () => {
+    const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
+    context.pluginSupported = true;
+    const workers = worker();
+    workers.call.mockImplementation(async (...args: any[]) => {
+      args[5]?.();
+      return { kind: "description", taskId: "attempt-1", executionContextVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
+    try {
+      for (const kind of ["describe", "describe"] as const) await executeEnvironmentTask(database().db, workers as never,
+        { companyId: "company", leaseId, operation: { kind }, executionContext: context });
+      expect(state.identity).toHaveBeenCalledOnce();
+      expect(state.config).toHaveBeenCalledOnce();
+      for (const call of workers.call.mock.calls as unknown as any[][]) expect(call[2].executionContext).toMatchObject({
+        id: context.id, deadlineAtMs: context.deadlineAtMs, transport: { instanceSecrets: { launcher: "synthetic-transient-binding" } },
+      });
     } finally { context.finish(); }
   });
   it.each(["json", "wrong-run"])("rejects a %s context before the worker", async mode => {
@@ -96,6 +110,16 @@ describe("plugin-provided Runner execution", () => {
       await expect(executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: { kind: "describe" },
         executionContext: mode === "json" ? JSON.parse(JSON.stringify(context)) : context })).rejects.toThrow("native_execution_context");
       expect(workers.call).not.toHaveBeenCalled();
+    } finally { context.finish(); }
+  });
+  it("removes transport material from worker error reporting", async () => {
+    const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
+    context.pluginSupported = true;
+    const workers = worker();
+    workers.call.mockImplementation(async (...args: any[]) => { args[5]?.(); throw new Error(JSON.stringify(args[2])); });
+    try {
+      await expect(executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: { kind: "describe" }, executionContext: context }))
+        .rejects.toThrow("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
     } finally { context.finish(); }
   });
   it("forwards a retained fresh directory intent on later launch calls and checks provider support", async () => {

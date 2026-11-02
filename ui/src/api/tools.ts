@@ -43,6 +43,7 @@ import type {
   ReorderToolPolicies,
   AppDefinition,
   ToolAppsAttentionResponse,
+  ToolConnectionReviewCounts,
   ToolConnectionActivityResponse,
   ToolConnectionLifecycleEventType,
   ToolConnectionTestAgentsResponse,
@@ -334,6 +335,8 @@ export const toolsApi = {
       `/companies/${companyId}/tools/apps/${connectionId}/finish`,
       input,
     ),
+  getConnectionReviewCounts: (connectionId: string) =>
+    api.get<ToolConnectionReviewCounts>(`/tool-connections/${connectionId}/review-counts`),
   listAppsAttention: (companyId: string) =>
     api.get<ToolAppsAttentionResponse>(`/companies/${companyId}/tools/apps/attention`),
   listApplications: (companyId: string) =>
