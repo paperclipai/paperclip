@@ -113,9 +113,10 @@ describePostgres("heartbeat agent status", () => {
     expect(await reconcile()).toEqual([]);
   });
 
-  it.each(["missing_finish", "retry", "controller", "local_execution"])("retains unfinished %s work", async hold => {
+  it.each(["missing_finish", "accounting", "retry", "controller", "local_execution"])("retains unfinished %s work", async hold => {
     const { runId } = await seed();
     const patch = hold === "missing_finish" ? { finishedAt: null }
+      : hold === "accounting" ? { costAccountingPending: true }
       : hold === "retry" ? { scheduledRetryAt: new Date() }
       : hold === "controller" ? { controllerLeaseExpiresAt: new Date(Date.now() + 60_000) } : {};
     await db.update(heartbeatRuns).set({ ...patch, updatedAt: old() }).where(eq(heartbeatRuns.id, runId));
