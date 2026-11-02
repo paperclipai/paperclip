@@ -30,7 +30,10 @@ Review: `operation-reviewed`.
 
 API: `present` — `GET /api/tool-connections/{connectionId}/grants`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
-Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Human capability descriptions
+reuse retained-target checks within one request for direct tool and AI connections.
+Pools with referenced accounts and delegated actors retain the full evaluator;
+mutations always reauthorize.
 Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.

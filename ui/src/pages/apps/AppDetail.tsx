@@ -29,6 +29,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { retryTransientOnly } from "@/lib/query-client";
 import { consumeSkillSourceReturn } from "@/lib/skill-source-connect-return";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
@@ -156,7 +157,8 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   // the banner must not offer that action to anyone else.
   const grantsQuery = useQuery({
     queryKey: queryKeys.tools.connectionGrants(connectionId),
-    queryFn: () => toolsApi.listConnectionGrants(connectionId),
+    queryFn: ({ signal }) => toolsApi.listConnectionGrants(connectionId, { signal }),
+    retry: retryTransientOnly(1),
     enabled: !!connectionId && !!activeTab,
   });
 
