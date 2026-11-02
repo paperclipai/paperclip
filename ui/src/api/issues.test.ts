@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
+
+afterEach(async () => { await i18n.changeLanguage("en"); });
 
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -44,6 +47,24 @@ describe("issuesApi.list", () => {
     mockApi.get.mockResolvedValueOnce(queue);
     await expect(issuesApi.interruptLatestQueuedComments("issue-1", "old-run")).rejects.toThrow("queued messages changed");
     expect(mockApi.post).not.toHaveBeenCalled();
+  });
+
+  it("retranslates a retained local queue error without a new request and leaves server errors raw", async () => {
+    mockApi.get.mockResolvedValueOnce({ queueId: null, targetRunId: null, revision: "empty" });
+    const error = await issuesApi.interruptLatestQueuedComments("issue-1", null).catch(cause => cause as Error);
+    expect(error).toBeInstanceOf(Error);
+    for (const locale of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(locale);
+      expect((error as Error).message).toBe(i18n.t("sep12Screens.queuedMessagesChanged"));
+    }
+    expect(mockApi.get).toHaveBeenCalledTimes(1);
+    expect(mockApi.post).not.toHaveBeenCalled();
+
+    await i18n.changeLanguage("ru");
+    const serverError = new ApiError("The queued messages changed. Refresh and try again.", 409, {});
+    mockApi.get.mockRejectedValueOnce(serverError);
+    await expect(issuesApi.interruptLatestQueuedComments("issue-1", null)).rejects.toBe(serverError);
+    expect(serverError.message).toBe("The queued messages changed. Refresh and try again.");
   });
 
   it("fetches all pages of tasks created from the source without filtering parentage", async () => {

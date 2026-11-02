@@ -5,6 +5,7 @@ import {MemoryRouter} from "react-router-dom";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {SpekoIncomingCalls} from "./SpekoIncomingCalls";
+import {i18n, t} from "@/i18n";
 const mocks = vi.hoisted(() => ({incoming: vi.fn(), list: vi.fn(), decide: vi.fn()}));
 vi.mock("@/api/voicePhone", () => ({voicePhoneApi: {incoming: mocks.incoming, decide: mocks.decide}}));
 vi.mock("@/api/issues", () => ({issuesApi: {list: mocks.list}}));
@@ -16,12 +17,13 @@ describe("incoming call task selection", () => {
     root = createRoot(container); client = new QueryClient({defaultOptions: {queries: {retry: false}}});
     mocks.incoming.mockResolvedValue([{id: "call", state: "awaiting_approval", approvalCode: "123456"}]);
   });
-  afterEach(async () => {await act(async () => root.unmount()); client.clear(); container.remove(); vi.useRealTimers();});
+  afterEach(async () => {await act(async () => root.unmount()); client.clear(); container.remove(); vi.useRealTimers(); await i18n.changeLanguage("en");});
   async function render() {await act(async () => root.render(<MemoryRouter><QueryClientProvider client={client}><SpekoIncomingCalls companyId="company" endpointId="endpoint" agentId="agent" /></QueryClientProvider></MemoryRouter>));}
-  it("shows task request failures and lets callers retry the existing task inventory", async () => {
+  it.each(["en", "ru"])("restores task selection focus after a failed inventory request in %s", async locale => {
+    await i18n.changeLanguage(locale);
     mocks.list.mockRejectedValueOnce(new Error("Offline")).mockResolvedValue(tasks); await render();
-    await vi.waitFor(() => expect(container.textContent).toContain("Task list could not be loaded"));
-    const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry tasks")!;
+    await vi.waitFor(() => expect(container.textContent).toContain(t("oct19Voice.taskListCouldNotBeLoaded_6o6y1t")));
+    const retry = [...container.querySelectorAll("button")].find(button => button.textContent === t("oct19Voice.retryTasks_1fg2a8r"))!;
     retry.focus();
     await act(async () => retry.click());
     await vi.waitFor(() => expect(container.querySelector('option[value="task"]')).not.toBeNull());

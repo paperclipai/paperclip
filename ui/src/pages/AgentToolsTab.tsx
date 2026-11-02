@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next";
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { HelpCircle, PackageCheck } from "lucide-react";
@@ -24,7 +26,7 @@ import {
 } from "./tools/shared";
 import { cn } from "../lib/utils";
 import { brandChipBadge } from "../lib/status-colors";
-import { installPayload, installStateFrom, isAgentInstalled, INSTALLED_HINT } from "../lib/tool-installs";
+import { installPayload, installStateFrom, isAgentInstalled, installedHint } from "../lib/tool-installs";
 
 function isGitHubConnection(connection: ToolConnection): boolean {
   return (connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey) === "github";
@@ -52,6 +54,7 @@ function GitHubIdentitySection({
   loadError: boolean;
   onRetry: () => void;
 }) {
+  const { t } = useTranslation();
   const dedicatedLogin = dedicatedIdentity?.grant.providerTenant?.github?.login;
   const personalLogin = personalIdentity?.grant.providerTenant?.github?.login;
 
@@ -63,34 +66,29 @@ function GitHubIdentitySection({
             <GithubIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-foreground">GitHub identity</h3>
+            <h3 className="text-sm font-semibold text-foreground">{t("localizationApps.gitHubIdentity370")}</h3>
             {loading ? (
-              <p className="mt-0.5 text-xs text-muted-foreground">Checking GitHub identity…</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{t("localizationAgentManagement.checkingGitHubIdentity62")}</p>
             ) : loadError ? (
               <>
-                <p className="mt-0.5 text-sm font-medium text-foreground">Could not load GitHub identity</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Paperclip could not verify this agent&apos;s current connection. Your existing setup was not changed.
-                </p>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{t("localizationAgentManagement.couldNotLoadGitHubIdentity63")}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{t("localizationAgentManagement.paperclipCouldNotVerifyThisAgentSCurrentConnectionYourE64")}</p>
               </>
             ) : dedicatedIdentity ? (
               <>
                 <p className="mt-0.5 text-sm font-medium text-foreground">
-                  {dedicatedLogin ? `@${dedicatedLogin}` : "Dedicated GitHub account"}
+                  {dedicatedLogin ? `@${dedicatedLogin}` : t("localizationApps.dedicatedGitHubAccount371")}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Used only by {agentName}. This dedicated connection takes precedence over the responsible person&apos;s GitHub.
+                  {t("localizationAgentManagement.dedicatedGitHub", { agentName })}
                 </p>
               </>
             ) : (
               <>
-                <p className="mt-0.5 text-sm font-medium text-foreground">Use responsible person&apos;s GitHub</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  At run start, Paperclip uses the personal GitHub connection of the person responsible for the task.
-                </p>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{t("localizationAgentManagement.useResponsiblePersonSGitHub67")}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{t("localizationAgentManagement.atRunStartPaperclipUsesThePersonalGitHubConnectionOfThe68")}</p>
                 {personalIdentity ? (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Your account is connected{personalLogin ? ` as @${personalLogin}` : ""}.
+                  <p className="mt-1 text-xs text-muted-foreground">{personalLogin ? t("localizationAgentManagement.accountConnectedAs", { login: personalLogin }) : t("localizationAgentManagement.accountConnected")}
                   </p>
                 ) : null}
               </>
@@ -101,24 +99,24 @@ function GitHubIdentitySection({
         {!loading ? (
           <div className="flex flex-wrap items-center gap-2">
             {loadError ? (
-              <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+              <Button variant="outline" size="sm" onClick={onRetry}>{t("pages.inbox.retry")}</Button>
             ) : dedicatedIdentity ? (
               <Button variant="outline" size="sm" asChild>
-                <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>Manage GitHub identity</Link>
+                <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>{t("localizationAgentManagement.manageGitHubIdentity72")}</Link>
               </Button>
             ) : (
               <>
                 {personalIdentity ? (
                   <Button variant="outline" size="sm" asChild>
-                    <Link to={`/apps/${personalIdentity.connection.id}/permissions`}>Manage my GitHub</Link>
+                    <Link to={`/apps/${personalIdentity.connection.id}/permissions`}>{t("localizationAgentManagement.manageMyGitHub73")}</Link>
                   </Button>
                 ) : (
                   <Button size="sm" asChild>
-                    <Link to="/apps/connect?source=github">Connect my GitHub</Link>
+                    <Link to="/apps/connect?source=github">{t("localizationAgentManagement.connectMyGitHub74")}</Link>
                   </Button>
                 )}
                 <Button variant="outline" size="sm" asChild>
-                  <Link to="/apps/connect?source=github">Use a dedicated account</Link>
+                  <Link to="/apps/connect?source=github">{t("localizationAgentManagement.useADedicatedAccount75")}</Link>
                 </Button>
               </>
             )}
@@ -196,27 +194,24 @@ function InstalledAppsSection({
   error: boolean;
   onChange: (connectionId: string, installed: boolean) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <section className="rounded-lg border border-border bg-card">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-3 py-2.5">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Installed apps</h3>
+          <h3 className="text-sm font-semibold text-foreground">{t("localizationAgentManagement.installedApps76")}</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Installed apps load tools into {agentName}'s context on every run. Permitted-only apps do not add context cost.
+            {t("localizationAgentManagement.installedAppsContext", { agentName })}
           </p>
         </div>
         <InstallSaveStatusChip pending={saving} unsaved={unsaved} error={error} />
       </div>
 
       <div className="space-y-3 p-3">
-        <InlineBanner tone="info" compact>
-          Has access means the app is permitted. Installed means its tools are added to this agent's runtime context.
-        </InlineBanner>
+        <InlineBanner tone="info" compact>{t("localizationAgentManagement.hasAccessMeansTheAppIsPermittedInstalledMeansItsToolsAr79")}</InlineBanner>
 
         {connections.length === 0 ? (
-          <p className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
-            No permitted apps yet. Bind an access profile to make apps available here.
-          </p>
+          <p className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">{t("localizationAgentManagement.noPermittedAppsYetBindAnAccessProfileToMakeAppsAvailabl80")}</p>
         ) : (
           <div className="divide-y divide-border rounded-md border border-border">
             {connections.map((connection) => {
@@ -231,21 +226,21 @@ function InstalledAppsSection({
                     <Checkbox
                       checked={checked}
                       disabled={installedForAll || rowPending}
-                      aria-label={`Install ${connection.name} on ${agentName}`}
+                      aria-label={t("localizationAgentManagement.installOnAgent", { app: connection.name, agentName })}
                       onCheckedChange={(next) => onChange(connection.id, Boolean(next))}
                     />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
                         <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
-                        {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+                        {rowPending ? <span className="text-xs text-muted-foreground">{t("pages.companySettings.saving")}</span> : null}
                       </span>
                       <span className="mt-0.5 block text-xs text-muted-foreground">
                         {installedForAll
-                          ? "Installed from the app page for every agent. Remove the all-agents install there."
+                          ? t("localizationAgentManagement.installedFromTheAppPageForEveryAgentRemoveTheAllAgentsI83")
                           : checked
-                            ? "Loaded into this agent's runtime context."
-                            : INSTALLED_HINT}
+                            ? t("localizationAgentManagement.loadedIntoThisAgentSRuntimeContext84")
+                            : installedHint()}
                       </span>
                     </span>
                   </label>
@@ -258,13 +253,9 @@ function InstalledAppsSection({
                         <Link
                           to={`/apps/${connection.id}/permissions`}
                           className="text-xs font-medium text-primary hover:underline"
-                        >
-                          Open permissions
-                        </Link>
+                        >{t("localizationAgentManagement.openPermissions85")}</Link>
                       )}
-                    >
-                      Permitted but not installed — tools will not appear in runs.
-                    </InlineBanner>
+                    >{t("localizationAgentManagement.permittedButNotInstalledToolsWillNotAppearInRuns86")}</InlineBanner>
                   ) : null}
                 </div>
               );
@@ -285,7 +276,8 @@ function InstallBadge({
   installedForAll: boolean;
   permitted: boolean;
 }) {
-  const label = installed ? (installedForAll ? "Installed for all" : "Installed") : permitted ? "Permitted only" : "Not permitted";
+  const { t } = useTranslation();
+  const label = installed ? (installedForAll ? t("localizationAgentManagement.installedForAll87") : t("localizationSkills.installed73")) : permitted ? t("pages.apps.connect.success.permittedOnly") : t("localizationAgentManagement.notPermitted90");
   return (
     <span
       className={cn(
@@ -308,19 +300,20 @@ function InstallSaveStatusChip({
   unsaved: boolean;
   error: boolean;
 }) {
-  if (pending) return <span className="text-xs text-muted-foreground">Saving...</span>;
-  if (error) return <span className="text-xs text-destructive">Could not save</span>;
-  if (unsaved) return <span className="text-xs text-muted-foreground">Unsaved changes</span>;
-  return <span className="text-xs text-muted-foreground">Saved</span>;
+  const { t } = useTranslation();
+  if (pending) return <span className="text-xs text-muted-foreground">{t("pages.companySettings.saving")}</span>;
+  if (error) return <span className="text-xs text-destructive">{t("localizationTaskRuntime.ui_Could_not_save_1ht6nc")}</span>;
+  if (unsaved) return <span className="text-xs text-muted-foreground">{t("localizationRoutines.unsavedChanges")}</span>;
+  return <span className="text-xs text-muted-foreground">{t("pages.companySettings.saved")}</span>;
 }
 
 const POLICY_EFFECT_LABEL: Record<string, string> = {
-  allow: "allow",
-  block: "block",
-  deny: "deny",
-  require_approval: "require approval",
-  redact: "redact",
-  rate_limit: "rate limit",
+  get allow() { return t("localizationAgentManagement.policyEffect_allow"); },
+  get block() { return t("localizationAgentManagement.policyEffect_block"); },
+  get deny() { return t("localizationAgentManagement.policyEffect_deny"); },
+  get require_approval() { return t("localizationTools.requireApproval581"); },
+  get redact() { return t("localizationAgentManagement.policyEffect_redact"); },
+  get rate_limit() { return t("localizationAgentManagement.rateLimit93"); },
 };
 
 const DENIED_TOOLS_DISPLAY_LIMIT = 30;
@@ -333,6 +326,7 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  * which access profiles and rules shape the final list.
  */
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
   const lastSavedInstallRef = useRef<Record<string, boolean>>({});
@@ -552,7 +546,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   const profiles = effective.data?.profiles ?? [];
   const catalogLoading = catalogQueries.some((q) => q.isLoading);
 
-  if (effective.isLoading) return <ToolsLoadingState label="Resolving effective access…" />;
+  if (effective.isLoading) return <ToolsLoadingState label={t("localizationAgentManagement.resolvingEffectiveAccess94")} />;
   if (effective.error) {
     return <ToolsErrorState error={effective.error} onRetry={() => effective.refetch()} />;
   }
@@ -563,15 +557,9 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
     <div className="space-y-4">
       <EnforcementBanner
         tone="info"
-        title="Effective access"
+        title={t("localizationAgentManagement.effectiveAccess95")}
         body={
-          <>
-            This is exactly the tool set Paperclip will accept for{" "}
-            <span className="font-medium">{agent.name}</span>. Profile and policy edits are
-            reflected within ~5 seconds. The agent's prompt can narrow this list but{" "}
-            <span className="font-medium">cannot expand it</span> — everything else is blocked by
-            default.
-          </>
+          <Trans i18nKey="localizationAgentManagement.effectiveAccessBody" values={{ agentName: agent.name }} components={{ agent: <span className="font-medium" />, limit: <span className="font-medium" /> }} />
         }
       />
 
@@ -610,23 +598,21 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         <div className="lg:col-span-2">
           <div className="rounded-lg border border-border">
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
-              <h3 className="text-sm font-semibold text-foreground">Allowed tools</h3>
+              <h3 className="text-sm font-semibold text-foreground">{t("localizationAgents.ui262_Allowed_tools")}</h3>
               <span className="text-xs text-muted-foreground tabular-nums">
-                {allowedTools.length} {allowedTools.length === 1 ? "tool" : "tools"}
+                {t("localizationApps.toolCount", { count: allowedTools.length })}
               </span>
             </div>
             {allowedTools.length === 0 ? (
-              <p className="px-3 py-6 text-sm text-muted-foreground">
-                No tools are allowed for this agent. Bind a tool profile to grant access.
-              </p>
+              <p className="px-3 py-6 text-sm text-muted-foreground">{t("localizationAgentManagement.noToolsAreAllowedForThisAgentBindAToolProfileToGrantAcc100")}</p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                    <th className="px-3 py-2 font-medium">Tool</th>
-                    <th className="px-3 py-2 font-medium">Capability</th>
-                    <th className="px-3 py-2 font-medium">Risk</th>
-                    <th className="px-3 py-2 font-medium">Source</th>
+                    <th className="px-3 py-2 font-medium">{t("localizationApps.tool180")}</th>
+                    <th className="px-3 py-2 font-medium">{t("localizationAgentManagement.capability102")}</th>
+                    <th className="px-3 py-2 font-medium">{t("localizationOperations.ui_Risk")}</th>
+                    <th className="px-3 py-2 font-medium">{t("localizationRoutines.source")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -663,27 +649,19 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         <aside className="space-y-4">
           <div className="rounded-lg border border-border bg-background/60 p-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-              <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
-              Why these tools?
-            </h3>
+              <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />{t("localizationAgentManagement.whyTheseTools104")}</h3>
 
             {/* Access profiles */}
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                  Access profiles
-                </div>
+                <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{t("localizationTools.accessProfiles62")}</div>
                 <Link
                   to={`${profilesHref}?check=1`}
                   className="text-(length:--text-micro) font-medium text-primary hover:underline"
-                >
-                  Check access
-                </Link>
+                >{t("localizationAgentManagement.checkAccess105")}</Link>
               </div>
               {profiles.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No active profile applies to this agent, so it has no allowed tools.
-                </p>
+                <p className="text-xs text-muted-foreground">{t("localizationAgentManagement.noActiveProfileAppliesToThisAgentSoItHasNoAllowedTools106")}</p>
               ) : (
                 profiles.map((profile) => {
                   return (
@@ -696,9 +674,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       </Link>
                       {profile.summary.isCompanyDefault ? (
                         <div className="mt-1">
-                          <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">
-                            Organization default
-                          </span>
+                          <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">{t("pages.companySettings.policyOption.companyDefault")}</span>
                         </div>
                       ) : null}
                     </div>
@@ -709,22 +685,18 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
 
             {/* Policies mutating the allow list */}
             <div className="mt-3 space-y-1.5">
-              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Active policies
-              </div>
+              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{t("localizationAgentManagement.activePolicies107")}</div>
               {policiesQuery.isLoading ? (
-                <p className="text-xs text-muted-foreground">Loading policies…</p>
+                <p className="text-xs text-muted-foreground">{t("localizationAgentManagement.loadingPolicies108")}</p>
               ) : governingPolicies.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No enabled policy currently mutates this agent's allow list.
-                </p>
+                <p className="text-xs text-muted-foreground">{t("localizationAgentManagement.noEnabledPolicyCurrentlyMutatesThisAgentSAllowList109")}</p>
               ) : (
                 governingPolicies.map(({ policy, order }) => (
                   <div key={policy.id} className="rounded-md border border-border/70 px-2.5 py-2">
                     <div className="flex items-center justify-between gap-2">
                       <span
                         className="truncate text-xs font-medium text-foreground"
-                        title={`Policy #${order}: ${policy.name}`}
+                        title={t("localizationAgentManagement.policyOrderTitle", { order, name: policy.name })}
                       >
                         #{order} {policy.name}
                       </span>
@@ -744,20 +716,14 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
 
             {/* Unavailable tools */}
             <div className="mt-3 space-y-1.5">
-              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Unavailable tools
-              </div>
+              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{t("localizationAgentManagement.unavailableTools111")}</div>
               {catalogLoading ? (
-                <p className="text-xs text-muted-foreground">Checking tools…</p>
+                <p className="text-xs text-muted-foreground">{t("localizationAgentManagement.checkingTools112")}</p>
               ) : deniedTools.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  Every known tool this agent could name is allowed.
-                </p>
+                <p className="text-xs text-muted-foreground">{t("localizationAgentManagement.everyKnownToolThisAgentCouldNameIsAllowed113")}</p>
               ) : (
                 <>
-                  <p className="text-(length:--text-micro) text-muted-foreground">
-                    Tools the agent could name but Paperclip would block:
-                  </p>
+                  <p className="text-(length:--text-micro) text-muted-foreground">{t("localizationAgentManagement.toolsTheAgentCouldNameButPaperclipWouldBlock114")}</p>
                   <div className="flex flex-wrap gap-1">
                     {deniedTools.slice(0, DENIED_TOOLS_DISPLAY_LIMIT).map((tool) => (
                       <span
@@ -771,7 +737,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                   </div>
                   {deniedTools.length > DENIED_TOOLS_DISPLAY_LIMIT ? (
                     <p className="text-(length:--text-micro) text-muted-foreground">
-                      +{deniedTools.length - DENIED_TOOLS_DISPLAY_LIMIT} more
+                      {t("localizationAgentManagement.moreCount", { count: deniedTools.length - DENIED_TOOLS_DISPLAY_LIMIT })}
                     </p>
                   ) : null}
                 </>

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ export function AgentAvatarDownload({
   name: string;
   iconOnly?: boolean;
 }) {
+  useTranslation();
   const [downloading, setDownloading] = useState(false);
   const [failed, setFailed] = useState(false);
   const download = async () => {
@@ -51,8 +53,8 @@ export function AgentAvatarDownload({
         asChild
       >
         <a
-          aria-label="Download avatar"
-          title="Download avatar"
+          aria-label={t("oct19Core.downloadAvatar")}
+          title={t("oct19Core.downloadAvatar")}
           href={avatarUrl}
           download={agentAvatarFilename(name)}
           aria-disabled={downloading}
@@ -66,12 +68,12 @@ export function AgentAvatarDownload({
           ) : (
             <Download className="size-4" />
           )}
-          {!iconOnly && "Download avatar"}
+          {!iconOnly && t("oct19Core.downloadAvatar")}
         </a>
       </Button>
       {failed && (
         <p role="alert" className="text-sm text-destructive">
-          Couldn’t download the avatar. Try downloading it again.
+          {t("oct19Core.avatarDownloadFailed")}
         </p>
       )}
     </div>

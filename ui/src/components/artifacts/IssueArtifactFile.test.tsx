@@ -3,9 +3,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
+import { within } from "storybook/test";
 import { IssueArtifactFile } from "./IssueArtifactCard";
+import { FileCard } from "./RichArtifactCards";
 import { loadArtifactCsv } from "@/lib/artifact-card-data";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { i18n } from "@/i18n";
 
 vi.mock("@/lib/artifact-card-data", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/artifact-card-data")>()),
@@ -85,4 +88,42 @@ describe("CSV preview consent", () => {
       vi.clearAllMocks();
     }
   });
+});
+
+it.each([
+  "/api/attachments/file-1/content?download=1",
+  "https://files.example/report.txt?signature=abc&expires=123",
+])("keeps the visible download label as its accessible name in EN/RU/EN: %s", async (downloadUrl) => {
+  const props = {
+    title: "Delivered notes {{RAW}}", summary: "Original summary {{RAW}}", author: "Original author",
+    updatedAt: "Original date", filename: "Заметки {{RAW}}.txt", contentType: "text/plain", fileSize: "123 B",
+    entries: ["Original entry {{RAW}}"], downloadUrl,
+  };
+  const canonical = JSON.stringify(props);
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      await i18n.changeLanguage("en");
+      root.render(<FileCard {...props} />);
+    });
+    const download = container.querySelector<HTMLAnchorElement>("a[download]")!;
+    download.focus();
+    for (const [locale, label] of [["en", "Download file"], ["ru", "Скачать файл"], ["en", "Download file"]]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(within(container).getByRole("link", { name: label })).toBe(download);
+      expect(download.textContent).toBe(label);
+      expect(download.getAttribute("href")).toBe(downloadUrl);
+      expect(download.getAttribute("download")).toBe(props.filename);
+      expect(document.activeElement).toBe(download);
+      for (const raw of [props.title, props.summary, props.author, props.filename, props.entries[0]]) {
+        expect(container.textContent).toContain(raw);
+      }
+      expect(JSON.stringify(props)).toBe(canonical);
+    }
+  } finally {
+    await act(async () => { root.unmount(); await i18n.changeLanguage("en"); });
+    container.remove();
+  }
 });

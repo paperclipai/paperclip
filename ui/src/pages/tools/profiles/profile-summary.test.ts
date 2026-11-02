@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import type { ToolProfileSummary } from "@paperclipai/shared";
 import { allowsLabel, assignedLabel, STATUS_LABEL } from "./profile-summary";
 
@@ -15,6 +16,19 @@ function summary(partial: Partial<ToolProfileSummary>): ToolProfileSummary {
     ...partial,
   };
 }
+
+describe("Russian profile summary plurals", () => {
+  it.each([[1, "инструмент", "агент"], [2, "инструмента", "агента"], [5, "инструментов", "агентов"], [11, "инструментов", "агентов"], [21, "инструмент", "агент"]])("uses count forms for %s", async (count, tools, agents) => {
+    const originalLanguage = i18n.language;
+    try {
+      await i18n.changeLanguage("ru");
+      expect(allowsLabel(summary({ allowedToolCount: Number(count) }))).toBe(`${count} ${tools}`);
+      expect(assignedLabel(summary({ appliesToAgentCount: Number(count) })).text).toBe(`${count} ${agents}`);
+    } finally {
+      await i18n.changeLanguage(originalLanguage);
+    }
+  });
+});
 
 describe("allowsLabel", () => {
   it("renders tools and apps in selected mode", () => {

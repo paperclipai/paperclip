@@ -1,3 +1,6 @@
+import { slackSearchLimitation, chatUiErrorMessage, type ChatUiError } from "./chat-copy";
+import { Trans } from "react-i18next";
+import { t, useTranslation } from "@/i18n";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
@@ -15,40 +18,27 @@ export function SlackCapabilitiesView({
   capabilities?: SlackToolCapabilities;
   error?: string;
 }) {
+  useTranslation();
   return (
     <section className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        Read, search, and act in Slack. Some actions require approval.
+        {t("oct19Apps.slackActionsApproval")}
       </p>
       {error && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          {chatUiErrorMessage(error)}
         </p>
       )}
       {!capabilities && !error && (
-        <p role="status" className="text-sm text-muted-foreground">
-          Checking Slack permissions…
-        </p>
+        <p role="status" className="text-sm text-muted-foreground">{t("sep28Apps.copy213")}</p>
       )}
       {capabilities && (
         <>
           {capabilities.missingScopes.length > 0 && (
             <div className="rounded-lg border border-border bg-muted p-3 space-y-2">
-              <p className="text-sm font-medium">
-                Add permissions to unlock more tools
-              </p>
+              <p className="text-sm font-medium">{t("sep28Apps.copy217")}</p>
               <p className="text-sm">
-                Your existing connection still works. In{" "}
-                <a
-                  className="underline underline-offset-4"
-                  href="https://api.slack.com/apps"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Slack app settings
-                </a>
-                , choose your app, open OAuth &amp; Permissions, add these Bot
-                Token Scopes, then reinstall the app to your workspace.
+                <Trans i18nKey="sep28Apps.slackAddScopes" components={{ settings: <a className="underline underline-offset-4" href="https://api.slack.com/apps" target="_blank" rel="noreferrer" /> }} />
               </p>
               <p className="text-xs font-mono break-words">
                 {capabilities.missingScopes.join(", ")}
@@ -75,11 +65,12 @@ export function SlackSearchView({
     clientSecret: string;
   }) => Promise<void>;
 }) {
+  useTranslation();
   const id = useId();
   const [clientId, setClientId] = useState(status.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ChatUiError | null>(null);
   const perform = async (action: () => Promise<void>) => {
     setPending(true);
     setError(null);
@@ -87,7 +78,7 @@ export function SlackSearchView({
       await action();
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Unable to update Slack search",
+        e instanceof Error ? e.message : { key: "sep28Apps.copy222" },
       );
     } finally {
       setPending(false);
@@ -95,49 +86,36 @@ export function SlackSearchView({
   };
   return (
     <section className="space-y-3">
-      <h3 className="text-sm font-semibold">Your Slack search access</h3>
-      <p className="text-sm text-muted-foreground">
-        Optional personal authorization enables private search on supported
-        runtimes. It cannot read channels the bot hasn’t joined or let the bot
-        write as you. Basic channel reading works without it.
-      </p>
+      <h3 className="text-sm font-semibold">{t("sep28Apps.copy223")}</h3>
+      <p className="text-sm text-muted-foreground">{t("sep28Apps.copy224")}</p>
       {!status.nativeSearchAvailable && (
         <p role="status" className="text-sm text-muted-foreground">
-          {status.limitation}
+          {slackSearchLimitation(status.limitation)}
         </p>
       )}
       {status.connected ? (
         <div className="flex items-center justify-between gap-3">
-          <span className="text-sm">Slack search connected</span>
+          <span className="text-sm">{t("sep28Apps.copy225")}</span>
           <Button
             variant="outline"
             size="sm"
             disabled={pending}
             onClick={() => void perform(onDisconnect)}
-          >
-            Disconnect search
-          </Button>
+          >{t("sep28Apps.copy226")}</Button>
         </div>
       ) : (
         <Button
           variant="outline"
           disabled={pending || !status.configured}
           onClick={() => void perform(onConnect)}
-        >
-          Connect Slack search
-        </Button>
+        >{t("sep28Apps.copy227")}</Button>
       )}
       {!status.configured && (
-        <p className="text-sm text-muted-foreground">
-          A connection manager needs to configure your Slack app’s OAuth
-          credentials first.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("sep28Apps.copy228")}</p>
       )}
       {status.canConfigure && (
         <details className="text-sm">
-          <summary className="cursor-pointer text-muted-foreground">
-            OAuth app configuration for connection managers
-          </summary>
+          <summary className="cursor-pointer text-muted-foreground">{t("sep28Apps.copy229")}</summary>
           <form
             className="mt-3 space-y-3"
             onSubmit={(event) => {
@@ -149,17 +127,13 @@ export function SlackSearchView({
             }}
           >
             <p className="text-sm">
-              In Slack app settings, add this redirect URL under OAuth &amp;
-              Permissions. Add user scopes <code>search:read.public</code>,{" "}
-              <code>search:read.private</code> and{" "}
-              <code>search:read.files</code>. Find Client ID and Client Secret
-              under Basic Information.
+              <Trans i18nKey="sep28Apps.slackRedirectScopes" components={{ public: <code />, private: <code />, files: <code /> }} />
             </p>
             <p className="text-xs font-mono break-all">
-              {status.redirectUri ?? "Configure a public HTTPS URL first."}
+              {status.redirectUri ?? t("sep28Apps.copy230")}
             </p>
             <div className="space-y-2">
-              <label htmlFor={`${id}-client`}>Client ID</label>
+              <label htmlFor={`${id}-client`}>{t("localizationConnections.clientID115")}</label>
               <Input
                 id={`${id}-client`}
                 value={clientId}
@@ -167,7 +141,7 @@ export function SlackSearchView({
               />
             </div>
             <div className="space-y-2">
-              <label htmlFor={`${id}-secret`}>Client Secret</label>
+              <label htmlFor={`${id}-secret`}>{t("sep28Apps.copy231")}</label>
               <Input
                 id={`${id}-secret`}
                 type="password"
@@ -181,16 +155,14 @@ export function SlackSearchView({
                 type="submit"
                 size="sm"
                 disabled={pending || !clientId || !clientSecret}
-              >
-                Save OAuth configuration
-              </Button>
+              >{t("sep28Apps.copy232")}</Button>
             </div>
           </form>
         </details>
       )}
       {error && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          {chatUiErrorMessage(error)}
         </p>
       )}
     </section>
@@ -203,6 +175,7 @@ export function SlackToolsSettings({
   companyId: string;
   endpointId: string;
 }) {
+  useTranslation();
   const query = useQuery({
     queryKey: ["slack-capabilities", companyId, endpointId],
     queryFn: () => slackToolsApi.capabilities(companyId, endpointId),
@@ -225,6 +198,7 @@ export function SlackSearchAccess({
   companyId: string;
   endpointId: string;
 }) {
+  useTranslation();
   const query = useQuery({
     queryKey: ["slack-search", companyId, endpointId],
     queryFn: () => slackToolsApi.search(companyId, endpointId),
@@ -237,9 +211,7 @@ export function SlackSearchAccess({
     );
   if (!query.data)
     return (
-      <p role="status" className="text-sm text-muted-foreground">
-        Loading search access…
-      </p>
+      <p role="status" className="text-sm text-muted-foreground">{t("sep28Apps.copy234")}</p>
     );
   return (
     <SlackSearchView

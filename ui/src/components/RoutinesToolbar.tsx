@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { ArrowUpDown, Check, Layers, Plus } from "lucide-react";
 import { Link } from "@/lib/router";
 import { ToolbarSearch } from "./ToolbarSearch";
@@ -22,22 +23,23 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
   selectMode?: boolean;
   onToggleSelect?: () => void;
 }) {
-  return <div data-canonical-toolbar="routines" role="toolbar" aria-label="Routines controls" className="flex flex-wrap items-center gap-4">
-    <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search routines" placeholder="Search routines…" />
+  useTranslation();
+  return <div data-canonical-toolbar="routines" role="toolbar" aria-label={t("oct26Toolbar.routineControls")} className="flex flex-wrap items-center gap-4">
+    <ToolbarSearch query={query} onQueryChange={onQueryChange} label={t("oct26Toolbar.searchRoutines")} placeholder={t("oct26Toolbar.searchRoutinesPlaceholder")} />
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" title="Sort">
+        <Button variant="outline" size="sm" title={t("oct26Toolbar.sort")}>
           <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-          <span >Sort</span>
+          <span >{t("oct26Toolbar.sort")}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-44 p-0">
         <div className="p-2 space-y-0.5">
           {([
-            ["updated", "Updated"],
-            ["created", "Created"],
-            ["lastRun", "Last run"],
-            ["title", "Title"],
+            ["updated", t("oct26Toolbar.updated")],
+            ["created", t("oct26Toolbar.created")],
+            ["lastRun", t("oct26Toolbar.lastRun")],
+            ["title", t("oct26Toolbar.title")],
           ] as const).map(([field, label]) => (
             <button
                 type="button"
@@ -56,7 +58,7 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
               <span>{label}</span>
               {sortField === field ? (
                 <span className="text-xs text-muted-foreground">
-                  {sortDir === "asc" ? "Asc" : "Desc"}
+                  {sortDir === "asc" ? t("oct26Toolbar.asc") : t("oct26Toolbar.desc")}
                 </span>
               ) : null}
             </button>
@@ -66,18 +68,18 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
     </Popover>
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" title="Group">
+        <Button variant="outline" size="sm" title={t("oct26Toolbar.group")}>
           <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-          <span >Group</span>
+          <span >{t("oct26Toolbar.group")}</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-44 p-0">
         <div className="p-2 space-y-0.5">
           {([
-            ["folder", "Folder"],
-            ["project", "Project"],
-            ["assignee", "Agent"],
-            ["none", "None"],
+            ["folder", t("oct26Toolbar.folder")],
+            ["project", t("oct26Toolbar.project")],
+            ["assignee", t("oct26Toolbar.agent")],
+            ["none", t("oct26Toolbar.none")],
           ] as const).map(([value, label]) => (
             <button
                 type="button"
@@ -97,10 +99,10 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
       </PopoverContent>
     </Popover>
     <div className="design-toolbar-actions">
-      {onToggleSelect && <Button variant="outline" size="sm" onClick={onToggleSelect}>{selectMode ? "Done" : "Select"}</Button>}
-      {runsHref && <Button variant="outline" size="sm" asChild><Link data-toolbar-control to={runsHref}>View all runs</Link></Button>}
-      {onNewFolder && <Button variant="outline" size="sm" onClick={onNewFolder}><Plus className="h-4 w-4" />New folder</Button>}
-      <Button variant="outline" size="sm" data-toolbar-primary onClick={onCreateRoutine}><Plus className="h-4 w-4" />Create routine</Button>
+      {onToggleSelect && <Button variant="outline" size="sm" onClick={onToggleSelect}>{selectMode ? t("oct26Toolbar.done") : t("oct26Toolbar.select")}</Button>}
+      {runsHref && <Button variant="outline" size="sm" asChild><Link data-toolbar-control to={runsHref}>{t("oct26Toolbar.viewRuns")}</Link></Button>}
+      {onNewFolder && <Button variant="outline" size="sm" onClick={onNewFolder}><Plus className="h-4 w-4" />{t("oct26Toolbar.newFolder")}</Button>}
+      <Button variant="outline" size="sm" data-toolbar-primary onClick={onCreateRoutine}><Plus className="h-4 w-4" />{t("oct26Toolbar.createRoutine")}</Button>
     </div>
   </div>;
 }

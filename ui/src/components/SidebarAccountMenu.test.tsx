@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,10 +149,11 @@ describe("SidebarAccountMenu", () => {
     mockGetCurrentBoardAccess.mockResolvedValue(boardAccess("owner"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
     vi.unstubAllGlobals();
   });
 
@@ -358,6 +360,17 @@ describe("SidebarAccountMenu", () => {
     const popover = document.body.querySelector('[data-slot="popover-content"]');
     expect(popover?.textContent).not.toContain("Feedback");
     expect(popover?.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+
+
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(accountTrigger?.getAttribute("aria-label")).toBe(i18n.t("account.openAccountMenu"));
+    expect(feedbackButton?.getAttribute("aria-label")).toBe("Оставить отзыв");
+    expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
+    expect(popover?.textContent).toContain("Jane Example");
+    expect(popover?.textContent).toContain("jane@example.com");
+    expect(popover?.querySelector('a[href="/u/user-1"]')).toBeTruthy();
+    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });

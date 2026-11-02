@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { centsToUsd, usdToCents } from "@paperclipai/shared";
 import { useEffect, useId, useState } from "react";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
@@ -12,7 +13,7 @@ function centsInputValue(value: number) {
 }
 
 function parseDollarInput(value: string) {
-  const normalized = value.trim();
+  const normalized = value.trim().replace(",", ".");
   if (normalized.length === 0) return 0;
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
@@ -20,7 +21,7 @@ function parseDollarInput(value: string) {
 }
 
 function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
-  return windowKind === "lifetime" ? "Lifetime budget" : "Monthly UTC budget";
+  return windowKind === "lifetime" ? t("localizationActivity.lifetimeBudget") : t("localizationActivity.monthlyBudget");
 }
 
 function statusTone(status: BudgetPolicySummary["status"]) {
@@ -46,6 +47,7 @@ export function BudgetPolicyCard({
   compact?: boolean;
   variant?: "card" | "plain";
 }) {
+  const { t } = useTranslation();
   const [draftBudget, setDraftBudget] = useState(centsInputValue(summary.amount));
 
   useEffect(() => {
@@ -58,25 +60,25 @@ export function BudgetPolicyCard({
   let reservationCents: string | null = null;
   try { if (!reservation.trim().startsWith("-")) reservationCents = usdToCents(reservation.trim()); } catch { /* Shown as invalid input below. */ }
   const reservationSection = onReservationChange ? <div className="space-y-2">
-    <label className="text-sm">Reserve per run (USD)
-      <Input aria-label="Reserve per run (USD)" aria-invalid={reservationCents === null} aria-describedby={reservationCents === null ? reservationErrorId : undefined}
+    <label className="text-sm">{t("oct19Core.reservePerRun")}
+      <Input aria-label={t("oct19Core.reservePerRun")} aria-invalid={reservationCents === null} aria-describedby={reservationCents === null ? reservationErrorId : undefined}
         value={reservation} onChange={event => setReservation(event.target.value)} inputMode="decimal" />
     </label>
-    {reservationCents === null && <p id={reservationErrorId} role="alert" className="text-xs text-destructive">Enter a valid amount of zero or more.</p>}
-    <p className="text-xs text-muted-foreground">An estimate held before each run starts. Zero disables the estimate. Actual provider charges may exceed it.</p>
+    {reservationCents === null && <p id={reservationErrorId} role="alert" className="text-xs text-destructive">{t("oct19Core.validNonnegativeAmount")}</p>}
+    <p className="text-xs text-muted-foreground">{t("oct19Core.reservationDescription")}</p>
     <Button variant="outline" disabled={isSaving || reservationCents === null || reservationCents === (summary.reservationCents ?? "0.0000000")}
-      onClick={() => { if (reservationCents !== null) onReservationChange(reservationCents); }}>Update reservation</Button>
+      onClick={() => { if (reservationCents !== null) onReservationChange(reservationCents); }}>{t("oct19Core.updateReservation")}</Button>
   </div> : null;
 
   const advancedSettings = onReservationChange || onUnpricedUsagePolicyChange ? (
     <details className="space-y-3">
-      <summary className="cursor-pointer text-sm font-medium">Advanced settings</summary>
+      <summary className="cursor-pointer text-sm font-medium">{t("oct19Core.advancedSettings")}</summary>
       <div className="space-y-4">
         {onUnpricedUsagePolicyChange && (
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={summary.unpricedUsagePolicy !== "allow"} disabled={isSaving}
               onChange={(event) => onUnpricedUsagePolicyChange(event.target.checked ? "block" : "allow")} />
-            Block new work when usage has no reliable price
+            {t("oct19Core.blockUnpricedUsage")}
           </label>
         )}
         {reservationSection}
@@ -93,38 +95,38 @@ export function BudgetPolicyCard({
   const observedBudgetGrid = isPlain ? (
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{t("localizationActivity.observed")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {summary.amount > 0 ? t("localizationActivity.percentOfLimit", { percent: summary.utilizationPercent }) : t("localizationActivity.noCap")}
         </div>
       </div>
       <div>
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Budget</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{t("localizationActivity.budget")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
+          {summary.amount > 0 ? formatCents(summary.amount) : t("localizationActivity.disabled")}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
+          {t("localizationActivity.softAlert", { percent: summary.warnPercent })}{summary.paused && summary.pauseReason ? ` · ${t("localizationActivity.pauseReason", { reason: t(`localizationActivity.pauseReason_${summary.pauseReason}`, { defaultValue: summary.pauseReason }) })}` : ""}
         </div>
       </div>
     </div>
   ) : (
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{t("localizationActivity.observed")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {summary.amount > 0 ? t("localizationActivity.percentOfLimit", { percent: summary.utilizationPercent }) : t("localizationActivity.noCap")}
         </div>
       </div>
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Budget</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{t("localizationActivity.budget")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
+          {summary.amount > 0 ? formatCents(summary.amount) : t("localizationActivity.disabled")}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
+          {t("localizationActivity.softAlert", { percent: summary.warnPercent })}{summary.paused && summary.pauseReason ? ` · ${t("localizationActivity.pauseReason", { reason: t(`localizationActivity.pauseReason_${summary.pauseReason}`, { defaultValue: summary.pauseReason }) })}` : ""}
         </div>
       </div>
     </div>
@@ -132,13 +134,13 @@ export function BudgetPolicyCard({
 
   const progressSection = (
     <div className="space-y-2">
-      {summary.pendingRunCount > 0 && <p className="text-sm text-destructive">{summary.pendingRunCount} completed runs await accounting.</p>}
+      {summary.pendingRunCount > 0 && <p className="text-sm text-destructive">{t("oct19Core.pendingAccountingCount", { count: summary.pendingRunCount })}</p>}
       {summary.unpricedEventCount > 0 && (
-        <p className="text-sm text-destructive">{summary.unpricedEventCount} usage events are unpriced. Known spend excludes their unknown cost.</p>
+        <p className="text-sm text-destructive">{t("oct19Core.unpricedUsageCount", { count: summary.unpricedEventCount })}</p>
       )}
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Remaining</span>
-        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
+        <span>{t("localizationActivity.remaining")}</span>
+        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : t("localizationActivity.unlimited")}</span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
@@ -146,7 +148,7 @@ export function BudgetPolicyCard({
           aria-valuenow={Math.round(progress)}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-label={`Budget utilization: ${Math.round(progress)}% used`}
+          aria-label={t("localizationActivity.budgetUtilization", { percent: Math.round(progress) })}
           className={cn(
             "h-full rounded-full transition-(--tp-width-background-color) duration-200",
             summary.status === "hard_stop"
@@ -166,8 +168,8 @@ export function BudgetPolicyCard({
       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
         {summary.scopeType === "project"
-          ? "Execution is paused for this project until the budget block is resolved."
-          : "Heartbeats are paused for this scope until the budget block is resolved."}
+          ? t("oct19Core.projectBudgetPaused")
+          : t("oct19Core.scopeBudgetPaused")}
       </div>
     </div>
   ) : null;
@@ -176,7 +178,7 @@ export function BudgetPolicyCard({
     <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-end", isPlain ? "" : "rounded-xl border border-border/70 bg-background/50 p-3")}>
       <div className="min-w-0 flex-1">
         <label className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Budget (USD)
+          {t("localizationActivity.budgetUsd")}
         </label>
         <Input
           value={draftBudget}
@@ -192,7 +194,7 @@ export function BudgetPolicyCard({
         }}
         disabled={!canSave || isSaving || parsedDraft === null}
       >
-        {isSaving ? "Saving..." : summary.amount > 0 ? "Update budget" : "Set budget"}
+        {isSaving ? t("localizationActivity.saving") : summary.amount > 0 ? t("localizationActivity.updateBudget") : t("localizationActivity.setBudget")}
       </Button>
     </div>
   ) : null;
@@ -203,7 +205,7 @@ export function BudgetPolicyCard({
         <div className="flex items-start justify-between gap-6">
           <div>
             <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-              {summary.scopeType}
+              {t(`localizationActivity.scope_${summary.scopeType}`, { defaultValue: summary.scopeType })}
             </div>
             <div className="mt-2 text-xl font-semibold">{summary.scopeName}</div>
             <div className="mt-2 text-sm text-muted-foreground">{windowLabel(summary.windowKind)}</div>
@@ -219,7 +221,7 @@ export function BudgetPolicyCard({
             )}
           >
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused ? t("localizationActivity.paused") : summary.status === "warning" ? t("localizationActivity.warning") : summary.status === "hard_stop" ? t("localizationActivity.hardStop") : t("localizationActivity.healthy")}
           </div>
         </div>
 
@@ -229,7 +231,7 @@ export function BudgetPolicyCard({
         {saveSection}
         {advancedSettings}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{t("localizationActivity.invalidBudget")}</p>
         ) : null}
       </div>
     );
@@ -241,14 +243,14 @@ export function BudgetPolicyCard({
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-              {summary.scopeType}
+              {t(`localizationActivity.scope_${summary.scopeType}`, { defaultValue: summary.scopeType })}
             </div>
             <CardTitle className="mt-1 text-base">{summary.scopeName}</CardTitle>
             <CardDescription className="mt-1">{windowLabel(summary.windowKind)}</CardDescription>
           </div>
           <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-(length:--text-micro) uppercase tracking-(--tracking-caps)", statusTone(summary.status))}>
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused ? t("localizationActivity.paused") : summary.status === "warning" ? t("localizationActivity.warning") : summary.status === "hard_stop" ? t("localizationActivity.hardStop") : t("localizationActivity.healthy")}
           </div>
         </div>
       </CardHeader>
@@ -259,7 +261,7 @@ export function BudgetPolicyCard({
         {saveSection}
         {advancedSettings}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{t("localizationActivity.invalidBudget")}</p>
         ) : null}
       </CardContent>
     </Card>

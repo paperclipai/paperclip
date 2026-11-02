@@ -33,6 +33,8 @@ export interface VoiceSessionSnapshot {
   canRepeat?: boolean;
   transcript: readonly VoiceTranscriptEntry[];
   announcement: string;
+  announcementSource?: "user" | "agent";
+  announcementText?: string;
   error?: string;
 }
 export interface VoiceSessionDependencies {
@@ -103,7 +105,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     if (!["idle", "ended", "failed"].includes(snapshot.state) || startup || stopping || media || credentials || cleanupSessionId) return;
     const ownedEpoch = ++epoch;
     notifications.clear(); queuedNotifications.clear(); unfinishedAgentSegments.clear(); interruptedAgentSegments.clear(); fallbackSegments.clear(); sequence = 0; hintSentAt = Number.NEGATIVE_INFINITY; hintSending = false; quietAfter = 0; clearNotificationTimer();
-    change({ state: "connecting", busy: true, muted: false, canRepeat: false, error: undefined, playbackBlocked: false, transcript: [], announcement: "" });
+    change({ state: "connecting", busy: true, muted: false, canRepeat: false, error: undefined, playbackBlocked: false, transcript: [], announcement: "", announcementSource: undefined, announcementText: undefined });
     let failed = false, recovering = false, creditsRequired = false;
     const operation = (async () => {
       try {
@@ -136,7 +138,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
             } else if (entry?.final || interruptedAgentSegments.has(segmentId)) unfinishedAgentSegments.delete(segmentId);
             else unfinishedAgentSegments.add(segmentId);
             noteActivity();
-            change({ transcript, ...(update.isFinal && entry && (!previous?.final || previous.text !== entry.text) ? { announcement: `${update.source === "user" ? "You" : "Agent"}: ${update.text}` } : {}) });
+            change({ transcript, ...(update.isFinal && entry && (!previous?.final || previous.text !== entry.text) ? { announcement: `${update.source === "user" ? "You" : "Agent"}: ${update.text}`, announcementSource: update.source, announcementText: update.text } : {}) });
           },
         });
         if (epoch === ownedEpoch) {
@@ -183,7 +185,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
       await media.sendChatMessage(VOICE_RESULT_NOTIFICATION);
       if (epoch !== ownedEpoch) return false;
       change({ canRepeat: true });
-      if (!snapshot.transcript.some((entry) => entry.id === `publication:${input.publicationId}`)) change({ transcript: [...snapshot.transcript, { id: `publication:${input.publicationId}`, source: "application", text: "A task update is available.", final: true }] });
+      if (!snapshot.transcript.some((entry) => entry.id === `publication:${input.publicationId}`)) change({ transcript: [...snapshot.transcript, { id: `publication:${input.publicationId}`, source: "application", text: "A task update is available.", final: true, generated: "task_update" }] });
       return true;
     } catch { if (epoch === ownedEpoch) change({ error: "A task update could not be delivered to voice. Open the task to read it." }); return false; }
     finally { if (epoch === ownedEpoch) { hintSending = false; scheduleNotifications(); } }

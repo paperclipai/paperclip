@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueLinkQuicklook, QUICKLOOK_CONTENT_CLASS, quicklookAlignOffset } from "./IssueLinkQuicklook";
 
@@ -71,6 +72,7 @@ describe("IssueLinkQuicklook", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    void i18n.changeLanguage("en");
     vi.useFakeTimers();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -93,6 +95,34 @@ describe("IssueLinkQuicklook", () => {
     container.remove();
     vi.useRealTimers();
     vi.clearAllMocks();
+    void i18n.changeLanguage("en");
+  });
+
+  it("keeps an open quicklook mounted while its status and date locale update", () => {
+    const issue = createIssue();
+    act(() => root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <IssueLinkQuicklook issuePathId="PAP-1" issuePrefetch={issue} to="/issues/PAP-1">PAP-1</IssueLinkQuicklook>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ));
+    const trigger = container.querySelector("a")!;
+    act(() => trigger.focus());
+    const card = document.body.querySelector("[data-quicklook]")!;
+    const glyph = card.querySelector('[role="img"][aria-label="Todo"]')!;
+    const link = card.querySelector("a")!;
+    const fetchCount = mockIssuesApiGet.mock.calls.length;
+    expect(glyph).not.toBeNull();
+    for (const language of ["ru", "en"] as const) {
+      act(() => { void i18n.changeLanguage(language); });
+      expect(document.body.querySelector("[data-quicklook]")).toBe(card);
+      expect(glyph.getAttribute("aria-label")).toBe(language === "ru" ? "К выполнению" : "Todo");
+      expect(link.textContent).toBe("Quicklook title");
+      expect(link.getAttribute("href")).toBe("/issues/PAP-1");
+      expect(card.textContent).toContain("Quicklook description");
+      expect(mockIssuesApiGet.mock.calls.length).toBe(fetchCount);
+    }
   });
 
   it("keeps portaled quicklook links mounted until after blur click handling", () => {

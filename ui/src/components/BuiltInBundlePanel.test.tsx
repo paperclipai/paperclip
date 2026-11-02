@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
+
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -124,10 +126,11 @@ describe("BuiltInBundlePanel (PAP-13099)", () => {
     document.body.appendChild(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root?.unmount());
     root = null;
     container.remove();
+    await i18n.changeLanguage("en");
     // Radix portals dialog content onto body; clear leftovers between tests.
     document.body.querySelectorAll("[data-slot='alert-dialog-portal']").forEach((node) => node.remove());
   });
@@ -159,6 +162,33 @@ describe("BuiltInBundlePanel (PAP-13099)", () => {
     expect(text).toContain("can create background work");
     expect(text).toContain("Disable schedule");
     expect(text).not.toContain("Enable weekly");
+  });
+
+  it("updates stock labels and an open destructive warning without mutating resources", async () => {
+    const state = makeState("ready", [
+      resource("skill", "operator_modified"),
+      resource("instructions", "stock_current"),
+      resource("routine", "stock_current", { scheduleEnabled: true }),
+    ]);
+    state.definition.bundle!.routine.title = "Review recent agent trajectories for coaching proposals";
+    const original = structuredClone(state);
+    const onResetResource = vi.fn();
+    render(state, { onResetResource });
+    const reset = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Reset")!;
+    flushSync(() => reset.click());
+    await flushReact();
+    expect(document.body.textContent).toContain("Your edits can't be recovered.");
+    await i18n.changeLanguage("ru");
+    await flushReact();
+    expect(container.textContent).toContain("Еженедельно · пн 09:00 UTC");
+    expect(container.textContent).toContain("Проанализировать недавние действия агентов");
+    expect(document.body.textContent).toContain("Восстановить ваши изменения будет невозможно.");
+    expect(document.body.textContent).toContain("Учётные данные и настройки адаптера не затрагиваются.");
+    const confirm = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.startsWith("Сбросить:"))!;
+    expect(confirm).toBeTruthy();
+    flushSync(() => confirm.click());
+    expect(onResetResource).toHaveBeenCalledExactlyOnceWith("skill");
+    expect(state).toEqual(original);
   });
 
   it("links to a pending proposal interaction when the routine resource reports one", () => {

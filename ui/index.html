@@ -70,6 +70,32 @@
         const title = document.getElementById("paperclip-startup-title");
         const message = document.getElementById("paperclip-startup-message");
         const reload = document.getElementById("paperclip-startup-reload");
+        // Generated from the registered JSON catalogs at build time, with no
+        // dependency on React, network access, or successful module imports.
+        const translations = /* PAPERCLIP_STARTUP_LOCALES */ {};
+        const locales = Object.keys(translations);
+        const matchLocale = (value) => {
+          if (typeof value !== "string") return null;
+          const normalized = value.trim().replace("_", "-").toLowerCase();
+          return locales.find((locale) => locale.toLowerCase() === normalized)
+            || locales.find((locale) => locale.toLowerCase() === normalized.split("-")[0])
+            || null;
+        };
+        let locale = null;
+        try { locale = matchLocale(window.localStorage.getItem("paperclip.locale")); } catch {}
+        if (!locale) {
+          try {
+            for (const candidate of [...(window.navigator.languages || []), window.navigator.language]) {
+              locale = matchLocale(candidate);
+              if (locale) break;
+            }
+          } catch {}
+        }
+        const copy = translations[locale || "en"];
+        if (copy) {
+          document.documentElement.lang = locale || "en";
+          reload.textContent = copy.startupReload;
+        }
         const retry = () => window.location.reload();
         const finished = () => root.childElementCount > 0;
         const cleanup = () => {
@@ -82,8 +108,8 @@
         };
         const onFailure = () => {
           if (finished()) return cleanup();
-          title.textContent = "Paperclip couldn’t start";
-          message.textContent = "Part of the app failed to load. Check your connection and reload this page to try again.";
+          title.textContent = copy?.startupFailedTitle || "Paperclip couldn’t start";
+          message.textContent = copy?.startupFailedMessage || "Part of the app failed to load. Check your connection and reload this page to try again.";
           notice.hidden = false;
         };
         const onError = (event) => {
@@ -97,8 +123,8 @@
         const timer = setTimeout(() => {
           if (finished()) return cleanup();
           if (!notice.hidden) return;
-          title.textContent = "Paperclip is taking longer to load";
-          message.textContent = "You can keep waiting, or reload this page to try again.";
+          title.textContent = copy?.startupSlowTitle || "Paperclip is taking longer to load";
+          message.textContent = copy?.startupSlowMessage || "You can keep waiting, or reload this page to try again.";
           notice.hidden = false;
         }, 30_000);
         window.addEventListener("error", onError, true);

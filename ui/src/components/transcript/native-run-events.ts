@@ -2,6 +2,22 @@ import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
 
+// Keep UI provenance outside canonical transcript fields so identical provider
+// text cannot be mistaken for a locally generated explanatory fallback.
+type NativeDisplayCopy = {
+  title?: "providerNotice";
+  summary?: "providerNotice";
+  detail?: "providerSessionUsage";
+};
+const nativeDisplayCopies = new WeakMap<TranscriptEntry, NativeDisplayCopy>();
+export function nativeRunEntryDisplayCopy(entry: TranscriptEntry): NativeDisplayCopy | undefined {
+  return nativeDisplayCopies.get(entry);
+}
+function withNativeDisplayCopy<T extends TranscriptEntry>(entry: T, copy: NativeDisplayCopy): T {
+  nativeDisplayCopies.set(entry, copy);
+  return entry;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -826,16 +842,17 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     // and category for the shared notice row instead of serializing an input blob.
     if (event.eventType === "provider.notice.recorded" && payload.schema === "paperclip.provider.notice.v1") {
       if (isRunLogOnlyProviderEvent(event.eventType, payload)) continue;
-      entries.push({
+      const summary = text(payload.summary)?.trim() || text(payload.message)?.trim();
+      entries.push(withNativeDisplayCopy({
         kind: "provider_activity",
         ts,
         family: "provider_notice",
         eventType: event.eventType,
         status: payload.severity === "error" ? "failed" : "informational",
         title: "Provider notice",
-        summary: text(payload.summary)?.trim() || text(payload.message)?.trim() || "Provider notice",
+        summary: summary || "Provider notice",
         payload,
-      });
+      }, { title: "providerNotice", ...(!summary ? { summary: "providerNotice" as const } : {}) }));
       continue;
     }
 
@@ -1059,14 +1076,14 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       errors: [],
     });
   } else if (cumulativeUsageSummary) {
-    entries.push({
+    entries.push(withNativeDisplayCopy({
       kind: "result",
       ...cumulativeUsageSummary,
       text: "Provider-reported session-cumulative usage; a per-run delta was unavailable.",
       subtype: "paperclip_runner_session_usage",
       isError: false,
       errors: [],
-    });
+    }, { detail: "providerSessionUsage" }));
   }
 
   return entries;

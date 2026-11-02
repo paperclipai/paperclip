@@ -1,3 +1,5 @@
+import { t, useTranslation, i18n } from "@/i18n";
+import { Trans } from "react-i18next";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "@paperclipai/shared";
 import {
@@ -92,59 +94,58 @@ type LivenessCopy = {
 
 const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   completed: {
-    label: "Completed",
+    get label() { return t("localizationTaskRuntime.ui_Completed_1tmo59u"); },
     tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    description: "Task reached a terminal state.",
+    get description() { return t("localizationTaskRuntime.ui_Task_reached_a_terminal_state_28r4o0"); },
   },
   advanced: {
-    label: "Advanced",
+    get label() { return t("localizationTaskRuntime.ui_Advanced_qwfkor"); },
     tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-    description: "Run produced concrete evidence of progress.",
+    get description() { return t("localizationTaskRuntime.ui_Run_produced_concrete_evidence_of_progress_9mvhx4"); },
   },
   plan_only: {
-    label: "Plan only",
+    get label() { return t("localizationTaskRuntime.ui_Plan_only_g6xu00"); },
     tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-    description: "Run described future work without concrete action evidence.",
+    get description() { return t("localizationTaskRuntime.ui_Run_described_future_work_without_concrete_action_evidence_wu7qon"); },
   },
   empty_response: {
-    label: "Empty response",
+    get label() { return t("localizationTaskRuntime.ui_Empty_response_9fq0gt"); },
     tone: "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300",
-    description: "Run finished without useful output.",
+    get description() { return t("localizationTaskRuntime.ui_Run_finished_without_useful_output_e90en7"); },
   },
   blocked: {
-    label: "Blocked",
+    get label() { return t("localizationTaskRuntime.ui_Blocked_1r45c2b"); },
     tone: "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
-    description: "Run or task declared a blocker.",
+    get description() { return t("localizationTaskRuntime.ui_Run_or_task_declared_a_blocker_1xc4zwn"); },
   },
   failed: {
-    label: "Failed",
+    get label() { return t("localizationTaskRuntime.ui_Failed_npsixg"); },
     tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
-    description: "Run ended unsuccessfully.",
+    get description() { return t("localizationTaskRuntime.ui_Run_ended_unsuccessfully_neo24m"); },
   },
   needs_followup: {
-    label: "Needs follow-up",
+    get label() { return t("localizationTaskRuntime.ui_Needs_follow_up_1ty5qfz"); },
     tone: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
-    description:
-      "Run produced useful output but did not prove concrete progress.",
+    get description() { return t("localizationTaskRuntime.ui_Run_produced_useful_output_but_did_not_prove_concrete_progress_q21a84"); },
   },
 };
 
 const PENDING_LIVENESS_COPY: LivenessCopy = {
-  label: "Checks after finish",
+  get label() { return t("localizationTaskRuntime.ui_Checks_after_finish_nzg1ad"); },
   tone: "border-border bg-background text-muted-foreground",
-  description: "Liveness is evaluated after the run finishes.",
+  get description() { return t("localizationTaskRuntime.ui_Liveness_is_evaluated_after_the_run_finishes_1d1zhwa"); },
 };
 
 const RETRY_PENDING_LIVENESS_COPY: LivenessCopy = {
-  label: "Retry pending",
+  get label() { return t("localizationTaskRuntime.ui_Retry_pending_bwqdx6"); },
   tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-  description: "Paperclip queued an automatic retry that has not started yet.",
+  get description() { return t("localizationTaskRuntime.ui_Paperclip_queued_an_automatic_retry_that_has_not_started_yet_1pcw7lx"); },
 };
 
 const MISSING_LIVENESS_COPY: LivenessCopy = {
-  label: "No liveness data",
+  get label() { return t("localizationTaskRuntime.ui_No_liveness_data_1blry79"); },
   tone: "border-border bg-background text-muted-foreground",
-  description: "This run has no persisted liveness classification.",
+  get description() { return t("localizationTaskRuntime.ui_This_run_has_no_persisted_liveness_classification_hxrbwh"); },
 };
 
 const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "cancelled"]);
@@ -163,15 +164,15 @@ const RUN_OUTPUT_SILENCE_COPY: Partial<
   Record<RunOutputSilenceLevel, RunOutputSilenceCopy>
 > = {
   suspicious: {
-    label: "Output silence",
+    get label() { return t("localizationTaskRuntime.ui_Output_silence_7050jj"); },
     tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
   critical: {
-    label: "Critical silence",
+    get label() { return t("localizationTaskRuntime.ui_Critical_silence_112wp8j"); },
     tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
   },
   snoozed: {
-    label: "Silence snoozed",
+    get label() { return t("localizationTaskRuntime.ui_Silence_snoozed_18imc5a"); },
     tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
   },
 };
@@ -201,14 +202,14 @@ function formatDuration(
   const endMs = end ? new Date(end).getTime() : Date.now();
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
   const totalSeconds = Math.max(0, Math.round((endMs - startMs) / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return t("localizationTaskRuntime.durationSeconds", { seconds: totalSeconds });
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   if (minutes < 60)
-    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+    return seconds > 0 ? t("localizationTaskRuntime.durationMinutesSeconds", { minutes, seconds }) : t("localizationTaskRuntime.durationMinutes", { minutes });
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  return remainingMinutes > 0 ? t("localizationTaskRuntime.durationHoursMinutes", { hours, minutes: remainingMinutes }) : t("localizationTaskRuntime.durationHours", { hours });
 }
 
 function toIsoString(value: string | Date | null | undefined) {
@@ -280,7 +281,7 @@ function mergeRuns(
 }
 
 function statusLabel(status: string) {
-  return status.replace(/_/g, " ");
+  return status === "scheduled_retry" ? t("localizationTaskRuntime.ui_Retry_pending_bwqdx6") : t(`status.${status}`, { defaultValue: status.replace(/_/g, " ") });
 }
 
 function isActiveRun(run: Pick<LedgerRun, "status" | "isLive">) {
@@ -292,11 +293,11 @@ function runSummary(
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>,
 ) {
   const agentName = compactAgentName(run, agentMap);
-  if (run.status === "running") return `Running now by ${agentName}`;
-  if (run.status === "queued") return `Queued for ${agentName}`;
+  if (run.status === "running") return t("localizationTaskRuntime.runRunningBy", { agent: agentName });
+  if (run.status === "queued") return t("localizationTaskRuntime.runQueuedFor", { agent: agentName });
   if (run.status === "scheduled_retry")
-    return `Automatic retry scheduled for ${agentName}`;
-  return `${statusLabel(run.status)} by ${agentName}`;
+    return t("localizationTaskRuntime.runRetryFor", { agent: agentName });
+  return t("localizationTaskRuntime.runStatusBy", { status: statusLabel(run.status), agent: agentName });
 }
 
 function livenessCopyForRun(run: LedgerRun) {
@@ -312,56 +313,56 @@ function stopReasonLabel(run: RunForIssue) {
   const effectiveTimeoutSec = readNumber(result?.effectiveTimeoutSec);
   const timeoutText =
     effectiveTimeoutSec && effectiveTimeoutSec > 0
-      ? `${effectiveTimeoutSec}s timeout`
+      ? t("localizationTaskRuntime.timeoutSeconds", { count: effectiveTimeoutSec })
       : null;
 
   if (timeoutFired || stopReason === "timeout") {
-    return timeoutText ? `timeout (${timeoutText})` : "timeout";
+    return timeoutText ? t("localizationTaskRuntime.timeoutDetail", { timeout: timeoutText }) : t("localizationTaskRuntime.timeout");
   }
   if (
     stopReason === "max_turns_exhausted" ||
     stopReason === "turn_limit_exhausted"
   )
-    return "max turns exhausted";
-  if (stopReason === "budget_paused") return "budget paused";
-  if (stopReason === "cancelled") return "cancelled";
-  if (stopReason === "paused") return "paused by board";
-  if (stopReason === "process_lost") return "process lost";
+    return t("localizationTaskRuntime.ui_max_turns_exhausted_3xo7wa");
+  if (stopReason === "budget_paused") return t("localizationTaskRuntime.ui_budget_paused_1xssosa");
+  if (stopReason === "cancelled") return t("localizationTaskRuntime.cancelled");
+  if (stopReason === "paused") return t("localizationTaskRuntime.ui_paused_by_board_10p834g");
+  if (stopReason === "process_lost") return t("localizationTaskRuntime.ui_process_lost_1nx646s");
   if (stopReason === "unmanaged_background_task_stopped")
-    return "unmanaged background task stopped";
-  if (stopReason === "adapter_failed") return "adapter failed";
+    return t("localizationTaskRuntime.ui_unmanaged_background_task_stopped_ro89fb");
+  if (stopReason === "adapter_failed") return t("localizationTaskRuntime.ui_adapter_failed_12m9vap");
   if (stopReason === "completed")
-    return timeoutText ? `completed (${timeoutText})` : "completed";
+    return timeoutText ? t("localizationTaskRuntime.completedDetail", { timeout: timeoutText }) : t("localizationTaskRuntime.completed");
   return timeoutText;
 }
 
 function stopStatusLabel(run: LedgerRun, stopReason: string | null) {
   if (stopReason) return stopReason;
-  if (run.status === "scheduled_retry") return "Retry pending";
-  if (run.status === "queued") return "Waiting to start";
-  if (run.status === "running") return "Still running";
-  if (!run.livenessState) return "Unavailable";
-  return "No stop reason";
+  if (run.status === "scheduled_retry") return t("localizationTaskRuntime.ui_Retry_pending_bwqdx6");
+  if (run.status === "queued") return t("localizationTaskRuntime.ui_Waiting_to_start_1ekquxd");
+  if (run.status === "running") return t("localizationTaskRuntime.ui_Still_running_2etln6");
+  if (!run.livenessState) return t("localizationTaskRuntime.ui_Unavailable_1okhrqh");
+  return t("localizationTaskRuntime.ui_No_stop_reason_1x9ncbq");
 }
 
 function lastUsefulActionLabel(run: LedgerRun) {
-  if (run.status === "scheduled_retry") return "Waiting for next attempt";
+  if (run.status === "scheduled_retry") return t("localizationTaskRuntime.ui_Waiting_for_next_attempt_vrnvq9");
   if (run.lastUsefulActionAt) return relativeTime(run.lastUsefulActionAt);
-  if (isActiveRun(run)) return "No action recorded yet";
+  if (isActiveRun(run)) return t("localizationTaskRuntime.ui_No_action_recorded_yet_5eh7m2");
   if (
     run.livenessState === "plan_only" ||
     run.livenessState === "needs_followup"
   ) {
-    return "No concrete action";
+    return t("localizationTaskRuntime.ui_No_concrete_action_bxvwhh");
   }
-  if (run.livenessState === "empty_response") return "No useful output";
-  if (!run.livenessState) return "Unavailable";
-  return "None recorded";
+  if (run.livenessState === "empty_response") return t("localizationTaskRuntime.ui_No_useful_output_1mdlv6h");
+  if (!run.livenessState) return t("localizationTaskRuntime.ui_Unavailable_1okhrqh");
+  return t("localizationTaskRuntime.ui_None_recorded_sqpl4x");
 }
 
 function continuationLabel(run: LedgerRun) {
   if (!run.continuationAttempt || run.continuationAttempt <= 0) return null;
-  return `Continuation attempt ${run.continuationAttempt}`;
+  return t("localizationTaskRuntime.continuationAttempt", { attempt: run.continuationAttempt });
 }
 
 function hasExhaustedContinuation(run: RunForIssue) {
@@ -391,13 +392,13 @@ function compactAgentName(
 function formatSilenceAge(ms: number | null | undefined) {
   if (!ms || ms <= 0) return null;
   const totalMinutes = Math.floor(ms / 60_000);
-  if (totalMinutes < 1) return "under 1 minute";
+  if (totalMinutes < 1) return t("localizationTaskRuntime.underMinute");
   if (totalMinutes < 60)
-    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return t("localizationTaskRuntime.silenceMinutes", { count: totalMinutes });
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (minutes === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
-  return `${hours}h ${minutes}m`;
+  if (minutes === 0) return t("localizationTaskRuntime.silenceHours", { count: hours });
+  return t("localizationTaskRuntime.durationHoursMinutes", { hours, minutes });
 }
 
 function canBoardRecordWatchdogDecision(
@@ -422,11 +423,11 @@ function canBoardRecordWatchdogDecision(
 
 function watchdogDecisionErrorMessage(error: unknown) {
   if (error instanceof ApiError && error.status === 403) {
-    return "Only the board or the assigned recovery owner can record watchdog decisions";
+    return t("localizationTaskRuntime.ui_Only_the_board_or_the_assigned_recovery_owner_can_record_watchdog_146cg6j");
   }
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
-    : "Paperclip could not record the watchdog decision.";
+    : t("localizationTaskRuntime.ui_Paperclip_could_not_record_the_watchdog_decision_1qzyjme");
 }
 
 export function IssueRunLedger({
@@ -440,6 +441,7 @@ export function IssueRunLedger({
   renderActivityEvent,
   resolveUserLabel,
 }: IssueRunLedgerProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [watchdogDecisionError, setWatchdogDecisionError] = useState<
@@ -476,7 +478,7 @@ export function IssueRunLedger({
   });
   const traceRunIds = useMemo(
     () => (runs ?? []).slice(0, 100).map((run) => run.runId),
-    [runs],
+    [i18n.resolvedLanguage, runs],
   );
   const canInspectProviderTrace =
     boardAccess?.source === "local_implicit" || boardAccess?.isInstanceAdmin === true;
@@ -488,7 +490,7 @@ export function IssueRunLedger({
   });
   const providerTraceMetadata = useMemo(
     () => new Map((providerTraceRows ?? []).map((trace) => [trace.runId, trace])),
-    [providerTraceRows],
+    [i18n.resolvedLanguage, providerTraceRows],
   );
   const watchdogDecision = useMutation({
     mutationFn: (input: WatchdogDecisionInput) =>
@@ -511,7 +513,7 @@ export function IssueRunLedger({
         error instanceof ApiError ? String(error.status) : "error";
       setWatchdogDecisionError(message);
       pushToast({
-        title: "Watchdog decision not recorded",
+        get title() { return t("localizationTaskRuntime.ui_Watchdog_decision_not_recorded_16zzdw7"); },
         body: message,
         tone: "error",
         dedupeKey: `watchdog-decision:${issueId}:${dedupeSuffix}`,
@@ -538,7 +540,7 @@ export function IssueRunLedger({
         companyId,
       );
       if (!("id" in result))
-        throw new Error(result.message ?? "Trace re-run was skipped.");
+        throw new Error(result.message ?? t("localizationTaskRuntime.ui_Trace_re_run_was_skipped_1dzofs"));
       return result;
     },
     onSuccess: () => {
@@ -551,11 +553,11 @@ export function IssueRunLedger({
     },
     onError: (error) =>
       pushToast({
-        title: "Trace re-run not started",
+        get title() { return t("localizationTaskRuntime.ui_Trace_re_run_not_started_135wpvz"); },
         body:
           error instanceof Error
             ? error.message
-            : "Paperclip could not start the trace re-run.",
+            : t("localizationTaskRuntime.ui_Paperclip_could_not_start_the_trace_re_run_1ubyhwo"),
         tone: "error",
         dedupeKey: `provider-trace-rerun:${issueId}`,
       }),
@@ -606,10 +608,11 @@ export function IssueRunLedgerContent({
   onRerunWithTrace,
   providerTraceMetadata = new Map(),
 }: IssueRunLedgerContentProps) {
+  const { t } = useTranslation();
   const [inspectedRun, setInspectedRun] = useState<LedgerRun | null>(null);
   const ledgerRuns = useMemo(
     () => mergeRuns(runs, liveRuns, activeRun),
-    [activeRun, liveRuns, runs],
+    [i18n.resolvedLanguage, activeRun, liveRuns, runs],
   );
   useEffect(() => {
     if (inspectedRun || typeof window === "undefined") return;
@@ -627,7 +630,7 @@ export function IssueRunLedgerContent({
           (run.outputSilence?.level === "critical" ||
             run.outputSilence?.level === "suspicious"),
       ) ?? null,
-    [ledgerRuns],
+    [i18n.resolvedLanguage, ledgerRuns],
   );
   const children = childIssueSummary(childIssues);
   const canRenderActivityEvents = Boolean(renderActivityEvent);
@@ -661,21 +664,21 @@ export function IssueRunLedgerContent({
       if (a.kind !== b.kind) return a.kind === "run" ? -1 : 1;
       return b.id.localeCompare(a.id);
     });
-  }, [activityEvents, canRenderActivityEvents, ledgerRuns]);
+  }, [i18n.resolvedLanguage, activityEvents, canRenderActivityEvents, ledgerRuns]);
 
   return (
-    <section className="space-y-3" aria-label="Task run ledger">
+    <section className="space-y-3" aria-label={t("localizationTaskRuntime.ui_Task_run_ledger_1wkqi76")}>
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-muted-foreground">
-            Run ledger
+            {t("localizationTaskRuntime.ui_Run_ledger_qqlilj")}
           </h3>
           <p className="text-xs text-muted-foreground">
             {latestRun
               ? runSummary(latestRun, agentMap)
               : issueStatus === "in_progress"
-                ? "Waiting for the first run record."
-                : "No runs linked yet."}
+                ? t("localizationTaskRuntime.ui_Waiting_for_the_first_run_record_2bwn6e")
+                : t("localizationTaskRuntime.ui_No_runs_linked_yet_zbvos7")}
           </p>
         </div>
         {latestRun ? (
@@ -683,7 +686,7 @@ export function IssueRunLedgerContent({
             to={`/agents/${latestRun.agentId}/runs/${latestRun.runId}`}
             className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
           >
-            Latest run
+            {t("localizationTaskRuntime.ui_Latest_run_243xn7")}
           </Link>
         ) : null}
       </div>
@@ -691,11 +694,11 @@ export function IssueRunLedgerContent({
       {children.total > 0 ? (
         <div className="rounded-md border border-border/70 px-3 py-2">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="font-medium text-foreground">Child work</span>
+            <span className="font-medium text-foreground">{t("localizationTaskRuntime.ui_Child_work_kkprzm")}</span>
             <span className="text-muted-foreground">
               {children.active.length > 0
-                ? `${children.active.length} active, ${children.done} done, ${children.cancelled} cancelled`
-                : `all ${children.total} terminal (${children.done} done, ${children.cancelled} cancelled)`}
+                ? t("localizationTaskRuntime.childWorkActive", { active: children.active.length, done: children.done, cancelled: children.cancelled })
+                : t("localizationTaskRuntime.childWorkTerminal", { total: children.total, done: children.done, cancelled: children.cancelled })}
             </span>
           </div>
           {children.active.length > 0 ? (
@@ -717,7 +720,7 @@ export function IssueRunLedgerContent({
               ))}
               {children.active.length > 4 ? (
                 <span className="rounded-md border border-border px-2 py-1 text-(length:--text-micro) text-muted-foreground">
-                  +{children.active.length - 4} more
+                  {t("localizationTaskRuntime.moreCount", { count: children.active.length - 4 })}
                 </span>
               ) : null}
             </div>
@@ -736,32 +739,22 @@ export function IssueRunLedgerContent({
         >
           <p className="font-medium">
             {latestSilentRun.outputSilence.level === "critical"
-              ? "Critical output silence"
-              : "Output silence watchdog warning"}
+              ? t("localizationTaskRuntime.ui_Critical_output_silence_1bu2u4e")
+              : t("localizationTaskRuntime.ui_Output_silence_watchdog_warning_l5mfma")}
           </p>
           <p className="mt-1">
-            Latest active run has been silent for{" "}
-            {formatSilenceAge(latestSilentRun.outputSilence.silenceAgeMs) ??
-              "an extended period"}
-            .
+            {t("localizationTaskRuntime.latestSilence", { duration: formatSilenceAge(latestSilentRun.outputSilence.silenceAgeMs) ?? t("localizationTaskRuntime.extendedPeriod") })}
             {latestSilentRun.outputSilence.evaluationIssueIdentifier ? (
               <>
                 {" "}
-                Review{" "}
-                <Link
-                  to={`/issues/${latestSilentRun.outputSilence.evaluationIssueIdentifier}`}
-                  className="font-medium underline underline-offset-2"
-                >
-                  {latestSilentRun.outputSilence.evaluationIssueIdentifier}
-                </Link>{" "}
-                for recovery context.
+                <Trans i18nKey="localizationTaskRuntime.recoveryContext" values={{ identifier: latestSilentRun.outputSilence.evaluationIssueIdentifier }} components={{ issue: <Link to={`/issues/${latestSilentRun.outputSilence.evaluationIssueIdentifier}`} className="font-medium underline underline-offset-2" /> }} />
               </>
             ) : null}
           </p>
           <p className="mt-1">
             {latestSilentRun.outputSilence.evaluationIssueIdentifier
-              ? "This signal is informational. Paperclip did not create new delegated recovery work."
-              : "This signal is informational. Paperclip did not create or assign a recovery task."}
+              ? t("localizationTaskRuntime.ui_This_signal_is_informational_Paperclip_did_not_create_new_delegat_rd55zj")
+              : t("localizationTaskRuntime.ui_This_signal_is_informational_Paperclip_did_not_create_or_assign_a_2q3eax")}
           </p>
           {onWatchdogDecision && canRecordWatchdogDecisions ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -778,7 +771,7 @@ export function IssueRunLedgerContent({
                 }
                 disabled={pendingWatchdogDecision != null}
               >
-                Continue monitoring
+                {t("localizationTaskRuntime.ui_Continue_monitoring_1r76exq")}
               </button>
               <button
                 type="button"
@@ -797,7 +790,7 @@ export function IssueRunLedgerContent({
                 }
                 disabled={pendingWatchdogDecision != null}
               >
-                Snooze 1h
+                {t("localizationTaskRuntime.ui_Snooze_1h_ab98c4")}
               </button>
               <button
                 type="button"
@@ -813,7 +806,7 @@ export function IssueRunLedgerContent({
                 }
                 disabled={pendingWatchdogDecision != null}
               >
-                Mark false positive
+                {t("localizationTaskRuntime.ui_Mark_false_positive_1uyncym")}
               </button>
             </div>
           ) : null}
@@ -828,8 +821,8 @@ export function IssueRunLedgerContent({
       {feedItems.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
           {renderActivityEvent
-            ? "Runs and activity will appear here once this task has history."
-            : "Historical runs without liveness metadata will appear here once linked to this task."}
+            ? t("localizationTaskRuntime.ui_Runs_and_activity_will_appear_here_once_this_task_has_history_14tmrmm")
+            : t("localizationTaskRuntime.ui_Historical_runs_without_liveness_metadata_will_appear_here_once_l_c80wkk")}
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -864,22 +857,21 @@ export function IssueRunLedgerContent({
                 className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground"
               >
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-medium text-foreground">Run</span>
+                  <span className="font-medium text-foreground">{t("localizationTaskRuntime.ui_Run_137u7vu")}</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="min-w-0 max-w-full truncate font-mono text-foreground hover:underline"
                   >
                     {run.runId.slice(0, 8)}
                   </Link>
-                  <span>by {agentName}</span>
+                  <span>{t("localizationTaskRuntime.byAgent", { agent: agentName })}</span>
                   {onBehalfOfLabel ? (
                     <span
                       data-testid="run-on-behalf-of"
                       className="min-w-0 max-w-full truncate text-muted-foreground"
-                      title={`Acting on behalf of ${onBehalfOfLabel}`}
+                      title={t("localizationTaskRuntime.actingOnBehalfOf", { actor: onBehalfOfLabel })}
                     >
-                      on behalf of{" "}
-                      <span className="text-foreground">{onBehalfOfLabel}</span>
+                      <Trans i18nKey="localizationTaskRuntime.onBehalfOf" values={{ actor: onBehalfOfLabel }} components={{ actor: <span className="text-foreground" /> }} />
                     </span>
                   ) : null}
                   <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
@@ -888,8 +880,8 @@ export function IssueRunLedgerContent({
                   {run.isLive ? (
                     <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
                       <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                      live
-                    </span>
+                      {t("localizationTaskRuntime.live")}
+</span>
                   ) : null}
                   <ProviderTraceStatusBadge
                     trace={providerTraceMetadata.get(run.runId)}
@@ -907,7 +899,7 @@ export function IssueRunLedgerContent({
                   </span>
                   {exhausted ? (
                     <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-red-700 dark:text-red-300">
-                      Exhausted
+                      {t("localizationTaskRuntime.ui_Exhausted_wsq9d8")}
                     </span>
                   ) : null}
                   {continuation ? (
@@ -944,22 +936,20 @@ export function IssueRunLedgerContent({
                     type="button"
                     className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) text-foreground hover:bg-accent/40"
                     onClick={() => setInspectedRun(run)}
-                  >
-                    Inspect run
-                  </button>
+                  >{t("localizationAgents.ui73_Inspect_run")}</button>
                 </div>
 
                 <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                   <div className="min-w-0">
-                    <span className="text-foreground">Elapsed</span>{" "}
-                    {duration ?? "unknown"}
+                    <span className="text-foreground">{t("localizationTaskRuntime.ui_Elapsed_14qdum3")}</span>{" "}
+                    {duration ?? t("localizationTaskRuntime.ui_unknown_174uabd")}
                   </div>
                   <div className="min-w-0">
-                    <span className="text-foreground">Last useful action</span>{" "}
+                    <span className="text-foreground">{t("localizationTaskRuntime.ui_Last_useful_action_1j9b2y5")}</span>{" "}
                     {lastUsefulActionLabel(run)}
                   </div>
                   <div className="min-w-0">
-                    <span className="text-foreground">Stop</span>{" "}
+                    <span className="text-foreground">{t("workspaces.actions.stop")}</span>{" "}
                     {stopStatusLabel(run, stopReason)}
                   </div>
                 </div>
@@ -972,7 +962,7 @@ export function IssueRunLedgerContent({
                     ) : null}
                     {retryState.retryOfRunId ? (
                       <p>
-                        Retry of{" "}
+                        {t("localizationTaskRuntime.ui_Retry_of_5o17n2")}{" "}
                         <Link
                           to={`/agents/${run.agentId}/runs/${retryState.retryOfRunId}`}
                           className="font-mono text-foreground hover:underline"
@@ -1004,7 +994,7 @@ export function IssueRunLedgerContent({
                 {run.nextAction ? (
                   <div className="min-w-0 rounded-md bg-accent/40 px-2 py-1.5 text-xs leading-5">
                     <span className="font-medium text-foreground">
-                      Next action:{" "}
+                      {t("localizationTaskRuntime.ui_Next_action_n7deyw")}{" "}
                     </span>
                     <span className="break-words text-muted-foreground">
                       {run.nextAction}
@@ -1016,7 +1006,7 @@ export function IssueRunLedgerContent({
           })}
           {feedItems.length > 20 ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">
-              {feedItems.length - 20} older items not shown
+              {t("localizationTaskRuntime.olderItems", { count: feedItems.length - 20 })}
             </div>
           ) : null}
         </div>

@@ -1,3 +1,5 @@
+import { i18n, t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -50,7 +52,7 @@ import { appTabHref } from "../app-tabs";
 
 /** "1.2s" / "0.4s" — the copy-spec always shows seconds with one decimal. */
 function seconds(ms: number): string {
-  return `${(ms / 1000).toFixed(1)}s`;
+  return t("localizationApps.durationSeconds", { seconds: (ms / 1000).toFixed(1) });
 }
 
 /** relativeTime() returns "just now"; the spec capitalizes it ("Just now"). */
@@ -88,6 +90,7 @@ export function ActionTestDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const testAgentsQuery = useQuery({
     queryKey: queryKeys.tools.testAgents(connectionId),
     queryFn: () => toolsApi.listTestAgents(connectionId),
@@ -129,38 +132,32 @@ export function ActionTestDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Test {title}</DialogTitle>
-          <DialogDescription>
-            Run a real action with the same permissions and credentials an agent would use.
-          </DialogDescription>
+          <DialogTitle>{t("localizationApps.testActionTitle", { title })}</DialogTitle>
+          <DialogDescription>{t("localizationApps.runARealActionWithTheSamePermissionsAndCreden483")}</DialogDescription>
         </DialogHeader>
 
         {testAgentsQuery.isLoading ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading agents…
-          </div>
+            <Loader2 className="h-4 w-4 animate-spin" />{t("pages.secrets.access.loadingAgents")}</div>
         ) : testAgentsQuery.isError ? (
           <TestLoadError
-            message="We couldn't load the agents available for testing."
+            message={t("localizationApps.weCouldnTLoadTheAgentsAvailableForTesting484")}
             onRetry={() => { void testAgentsQuery.refetch(); }}
           />
         ) : agents.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">No agents are available to test as.</p>
+          <p className="py-6 text-sm text-muted-foreground">{t("localizationApps.noAgentsAreAvailableToTestAs485")}</p>
         ) : accessQuery.isError && !accessQuery.data ? (
           <TestLoadError
-            message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
+            message={t("localizationApps.couldNotLoadAgentPermissions", { agent: selectedAgentBase?.name ?? t("localizationApps.thisAgent487") })}
             onRetry={() => { void accessQuery.refetch(); }}
           />
         ) : !selectedAgent ? (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading agent permissions…
-          </div>
+            <Loader2 className="h-4 w-4 animate-spin" />{t("localizationApps.loadingAgentPermissions488")}</div>
         ) : (
           <div className="space-y-5">
             <div className="rounded-md border border-border bg-muted/30 p-4">
-              <p className="text-xs font-medium text-muted-foreground">Act as</p>
+              <p className="text-xs font-medium text-muted-foreground">{t("localizationApps.actAs489")}</p>
               <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                 <AgentPicker
                   agents={agents}
@@ -191,20 +188,21 @@ export function ActionTestDialog({
 
 const DECISION_META: Record<ToolConnectionTestDecision, DecisionMeta> = {
   allowed: {
-    label: "Allowed",
+    get label() { return t("localizationApps.allowed166"); },
     className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   },
   ask_first: {
-    label: "Ask first",
+    get label() { return t("pages.apps.connect.actions.askFirst"); },
     className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
   off: {
-    label: "Off",
+    get label() { return t("pages.instanceSettings.off"); },
     className: "border-border bg-muted text-muted-foreground",
   },
 };
 
 function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
+  useTranslation();
   const meta = DECISION_META[decision];
   return (
     <span
@@ -219,12 +217,11 @@ function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
 }
 
 function TestLoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="py-8 text-center">
       <p className="text-sm font-medium text-foreground">{message}</p>
-      <Button className="mt-3" size="sm" variant="outline" onClick={onRetry}>
-        Try again
-      </Button>
+      <Button className="mt-3" size="sm" variant="outline" onClick={onRetry}>{t("pages.apps.common.retry")}</Button>
     </div>
   );
 }
@@ -246,6 +243,7 @@ function AgentPicker({
   connectionId: string;
   appName: string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -259,7 +257,7 @@ function AgentPicker({
         <button
           type="button"
           className="inline-flex items-center gap-1.5 font-semibold text-foreground underline-offset-2 outline-none hover:text-primary hover:underline focus-visible:text-primary"
-          aria-label="Choose which agent to test as"
+          aria-label={t("localizationApps.chooseWhichAgentToTestAs507")}
         >
           {selectedAgent.name}
           <ChevronsUpDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -270,8 +268,8 @@ function AgentPicker({
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Search agents"
-              placeholder="Search agents…"
+              aria-label={t("localizationApps.searchAgents508")}
+              placeholder={t("localizationSkills.searchAgents581")}
               className="h-8 pl-8 text-sm"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -281,7 +279,7 @@ function AgentPicker({
         </div>
         <div className="max-h-60 overflow-y-auto p-1">
           {filtered.length === 0 ? (
-            <p className="px-3 py-4 text-center text-xs text-muted-foreground">No agents match.</p>
+            <p className="px-3 py-4 text-center text-xs text-muted-foreground">{t("localizationApps.noAgentsMatch509")}</p>
           ) : (
             filtered.map((agent) => {
               const detail = agent.title?.trim() || agent.role;
@@ -315,24 +313,19 @@ function AgentPicker({
           )}
         </div>
         <div className="border-t border-border px-3 py-2 text-(length:--text-micro) text-muted-foreground">
-          <p>Only agents you can assign tasks to are listed.</p>
-          <p>Pick one to preview what they'd see in {appName}.</p>
+          <p>{t("localizationApps.onlyAgentsYouCanAssignTasksToAreListed511")}</p>
+          <p>{t("localizationApps.pickAgentPreview", { app: appName })}</p>
         </div>
         <div className="border-t border-border p-3">
-          <p className="text-xs font-semibold text-foreground">What the badges mean</p>
+          <p className="text-xs font-semibold text-foreground">{t("localizationApps.whatTheBadgesMean513")}</p>
           <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-            <li><span className="font-medium text-foreground">Allowed</span> — runs immediately when you press Run.</li>
-            <li><span className="font-medium text-foreground">Ask first</span> — Run is parked in Review for your OK.</li>
+            <li><Trans t={t} i18nKey="localizationApps.allowedBadgeHint" components={{ badge: <span className="font-medium text-foreground" /> }} /></li>
+            <li><Trans t={t} i18nKey="localizationApps.askBadgeHint" components={{ badge: <span className="font-medium text-foreground" /> }} /></li>
             <li>
-              <span className="font-medium text-foreground">Off</span> — won't run. Change it in{" "}
-              <Link className="text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>.
+              <Trans t={t} i18nKey="localizationApps.offBadgeHint" components={{ badge: <span className="font-medium text-foreground" />, permissions: <Link className="text-primary hover:underline" to={appTabHref(connectionId, "permissions")} /> }} />
             </li>
           </ul>
-          <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
-            Badges reflect this agent's current settings, not yours. Swap agents to see how an action would behave for each.
-          </p>
+          <p className="mt-2 text-(length:--text-micro) text-muted-foreground">{t("localizationApps.badgesReflectThisAgentSCurrentSettingsNotYour517")}</p>
         </div>
       </PopoverContent>
     </Popover>
@@ -407,9 +400,9 @@ function splitRequiredOptional(schema: JsonSchemaNode): JsonSchemaNode {
 }
 
 const GUT_CHECK: Record<ToolConnectionTestDecision, (app: string, agent: string) => string> = {
-  allowed: (app, agent) => `This runs a real call against ${app} as ${agent}.`,
-  ask_first: () => `Waiting for your OK before this call leaves Paperclip.`,
-  off: (_app, agent) => `No call will be made — this action is off for ${agent}.`,
+  allowed: (app, agent) => t("localizationApps.realCallAsAgent", { app, agent }),
+  ask_first: () => t("localizationApps.waitingForOkBeforeCall"),
+  off: (_app, agent) => t("localizationApps.noCallActionOff", { agent }),
 };
 
 function ActionTester({
@@ -429,6 +422,7 @@ function ActionTester({
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const rawSchema = (entry.inputSchema ?? { type: "object", properties: {} }) as JsonSchemaNode;
@@ -537,10 +531,10 @@ function ActionTester({
           onChange={setValues}
           errors={errors}
           disabled={running}
-          advancedLabel="More options"
+          advancedLabel={t("localizationApps.moreOptions521")}
         />
       ) : (
-        <p className="text-xs text-muted-foreground">This action takes no inputs.</p>
+        <p className="text-xs text-muted-foreground">{t("localizationApps.thisActionTakesNoInputs522")}</p>
       )}
 
       <p className="text-xs text-muted-foreground">{GUT_CHECK[decision](appName, agent.name)}</p>
@@ -549,20 +543,17 @@ function ActionTester({
         <Button onClick={onRun} disabled={running || !!outcome?.result.upstreamPending?.resumeTool || outcome?.result.decision === "ask_first"} size="sm">
           {running ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Running…
-            </>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />{t("localizationIssueDetail.ui_Running")}</>
           ) : (
             <>
-              <Play className="h-3.5 w-3.5" /> {outcome ? "Run again" : "Run"}
+              <Play className="h-3.5 w-3.5" /> {outcome ? t("localizationApps.runAgain523") : t("localizationApps.run524")}
             </>
           )}
         </Button>
-        <Button onClick={onReset} disabled={running} size="sm" variant="ghost">
-          Reset
-        </Button>
+        <Button onClick={onReset} disabled={running} size="sm" variant="ghost">{t("workspaces.actions.reset")}</Button>
       </div>
 
-      {(outcome?.result.decision === "ask_first" || outcome?.result.upstreamPending?.resumeTool) && <p className="text-xs text-muted-foreground">Finish the existing request below. Use Reset only when you intend to start a new call.</p>}
+      {(outcome?.result.decision === "ask_first" || outcome?.result.upstreamPending?.resumeTool) && <p className="text-xs text-muted-foreground">{t("sep28Apps.copy314")}</p>}
 
       {running && (
         <RunningCard entry={entry} appName={appName} agentName={agent.name} elapsedMs={elapsedMs} onCancel={onCancelRunning} />
@@ -570,7 +561,7 @@ function ActionTester({
 
       {run.isError && !running && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          Couldn't reach {agent.name}. {run.error instanceof Error ? run.error.message : "Please try again."}
+          {t("localizationApps.couldNotReachAgent", { agent: agent.name, error: run.error instanceof Error ? run.error.message : t("pages.apps.common.tryAgain") })}
         </div>
       )}
 
@@ -598,21 +589,24 @@ function RunningCard({
   elapsedMs: number;
   onCancel: () => void;
 }) {
-  const verb = entry.isReadOnly ? "Reading from" : entry.isWrite ? "Writing to" : "Calling";
+  const { t } = useTranslation();
+  const runningMessage = entry.isReadOnly
+    ? t("localizationApps.readingAsAgent", { app: appName, agent: agentName })
+    : entry.isWrite
+      ? t("localizationApps.writingAsAgent", { app: appName, agent: agentName })
+      : t("localizationApps.callingAsAgent", { app: appName, agent: agentName });
   return (
     <div className="rounded-md border border-border bg-muted/30 p-4">
       <div className="flex items-center gap-2">
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground">Running…</span>
+        <span className="text-sm font-medium text-foreground">{t("localizationIssueDetail.ui_Running")}</span>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        {verb} {appName} as {agentName}.
+        {runningMessage}
       </p>
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">Started {seconds(elapsedMs)} ago · Press cancel to stop</span>
-        <Button onClick={onCancel} size="sm" variant="outline">
-          Cancel
-        </Button>
+        <span className="text-xs text-muted-foreground">{t("localizationApps.runningElapsed", { duration: seconds(elapsedMs) })}</span>
+        <Button onClick={onCancel} size="sm" variant="outline">{t("pages.apps.common.cancel")}</Button>
       </div>
     </div>
   );
@@ -635,6 +629,7 @@ function ResultPanel({
   connectionId: string;
   agent?: TestAgentWithAccess;
 }) {
+  const { t } = useTranslation();
   const { result } = outcome;
   if (result.upstreamPending) return <ProviderPendingResult pending={result.upstreamPending} appName={appName} connectionId={connectionId} agent={agent} />;
   if (result.decision === "ask_first") {
@@ -643,7 +638,7 @@ function ResultPanel({
   if (result.decision === "off") {
     return (
       <div className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-        {result.error?.message ?? "This action is off and won't run."}
+        {result.error?.message ?? t("localizationApps.thisActionIsOffAndWonTRun533")}
       </div>
     );
   }
@@ -658,35 +653,36 @@ function ResultPanel({
 }
 
 function ProviderPendingResult({ pending, appName, connectionId, agent }: { pending: ToolUpstreamPending; appName: string; connectionId: string; agent?: TestAgentWithAccess }) {
+  useTranslation();
   const [resumed, setResumed] = useState<{ outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" } | null>(null);
   const resumeError = resumed && (resumed.outcome.result.error ?? mcpToolError(resumed.outcome.result.result));
   const stoppedByUser = resumed && resumeError?.reasonCode === "tool_error" &&
     ((resumed.action === "decline" && /request was declined by the user/i.test(resumeError.message)) ||
       (resumed.action === "cancel" && /request was cancelled by the user/i.test(resumeError.message)));
   if (stoppedByUser) return <div role="status" className="space-y-2 rounded-md border border-border bg-muted/40 p-4 text-sm">
-    <p className="font-medium">{resumed.action === "decline" ? "Request declined" : "Request cancelled"}</p>
+    <p className="font-medium">{resumed.action === "decline" ? t("sep28Apps.copy315") : t("sep28Apps.copy316")}</p>
     <p>{resumeError.message}</p>
-    <p className="text-muted-foreground">The original call was not repeated.</p>
-    {pending.executionId && <p>Execution: <code className="break-all">{pending.executionId}</code></p>}
+    <p className="text-muted-foreground">{t("sep28Apps.copy317")}</p>
+    {pending.executionId && <p>{t("sep28Apps.copy318")} <code className="break-all">{pending.executionId}</code></p>}
   </div>;
   if (resumed) return <ResultPanel outcome={resumed.outcome} entry={resumed.entry} appName={appName} connectionId={connectionId} agent={agent} />;
   return (
     <div role="status" className="space-y-3 rounded-md border border-border bg-muted/40 p-4 text-sm">
-      <p className="font-medium">{pending.kind === "approval" ? "Approval needed" : "Authorization needed"} in {appName}</p>
-      <p className="text-muted-foreground">Paperclip allowed this call. The provider needs your input before it can continue.</p>
+      <p className="font-medium">{t(pending.kind === "approval" ? "sep28Apps.approvalIn" : "sep28Apps.authorizationIn", { app: appName })}</p>
+      <p className="text-muted-foreground">{t("sep28Apps.copy321")}</p>
       {pending.links.map((link) => {
         const checked = checkOAuthEndpointUrl(link.url);
-        return checked.ok ? <Button key={checked.url} variant="outline" asChild><a href={checked.url} target="_blank" rel="noopener noreferrer">Continue at {checked.host}</a></Button> : null;
+        return checked.ok ? <Button key={checked.url} variant="outline" asChild><a href={checked.url} target="_blank" rel="noopener noreferrer">{t("sep28Apps.continueProvider", { host: checked.host })}</a></Button> : null;
       })}
       {pending.message && <p className="whitespace-pre-wrap break-words">{pending.message}</p>}
-      {pending.links.length === 0 && !pending.resumeTool && <p>Open the provider dashboard to complete this request.</p>}
-      {pending.executionId && <p>Execution: <code className="break-all">{pending.executionId}</code></p>}
-      {pending.elicitationId && <p>Request: <code className="break-all">{pending.elicitationId}</code></p>}
-      {pending.expiresAt && <p>Approval expires {new Date(pending.expiresAt).toLocaleTimeString()}.</p>}
+      {pending.links.length === 0 && !pending.resumeTool && <p>{t("sep28Apps.copy322")}</p>}
+      {pending.executionId && <p>{t("sep28Apps.copy318")} <code className="break-all">{pending.executionId}</code></p>}
+      {pending.elicitationId && <p>{t("sep28Apps.copy323")} <code className="break-all">{pending.elicitationId}</code></p>}
+      {pending.expiresAt && <p>{t("sep28Apps.approvalExpires", { date: new Date(pending.expiresAt).toLocaleTimeString(i18n.resolvedLanguage ?? i18n.language) })}</p>}
       {pending.resumeTool && agent ? <ProviderResumeControls pending={pending} connectionId={connectionId} agent={agent} onResult={setResumed} /> :
       <p className="text-muted-foreground">{pending.resumeTool
-        ? `After approval, test the ${pending.resumeTool} action with this execution ID. Do not start the original action again.`
-        : "After authorizing, check the provider's result before using Run again. Paperclip will not repeat the call automatically."}</p>}
+        ? t("sep28Apps.resumeAction", { tool: pending.resumeTool })
+        : t("sep28Apps.copy324")}</p>}
     </div>
   );
 }
@@ -695,6 +691,7 @@ function ProviderResumeControls({ pending, connectionId, agent, onResult }: {
   pending: ToolUpstreamPending; connectionId: string; agent: TestAgentWithAccess;
   onResult: (result: { outcome: RunOutcome; entry: ToolCatalogEntry; action: "accept" | "decline" | "cancel" }) => void;
 }) {
+  useTranslation();
   const catalog = useQuery({ queryKey: queryKeys.tools.catalog(connectionId), queryFn: () => toolsApi.listCatalog(connectionId) });
   const entry = catalog.data?.catalog.find((item) => item.toolName === pending.resumeTool && item.status === "active");
   const schema = (pending.requestedSchema ?? { type: "object", properties: {} }) as JsonSchemaNode;
@@ -716,18 +713,18 @@ function ProviderResumeControls({ pending, connectionId, agent, onResult }: {
     if (!Object.keys(validation).length) resume.mutate(action);
   };
   return <div className="space-y-3">
-    <p className="text-muted-foreground">Review the provider's request, then resume this execution as {agent.name}. The original action will not be started again.</p>
-    <div className="flex items-center gap-2"><span>Resume permission</span><DecisionBadge decision={permission} /></div>
+    <p className="text-muted-foreground"><Trans i18nKey="sep28Apps.resumeIdentity" values={{ identity: agent.name }} components={{ identity: <span /> }} /></p>
+    <div className="flex items-center gap-2"><span>{t("sep28Apps.copy325")}</span><DecisionBadge decision={permission} /></div>
     {Object.keys(schema.properties ?? {}).length > 0 && <JsonSchemaForm schema={schema} values={content} onChange={setContent} errors={errors} disabled={resume.isPending} />}
     <div className="flex flex-wrap gap-2">
-      <Button disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("accept")}>{resume.isPending ? "Resuming…" : "Approve and resume"}</Button>
-      <Button variant="outline" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("decline")}>Decline</Button>
-      <Button variant="ghost" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("cancel")}>Cancel request</Button>
+      <Button disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("accept")}>{resume.isPending ? t("pages.dashboard.resumingImportedAgents") : t("sep28Apps.copy326")}</Button>
+      <Button variant="outline" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("decline")}>{t("pages.apps.review.decline")}</Button>
+      <Button variant="ghost" disabled={!entry || expired || permission === "off" || resume.isPending} onClick={() => submit("cancel")}>{t("sep28Apps.copy327")}</Button>
     </div>
-    {expired && <p>This provider approval expired. Check the provider before starting a new action.</p>}
-    {permission === "off" && <p>Allow the resume action in Permissions before continuing.</p>}
-    {catalog.isError && <p role="alert">Could not load the resume action. Close this test and try again.</p>}
-    {resume.isError && <p role="alert">{resume.error instanceof Error ? resume.error.message : "Could not resume. Check the provider before trying again."}</p>}
+    {expired && <p>{t("sep28Apps.copy328")}</p>}
+    {permission === "off" && <p>{t("sep28Apps.copy329")}</p>}
+    {catalog.isError && <p role="alert">{t("sep28Apps.copy330")}</p>}
+    {resume.isError && <p role="alert">{resume.error instanceof Error ? resume.error.message : t("sep28Apps.copy331")}</p>}
   </div>;
 }
 
@@ -748,7 +745,7 @@ function mcpToolError(value: unknown): { message: string; reasonCode: string | n
   const message =
     (typeof envelope.content === "string" && envelope.content.trim() !== "" && envelope.content)
     || (typeof envelope.error === "string" && envelope.error.trim() !== "" && envelope.error)
-    || "The app returned an error result.";
+    || t("localizationApps.theAppReturnedAnErrorResult534");
   return { message, reasonCode: "tool_error" };
 }
 
@@ -810,15 +807,15 @@ function resultPreview(value: unknown): { items: Array<{ label: string | null; v
     if (content.type === "text" && typeof content.text === "string") {
       const parsed = parseText(content.text);
       if (structured === null || structured === undefined || safeStringify(parsed) !== safeStringify(structuredValue)) {
-        items.push({ label: (blocks?.length ?? 0) > 1 || (structured !== null && structured !== undefined) ? "Text" : null, value: parsed });
+        items.push({ label: (blocks?.length ?? 0) > 1 || (structured !== null && structured !== undefined) ? t("pages.artifacts.kindText") : null, value: parsed });
       }
     } else if (content.type === "image" || content.type === "audio") {
-      items.push({ label: content.type === "image" ? "Image" : "Audio", value: typeof content.mimeType === "string" ? content.mimeType : "Media attachment" });
+      items.push({ label: content.type === "image" ? t("localizationRoutines.image") : t("localizationTaskRuntime.fileKind.audio"), value: typeof content.mimeType === "string" ? content.mimeType : t("oct5Apps.copy062") });
     } else if (content.type === "resource_link") {
-      items.push({ label: "Resource", value: content.title ?? content.name ?? content.uri ?? "Resource link" });
+      items.push({ label: t("localizationTaskRuntime.display.ui_Resource_9wi711"), value: content.title ?? content.name ?? content.uri ?? t("oct5Apps.copy063") });
     } else if (content.type === "resource" && content.resource && typeof content.resource === "object") {
       const resource = content.resource as Record<string, unknown>;
-      items.push({ label: "Resource", value: typeof resource.text === "string" ? parseText(resource.text) : resource.uri ?? "Embedded resource" });
+      items.push({ label: t("localizationTaskRuntime.display.ui_Resource_9wi711"), value: typeof resource.text === "string" ? parseText(resource.text) : resource.uri ?? t("oct5Apps.copy064") });
     } else {
       return { items: [{ label: null, value }], summary: value, rawFallback: true };
     }
@@ -839,11 +836,15 @@ function writeVerb(entry: ToolCatalogEntry): string | null {
 
 function successHeadline(value: unknown, entry: ToolCatalogEntry, appName: string): string {
   const verb = writeVerb(entry);
-  if (!entry.isReadOnly && verb) return `Worked. Row ${verb}.`;
+  if (!entry.isReadOnly && verb) return verb === "added"
+    ? t("localizationApps.rowAdded")
+    : verb === "updated"
+      ? t("localizationApps.rowUpdated")
+      : t("localizationApps.rowRemoved");
   const rows = asRows(value);
-  if (rows) return `Worked. ${rows.length} ${rows.length === 1 ? "row" : "rows"} came back.`;
-  if (isEmptyResult(value)) return "Worked. No data to show.";
-  return `Worked. ${appName} sent back the result.`;
+  if (rows) return t("localizationApps.rowsReturned", { count: rows.length });
+  if (isEmptyResult(value)) return t("localizationApps.workedNoDataToShow538");
+  return t("localizationApps.resultReturned", { app: appName });
 }
 
 function AllowedResult({
@@ -857,6 +858,7 @@ function AllowedResult({
   appName: string;
   connectionId: string;
 }) {
+  const { t } = useTranslation();
   const value = outcome.result.result;
   const preview = resultPreview(value);
   return (
@@ -867,12 +869,12 @@ function AllowedResult({
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
-        Ran as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        {t("localizationApps.ranAsAgent", { agent: outcome.agentName, duration: seconds(outcome.durationMs), time: relTime(outcome.ranAt) })}
       </p>
 
       {preview.items.some((item) => !isEmptyResult(item.value)) && (
         <div className="mt-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("pages.pipelines.preview")}</p>
           <div className="mt-1.5">
             <div className="space-y-2">
               {preview.items.map((item, index) => (
@@ -889,19 +891,16 @@ function AllowedResult({
       <RawResponseDisclosure value={value} initiallyOpen={preview.rawFallback} />
 
       <p className="mt-3 text-xs text-muted-foreground">
-        This call is in the{" "}
-        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
-          Audit log
-        </Link>
-        .
+        <Trans t={t} i18nKey="localizationApps.callInAuditLog" components={{ audit: <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_" /> }} />
       </p>
-      <p className="mt-1 text-xs text-muted-foreground">Last run finished in {seconds(outcome.durationMs)}.</p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("localizationApps.lastRunDuration", { duration: seconds(outcome.durationMs) })}</p>
     </div>
   );
 }
 
 /** Pretty preview: tables for row arrays, labeled fields for objects, plain text for prose. */
 function PrettyPreview({ value }: { value: unknown }) {
+  const { t } = useTranslation();
   const rows = asRows(value);
   if (rows) {
     const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r)))).slice(0, 6);
@@ -914,7 +913,7 @@ function PrettyPreview({ value }: { value: unknown }) {
         <div className="space-y-2">
           {shown.map((row, index) => <PreviewRowCard key={index} row={row} index={index} />)}
           {rows.length > shown.length && (
-            <p className="text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows in the raw response</p>
+            <p className="text-(length:--text-micro) text-muted-foreground">… {t("oct5Apps.moreRows", { count: rows.length - shown.length })}</p>
           )}
         </div>
       );
@@ -940,7 +939,7 @@ function PrettyPreview({ value }: { value: unknown }) {
           </tbody>
         </table>
         {rows.length > shown.length && (
-          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows</p>
+          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">{t("localizationApps.moreRows", { count: rows.length - shown.length })}</p>
         )}
       </div>
     );
@@ -968,6 +967,7 @@ function PrettyPreview({ value }: { value: unknown }) {
 }
 
 function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: number }) {
+  useTranslation();
   const titleKey = ["title", "name", "label"].find((key) => typeof row[key] === "string" && row[key] !== "");
   const summaryKey = ["highlight", "description", "summary"].find((key) => typeof row[key] === "string" && row[key] !== "");
   const url = typeof row.url === "string" && /^https?:\/\//i.test(row.url) ? row.url : null;
@@ -983,9 +983,9 @@ function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: n
     <div className="min-w-0 rounded-md border border-border bg-background p-3 text-xs">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <p className="min-w-0 break-words text-sm font-medium text-foreground">
-          {titleKey ? cellText(row[titleKey]) : `Result ${index + 1}`}
+          {titleKey ? cellText(row[titleKey]) : t("oct5Apps.resultNumber", { number: index + 1 })}
         </p>
-        {url && <a className="shrink-0 text-primary hover:underline" href={url} target="_blank" rel="noopener noreferrer">Open link</a>}
+        {url && <a className="shrink-0 text-primary hover:underline" href={url} target="_blank" rel="noopener noreferrer">{t("oct5Apps.copy137")}</a>}
       </div>
       {summaryKey && <p className="mt-1 line-clamp-2 break-words text-muted-foreground">{cellText(row[summaryKey]).replace(/\*\*(.*?)\*\*/g, "$1")}</p>}
       {details.length > 0 && (
@@ -998,7 +998,7 @@ function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: n
           ))}
         </dl>
       )}
-      {details.length > 3 && <p className="mt-2 text-muted-foreground">{details.length - 3} more {details.length === 4 ? "field" : "fields"} in the raw response</p>}
+      {details.length > 3 && <p className="mt-2 text-muted-foreground">{t("oct5Apps.moreFields", { count: details.length - 3 })}</p>}
     </div>
   );
 }
@@ -1023,6 +1023,7 @@ function collapseDeep(value: unknown, maxDepth: number, depth = 0): unknown {
 
 function RawResponseDisclosure({ value, initiallyOpen = false }: { value: unknown; initiallyOpen?: boolean }) {
   const [showRaw, setShowRaw] = useState(initiallyOpen);
+  const { t } = useTranslation();
   if (value === undefined || value === null) return null;
   return (
     <div className="mt-3">
@@ -1031,7 +1032,7 @@ function RawResponseDisclosure({ value, initiallyOpen = false }: { value: unknow
         onClick={() => setShowRaw((prev) => !prev)}
         className="text-xs font-semibold uppercase tracking-wide text-primary hover:underline"
       >
-        {showRaw ? "Hide raw response" : "Show raw response"}
+        {showRaw ? t("localizationApps.hideRawResponse545") : t("localizationApps.showRawResponse546")}
       </button>
       {showRaw && (
         <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground">
@@ -1055,25 +1056,26 @@ function ErrorResult({
   connectionId: string;
   error: { message: string; reasonCode: string | null };
 }) {
+  const { t } = useTranslation();
   const hints = errorHints(error.message, error.reasonCode);
   const needsReconnect = isReconnectError(error.reasonCode);
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">It didn't work.</span>
+        <span className="text-sm font-medium text-foreground">{t("localizationApps.itDidnTWork547")}</span>
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
-        Tried as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        {t("localizationApps.triedAsAgent", { agent: outcome.agentName, duration: seconds(outcome.durationMs), time: relTime(outcome.ranAt) })}
       </p>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What {appName} said</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("localizationApps.appResponse", { app: appName })}</p>
         <p className="mt-1 break-words text-sm text-foreground">{error.message}</p>
-        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">code: {error.reasonCode}</p>}
+        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">{t("localizationApps.errorCode", { code: error.reasonCode })}</p>}
       </div>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What to try</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("localizationApps.whatToTry552")}</p>
         <ul className="mt-1 list-disc space-y-0.5 pl-4 text-sm text-foreground">
           {hints.map((hint) => (
             <li key={hint}>{hint}</li>
@@ -1082,14 +1084,10 @@ function ErrorResult({
       </div>
       {outcome.result.result !== undefined && <RawResponseDisclosure value={outcome.result.result} initiallyOpen />}
       <p className="mt-3 text-xs text-muted-foreground">
-        {needsReconnect ? "After reconnecting, run this action again." : "Adjust the input above and try again."}
+        {needsReconnect ? t("oct5Apps.copy065") : t("localizationApps.adjustTheInputAboveAndTryAgain553")}
       </p>
       <p className="mt-1 text-xs text-muted-foreground">
-        Also visible in the{" "}
-        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
-          Audit log
-        </Link>
-        .
+        <Trans t={t} i18nKey="localizationApps.alsoInAuditLog" components={{ audit: <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_" /> }} />
       </p>
     </div>
   );
@@ -1131,6 +1129,7 @@ function AskFirstResult({
   connectionId: string;
   agent?: TestAgentWithAccess;
 }) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const actionRequestId = outcome.result.actionRequestId;
@@ -1188,37 +1187,37 @@ function AskFirstResult({
   const where = formatWhere(status?.parameters);
   const statusLabel =
     phase === "running"
-      ? "Approved · running"
+      ? t("localizationApps.approvedRunning556")
       : phase === "denied"
-        ? "Denied — see Review for why"
+        ? t("localizationApps.deniedSeeReviewForWhy557")
         : phase === "cancelled"
-          ? "Cancelled"
+          ? t("status.cancelled")
           : phase === "expired"
-            ? "Expired — send it again"
-            : `Waiting · ${relTime(requestedAt)}`;
+            ? t("localizationApps.expiredSendItAgain559")
+            : t("localizationApps.waitingSince", { time: relTime(requestedAt) });
   const settled = phase === "denied" || phase === "cancelled" || phase === "expired";
 
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <ShieldQuestion className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">Sent for your OK.</span>
+        <span className="text-sm font-medium text-foreground">{t("localizationApps.sentForYourOK561")}</span>
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">{outcome.agentName} needs your approval before this runs.</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">{t("localizationApps.agentNeedsApproval", { agent: outcome.agentName })}</p>
 
       <dl className="mt-3 space-y-1.5 text-sm">
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("localizationSettings.action")}</dt>
           <dd className="text-foreground">{entry.title ?? entry.toolName}</dd>
         </div>
         {where && (
           <div className="flex gap-3">
-            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Where</dt>
+            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("localizationApps.where564")}</dt>
             <dd className="break-words text-foreground">{where}</dd>
           </div>
         )}
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("nav.status")}</dt>
           <dd className={cn("flex items-center gap-1.5 text-foreground", settled && "text-muted-foreground")}>
             {phase === "running" && <Loader2 className="h-3 w-3 animate-spin" />}
             {statusLabel}
@@ -1228,21 +1227,17 @@ function AskFirstResult({
 
       {!settled && (
         <p className="mt-3 text-sm text-foreground">
-          Approve it in the{" "}
-          <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")}>
-            Review tab
-          </Link>{" "}
-          to finish the test. You can also cancel the request.
+          <Trans t={t} i18nKey="localizationApps.approveTestInReview" components={{ review: <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")} /> }} />
         </p>
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button asChild size="sm" variant="outline">
-          <Link to={appTabHref(connectionId, "review")}>Open Review tab</Link>
+          <Link to={appTabHref(connectionId, "review")}>{t("localizationApps.openReviewTab568")}</Link>
         </Button>
         {phase === "waiting" && actionRequestId && selectedCompanyId && (
           <Button size="sm" variant="ghost" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
-            {cancel.isPending ? "Cancelling…" : "Cancel this request"}
+            {cancel.isPending ? t("pages.agentDetail.cancelling") : t("localizationApps.cancelThisRequest569")}
           </Button>
         )}
       </div>
@@ -1266,6 +1261,7 @@ function OffExplanation({
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
 }) {
+  const { t } = useTranslation();
   const title = entry.title ?? entry.toolName;
   const permHref = `${appTabHref(connectionId, "permissions")}?focus=${encodeURIComponent(entry.id)}`;
 
@@ -1275,8 +1271,8 @@ function OffExplanation({
   const others = allAgents.filter((a) => a.id !== agent.id);
 
   const whyBody = entry.status === "quarantined"
-    ? "This action is new and hasn't been turned on yet."
-    : `${agent.name}'s access profile sets this action to Off.`;
+    ? t("localizationApps.thisActionIsNewAndHasnTBeenTurnedOnYet571")
+    : t("localizationApps.agentProfileActionOff", { agent: agent.name });
 
   // "Last changed by {Actor} · {relativeTime}" — only the access config carries
   // this; a quarantined action has never been configured, so there's nothing to
@@ -1284,7 +1280,9 @@ function OffExplanation({
   const { lastChangedAt, lastChangedByName } = agent.effectiveAccess;
   const auditHint =
     entry.status !== "quarantined" && lastChangedAt
-      ? `Last changed${lastChangedByName ? ` by ${lastChangedByName}` : ""} · ${relTime(new Date(lastChangedAt))}`
+      ? lastChangedByName
+        ? t("localizationApps.lastChangedBy", { name: lastChangedByName, time: relTime(new Date(lastChangedAt)) })
+        : t("localizationApps.lastChangedAt", { time: relTime(new Date(lastChangedAt)) })
       : null;
 
   return (
@@ -1293,30 +1291,26 @@ function OffExplanation({
         <div className="flex items-start gap-2">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">{title} is off for {agent.name}.</p>
-            <p className="mt-0.5">It won't run here, and it won't run from a task either.</p>
+            <p className="font-medium text-foreground">{t("localizationApps.actionOffForAgent", { action: title, agent: agent.name })}</p>
+            <p className="mt-0.5">{t("localizationApps.itWonTRunHereAndItWonTRunFromATaskEither576")}</p>
             <p className="mt-2">
-              Want to test it? Turn it on for {agent.name} in{" "}
-              <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>{" "}
-              — set it to Allowed or Ask first.
+              <Trans t={t} i18nKey="localizationApps.enableToTest" values={{ agent: agent.name }} components={{ permissions: <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")} /> }} />
             </p>
           </div>
         </div>
         <Button asChild size="sm">
-          <Link to={permHref}>Open Permissions →</Link>
+          <Link to={permHref}>{t("localizationApps.openPermissions579")}</Link>
         </Button>
-        <p className="text-xs text-muted-foreground">No call will be made — this action is off for {agent.name}.</p>
+        <p className="text-xs text-muted-foreground">{t("localizationApps.noCallActionOff", { agent: agent.name })}</p>
       </div>
 
       <aside>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("localizationApps.whyThisIsOff581")}</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
         {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}
         {others.length > 0 && (
           <div className="mt-3">
-            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Try as a different agent:</p>
+            <p className="text-(length:--text-micro) font-medium text-muted-foreground">{t("localizationApps.tryAsADifferentAgent582")}</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {others.slice(0, 4).map((other) => (
                 <button
@@ -1359,33 +1353,33 @@ function isReconnectError(reasonCode: string | null | undefined): boolean {
 
 export function errorHints(message: string, reasonCode: string | null | undefined): string[] {
   if (reasonCode === "grant_credential_invalid") {
-    return ["Ask the connection owner to reconnect it from Connectors with a fresh key or server URL."];
+    return [t("oct5Apps.copy066")];
   }
   if (reasonCode === "oauth_insufficient_scope") {
-    return ["Reconnect the app and allow the permissions required for this action."];
+    return [t("oct5Apps.copy067")];
   }
   const haystack = `${reasonCode ?? ""} ${message}`.toUpperCase();
   if (haystack.includes("NOT_FOUND")) {
     return [
-      "Double-check the ID or name you entered — pick it from a dropdown if one is offered.",
-      "Make sure this agent has access to that resource in the connected account.",
+      t("localizationApps.doubleCheckTheIDOrNameYouEnteredPickItFromADr585"),
+      t("localizationApps.makeSureThisAgentHasAccessToThatResourceInThe586"),
     ];
   }
   if (haystack.includes("PERMISSION") || haystack.includes("FORBIDDEN") || haystack.includes("UNAUTHORIZED")) {
     return [
-      "The connected account may not have permission for this action.",
-      "Reconnect the app from Setup if its access was recently changed.",
+      t("localizationApps.theConnectedAccountMayNotHavePermissionForThi590"),
+      t("localizationApps.reconnectTheAppFromSetupIfItsAccessWasRecentl591"),
     ];
   }
   if (haystack.includes("INVALID_ARGUMENT") || haystack.includes("INVALID") || haystack.includes("BAD_REQUEST")) {
     return [
-      "Check the field formats above — a value may be the wrong type or shape.",
-      "Open “More options” to confirm any advanced fields are filled in correctly.",
+      t("localizationApps.checkTheFieldFormatsAboveAValueMayBeTheWrongT595"),
+      t("localizationApps.openMoreOptionsToConfirmAnyAdvancedFieldsAreF596"),
     ];
   }
   if (haystack.includes("RATE_LIMIT") || haystack.includes("RESOURCE_EXHAUSTED") || haystack.includes("429")) {
-    return ["The app is rate-limiting calls right now — wait a moment and run it again."];
+    return [t("localizationApps.theAppIsRateLimitingCallsRightNowWaitAMomentA599")];
   }
   // Locked generic fallback (copy-spec decision #2).
-  return ["Check the inputs above and try again."];
+  return [t("localizationApps.checkTheInputsAboveAndTryAgain600")];
 }

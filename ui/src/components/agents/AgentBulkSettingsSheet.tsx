@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { SettingsDisplayError, settingsErrorText } from "@/lib/settings-localization";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Loader2 } from "lucide-react";
@@ -16,18 +18,19 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 
 type Catalog = { agent: Agent; accounts: AiConnectionList; binding: AiConnectionBinding | undefined; models: AdapterModel[]; restricted: boolean };
-type Failure = { agent: Agent; message: string };
+type Failure = { agent: Agent; error: Error };
 
 export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClose }: {
   companyId: string; agents: Agent[]; totalSelected: number; onClose: (updatedIds: string[], complete?: boolean) => void;
 }) {
+  useTranslation();
   const client = useQueryClient();
   const harness = bulkAgentHarness(agents[0]);
   const label = getAdapterLabel(harness);
   const [changeConnection, setChangeConnection] = useState(false);
   const [changeModel, setChangeModel] = useState(false);
   const [binding, setBinding] = useState<AiConnectionBinding>();
-  const [selectionError, setSelectionError] = useState("");
+  const [selectionError, setSelectionError] = useState(false);
   const [model, setModel] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -65,7 +68,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
         }
         return { agent, accounts, binding: effective, models, restricted } satisfies Catalog;
       });
-      return results.map((result, index) => result.status === "fulfilled" ? result.value : { agent: targets[index], error: result.reason instanceof Error ? result.reason.message : "Couldn’t load connections or models" });
+      return results.map((result, index) => result.status === "fulfilled" ? result.value : { agent: targets[index], error: result.reason instanceof Error ? result.reason : new SettingsDisplayError("bulk.loadError") });
     },
   });
   const rows = catalogs.data?.filter((r): r is Catalog => !("error" in r)) ?? [];
@@ -82,16 +85,16 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
     let problem: string | null = null;
     if (row.binding) {
       problem = bindingProblem(row.binding, { companyId, provider: row.binding.provider }, row.accounts.connections, row.accounts.currentUserId, agent.id);
-      if (!problem && !isAiConnectionCompatible(row.binding, harness, nextModel)) problem = "Choose a model compatible with this connection.";
+      if (!problem && !isAiConnectionCompatible(row.binding, harness, nextModel)) problem = t("oct26Settings.bulk.compatibleModel");
     }
-    if (!problem && row.restricted && !row.models.some(m => m.id === nextModel)) problem = `${nextModel ?? "Harness default"} isn’t available on this connection. Choose a different connection or change the default model.`;
+    if (!problem && row.restricted && !row.models.some(m => m.id === nextModel)) problem = nextModel ? t("oct26Settings.bulk.modelUnavailable", { model: nextModel }) : t("oct26Settings.bulk.defaultUnavailable");
     return problem ? [{ agent, message: problem }] : [];
   });
   const canSave = !saving && !missing && !selectionError && !catalogs.isFetching && !catalogs.error && !loadErrors.length && rows.length === targets.length && !problems.length && changed.length > 0;
   const updateCount = changed.length || agents.length;
   const otherSelected = totalSelected - agents.length;
   const currentConnections = [...new Set(agents.map(a => bulkConnectionName(agentConnection(a), rows.find(r => r.agent.id === a.id)?.accounts)))];
-  const currentModels = [...new Set(agents.map(a => agentDefaultModel(a) ?? "Harness default"))];
+  const currentModels = [...new Set(agents.map(a => agentDefaultModel(a) ?? t("oct26Settings.roster.harnessDefault")))];
   const close = () => { if (!savingRef.current) onClose(updatedIds); };
 
   async function save() {
@@ -112,7 +115,7 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
     const successes: Agent[] = [];
     results.forEach((result, index) => {
       if (result.status === "fulfilled") successes.push(result.value);
-      else nextFailures.push({ agent: changed[index], message: result.reason instanceof Error ? result.reason.message : "Couldn’t save this agent. Try again." });
+      else nextFailures.push({ agent: changed[index], error: result.reason instanceof Error ? result.reason : new SettingsDisplayError("bulk.saveError") });
     });
     const allUpdated = [...updatedIds, ...successes.map(a => a.id)];
     setUpdatedIds(allUpdated);
@@ -126,29 +129,29 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
   }
 
   return <Sheet open onOpenChange={open => { if (!open) close(); }}><SheetContent className="w-full sm:max-w-lg" showCloseButton={!saving} onEscapeKeyDown={event => { if (savingRef.current) event.preventDefault(); }} onInteractOutside={event => { if (savingRef.current) event.preventDefault(); }}>
-    <SheetHeader className="px-6 pt-6 pb-0"><SheetTitle>Update {agents.length} {label} {agents.length === 1 ? "agent" : "agents"}</SheetTitle><SheetDescription>{totalSelected > agents.length ? `${otherSelected} other selected ${otherSelected === 1 ? "agent" : "agents"} won’t change.` : "Change their connection, default model, or both."}</SheetDescription></SheetHeader>
+    <SheetHeader className="px-6 pt-6 pb-0"><SheetTitle>{t("oct26Settings.bulk.title", { count: agents.length, harness: label })}</SheetTitle><SheetDescription>{totalSelected > agents.length ? t("oct26Settings.bulk.otherSelected", { count: otherSelected }) : t("oct26Settings.bulk.description")}</SheetDescription></SheetHeader>
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 py-2">
-      <div className="flex flex-wrap gap-2" aria-label="Agents to update">{agents.map(a => <span key={a.id} className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs"><AgentAvatar agent={a} size={20} />{a.name}</span>)}</div>
-      {failures && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm"><p className="font-medium">{updatedIds.length} updated · {failures.length} couldn’t be saved</p>{failures.map(f => <p key={f.agent.id} className="text-muted-foreground">{f.agent.name}: {f.message}</p>)}<p className="text-xs text-muted-foreground">Retry updates only the remaining agents. Close and reopen to review changed settings.</p></div>}
+      <div className="flex flex-wrap gap-2" aria-label={t("oct26Settings.bulk.targets")}>{agents.map(a => <span key={a.id} className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs"><AgentAvatar agent={a} size={20} />{a.name}</span>)}</div>
+      {failures && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm"><p className="font-medium">{t("oct26Settings.bulk.result", { updated: updatedIds.length, failed: failures.length })}</p>{failures.map(f => <p key={f.agent.id} className="text-muted-foreground">{f.agent.name}: {settingsErrorText(f.error)}</p>)}<p className="text-xs text-muted-foreground">{t("oct26Settings.bulk.retryNotice")}</p></div>}
       <fieldset disabled={saving || failures !== null} className="flex flex-col gap-6 disabled:opacity-60">
-        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeConnection} disabled={!aiProviderForAdapter(harness)} onCheckedChange={value => setChangeConnection(value === true)} aria-label="Change connection" className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">Change connection</span><span className="block text-xs text-muted-foreground">{currentConnections.length === 1 ? currentConnections[0] : `${currentConnections.length} different connections`}{!changeConnection && " · Keep current"}</span></span></label>
-          {changeConnection && <div className="pl-7"><AiConnectionField companyId={companyId} agentId={agents[0].id} agentName={`${agents.length} agents`} adapterType={harness} model={changeModel ? model : undefined} value={binding} readOnly={saving || failures !== null} onChange={value => {
-            if (value.mode === "router") { setSelectionError("Configure connection pools on each agent’s configuration page."); return; }
-            setSelectionError(""); setBinding(value);
+        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeConnection} disabled={!aiProviderForAdapter(harness)} onCheckedChange={value => setChangeConnection(value === true)} aria-label={t("oct26Settings.bulk.changeConnection")} className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">{t("oct26Settings.bulk.changeConnection")}</span><span className="block text-xs text-muted-foreground">{currentConnections.length === 1 ? currentConnections[0] : t("oct26Settings.bulk.connectionCount", { count: currentConnections.length })}{!changeConnection && t("oct26Settings.bulk.keepCurrent")}</span></span></label>
+          {changeConnection && <div className="pl-7"><AiConnectionField companyId={companyId} agentId={agents[0].id} agentName={t("oct26Settings.roster.agentCount", { count: agents.length })} adapterType={harness} model={changeModel ? model : undefined} value={binding} readOnly={saving || failures !== null} onChange={value => {
+            if (value.mode === "router") { setSelectionError(true); return; }
+            setSelectionError(false); setBinding(value);
           }} /></div>}
         </section>
-        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeModel} onCheckedChange={value => setChangeModel(value === true)} aria-label="Change default model" className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">Change default model</span><span className="block text-xs text-muted-foreground">{currentModels.length === 1 ? currentModels[0] : `${currentModels.length} different models`}{!changeModel && " · Keep current"}</span></span></label>
-          {changeModel && <div className="pl-7"><ModelDropdown models={availableModels} value={model} onChange={setModel} open={modelOpen} onOpenChange={setModelOpen} allowDefault={false} required groupByProvider={false} preserveOrder creatable={allowManualModel} /><p className="pt-2 text-xs text-muted-foreground">{allowManualModel ? "Choose a suggested model or enter a model ID supported by your harness." : `Available on every selected agent’s ${changeConnection ? "new connection" : "current connection"}.`}</p></div>}
+        <section className="space-y-3"><label className="flex cursor-pointer items-start gap-3"><Checkbox checked={changeModel} onCheckedChange={value => setChangeModel(value === true)} aria-label={t("oct26Settings.bulk.changeDefaultModel")} className="mt-0.5" /><span className="space-y-1"><span className="block text-sm font-medium">{t("oct26Settings.bulk.changeDefaultModel")}</span><span className="block text-xs text-muted-foreground">{currentModels.length === 1 ? currentModels[0] : t("oct26Settings.bulk.modelCount", { count: currentModels.length })}{!changeModel && t("oct26Settings.bulk.keepCurrent")}</span></span></label>
+          {changeModel && <div className="pl-7"><ModelDropdown models={availableModels} value={model} onChange={setModel} open={modelOpen} onOpenChange={setModelOpen} allowDefault={false} required groupByProvider={false} preserveOrder creatable={allowManualModel} /><p className="pt-2 text-xs text-muted-foreground">{allowManualModel ? t("oct26Settings.bulk.modelHint") : t(changeConnection ? "oct26Settings.bulk.newConnectionAvailability" : "oct26Settings.bulk.currentConnectionAvailability")}</p></div>}
         </section>
       </fieldset>
-      {catalogs.isFetching && <p role="status" className="text-xs text-muted-foreground">Checking connections and models…</p>}
-      {(catalogs.error || loadErrors.length > 0) && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{catalogs.error?.message}</p>{loadErrors.map(r => <p key={r.agent.id}>{r.agent.name}: {"error" in r ? r.error : ""}</p>)}<Button variant="outline" size="sm" onClick={() => void catalogs.refetch()}>Retry loading options</Button></div>}
-      {selectionError && <p role="alert" className="text-sm text-destructive">{selectionError}</p>}
-      {problems.length > 0 && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm">{problems.map(p => <p key={p.agent.id}><span className="font-medium">{p.agent.name}: </span>{p.message}</p>)}{!changeModel && !failures && <Button size="sm" variant="outline" onClick={() => setChangeModel(true)}>Change default model</Button>}</div>}
-      {!missing && changed.length > 0 && <section className="space-y-3" aria-label="Changes to apply"><h3 className="text-xs font-medium text-muted-foreground">CHANGES TO APPLY</h3><div className="divide-y divide-border">{changed.map(agent => <div key={agent.id} className="space-y-1.5 py-3 text-xs"><p className="text-sm font-medium">{agent.name}</p>{changeConnection && !sameBinding(binding, agentConnection(agent)) && <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground"><span>{bulkConnectionName(agentConnection(agent), rows.find(r => r.agent.id === agent.id)?.accounts)}</span><ArrowRight className="size-3" aria-label="to" /><span className="text-foreground">{bulkConnectionName(binding, rows.find(r => r.agent.id === agent.id)?.accounts)}</span></p>}{changeModel && model !== agentDefaultModel(agent) && <p className="flex flex-wrap items-center gap-1.5 font-mono text-muted-foreground"><span>{agentDefaultModel(agent) ?? "Harness default"}</span><ArrowRight className="size-3" aria-label="to" /><span className="text-foreground">{model}</span></p>}</div>)}</div>{targets.length > changed.length && <p className="text-xs text-muted-foreground">{targets.length - changed.length} already have these settings.</p>}</section>}
-      {!missing && !changed.length && <p className="text-sm text-muted-foreground">All selected agents already have these settings.</p>}
-      <p className="text-xs text-muted-foreground">Applies to future runs. Running work keeps its current settings. Task-specific model overrides stay in place. A model change may start a fresh session; existing sessions may retain their connection until reset.</p>
+      {catalogs.isFetching && <p role="status" className="text-xs text-muted-foreground">{t("oct26Settings.bulk.checking")}</p>}
+      {(catalogs.error || loadErrors.length > 0) && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{catalogs.error?.message}</p>{loadErrors.map(r => <p key={r.agent.id}>{r.agent.name}: {"error" in r ? settingsErrorText(r.error) : ""}</p>)}<Button variant="outline" size="sm" onClick={() => void catalogs.refetch()}>{t("oct26Settings.bulk.retryLoading")}</Button></div>}
+      {selectionError && <p role="alert" className="text-sm text-destructive">{t("oct26Settings.bulk.poolHint")}</p>}
+      {problems.length > 0 && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm">{problems.map(p => <p key={p.agent.id}><span className="font-medium">{p.agent.name}: </span>{p.message}</p>)}{!changeModel && !failures && <Button size="sm" variant="outline" onClick={() => setChangeModel(true)}>{t("oct26Settings.bulk.changeDefaultModel")}</Button>}</div>}
+      {!missing && changed.length > 0 && <section className="space-y-3" aria-label={t("oct26Settings.bulk.changes")}><h3 className="text-xs font-medium text-muted-foreground">{t("oct26Settings.bulk.changesHeading")}</h3><div className="divide-y divide-border">{changed.map(agent => <div key={agent.id} className="space-y-1.5 py-3 text-xs"><p className="text-sm font-medium">{agent.name}</p>{changeConnection && !sameBinding(binding, agentConnection(agent)) && <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground"><span>{bulkConnectionName(agentConnection(agent), rows.find(r => r.agent.id === agent.id)?.accounts)}</span><ArrowRight className="size-3" aria-label={t("oct26Settings.bulk.to")} /><span className="text-foreground">{bulkConnectionName(binding, rows.find(r => r.agent.id === agent.id)?.accounts)}</span></p>}{changeModel && model !== agentDefaultModel(agent) && <p className="flex flex-wrap items-center gap-1.5 font-mono text-muted-foreground"><span>{agentDefaultModel(agent) ?? t("oct26Settings.roster.harnessDefault")}</span><ArrowRight className="size-3" aria-label={t("oct26Settings.bulk.to")} /><span className="text-foreground">{model}</span></p>}</div>)}</div>{targets.length > changed.length && <p className="text-xs text-muted-foreground">{t("oct26Settings.bulk.alreadyConfigured", { count: targets.length - changed.length })}</p>}</section>}
+      {!missing && !changed.length && <p className="text-sm text-muted-foreground">{t("oct26Settings.bulk.allConfigured")}</p>}
+      <p className="text-xs text-muted-foreground">{t("oct26Settings.bulk.applyNotice")}</p>
     </div>
-    <SheetFooter className="flex-row items-center justify-between border-t px-6 py-4"><Button variant="ghost" onClick={close} disabled={saving}>{failures ? "Close" : "Cancel"}</Button><Button onClick={() => void save()} disabled={!canSave}>{saving && <Loader2 className="size-4 animate-spin" aria-hidden />}{saving ? "Updating…" : failures ? `Retry ${failures.length} ${failures.length === 1 ? "agent" : "agents"}` : `Update ${updateCount} ${updateCount === 1 ? "agent" : "agents"}`}</Button></SheetFooter>
+    <SheetFooter className="flex-row items-center justify-between border-t px-6 py-4"><Button variant="ghost" onClick={close} disabled={saving}>{failures ? t("oct26Settings.common.close") : t("oct26Settings.common.cancel")}</Button><Button onClick={() => void save()} disabled={!canSave}>{saving && <Loader2 className="size-4 animate-spin" aria-hidden />}{saving ? t("oct26Settings.bulk.updating") : failures ? t("oct26Settings.bulk.retryAgents", { count: failures.length }) : t("oct26Settings.bulk.updateAgents", { count: updateCount })}</Button></SheetFooter>
   </SheetContent></Sheet>;
 }

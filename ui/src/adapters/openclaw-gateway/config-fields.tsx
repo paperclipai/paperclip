@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -30,6 +31,7 @@ function HeadersJsonTextarea({
   onEditCommit: (next: string) => void;
   inputClass: string;
 }) {
+  useTranslation();
   const [editDraft, setEditDraft] = useState<string>(editStringified);
   const [lastSyncedFromConfig, setLastSyncedFromConfig] = useState<string>(editStringified);
   useEffect(() => {
@@ -70,6 +72,7 @@ function SecretField({
   onCommit: (v: string) => void;
   placeholder?: string;
 }) {
+  useTranslation();
   const [visible, setVisible] = useState(false);
   return (
     <Field label={label}>
@@ -110,6 +113,7 @@ export function OpenClawGatewayConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   const configuredHeaders =
     config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
       ? (config.headers as Record<string, unknown>)
@@ -144,7 +148,7 @@ export function OpenClawGatewayConfigFields({
 
   return configFieldsForSection(section, (
     <>
-      <Field label="Gateway URL" hint={help.webhookUrl}>
+      <Field label={t("onboarding.wizard.model.gatewayUrl")} hint={help.webhookUrl}>
         <DraftInput
           value={
             isCreate
@@ -172,7 +176,7 @@ export function OpenClawGatewayConfigFields({
 
       {/* Auth and Identity - available in both create and edit modes */}
       <SecretField
-        label="Gateway auth token"
+        label={t("localizationAgents.ui275_Gateway_auth_token")}
         value={
           isCreate
             ? values!.authToken ?? ""
@@ -183,10 +187,10 @@ export function OpenClawGatewayConfigFields({
             ? set!({ authToken: v })
             : commitGatewayToken(v)
         }
-        placeholder="OpenClaw gateway token"
+        placeholder={t("localizationAgents.ui276_OpenClaw_gateway_token")}
       />
 
-      <Field label="Agent ID">
+      <Field label={t("localizationAgents.ui277_Agent_ID")}>
         <DraftInput
           value={
             isCreate
@@ -204,7 +208,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Session strategy">
+      <Field label={t("localizationAgents.ui279_Session_strategy")}>
         <select
           value={
             isCreate
@@ -218,14 +222,14 @@ export function OpenClawGatewayConfigFields({
           }
           className={inputClass}
         >
-          <option value="fixed">Fixed</option>
-          <option value="issue">Per issue</option>
-          <option value="run">Per run</option>
+          <option value="fixed">{t("localizationCommon.billingType.fixed")}</option>
+          <option value="issue">{t("localizationAgents.ui280_Per_issue")}</option>
+          <option value="run">{t("localizationAgents.ui281_Per_run")}</option>
         </select>
       </Field>
 
       {(isCreate ? values!.sessionKeyStrategy ?? "fixed" : sessionStrategy) === "fixed" && (
-        <Field label="Session key">
+        <Field label={t("localizationAgents.ui282_Session_key")}>
           <DraftInput
             value={
               isCreate
@@ -245,7 +249,7 @@ export function OpenClawGatewayConfigFields({
       )}
 
       <SecretField
-        label="Password (alternative auth)"
+        label={t("localizationAgents.ui284_Password_alternative_auth_")}
         value={
           isCreate
             ? values!.password ?? ""
@@ -256,10 +260,10 @@ export function OpenClawGatewayConfigFields({
             ? set!({ password: v })
             : mark("adapterConfig", "password", v || undefined)
         }
-        placeholder="Gateway shared password"
+        placeholder={t("localizationAgents.ui285_Gateway_shared_password")}
       />
 
-      <Field label="Role">
+      <Field label={t("localizationSettings.role")}>
         <DraftInput
           value={
             isCreate
@@ -277,7 +281,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Scopes (comma-separated)">
+      <Field label={t("localizationAgents.ui287_Scopes_comma_separated_")}>
         <DraftInput
           value={
             isCreate
@@ -309,7 +313,7 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
-      <Field label="Paperclip API URL override">
+      <Field label={t("localizationAgents.ui289_Paperclip_API_URL_override")}>
         <DraftInput
           value={
             isCreate
@@ -327,7 +331,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field configSection="runPolicy" label="Timeout (seconds)">
+      <Field configSection="runPolicy" label={t("localizationAgents.ui291_Timeout_seconds_")}>
         <DraftInput
           value={
             isCreate
@@ -349,7 +353,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Headers JSON">
+      <Field label={t("localizationAgents.ui292_Headers_JSON")}>
         <HeadersJsonTextarea
           isCreate={isCreate}
           createDraft={isCreate ? values!.headersJson ?? "" : ""}
@@ -375,7 +379,7 @@ export function OpenClawGatewayConfigFields({
       </Field>
 
       {!isCreate && (
-        <Field label="Claimed API key path">
+        <Field label={t("localizationAgents.ui293_Claimed_API_key_path")}>
           <DraftInput
             value={eff("adapterConfig", "claimedApiKeyPath", String(config.claimedApiKeyPath ?? ""))}
             onCommit={(v) => mark("adapterConfig", "claimedApiKeyPath", v || undefined)}
@@ -386,7 +390,7 @@ export function OpenClawGatewayConfigFields({
         </Field>
       )}
 
-      <Field configSection="runPolicy" label="Wait timeout (ms)">
+      <Field configSection="runPolicy" label={t("localizationAgents.ui295_Wait_timeout_ms_")}>
         <DraftInput
           value={
             isCreate
@@ -410,7 +414,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Disable device auth">
+      <Field label={t("localizationAgents.ui296_Disable_device_auth")}>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -424,12 +428,10 @@ export function OpenClawGatewayConfigFields({
                 ? set!({ disableDeviceAuth: e.target.checked })
                 : mark("adapterConfig", "disableDeviceAuth", e.target.checked || undefined)
             }
-          />
-          Skip device key authentication
-        </label>
+          />{t("localizationAgents.ui297_Skip_device_key_authentication")}</label>
       </Field>
 
-      <Field label="Auto-pair on first connect">
+      <Field label={t("localizationAgents.ui298_Auto_pair_on_first_connect")}>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -443,16 +445,11 @@ export function OpenClawGatewayConfigFields({
                 ? set!({ autoPairOnFirstConnect: e.target.checked })
                 : mark("adapterConfig", "autoPairOnFirstConnect", e.target.checked)
             }
-          />
-          Automatically approve device pairing
-        </label>
+          />{t("localizationAgents.ui299_Automatically_approve_device_pairing")}</label>
       </Field>
 
-      <Field label="Device auth">
-        <div className="text-xs text-muted-foreground leading-relaxed">
-          When enabled, Paperclip persists a device key during onboarding so pairing approvals
-          remain stable across runs.
-        </div>
+      <Field label={t("localizationAgents.ui300_Device_auth")}>
+        <div className="text-xs text-muted-foreground leading-relaxed">{t("localizationAgents.ui301_When_enabled_Paperclip_persists_a_device_key_during_onboardi")}</div>
       </Field>
     </>
   ));

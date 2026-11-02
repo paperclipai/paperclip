@@ -1,9 +1,16 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { isUuidLike } from "@paperclipai/shared";
 import { emailApi } from "@/api/email";
 import { Button } from "@/components/ui/button";
 import { AgentMailCredentialField } from "./AgentMailCredentialField";
+
+class ReservedEmailAddressError extends Error {
+  constructor(readonly address: string) {
+    super(`The address ${address} is already reserved. Finish setup with its saved key.`);
+  }
+}
 
 interface InlineEmailDraft {
   setupRequestId: string;
@@ -30,6 +37,7 @@ export function AgentMailIntentSetup({ companyId, agentId, requestId, savedCrede
   onDecline(): void;
   declining?: boolean;
 }) {
+  useTranslation();
   const draftKey = `paperclip.agentmail-inline:${companyId}:${requestId}`;
   const [draft] = useState(() => readDraft(draftKey));
   const [setupRequestId, setSetupRequestId] = useState(draft?.setupRequestId ?? requestId);
@@ -48,7 +56,7 @@ export function AgentMailIntentSetup({ companyId, agentId, requestId, savedCrede
   const changeKey = useMutation({
     mutationFn: async (pendingRequestId: string) => {
       const pending = (await emailApi.list(companyId)).find(inbox => inbox.id === pendingRequestId && inbox.status !== "archived");
-      if (pending?.address) throw new Error(`The address ${pending.address} is already reserved. Finish setup with its saved key.`);
+      if (pending?.address) throw new ReservedEmailAddressError(pending.address);
       if (pending) await emailApi.control(pending.id, "remove");
     },
     onSuccess: () => {
@@ -95,20 +103,20 @@ export function AgentMailIntentSetup({ companyId, agentId, requestId, savedCrede
     }
   }}>
     {credentialId || inboxConnectionId
-      ? <p className="text-sm text-muted-foreground">{inboxConnectionId ? "Your inbox is ready. Continue to resume the chat." : "API key saved. Finish creating the inbox."}</p>
+      ? <p className="text-sm text-muted-foreground">{inboxConnectionId ? t("oct5Apps.copy026") : t("oct5Apps.copy027")}</p>
       : <AgentMailCredentialField companyId={companyId} connectionId={selectedCredentialId}
           onConnectionChange={id => { setSelectedCredentialId(id); setApiKey(""); }}
           value={apiKey} onChange={setApiKey} disabled={setup.isPending || changeKey.isPending || declining} />}
     {credentialId && !inboxConnectionId && <Button type="button" variant="link" size="sm" className="h-auto p-0"
       disabled={setup.isPending || changeKey.isPending || declining} onClick={() => changeKey.mutate(setupRequestId)}>
-      {changeKey.isPending ? "Checking setup…" : "Change API key"}
+      {changeKey.isPending ? t("oct5Apps.copy028") : t("oct5Apps.copy029")}
     </Button>}
-    {changeKey.error && <p className="text-sm text-destructive" role="alert">{changeKey.error.message}</p>}
+    {changeKey.error && <p className="text-sm text-destructive" role="alert">{changeKey.error instanceof ReservedEmailAddressError ? t("oct5Apps.reservedAddress", { address: changeKey.error.address }) : changeKey.error.message}</p>}
     {setup.error && <p className="text-sm text-destructive" role="alert">{setup.error.message}</p>}
     <div className="flex items-center justify-between gap-2">
-      <Button type="button" variant="ghost" disabled={setup.isPending || changeKey.isPending || declining} onClick={onDecline}>Not now</Button>
+      <Button type="button" variant="ghost" disabled={setup.isPending || changeKey.isPending || declining} onClick={onDecline}>{t("localizationIssueDetail.ui_Not_now")}</Button>
       <Button type="submit" disabled={setup.isPending || changeKey.isPending || declining || (!credentialId && !selectedCredentialId && !inboxConnectionId && !apiKey.trim())}>
-        {setup.isPending ? "Connecting…" : inboxConnectionId ? "Continue" : credentialId ? "Finish setup" : "Connect AgentMail"}
+        {setup.isPending ? t("sep12Connections.connecting") : inboxConnectionId ? t("pages.inviteLanding.actions.continue") : credentialId ? t("pages.apps.connect.install.finish") : t("oct5Apps.copy030")}
       </Button>
     </div>
   </form>;

@@ -3,7 +3,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AgentDetail, AgentRuntimeState, HeartbeatRun, Issue } from "@paperclipai/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { AgentOverview } from "./AgentDetail";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -20,6 +21,8 @@ vi.mock("@/lib/router", async () => {
 vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div>{children}</div>,
 }));
+
+afterEach(async () => { await i18n.changeLanguage("en"); });
 
 describe("AgentOverview", () => {
   it("identifies Muse and shows its provider-managed model even when old model fields remain", () => {
@@ -40,7 +43,7 @@ describe("AgentOverview", () => {
     expect(markup).not.toContain("old-runtime-model");
   });
 
-  it("prioritizes identity, capability, runtime, skills, tasks, and scoped Audit entry points", () => {
+  it("prioritizes identity, capability, runtime, skills, tasks, and scoped Audit entry points", async () => {
     const agent = {
       id: "agent-1",
       companyId: "company-1",
@@ -70,7 +73,7 @@ describe("AgentOverview", () => {
       sessionDisplayId: "codex-session-42",
     } as unknown as AgentRuntimeState;
 
-    const markup = renderToStaticMarkup(
+    const render = () => renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
         <AgentOverview
           agent={agent}
@@ -84,6 +87,7 @@ describe("AgentOverview", () => {
       </QueryClientProvider>,
     );
 
+    const markup = render();
     expect(markup).toContain("Identity");
     expect(markup).toContain("Capabilities");
     expect(markup).toContain("Harness / Runtime");
@@ -94,6 +98,23 @@ describe("AgentOverview", () => {
     expect(markup).not.toContain("Run Activity");
     expect(markup).not.toContain("Tasks by Status");
     expect(markup).not.toContain("Created by");
+    for (const locale of ["ru", "en"] as const) {
+      await i18n.changeLanguage(locale);
+      const host = document.createElement("div");
+      host.innerHTML = render();
+      const links = Array.from(host.querySelectorAll('[aria-labelledby="agent-audit-links-heading"] a'));
+      expect(links.map(link => link.textContent)).toEqual(locale === "ru"
+        ? ["Активность", "Запуски", "Затраты", "Бюджеты"]
+        : ["Activity", "Runs", "Costs", "Budgets"]);
+      expect(links.map(link => link.getAttribute("href"))).toEqual(
+        ["/activity?mode=agents&agentId=agent-1", "/activity/runs?agentId=agent-1", "/activity/costs?agentId=agent-1", "/activity/budgets?agentId=agent-1"],
+      );
+      expect(host.textContent).toContain("Simplify agent information architecture");
+      expect(host.textContent).toContain("Product engineer");
+      const model = Array.from(host.querySelectorAll("span")).find(element => element.textContent === "gpt-5.6-sol");
+      expect(model?.className).toContain("break-words");
+      expect(model?.className).not.toContain("truncate");
+    }
   });
 
   function renderOverview(createdByUserId: string | null, client: QueryClient) {

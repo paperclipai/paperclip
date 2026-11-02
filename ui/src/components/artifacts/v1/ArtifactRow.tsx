@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { CSSProperties, ReactNode } from "react";
 import type { To } from "react-router-dom";
 import { Link } from "@/lib/router";
@@ -9,7 +10,7 @@ import panelGlyphSlides from "./assets/panel-glyph-slides.svg";
 import panelPlay from "./assets/panel-play.svg";
 import { ROW_ICON, ROW_PLAY } from "./geometry";
 import { glyphOf, isAudio, labelOf, treatmentOf, type ArtifactSubject } from "./kinds";
-import { panelDateLabel } from "./when";
+import { panelDateLabel, sizeLabel } from "./when";
 
 /**
  * One row, from the panel mock (node 2096:87691) and reused in the thread:
@@ -54,6 +55,7 @@ function IconGlyph({ subject }: { subject: ArtifactSubject }) {
 const iconLabel = (subject: ArtifactSubject) => (subject.kind === "document" ? "DOC" : labelOf(subject));
 
 export function ArtifactRowIcon({ subject }: { subject: ArtifactSubject }) {
+  useTranslation();
   return (
     <span className="relative block shrink-0" style={{ width: ROW_ICON.size, height: ROW_ICON.size }}>
       <img src={panelDoc} alt="" width={ROW_ICON.size} height={ROW_ICON.size} className="absolute left-0 top-0 block max-w-none" />
@@ -121,9 +123,10 @@ export interface ArtifactRowProps {
  * it, so nothing interactive nests.
  */
 export function ArtifactRow({ subject, to, href, external = false, onClick, expanded, trailing, className, style, now, testId = "artifact-v1-row" }: ArtifactRowProps) {
+  const { t } = useTranslation();
   const name = subject.filename ?? subject.title;
   const [stem, ext] = splitName(name);
-  const facts = [subject.sizeLabel, subject.updatedAt ? panelDateLabel(subject.updatedAt, now) : null].filter((fact): fact is string => Boolean(fact));
+  const facts = [subject.sizeBytes != null ? sizeLabel(subject.sizeBytes) : subject.sizeLabel, subject.updatedAt ? panelDateLabel(subject.updatedAt, now) : null].filter((fact): fact is string => Boolean(fact));
   const content = (
     <>
       {treatmentOf(subject) === "media" ? <Thumbnail subject={subject} /> : <ArtifactRowIcon subject={subject} />}
@@ -143,7 +146,7 @@ export function ArtifactRow({ subject, to, href, external = false, onClick, expa
       </span>
     </>
   );
-  const label = `Open ${name}`;
+  const label = t("oct26Artifacts.open", { name });
   const control = to ? (
     <Link to={to} aria-label={label} data-testid={`${testId}-open`} className={CONTROL_CLASS}>
       {content}

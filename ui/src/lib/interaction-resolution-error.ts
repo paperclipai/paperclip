@@ -12,6 +12,7 @@
  * action is permitted, it only explains the answer the server already gave.
  */
 
+import { t } from "@/i18n";
 import type { InteractionAudienceDescription } from "./interaction-audience";
 
 /**
@@ -160,4 +161,85 @@ export function interactionResolutionErrorMessage(
   audience?: InteractionResolutionAudience | null,
 ): string {
   return describeInteractionResolutionFailure(error, audience).message;
+}
+
+/** Exact built-in server reasons only; unfamiliar server details stay intact. */
+const RESOLUTION_REASON_DISPLAY_KEYS: Readonly<Record<string, string>> = {
+  "Only the addressed user may resolve this issue-thread interaction.": "localizationInteractionAudience.reasonUserAddressed",
+  "This issue-thread interaction requires a resolver other than its creator.": "localizationInteractionAudience.reasonOtherCreator",
+  "A valid authenticated agent run is required to resolve this issue-thread interaction.": "localizationInteractionAudience.reasonRunRequired",
+  "This interaction is bound to a governed action that requires independent authorization.": "localizationInteractionAudience.reasonGoverned",
+  "This issue-thread interaction is human-only.": "localizationInteractionAudience.reasonHumanOnly",
+  "This issue-thread interaction is addressed to a specific user.": "localizationInteractionAudience.reasonSpecificUser",
+  "Only the addressed agent or an authorized human may resolve this issue-thread interaction.": "localizationInteractionAudience.reasonAgentAddressed",
+  "This issue-thread interaction requires a resolver other than its creator or creating run.": "localizationInteractionAudience.reasonOtherRun",
+  "The authenticated agent run is not valid for this issue-thread interaction.": "localizationInteractionAudience.reasonInvalidRun",
+  "This issue-thread interaction is outside the actor's trusted control-plane scope.": "localizationInteractionAudience.reasonTrustedScope",
+  "This issue-thread interaction is outside the current watchdog scope.": "localizationInteractionAudience.reasonWatchdogScope",
+  "This issue-thread interaction is outside the actor's authorized issue scope.": "localizationInteractionAudience.reasonIssueScope",
+  "Suggested-task creation is outside the resolver's authorized issue scope.": "localizationInteractionAudience.reasonTaskIssueScope",
+  "Suggested-task creation is outside the current watchdog scope.": "localizationInteractionAudience.reasonTaskWatchdogScope",
+  "Suggested-task creation requires independent authorization for every selected task.": "localizationInteractionAudience.reasonTaskAuthorization",
+  "Interaction not found.": "localizationInteractionAudience.reasonNotFound",
+  "Interaction is no longer actionable because the issue is closed.": "localizationInteractionAudience.reasonClosed",
+  "Interaction has already been resolved.": "localizationInteractionAudience.reasonResolved",
+  "Interaction target is stale.": "localizationInteractionAudience.reasonStale",
+  "Interaction has been superseded.": "localizationInteractionAudience.reasonSuperseded",
+  "Forbidden.": "localizationInteractionAudience.reasonForbidden",
+  "This interaction is human-only.": "localizationInteractionAudience.reasonHumanOnlyLegacy",
+  "Review policy `not_creator` requires someone other than the writer who moved the issue into `in_review` to approve or reject it.": "localizationInteractionAudience.reasonReviewWriter",
+  "Review policy `not_creator` requires a different writer, but the review requester could not be determined.": "localizationInteractionAudience.reasonReviewUnknown",
+};
+
+export function describeInteractionResolutionFailureDisplay(
+  error: unknown,
+  audience?: InteractionResolutionAudience | null,
+): InteractionResolutionFailure {
+  const raw = describeInteractionResolutionFailure(error);
+  return {
+    ...raw,
+    get message() {
+      const rawReason = serverReason(error);
+      const reasonKey = rawReason ? RESOLUTION_REASON_DISPLAY_KEYS[rawReason] : undefined;
+      const reason = reasonKey ? t(reasonKey) : rawReason;
+      if (raw.kind === "audience_denied") {
+        const coded = raw.code !== null && (INTERACTION_AUDIENCE_DENIAL_CODES as readonly string[]).includes(raw.code);
+        const explanation = reason ?? t(coded
+          ? "localizationInteractionAudience.errorOutsideAudience"
+          : "localizationInteractionAudience.errorForbidden");
+        return audience && !audience.isOpen && audience.shortSummary
+          ? t("localizationInteractionAudience.errorWithAudience", { reason: explanation, audience: audience.shortSummary })
+          : explanation;
+      }
+      if (raw.kind === "settled") return reason ?? t("localizationInteractionAudience.errorSettled");
+      return reason
+        ? t("localizationInteractionAudience.errorRetryReason", { reason })
+        : t("localizationInteractionAudience.errorRetry");
+    },
+  };
+}
+
+export function interactionResolutionErrorMessageDisplay(
+  error: unknown,
+  audience?: InteractionResolutionAudience | null,
+): string {
+  return describeInteractionResolutionFailureDisplay(error, audience).message;
+}
+
+/**
+ * UI-only error envelope. Keep the original cause and audience facts across
+ * form state updates; do not freeze a translated string in React state.
+ */
+export class InteractionResolutionDisplayError extends Error {
+  constructor(
+    readonly resolutionCause: unknown,
+    readonly audience?: InteractionResolutionAudience | null,
+  ) {
+    super(describeInteractionResolutionFailure(resolutionCause).message);
+    this.name = "InteractionResolutionDisplayError";
+  }
+
+  get displayMessage(): string {
+    return interactionResolutionErrorMessageDisplay(this.resolutionCause, this.audience);
+  }
 }

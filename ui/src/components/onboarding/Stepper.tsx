@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 
 /**
@@ -13,10 +14,10 @@ export const AGENT_ARC_TOTAL_STEPS = 3;
  * controls both announcing "Step 1" while meaning different steps is worse
  * than no number at all. The strip's own "Step N of 3" line carries the count.
  */
-export const AGENT_ARC_STEP_LABELS = [
-  "Create your first agent",
-  "Connect a model",
-  "Review",
+export const AGENT_ARC_STEP_LABEL_KEYS = [
+  "localizationOnboarding.stepAgent",
+  "localizationOnboarding.stepModel",
+  "localizationOnboarding.stepReview",
 ] as const;
 
 /** Wizard step numbers that make up the arc, in order. */
@@ -34,11 +35,9 @@ export const AGENT_ARC_WIZARD_STEPS = [3, 4, 5] as const;
 export const ONBOARDING_WIZARD_STEPS = [1, 3, 4, 5] as const;
 
 /** Destinations for the full walk, in the same order. */
-export const ONBOARDING_STEP_LABELS = [
-  "Name your organization",
-  "Create your first agent",
-  "Connect a model",
-  "Review",
+export const ONBOARDING_STEP_LABEL_KEYS = [
+  "localizationOnboarding.stepOrganization",
+  ...AGENT_ARC_STEP_LABEL_KEYS,
 ] as const;
 
 /**
@@ -91,7 +90,7 @@ export function agentArcStepFor(wizardStep: number): number | null {
 export function Stepper({
   step,
   total = AGENT_ARC_TOTAL_STEPS,
-  labels = AGENT_ARC_STEP_LABELS,
+  labels,
   canJumpToStep,
   onJumpToStep,
 }: {
@@ -107,6 +106,8 @@ export function Stepper({
   canJumpToStep?: (target: number) => boolean;
   onJumpToStep?: (target: number) => void;
 }) {
+  const { t } = useTranslation();
+  const stepLabels = labels ?? AGENT_ARC_STEP_LABEL_KEYS.map((key) => t(key));
   return (
     <div className="mb-11 flex items-center justify-center gap-2">
       {Array.from({ length: total }, (_, index) => index + 1).map((segment) => {
@@ -115,7 +116,7 @@ export function Stepper({
           <button
             key={segment}
             type="button"
-            aria-label={labels[segment - 1] ?? `Step ${segment}`}
+            aria-label={stepLabels[segment - 1] ?? t("localizationOnboarding.stepNumber", { number: segment })}
             aria-current={segment === step ? "step" : undefined}
             disabled={!jumpable}
             onClick={() => jumpable && onJumpToStep?.(segment)}
@@ -134,7 +135,7 @@ export function Stepper({
       })}
       {/* Out of flow, so it neither takes a row nor picks up the gap. */}
       <span className="sr-only">
-        Step {step} of {total}
+        {t("localizationOnboarding.stepProgress", { step, total })}
       </span>
     </div>
   );

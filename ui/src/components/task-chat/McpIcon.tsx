@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { SVGProps } from "react";
 
 /**
@@ -6,6 +7,7 @@ import type { SVGProps } from "react";
  * other taxonomy glyph.
  */
 export function McpIcon(props: SVGProps<SVGSVGElement>) {
+  useTranslation();
   return (
     <svg
       viewBox="0 0 180 180"

@@ -1,3 +1,5 @@
+import { t as translateOct26, useTranslation as useOct26Translation } from "@/i18n";
+import { i18n, useTranslation } from "@/i18n";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -79,6 +81,7 @@ function CopyableCompactValue({
   children: ReactNode;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const text = stringifyCopyValue(value);
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -110,7 +113,7 @@ function CopyableCompactValue({
           className="pointer-events-none absolute bottom-full left-1/2 mb-1.5 inline-flex -translate-x-1/2 items-center gap-1 rounded-md bg-foreground px-2 py-1 text-xs whitespace-nowrap text-background"
         >
           <Check className="h-3 w-3 shrink-0" />
-          Copied
+          {t("localizationActivityChrome.copied")}
         </span>
       ) : null}
     </span>
@@ -164,6 +167,7 @@ export function CaseFieldValue({
   fieldKey?: string;
   variant?: "compact" | "full";
 }) {
+  const { t } = useTranslation();
   if (value === null || value === undefined) return <EmptyValue />;
 
   const issueIdentifiers = extractIssueIdentifiers(value, fieldKey);
@@ -176,16 +180,16 @@ export function CaseFieldValue({
     if (variant === "compact") {
       return (
         <CopyableCompactValue value={value} className="text-sm tabular-nums">
-          {value.toLocaleString()}
+          {value.toLocaleString(i18n.resolvedLanguage ?? i18n.language, { maximumSignificantDigits: 21 })}
         </CopyableCompactValue>
       );
     }
-    return <span className="text-sm tabular-nums">{value.toLocaleString()}</span>;
+    return <span className="text-sm tabular-nums">{value.toLocaleString(i18n.resolvedLanguage ?? i18n.language, { maximumSignificantDigits: 21 })}</span>;
   }
 
   if (typeof value === "boolean") {
     return value ? (
-      <Check className="h-4 w-4 text-green-600 dark:text-green-400" aria-label="true" />
+      <Check className="h-4 w-4 text-green-600 dark:text-green-400" aria-label={t("localizationActivityChrome.true")} />
     ) : (
       <EmptyValue />
     );
@@ -325,12 +329,13 @@ function TableFieldValue({ value, fieldKey }: { value: unknown; fieldKey: string
 
 /** Compact read-only field rows for case detail, including nested JSON paths. */
 export function CaseFieldsTable({ fields }: { fields: Record<string, unknown> }) {
+  useOct26Translation();
   const rows = flattenCaseFields(fields);
   if (rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No fields set</p>;
+    return <p className="text-sm text-muted-foreground">{translateOct26("localizationActivityChrome.noFields")}</p>;
   }
   return (
-    <table aria-label="Case fields" className="w-full table-fixed border-collapse font-mono text-xs leading-5">
+    <table aria-label={translateOct26("oct26Finish.caseFields")} className="w-full table-fixed border-collapse font-mono text-xs leading-5">
       <tbody>
         {rows.map(({ id, path, value }) => (
           <tr key={id} className="even:bg-muted/50">
@@ -348,17 +353,18 @@ export function CaseFieldsTable({ fields }: { fields: Record<string, unknown> })
 }
 
 export function CaseFieldsPanel({ fields }: { fields: Record<string, unknown> }) {
+  const { t } = useTranslation();
   const entries = Object.entries(fields ?? {});
 
   return (
     <section className="space-y-2">
       <div className="flex items-baseline gap-2">
-        <h2 className="text-sm font-semibold">Fields</h2>
-        <span className="text-xs text-muted-foreground">from the skill&apos;s schema — rendered generically</span>
+        <h2 className="text-sm font-semibold">{t("localizationActivityChrome.fields")}</h2>
+        <span className="text-xs text-muted-foreground">{t("localizationActivityChrome.fieldsDescription")}</span>
       </div>
       <Card className="gap-0 py-0">
         {entries.length === 0 ? (
-          <div className="px-4 py-3 text-sm text-muted-foreground">No fields set</div>
+          <div className="px-4 py-3 text-sm text-muted-foreground">{t("localizationActivityChrome.noFields")}</div>
         ) : (
           <dl className="divide-y divide-border">
             {entries.map(([key, value]) => (

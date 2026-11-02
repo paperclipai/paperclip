@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RoutineDetail, RoutineTrigger } from "@paperclipai/shared";
 import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { TriggersSection } from "./editable-sections";
+import { RoutineTriggers as TriggersSection } from "../routine-triggers/RoutineTriggers";
 import { RoutineDetailContext, type RoutineDetailContextValue, type SecretMessage } from "./context";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), createTrigger: vi.fn(), updateTrigger: vi.fn() }));

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import type { CaseSummary } from "@/api/cases";
 import { Cases } from "./Cases";
+import { i18n } from "@/i18n";
 
 const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" as string | null }));
 const casesApi = vi.hoisted(() => ({ list: vi.fn(), listTypes: vi.fn(), get: vi.fn(), patch: vi.fn() }));
@@ -120,6 +121,47 @@ describe("Read-only cases list", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
+  });
+
+  it("switches mounted list and filter labels without changing raw records, URL selections, or requests", async () => {
+    const record = createCase({ title: "oct26Cases.done {{title}}", caseType: "Raw type", phase: "Raw phase",
+      workIssueId: "task-1", workIssue: { id: "task-1", identifier: "PAP-812", title: "Raw task", status: "in_progress", statusVersion: 2, assigneeAgentId: "agent-1", assigneeAgentName: "Raw agent" } });
+    const before = JSON.stringify(record);
+    casesApi.list.mockResolvedValue([record]);
+    casesApi.listTypes.mockResolvedValue(["Raw type"]);
+    const url = "/PAP/cases?q=Raw%20query&type=Raw%20type&status=in_progress&project=none&columns=identifier,type,phase,assignee,status&group=status";
+    await renderPage(url);
+    await waitFor(() => expect(container.textContent).toContain(record.title));
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search cases"]')!;
+    const row = container.querySelector('a[href^="/PAP/cases/PAP-C1"]')!;
+    const href = row.getAttribute("href");
+    await click(labelledButton("Filter cases (3 active)"));
+    const reads = [casesApi.list.mock.calls.length, casesApi.listTypes.mock.calls.length, projectsApi.list.mock.calls.length];
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(input.getAttribute("aria-label")).toBe("Поиск материалов");
+    expect(input.value).toBe("Raw query");
+    expect(document.body.querySelector('[aria-label="Фильтр по типу"]')?.textContent).toBe("Raw type");
+    expect(document.body.querySelector('[aria-label="Фильтр по статусу"]')?.textContent).toBe("В работе");
+    expect(document.body.querySelector('[aria-label="Фильтр по проекту"]')?.textContent).toBe("Без проекта");
+    expect(container.textContent).toContain("1 материал");
+    for (const text of [record.title, "Raw phase", "Raw agent"]) expect(row.textContent).toContain(text);
+    expect(row.getAttribute("href")).toBe(href);
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(url);
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(input.getAttribute("aria-label")).toBe("Search cases");
+    expect(document.body.querySelector('[aria-label="Filter by type"]')?.textContent).toBe("Raw type");
+    expect(row.getAttribute("href")).toBe(href);
+    expect([casesApi.list.mock.calls.length, casesApi.listTypes.mock.calls.length, projectsApi.list.mock.calls.length]).toEqual(reads);
+    expect(casesApi.patch).not.toHaveBeenCalled();
+    expect(JSON.stringify(record)).toBe(before);
+  });
+
+  it.each([[1, "1 материал"], [2, "2 материала"], [5, "5 материалов"], [21, "21 материал"], [22, "22 материала"], [25, "25 материалов"]])("renders Russian list counts for %i", async (count, expected) => {
+    casesApi.list.mockResolvedValue(Array.from({ length: count }, (_, i) => createCase({ id: `case-${i}`, identifier: `PAP-C${i}` })));
+    await i18n.changeLanguage("ru");
+    await renderPage();
+    await waitFor(() => expect(container.querySelector('[role="status"]')?.textContent).toBe(expected));
   });
 
   it("uses batched primary-work data and static statuses without case-edit controls", async () => {

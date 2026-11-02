@@ -1,5 +1,7 @@
+import { agentRoleLabel } from "@/lib/entity-labels";
+import { t, useTranslation } from "@/i18n";
 import { useId } from "react";
-import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLES } from "@paperclipai/shared";
 import type { MuseInvitationDraft } from "@/lib/muse-invitation-draft";
 import { Input } from "../ui/input";
 import { Link } from "@/lib/router";
@@ -16,17 +18,18 @@ export type DotConnectionState = {
   problem?: "event_timeout" | "prompt_unavailable" | "offline" | "agent_unavailable";
 };
 
-const presets = [
-  { id: "dot", name: "Dot", adapter: "openai_dot", description: "Your Dot in ChatGPT" },
-  { id: "grok_bot", name: "Grok Bot", adapter: "grok_bot", description: "An existing Bot in Grok" },
-  { id: "muse", name: "Muse — Personal agent", adapter: "muse", description: "Your personal Muse at muse.ai" },
-  { id: "hermes", name: "Hermes", adapter: "hermes_gateway", description: "An existing Hermes agent" },
-  { id: "other", name: "Other", adapter: "http", description: "Any agent that can connect to Paperclip" },
+const presets = () => [
+  { id: "dot", name: "Dot", adapter: "openai_dot", description: t("oct19Voice.yourDotInChatgpt_x6b037") },
+  { id: "grok_bot", name: "Grok Bot", adapter: "grok_bot", description: t("oct19Voice.anExistingBotInGrok_57yr24") },
+  { id: "muse", name: t("oct19Voice.musePersonalAgent_bx5cxw"), adapter: "muse", description: t("oct19Voice.yourPersonalMuseAtMuseAi_erpoqz") },
+  { id: "hermes", name: "Hermes", adapter: "hermes_gateway", description: t("oct19Voice.anExistingHermesAgent_18kz3by") },
+  { id: "other", name: t("oct19Voice.other_ukzedx"), adapter: "http", description: t("oct19Voice.anyAgentThatCanConnectTo_ip4l6e") },
 ] as const;
 
 export function ExternalAgentPresetPicker({ onSelect, dotDisabledReason, grokDisabledReason, museEnabled = false }: { onSelect: (preset: ExternalAgentPreset) => void; dotDisabledReason?: string; grokDisabledReason?: string; museEnabled?: boolean }) {
+  useTranslation();
   return <div className={cn("grid grid-cols-2 gap-3", !museEnabled && "sm:grid-cols-4")}>
-    {presets.filter(preset => preset.id !== "muse" || museEnabled).map(preset => <button
+    {presets().filter(preset => preset.id !== "muse" || museEnabled).map(preset => <button
       key={preset.id}
       type="button"
       onClick={() => onSelect(preset.id)}
@@ -41,27 +44,28 @@ export function ExternalAgentPresetPicker({ onSelect, dotDisabledReason, grokDis
   </div>;
 }
 
-const checks = [
-  { title: "Connected to Paperclip", description: "Your Dot has connected to this agent." },
-  { title: "Task updates enabled", description: "Your Dot is subscribed to new assignments and messages." },
-  { title: "Test event confirmed", description: "Your Dot received our test and replied to Paperclip." },
+const checks = () => [
+  { title: t("oct19Voice.connectedToPaperclip_keks1"), description: t("oct19Voice.yourDotHasConnectedToThis_1rgn2fq") },
+  { title: t("oct19Voice.taskUpdatesEnabled_ixf70z"), description: t("oct19Voice.yourDotIsSubscribedToNew_wvaxtl") },
+  { title: t("oct19Voice.testEventConfirmed_gzk0wo"), description: t("oct19Voice.yourDotReceivedOurTestAnd_1g97z4b") },
 ];
 
 /** Controlled by server evidence in the invite controller, never by copying a prompt. */
 export function DotConnectionChecks({ state }: { state: DotConnectionState }) {
+  useTranslation();
   const completed = { waiting: 0, connected: 1, subscribed: 2, testing: 2, finishing: 3, ready: 3 }[state.phase];
-  const message = state.problem === "agent_unavailable" ? "Connection checks passed, but this agent cannot receive tasks. Resolve the agent’s setup blocker in Paperclip."
-    : state.problem === "offline" ? "Connection updates paused. Reconnect to check the latest status."
-    : state.problem === "prompt_unavailable" ? "This setup prompt was replaced in another window. Create a fresh prompt to continue."
-    : state.problem === "event_timeout" ? "Your Dot connected, but hasn’t confirmed the test event. Ask it to check Paperclip, then retry."
-    : state.phase === "finishing" ? "Your Dot confirmed the test event. Paperclip is finishing agent setup."
-    : state.phase === "ready" ? "Your Dot is ready for tasks. Messages can travel both ways."
-    : state.phase === "waiting" ? "Watching for your Dot. Updates will appear here automatically."
-    : state.phase === "connected" ? "Your Dot connected. Waiting for it to enable task updates."
-    : "Waiting for your Dot to confirm a test event. No task will be created.";
-  return <section aria-label="Dot connection checks" className="space-y-4">
+  const message = state.problem === "agent_unavailable" ? t("oct19Voice.connectionChecksPassedButThisAgent_1d2k8dq")
+    : state.problem === "offline" ? t("oct19Voice.connectionUpdatesPausedReconnectToCheck_1f1fpgf")
+    : state.problem === "prompt_unavailable" ? t("oct19Voice.thisSetupPromptWasReplacedIn_ps4zk2")
+    : state.problem === "event_timeout" ? t("oct19Voice.yourDotConnectedButHasnT_1qrnfl8")
+    : state.phase === "finishing" ? t("oct19Voice.yourDotConfirmedTheTestEvent_1hzah7w")
+    : state.phase === "ready" ? t("oct19Voice.yourDotIsReadyForTasks_8jll7g")
+    : state.phase === "waiting" ? t("oct19Voice.watchingForYourDotUpdatesWill_1kejx0p")
+    : state.phase === "connected" ? t("oct19Voice.yourDotConnectedWaitingForIt_1dhvthq")
+    : t("oct19Voice.waitingForYourDotToConfirm_1gih6pc");
+  return <section aria-label={t("oct19Voice.dotConnectionChecks_85vmrd")} className="space-y-4">
     <ol className="space-y-4">
-      {checks.map((check, index) => {
+      {checks().map((check, index) => {
         const done = index < completed;
         const failed = index === completed && state.problem === "event_timeout";
         const active = index === completed && !state.problem;
@@ -72,7 +76,7 @@ export function DotConnectionChecks({ state }: { state: DotConnectionState }) {
           </span>
           <div className="min-w-0 pt-0.5">
             <p className={cn("text-sm", done || active || failed ? "font-medium" : "text-muted-foreground")}>
-              {check.title}<span className="sr-only">{done ? ": complete" : failed ? ": needs attention" : active ? ": in progress" : ": waiting"}</span>
+              {check.title}<span className="sr-only">{done ? t("oct19Voice.complete_f87q0k") : failed ? t("oct19Voice.needsAttention_150zfda") : active ? t("oct19Voice.inProgress_1wp4onz") : t("oct19Voice.waiting_12xb3xe")}</span>
             </p>
             {done && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{check.description}</p>}
           </div>
@@ -95,26 +99,27 @@ export type MuseConnectionState = {
 
 /** Receiver contact is separate from an authenticated, independent worker reply. */
 export function MuseConnectionChecks({ state }: { state: MuseConnectionState }) {
+  useTranslation();
   const milestones = [
-    { title: "Paired with Paperclip", done: state.paired, description: "Paperclip authorized the scoped Muse agent connection." },
-    { title: "Receiver detected", done: state.receiverDetected, description: "Paperclip observed a public receiver check. Only an authenticated reply confirms Muse can work." },
-    { title: "Background reply verified", done: state.backgroundReplyVerified, description: "Muse replied to an independent background test." },
+    { title: t("oct19Voice.pairedWithPaperclip_yew6ro"), done: state.paired, description: t("oct19Voice.paperclipAuthorizedTheScopedMuseAgent_jdi67e") },
+    { title: t("oct19Voice.receiverDetected_2nv2bi"), done: state.receiverDetected, description: t("oct19Voice.paperclipObservedAPublicReceiverCheck_1awbfam") },
+    { title: t("oct19Voice.backgroundReplyVerified_1nkm2m7"), done: state.backgroundReplyVerified, description: t("oct19Voice.museRepliedToAnIndependentBackground_y89kke") },
   ];
   const checksPassed = milestones.every(item => item.done);
-  const message = state.problem === "offline" ? "Connection updates paused. Refresh to check the latest evidence."
-    : state.problem === "disconnected" ? "Disconnected. These are the last observed connection checks. Detector cleanup and worker stop evidence remain separate."
-    : state.problem === "connection_expired" ? "This Muse connection expired. Reconnect Muse with a fresh setup prompt. Previous checks do not restore access."
-    : state.problem === "disabled" ? "Muse is disabled. These are the last observed connection checks; new work cannot start."
-    : state.problem === "prompt_unavailable" ? "This setup prompt was replaced or expired. Create a fresh prompt to continue."
-    : state.problem === "agent_unavailable" ? "Connection checks passed. Resolve this agent’s setup or approval blocker before assigning tasks."
-    : state.problem === "no_recent_response" ? "No recent response. Open Muse to check the current conversation and hostname permission, then test again. Silence does not identify a permission problem."
-    : state.testing ? "Waiting for Muse to reply to the current background test."
-    : checksPassed && state.ready ? "Muse is ready for tasks. All connection checks and agent setup passed."
-    : checksPassed ? "All connection checks passed. Paperclip is finishing agent setup."
-    : !state.paired ? "Watching for Muse to pair. Copy the setup prompt into your current Muse conversation."
-    : !state.receiverDetected ? "Muse is paired. Waiting for the first persisted receiver contact."
-    : "Receiver detected. Waiting for Muse to reply to the background test.";
-  return <section aria-label="Muse connection checks" className="space-y-4">
+  const message = state.problem === "offline" ? t("oct19Voice.connectionUpdatesPausedRefreshToCheck_8by63g")
+    : state.problem === "disconnected" ? t("oct19Voice.disconnectedTheseAreTheLastObserved_10xhjwi")
+    : state.problem === "connection_expired" ? t("oct19Voice.thisMuseConnectionExpiredReconnectMuse_bhodbv")
+    : state.problem === "disabled" ? t("oct19Voice.museIsDisabledTheseAreThe_snf6af")
+    : state.problem === "prompt_unavailable" ? t("oct19Voice.thisSetupPromptWasReplacedOr_1gy63o0")
+    : state.problem === "agent_unavailable" ? t("oct19Voice.connectionChecksPassedResolveThisAgent_1gbw8z2")
+    : state.problem === "no_recent_response" ? t("oct19Voice.noRecentResponseOpenMuseTo_5ied6c")
+    : state.testing ? t("oct19Voice.waitingForMuseToReplyTo_1f3n587")
+    : checksPassed && state.ready ? t("oct19Voice.museIsReadyForTasksAll_10i63fm")
+    : checksPassed ? t("oct19Voice.allConnectionChecksPassedPaperclipIs_1nf0z86")
+    : !state.paired ? t("oct19Voice.watchingForMuseToPairCopy_6swq46")
+    : !state.receiverDetected ? t("oct19Voice.museIsPairedWaitingForThe_uwngql")
+    : t("oct19Voice.receiverDetectedWaitingForMuseTo_1voq0un");
+  return <section aria-label={t("oct19Voice.museConnectionChecks_i025ge")} className="space-y-4">
     <ol className="space-y-4">
       {milestones.map(item => <li key={item.title} className="flex items-start gap-3">
         <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-full", item.done ? "bg-accent text-foreground" : "text-muted-foreground")}>
@@ -122,7 +127,7 @@ export function MuseConnectionChecks({ state }: { state: MuseConnectionState }) 
         </span>
         <div className="min-w-0 pt-0.5">
           <p className={cn("text-sm", item.done ? "font-medium" : "text-muted-foreground")}>
-            {item.title}<span className="sr-only">{item.done ? ": complete" : ": waiting"}</span>
+            {item.title}<span className="sr-only">{item.done ? t("oct19Voice.complete_f87q0k") : t("oct19Voice.waiting_12xb3xe")}</span>
           </p>
           {item.done && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.description}</p>}
         </div>
@@ -158,106 +163,107 @@ export function ExternalAgentInviteContent({
   onRetry: () => void;
   onNewPrompt: () => void;
 }) {
+  useTranslation();
   const detailsId = useId();
   const muse = preset === "muse";
   const museDetails = muse && !!museDraft;
   const museAwaitingInvitation = muse && !museDetails && !museConnection && !approvalHref;
   const museReady = muse && !!museConnection?.ready && museConnection.paired && museConnection.receiverDetected && museConnection.backgroundReplyVerified && !museConnection.problem && !museConnection.testing;
-  const provider = presets.find(item => item.id === preset);
+  const provider = presets().find(item => item.id === preset);
   const dot = preset === "dot";
   const ready = museReady || (dot && connection.phase === "ready" && !connection.problem);
   const connecting = dot && connection.phase !== "waiting";
-  const progressLabel = connection.problem === "agent_unavailable" ? "Agent unavailable"
-    : connection.problem === "offline" ? "Updates paused"
-    : connection.problem === "event_timeout" ? "Needs attention"
-    : connection.phase === "finishing" ? "Finishing setup…"
-    : connection.phase === "connected" ? "Connecting…" : "Confirming connection…";
+  const progressLabel = connection.problem === "agent_unavailable" ? t("oct19Voice.agentUnavailable_ft9sak")
+    : connection.problem === "offline" ? t("oct19Voice.updatesPaused_13g2a4h")
+    : connection.problem === "event_timeout" ? t("oct19Voice.needsAttention_pwuroc")
+    : connection.phase === "finishing" ? t("oct19Voice.finishingSetup_oq5xub")
+    : connection.phase === "connected" ? t("oct19Voice.connecting_1puhp9v") : t("oct19Voice.confirmingConnection_lp44br");
   return <>
     <div className="min-h-0 space-y-6 overflow-y-auto px-6 pb-6 pt-8 sm:px-8">
       <div className="space-y-3 pr-5">
-        {muse && <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back</Button>}
+        {muse && <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />{t("oct19Voice.back_1hzmxtu")}</Button>}
         {provider && <AdapterMark type={provider.adapter} className="size-10" />}
         <div className="space-y-2">
           <DialogTitle className="text-xl font-semibold tracking-tight">
-            {!provider ? "Invite an external agent" : muse ? ready ? "Muse is connected" : museDetails || museAwaitingInvitation ? "Invite your Muse" : "Connect your Muse" : dot ? ready ? "Your Dot is connected" : "Connect your Dot" : preset === "hermes" ? "Invite your Hermes agent" : "Invite your agent"}
+            {!provider ? t("oct19Voice.inviteAnExternalAgent_1j0k98b") : muse ? ready ? t("oct19Voice.museIsConnected_1r13dmu") : museDetails || museAwaitingInvitation ? t("oct19Voice.inviteYourMuse_l4zp1b") : t("oct19Voice.connectYourMuse_1k18uqe") : dot ? ready ? t("oct19Voice.yourDotIsConnected_1q1v2c4") : t("oct19Voice.connectYourDot_1qss09r") : preset === "hermes" ? t("oct19Voice.inviteYourHermesAgent_ihbwty") : t("oct19Voice.inviteYourAgent_pzd50q")}
           </DialogTitle>
           <DialogDescription className="text-sm leading-relaxed">
-            {!provider ? `Bring an agent you already use into ${companyName}.`
-              : muse ? museDetails ? `Give your personal Muse a name and role in ${companyName}.`
-              : museAwaitingInvitation ? "Muse requires an authenticated Paperclip instance with a public HTTPS URL and a company operator account."
-              : ready ? `Muse can receive assignments and work with ${companyName}.`
-              : !prompt && !museConnection?.paired ? "We’re checking whether this instance can prepare Muse setup."
-              : "Paste the setup prompt into your current Muse conversation. Complete Connect Paperclip if Muse asks, then approve this Paperclip hostname. Muse keeps the connection credential in its secure vault. The hostname permission applies to future requests."
-              : ready ? `Your Dot can now receive assignments and work with ${companyName}.`
-              : connection.problem === "agent_unavailable" ? "Your Dot is connected. This agent must be available in Paperclip before it can receive assignments."
-              : connection.phase === "finishing" ? "Your Dot has connected and confirmed task updates. Paperclip is preparing it for assignments."
-              : connecting ? "Your Dot has connected. We’re checking that task updates can travel both ways."
-              : dot ? "Copy the setup prompt and send it to your Dot in ChatGPT. Your Dot will connect itself; we’ll watch for it here."
-              : `Copy the invitation prompt and send it to your ${preset === "hermes" ? "Hermes " : ""}agent. Approve its join request in Paperclip when it’s ready.`}
+            {!provider ? t("oct19Voice.bringAgent", { company: companyName })
+              : muse ? museDetails ? t("oct19Voice.museNameRole", { company: companyName })
+              : museAwaitingInvitation ? t("oct19Voice.museRequiresAnAuthenticatedPaperclipInstance_vmkbig")
+              : ready ? t("oct19Voice.museReady", { company: companyName })
+              : !prompt && !museConnection?.paired ? t("oct19Voice.weReCheckingWhetherThisInstance_1c7wytz")
+              : t("oct19Voice.pasteTheSetupPromptIntoYour_17v1tal")
+              : ready ? t("oct19Voice.dotReady", { company: companyName })
+              : connection.problem === "agent_unavailable" ? t("oct19Voice.yourDotIsConnectedThisAgent_g7gtri")
+              : connection.phase === "finishing" ? t("oct19Voice.yourDotHasConnectedAndConfirmed_a68cwt")
+              : connecting ? t("oct19Voice.yourDotHasConnectedWeRe_iawpal")
+              : dot ? t("oct19Voice.copyTheSetupPromptAndSend_1wbvuhj")
+              : t(preset === "hermes" ? "oct19Voice.inviteHermes" : "oct19Voice.inviteOther")}
           </DialogDescription>
         </div>
       </div>
-      {error && <div role="alert" className="space-y-3 text-sm text-destructive"><p>{error}</p>{!museAwaitingInvitation && <Button variant="outline" disabled={busy} onClick={onRetry}>Try again</Button>}</div>}
+      {error && <div role="alert" className="space-y-3 text-sm text-destructive"><p>{error}</p>{!museAwaitingInvitation && <Button variant="outline" disabled={busy} onClick={onRetry}>{t("oct19Voice.tryAgain_982hh6")}</Button>}</div>}
       {!provider ? <><ExternalAgentPresetPicker onSelect={onSelect} dotDisabledReason={dotDisabledReason} grokDisabledReason={grokDisabledReason} museEnabled={museEnabled} />
         {dotDisabledReason && <p className="text-sm text-muted-foreground">{dotDisabledReason}</p>}{grokDisabledReason && grokDisabledReason !== dotDisabledReason && <p className="text-sm text-muted-foreground">{grokDisabledReason}</p>}</>
-        : approvalHref ? <p className="text-sm text-muted-foreground">An organization admin needs to approve this agent before {muse ? "Muse" : "Dot"} can connect. This page will update after approval.</p>
-        : museAwaitingInvitation ? busy ? <p role="status" className="text-sm text-muted-foreground">Loading Muse invitation…</p> : null
-        : muse && busy && !museDetails && !prompt && !museConnection?.paired ? <p role="status" className="text-sm text-muted-foreground">Loading Muse setup…</p>
+        : approvalHref ? <p className="text-sm text-muted-foreground">{t("oct19Voice.approvalNeeded", { provider: muse ? "Muse" : "Dot" })}</p>
+        : museAwaitingInvitation ? busy ? <p role="status" className="text-sm text-muted-foreground">{t("oct19Voice.loadingMuseInvitation_1iw1sx0")}</p> : null
+        : muse && busy && !museDetails && !prompt && !museConnection?.paired ? <p role="status" className="text-sm text-muted-foreground">{t("oct19Voice.loadingMuseSetup_daivj0")}</p>
         : museDetails ? <form id={detailsId} className="space-y-4" onSubmit={event => { event.preventDefault(); if (museDraft.name.trim() && !busy) onMuseContinue?.(); }}>
           <div className="space-y-2">
-            <label htmlFor={`${detailsId}-name`} className="text-sm font-medium">Agent name</label>
+            <label htmlFor={`${detailsId}-name`} className="text-sm font-medium">{t("oct19Voice.agentName_xw70bd")}</label>
             <Input id={`${detailsId}-name`} disabled={busy} autoFocus maxLength={100} value={museDraft.name} placeholder="Muse" onChange={event => onMuseDraftChange?.({ ...museDraft, name: event.target.value })} />
           </div>
           <div className="space-y-2">
-            <label htmlFor={`${detailsId}-role`} className="text-sm font-medium">Role</label>
+            <label htmlFor={`${detailsId}-role`} className="text-sm font-medium">{t("oct19Voice.role_1402mgp")}</label>
             <select id={`${detailsId}-role`} disabled={busy} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={museDraft.role} onChange={event => {
               const role = AGENT_ROLES.find(value => value === event.target.value);
               if (role) onMuseDraftChange?.({ ...museDraft, role });
-            }}>{AGENT_ROLES.map(role => <option key={role} value={role}>{AGENT_ROLE_LABELS[role]}</option>)}</select>
+            }}>{AGENT_ROLES.map(role => <option key={role} value={role}>{agentRoleLabel(role)}</option>)}</select>
           </div>
-          <p className="text-xs text-muted-foreground">Muse uses its own approved tools. Provider usage and cost are unavailable to Paperclip.</p>
+          <p className="text-xs text-muted-foreground">{t("oct19Voice.museUsesItsOwnApprovedTools_1xzgtgc")}</p>
         </form>
         : muse && museConnection ? <>
           <MuseConnectionChecks state={museConnection} />
-          {museConnection.problem === "no_recent_response" && <Button variant="outline" disabled={busy} onClick={onRetry}>Test background reply</Button>}
-          {museConnection.problem === "offline" && <Button variant="outline" disabled={busy} onClick={onRetry}>Refresh connection</Button>}
-          {!museConnection.paired && <a href="https://muse.ai" target="_blank" rel="noopener noreferrer" className="inline-flex text-sm text-foreground underline underline-offset-4">Open Muse</a>}
-          <p className="text-xs text-muted-foreground">Receiver contact is persisted in batches and may lag. Setup never creates a task. Provider usage and cost are unavailable.</p>
+          {museConnection.problem === "no_recent_response" && <Button variant="outline" disabled={busy} onClick={onRetry}>{t("oct19Voice.testBackgroundReply_1vy7683")}</Button>}
+          {museConnection.problem === "offline" && <Button variant="outline" disabled={busy} onClick={onRetry}>{t("oct19Voice.refreshConnection_7d3lxo")}</Button>}
+          {!museConnection.paired && <a href="https://muse.ai" target="_blank" rel="noopener noreferrer" className="inline-flex text-sm text-foreground underline underline-offset-4">{t("oct19Voice.openMuse_pbmdvp")}</a>}
+          <p className="text-xs text-muted-foreground">{t("oct19Voice.receiverContactIsPersistedInBatches_gvu1ek")}</p>
         </>
-        : busy && !prompt && connection.phase === "waiting" ? <p role="status" className="text-sm text-muted-foreground">Preparing your invitation…</p> : dot ? <>
+        : busy && !prompt && connection.phase === "waiting" ? <p role="status" className="text-sm text-muted-foreground">{t("oct19Voice.preparingYourInvitation_cuc2ll")}</p> : dot ? <>
         <div className="border-t pt-6"><DotConnectionChecks state={connection} />
-          {connection.phase === "waiting" && <p className="mt-4 text-xs text-muted-foreground">Dot uses your OpenAI account. Provider usage and cost aren’t reported to Paperclip.</p>}</div>
-        {connection.problem === "event_timeout" && <Button variant="outline" disabled={busy} onClick={onRetry}>Retry test event</Button>}
-        {connection.problem === "offline" && <Button variant="outline" disabled={busy} onClick={onRetry}>Reconnect updates</Button>}
-      </> : <p className="text-sm leading-relaxed text-muted-foreground">The invitation includes everything your agent needs to join {companyName}. You can review its request before granting access.</p>}
+          {connection.phase === "waiting" && <p className="mt-4 text-xs text-muted-foreground">{t("oct19Voice.dotUsesYourOpenaiAccountProvider_19sqpvb")}</p>}</div>
+        {connection.problem === "event_timeout" && <Button variant="outline" disabled={busy} onClick={onRetry}>{t("oct19Voice.retryTestEvent_1bg10ev")}</Button>}
+        {connection.problem === "offline" && <Button variant="outline" disabled={busy} onClick={onRetry}>{t("oct19Voice.reconnectUpdates_qzootk")}</Button>}
+      </> : <p className="text-sm leading-relaxed text-muted-foreground">{t("oct19Voice.invitationDescription", { company: companyName })}</p>}
     </div>
     <div className="flex items-center justify-between gap-3 border-t px-6 py-4 sm:px-8">
       <div className="flex items-center gap-2">
         <Button variant="ghost" onClick={muse ? onClose : provider ? onBack : onClose}>
-          {provider && !muse && <ArrowLeft className="size-4" />}{muse ? ready ? "Close" : "Save & exit" : provider ? "Back" : "Cancel"}
+          {provider && !muse && <ArrowLeft className="size-4" />}{muse ? ready ? t("oct19Voice.close_1l0xxoj") : t("oct19Voice.saveExit_10o0pue") : provider ? t("oct19Voice.back_1hzmxtu") : t("oct19Voice.cancel_ew9em3")}
         </Button>
       </div>
-      {provider && (approvalHref ? <Button asChild><Link to={approvalHref} onClick={onClose}>Review approval</Link></Button>
-        : museDetails ? <Button type="submit" form={detailsId} disabled={busy || !museDraft.name.trim()}>{busy ? "Preparing…" : "Continue"}</Button>
-        : ready ? <Button onClick={onClose}>Done</Button>
-        : museAwaitingInvitation ? <Button disabled={busy} onClick={onRetry}>{busy ? "Loading setup…" : "Refresh setup"}</Button>
-        : muse ? museConnection?.problem === "disconnected" || museConnection?.problem === "connection_expired" ? <Button disabled={busy} onClick={onNewPrompt}>Reconnect Muse</Button>
-          : museConnection?.problem === "prompt_unavailable" ? <Button disabled={busy} onClick={onNewPrompt}>Create a new prompt</Button>
-          : !museConnection?.paired && prompt ? <AgentSetupPrompt key={prompt} prompt={prompt} label="Copy setup prompt" title="Connect your Muse" agent={{ name: "Muse", icon: <Bot className="size-5" /> }} description="Send this whole prompt to your current Muse conversation." align="end" className="min-w-0 shrink" onCopied={onCopied} />
-          : busy ? <Button disabled>Preparing…</Button>
-          : <Button asChild><a href="https://muse.ai" target="_blank" rel="noopener noreferrer">Open Muse</a></Button>
+      {provider && (approvalHref ? <Button asChild><Link to={approvalHref} onClick={onClose}>{t("oct19Voice.reviewApproval_jntaqg")}</Link></Button>
+        : museDetails ? <Button type="submit" form={detailsId} disabled={busy || !museDraft.name.trim()}>{busy ? t("oct19Voice.preparing_1h0c06j") : t("oct19Voice.continue_1bipuuc")}</Button>
+        : ready ? <Button onClick={onClose}>{t("oct19Voice.done_13cn9g1")}</Button>
+        : museAwaitingInvitation ? <Button disabled={busy} onClick={onRetry}>{busy ? t("oct19Voice.loadingSetup_1plqu2o") : t("oct19Voice.refreshSetup_n70wm1")}</Button>
+        : muse ? museConnection?.problem === "disconnected" || museConnection?.problem === "connection_expired" ? <Button disabled={busy} onClick={onNewPrompt}>{t("oct19Voice.reconnectMuse_1y26e98")}</Button>
+          : museConnection?.problem === "prompt_unavailable" ? <Button disabled={busy} onClick={onNewPrompt}>{t("oct19Voice.createANewPrompt_9mn07q")}</Button>
+          : !museConnection?.paired && prompt ? <AgentSetupPrompt key={prompt} prompt={prompt} label={t("oct19Voice.copySetupPrompt_1qzokyx")} title={t("oct19Voice.connectYourMuse_1k18uqe")} agent={{ name: "Muse", icon: <Bot className="size-5" /> }} description={t("oct19Voice.sendThisWholePromptToYour_1m31tjy")} align="end" className="min-w-0 shrink" onCopied={onCopied} />
+          : busy ? <Button disabled>{t("oct19Voice.preparing_1h0c06j")}</Button>
+          : <Button asChild><a href="https://muse.ai" target="_blank" rel="noopener noreferrer">{t("oct19Voice.openMuse_pbmdvp")}</a></Button>
         : connecting ? <Button disabled aria-live="polite">
           {!connection.problem && <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
           {progressLabel}
         </Button>
-        : dot && connection.problem === "prompt_unavailable" ? <Button disabled={busy} onClick={onNewPrompt}>Create a new prompt</Button>
-        : !prompt || busy ? <Button disabled>{busy ? "Preparing…" : "Waiting for Dot…"}</Button>
+        : dot && connection.problem === "prompt_unavailable" ? <Button disabled={busy} onClick={onNewPrompt}>{t("oct19Voice.createANewPrompt_9mn07q")}</Button>
+        : !prompt || busy ? <Button disabled>{busy ? t("oct19Voice.preparing_1h0c06j") : t("oct19Voice.waitingForDot_1lo4drm")}</Button>
         : <AgentSetupPrompt
           key={preset}
           prompt={prompt}
-          label={dot ? "Copy setup prompt" : "Copy invitation prompt"}
-          title={dot ? "Connect your Dot" : "Invite your agent"}
-          description={dot ? "Send this whole prompt to your Dot in ChatGPT." : "Send this whole prompt to your agent."}
+          label={dot ? t("oct19Voice.copySetupPrompt_1qzokyx") : t("oct19Voice.copyInvitationPrompt_1taa6dj")}
+          title={dot ? t("oct19Voice.connectYourDot_1qss09r") : t("oct19Voice.inviteYourAgent_pzd50q")}
+          description={dot ? t("oct19Voice.sendThisWholePromptToYour_1t7n2f5") : t("oct19Voice.sendThisWholePromptToYour_p1lrp1")}
           agent={dot ? { name: "Dot", src: "/brands/adapters/openai-dot.svg" } : undefined}
           align="end"
           className="min-w-0 shrink"

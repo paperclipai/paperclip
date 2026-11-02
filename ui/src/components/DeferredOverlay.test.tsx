@@ -3,6 +3,7 @@ import { act, lazy, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DeferredOverlay } from "./DeferredOverlay";
+import { i18n, t, useTranslation } from "@/i18n";
 
 const capture = vi.hoisted(() => vi.fn());
 vi.mock("../lib/sentry", () => ({ captureBrowserException: capture }));
@@ -19,6 +20,7 @@ afterEach(async () => {
   container.remove();
   vi.restoreAllMocks();
   capture.mockClear();
+  await i18n.changeLanguage("en");
 });
 it("dismisses a failed chunk without replacing the board or its draft", async () => {
   const Failed = lazy(async () => { throw new Error("Chunk download failed"); });
@@ -61,4 +63,22 @@ it("allows cancelling an in-flight download", async () => {
   const cancel = [...document.querySelectorAll("button")].find((button) => button.textContent === "Cancel")!;
   await act(async () => cancel.click());
   expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
+it("updates a pending notice while preserving the supplied Russian title and board draft", async () => {
+  const Pending = lazy(() => new Promise<never>(() => {}));
+  const close = vi.fn();
+  function Board() {
+    useTranslation();
+    return <><textarea defaultValue="{{RAW}} <draft>" /><DeferredOverlay requested title={i18n.language === "ru" ? "Новая Задача {{RAW}}" : "New Task {{RAW}}"} onClose={close}><Pending /></DeferredOverlay></>;
+  }
+  await act(async () => root.render(<Board />));
+  const draft = container.querySelector("textarea");
+  for (const language of ["ru", "en", "ru"]) {
+    await act(async () => { await i18n.changeLanguage(language); });
+    const title = language === "ru" ? "Новая Задача {{RAW}}" : "new task {{raw}}";
+    expect(document.body.textContent).toContain(t("oct26Ui.overlay.loading", { title }));
+    expect(container.querySelector("textarea")).toBe(draft);
+    expect(draft?.value).toBe("{{RAW}} <draft>"); expect(close).not.toHaveBeenCalled();
+  }
 });

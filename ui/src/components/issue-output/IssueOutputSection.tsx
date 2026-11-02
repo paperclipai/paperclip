@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Play } from "lucide-react";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import {
@@ -36,6 +37,7 @@ function OutputMediaPreview({
   creatorName?: string | null;
   onMediaClick?: (item: IssueOutputItem) => void;
 }) {
+  const { t } = useTranslation();
   const meta = item.metadata;
   if (!meta) return null;
 
@@ -80,7 +82,7 @@ function OutputMediaPreview({
       <button
         type="button"
         className={className}
-        aria-label={`Browse ${filename} in gallery`}
+        aria-label={t("localizationCommonTail.browseGallery", { filename })}
         onClick={() => onMediaClick(item)}
       >
         {preview}
@@ -94,7 +96,7 @@ function OutputMediaPreview({
       target="_blank"
       rel="noreferrer"
       className={className}
-      aria-label={`Open ${filename}`}
+      aria-label={t("localizationCommonTail.openFile", { filename })}
     >
       {preview}
     </a>
@@ -111,6 +113,7 @@ function OutputMediaPreview({
  * permanent empty card.
  */
 export function IssueOutputSection({ workProducts, resolveCreatorName, onMediaClick }: IssueOutputSectionProps) {
+  const { t } = useTranslation();
   const { primary, rest, count } = getIssueOutputs(workProducts);
 
   if (!primary) return null;
@@ -120,10 +123,10 @@ export function IssueOutputSection({ workProducts, resolveCreatorName, onMediaCl
   const fileRest = rest.filter((item) => !isMediaOutput(item));
 
   return (
-    <section className="space-y-3" aria-label="Task outputs">
+    <section className="space-y-3" aria-label={t("localizationCommonTail.taskOutputs")}>
       <div className="flex items-center gap-2">
         <Play className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-        <h3 className="text-sm font-medium text-muted-foreground">Output</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">{t("localizationCommonTail.output")}</h3>
         <span className="text-xs text-muted-foreground">{count}</span>
       </div>
 
@@ -135,7 +138,7 @@ export function IssueOutputSection({ workProducts, resolveCreatorName, onMediaCl
 
       {rest.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Also produced</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{t("localizationCommonTail.alsoProduced")}</p>
           {mediaRest.length > 0 ? (
             <div className="grid grid-cols-4 gap-2">
               {mediaRest.map((item) => (

@@ -1,7 +1,9 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { createVoiceSessionController, type VoiceSessionDependencies } from "@/lib/voice-session-controller";
 import { VoiceControls } from "./VoiceControls";
 import { VoiceTranscript } from "./VoiceTranscript";
+import { voiceControllerErrorLabel } from "./voice-display";
 
 export interface VoiceConversationPanelProps {
   agentName: string;
@@ -14,6 +16,7 @@ export interface VoiceConversationPanelProps {
 }
 
 export function VoiceConversationPanel({ agentName, dependencies, notification, autoStart = false, onEndedChange, accessRevoked = false }: VoiceConversationPanelProps) {
+  useTranslation();
   const controller = useMemo(() => createVoiceSessionController(dependencies), [dependencies]);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const started = useRef(false);
@@ -30,8 +33,8 @@ export function VoiceConversationPanel({ agentName, dependencies, notification, 
   useEffect(() => { if (notification) void controller.notify(notification); else controller.clearPendingNotifications(); }, [controller, notification?.sessionId, notification?.generation, notification?.publicationId, notification?.attempt]);
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <VoiceControls {...snapshot} agentName={agentName} onStart={() => { void controller.start(); }} onMute={() => { void controller.mute(); }} onEnd={() => { void controller.stop(); }} onResumeAudio={() => { void controller.resumeAudio(); }} onRepeat={() => { void controller.repeat(); }} />
-      <div className="max-h-64 overflow-y-auto" role="region" aria-label="Voice transcript history" tabIndex={snapshot.transcript.length ? 0 : undefined}><VoiceTranscript entries={snapshot.transcript} agentName={agentName} /></div>
+      <VoiceControls {...snapshot} error={voiceControllerErrorLabel(snapshot.error)} announcement={snapshot.announcementSource && snapshot.announcementText !== undefined ? t("oct19Voice.controllerAnnouncement", { speaker: t(snapshot.announcementSource === "user" ? "oct19Voice.you_1efd4xo" : "oct19Voice.agent_1w5o8jq"), text: snapshot.announcementText }) : snapshot.announcement} agentName={agentName} onStart={() => { void controller.start(); }} onMute={() => { void controller.mute(); }} onEnd={() => { void controller.stop(); }} onResumeAudio={() => { void controller.resumeAudio(); }} onRepeat={() => { void controller.repeat(); }} />
+      <div className="max-h-64 overflow-y-auto" role="region" aria-label={t("oct19Voice.voiceTranscriptHistory_6ap8pl")} tabIndex={snapshot.transcript.length ? 0 : undefined}><VoiceTranscript entries={snapshot.transcript} agentName={agentName} /></div>
     </div>
   );
 }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storybookAgents } from "../../../storybook/fixtures/paperclipData";
 import { TooltipProvider } from "../ui/tooltip";
 import { AgentBulkSettingsSheet } from "./AgentBulkSettingsSheet";
+import { i18n, t } from "@/i18n";
 
 const api = vi.hoisted(() => ({ models: vi.fn(), accounts: vi.fn(), update: vi.fn(), get: vi.fn() }));
 vi.mock("@/api/agents", () => ({ agentsApi: { adapterModels: api.models, updateRuntimeSettings: api.update, get: api.get } }));
@@ -64,9 +65,33 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   client?.clear();
   document.body.innerHTML = "";
+  await i18n.changeLanguage("en");
 });
 
 describe("bulk model editing", () => {
+  it("preserves the model draft and reactive local failure without replaying a bulk update on locale change", async () => {
+    api.update.mockRejectedValue(undefined);
+    await render([agent("Agent {{RAW}}")]);
+    await chooseModel("provider/{{MODEL}}", true);
+    const accounts = api.accounts.mock.calls.length, models = api.models.mock.calls.length;
+    for (const language of ["ru", "en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(document.body.textContent).toContain("provider/{{MODEL}}");
+      expect(document.body.textContent).toContain("Agent {{RAW}}");
+      expect(api.accounts).toHaveBeenCalledTimes(accounts); expect(api.models).toHaveBeenCalledTimes(models);
+      expect(api.update).not.toHaveBeenCalled(); expect(onClose).not.toHaveBeenCalled();
+    }
+    await act(async () => button("Update 1 agent").click());
+    await vi.waitFor(() => expect(button("Retry 1 agent")).toBeDefined());
+    for (const language of ["ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(document.body.textContent).toContain(t("oct26Settings.bulk.saveError"));
+      expect(button(t("oct26Settings.bulk.retryAgents", { count: 1 })).disabled).toBe(false);
+      expect(api.update).toHaveBeenCalledExactlyOnceWith("Agent {{RAW}}", expect.objectContaining({ harness: "hermes_local", model: "provider/{{MODEL}}", expected: { model: "old-model", aiConnection: null } }), "company-1");
+      expect(onClose).not.toHaveBeenCalled();
+    }
+  });
+
   it("saves a manual Hermes model when the local adapter has no catalog", async () => {
     const hermes = agent("Hermes");
     api.update.mockResolvedValue({ ...hermes, adapterConfig: { model: "provider/custom-model" } });

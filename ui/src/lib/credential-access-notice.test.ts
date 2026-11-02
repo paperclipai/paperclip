@@ -8,6 +8,15 @@ const run: IssueChatLinkedRun = { runId: "denied", agentId: "codie", agentName: 
     credentialAccess: { connectionName: "Dotta’s API Key" } } },
 };
 describe("credential access notice", () => {
+  it("records UI fallback provenance without changing canonical sentinel values", () => {
+    expect(credentialAccessNotice({ ...run, agentName: "" }, "nicky"))
+      .toMatchObject({ agentName: "This agent", agentNameIsFallback: true, deniedUser: "you", deniedUserKind: "self" });
+    expect(credentialAccessNotice({ ...run, agentName: "This agent" }, "viewer", new Map([["nicky", "you"]])))
+      .toMatchObject({ agentName: "This agent", agentNameIsFallback: false, deniedUser: "you", deniedUserKind: "named" });
+    expect(credentialAccessNotice(run, "viewer", new Map([["nicky", "the person this task runs for"]])))
+      .toMatchObject({ deniedUser: "the person this task runs for", deniedUserKind: "named" });
+    expect(credentialAccessNotice(run, "viewer")).toMatchObject({ deniedUserKind: "unknown" });
+  });
   it("names the selected credential and addresses only the denied person as you", () => {
     expect(credentialAccessNotice(run, "nicky")).toMatchObject({ agentName: "Codie", credentialName: "Dotta’s API Key", deniedUser: "you" });
     expect(credentialAccessNotice(run, "dotta", new Map([["nicky", "Nicky"]]))?.deniedUser).toBe("Nicky");

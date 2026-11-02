@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { act as reactAct, useState } from "react";
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -75,7 +76,8 @@ describe("ScheduleEditor", () => {
     document.body.appendChild(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await reactAct(async () => { await i18n.changeLanguage("en"); });
     container.remove();
     document.body.innerHTML = "";
   });
@@ -83,6 +85,26 @@ describe("ScheduleEditor", () => {
   function cronInput() {
     return container.querySelector<HTMLInputElement>('input[aria-label="Cron expression"]');
   }
+
+  it("keeps an incomplete cron draft and its validity while changing the display language", async () => {
+    const onChange = vi.fn();
+    const root = createRoot(container);
+    try {
+      await reactAct(async () => { root.render(<Harness initial="0 8-18/2 * * 1-5" onChange={onChange} />); });
+      await reactAct(async () => { typeCron(cronInput()!, "0 8-18/2 *"); });
+      expect(onChange).not.toHaveBeenCalled();
+      await reactAct(async () => { await i18n.changeLanguage("ru"); });
+      const input = container.querySelector<HTMLInputElement>('input[aria-label="Выражение cron"]');
+      expect(input?.value).toBe("0 8-18/2 *");
+      expect(input?.getAttribute("aria-invalid")).toBe("true");
+      expect(container.textContent).toContain("Нужно ровно 5 полей, а указано 3.");
+      expect(onChange).not.toHaveBeenCalled();
+      await reactAct(async () => { await i18n.changeLanguage("en"); });
+      expect(cronInput()?.value).toBe("0 8-18/2 *");
+    } finally {
+      await reactAct(async () => root.unmount());
+    }
+  });
 
   it("renders unknown valid cron expressions in Custom with the original text", () => {
     const root = createRoot(container);

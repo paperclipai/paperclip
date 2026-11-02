@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AiManagedConnectionSummary, AiConnectionUsage } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
 
 const api = vi.hoisted(() => ({ probeUsage: vi.fn() }));
@@ -12,12 +13,13 @@ const account: AiManagedConnectionSummary = { id: "connection", grantId: "grant"
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
 let client: QueryClient;
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
   vi.resetAllMocks();
   client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); });
+afterEach(async () => { flushSync(() => root.unmount()); client.clear(); host.remove(); await i18n.changeLanguage("en"); });
 function render(value = account) {
   flushSync(() => root.render(<QueryClientProvider client={client}><AiConnectionUsagePanel key={value.id} account={value} /></QueryClientProvider>));
 }
@@ -104,4 +106,50 @@ it("shows cached pool observations without offering or making a provider call", 
   expect(host.textContent).toContain("Usage not reported");
   expect(host.querySelector("button")).toBeNull();
   expect(api.probeUsage).not.toHaveBeenCalled();
+});
+
+const weeklyLabels = [
+  ["Weekly limit", "Weekly", "За неделю"],
+  ["Sonnet weekly limit", "Sonnet Weekly", "Sonnet за неделю"],
+  ["Opus weekly limit", "Opus Weekly", "Opus за неделю"],
+  ["OAuth apps weekly limit", "OAuth apps Weekly", "Недельный лимит использования через OAuth-приложения"],
+] as const;
+const labelCases = [
+  ...weeklyLabels.flatMap(([label, en, ru]) => [null, 604800].map((duration) => ({ label, duration, en, ru }))),
+  ...[null, 18000].map((duration) => ({ label: "5 hour limit", duration, en: "5h", ru: "5 ч" })),
+  ...[["Primary", "Основной"], ["Secondary", "Дополнительный"]].flatMap(([part, translated]) => [
+    { label: `Plan usage · ${part}`, duration: null, en: `Plan usage · ${part}`, ru: `Plan usage · ${translated}` },
+    { label: `Plan usage · ${part}`, duration: 18000, en: `Plan usage · ${part} · 5h`, ru: `Plan usage · ${translated} · 5 ч` },
+    { label: `Plan usage · ${part}`, duration: 604800, en: `Plan usage · ${part} · Weekly`, ru: `Plan usage · ${translated} · За неделю` },
+  ]),
+  { label: "Weekly limit · Sonnet customer scope {{RAW}}", duration: 604800, en: "Weekly · Sonnet customer scope {{RAW}}", ru: "За неделю · Sonnet customer scope {{RAW}}" },
+  { label: "Acme allowance {{RAW}}", duration: null, en: "Acme allowance {{RAW}}", ru: "Acme allowance {{RAW}}" },
+  { label: "Acme allowance {{RAW}}", duration: 18000, en: "Acme allowance {{RAW}} · 5h", ru: "Acme allowance {{RAW}} · 5 ч" },
+  { label: "0.5 hour limit", duration: 1800, en: "0.5h", ru: "0,5 ч" },
+];
+
+it.each(labelCases)("normalizes $label ($duration seconds) before translating EN/RU/EN", async ({ label, duration, en, ru }) => {
+  const observation: AiConnectionUsage = {
+    connectionId: account.id, grantId: account.grantId, provider: account.provider, method: account.method,
+    status: "ok", checkedAt: "2026-10-02T12:00:00Z", source: "anthropic_oauth", planType: "Provider plan {{RAW}}", overage: null,
+    limits: [{ id: "provider-window", label, scope: "provider-scope", windowDurationSeconds: duration, resetsAt: null,
+      usedPercent: 12.5, remainingPercent: 87.5, used: 0.00000123456789, limit: 2.5, remaining: null,
+      unit: "provider-unit", limitReached: false, allowed: null }],
+  };
+  const canonical = JSON.stringify({ account, observation });
+  flushSync(() => root.render(<QueryClientProvider client={client}><AiConnectionUsagePanel account={account} observation={observation} cachedOnly /></QueryClientProvider>));
+  const progress = host.querySelector('[role="progressbar"]');
+  for (const [locale, expected] of [["en", en], ["ru", ru], ["en", en]]) {
+    flushSync(() => { void i18n.changeLanguage(locale); });
+    await vi.waitFor(() => expect(progress?.getAttribute("aria-label")).toBe(`${expected}: 13%`));
+    expect(host.querySelector('[role="progressbar"]')).toBe(progress);
+    expect(progress?.getAttribute("aria-valuenow")).toBe("13");
+    expect((progress as HTMLElement).style.width).toBe("12.5%");
+    expect(Array.from(host.querySelectorAll("span")).some((span) => span.textContent === expected)).toBe(true);
+    const number = new Intl.NumberFormat(locale, { maximumFractionDigits: 20 }).format(observation.limits[0].used!);
+    expect(host.textContent).toContain(`${number} provider-unit`);
+    expect(host.textContent).toContain("Provider plan {{RAW}}");
+    expect(JSON.stringify({ account, observation })).toBe(canonical);
+    expect(api.probeUsage).not.toHaveBeenCalled();
+  }
 });

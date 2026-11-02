@@ -6,6 +6,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { i18n } from "@/i18n";
+import ruTranslations from "@/i18n/locales/ru.json";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
@@ -410,6 +412,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function render(queryClient?: QueryClient, byoOnly = false, content?: ReactNode) {
@@ -427,6 +430,142 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     return root;
   }
+
+  it("retranslates a rejected MCP URL without resetting its draft or attempting a connection", async () => {
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')!;
+    await act(async () => setInputValue(input, "raw-invalid-link"));
+    await act(async () => buttonByText("Continue")!.click());
+    for (const locale of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.textContent).toContain(i18n.t("localizationConnections.pasteAFullHttpOrHttpsLink86"));
+      expect(input.value).toBe("raw-invalid-link");
+      expect(container.contains(input)).toBe(true);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ["generic", ["Pick app", "Add your key"], ["Выбор приложения", "Добавление ключа"]],
+    ["zapier", [], []],
+  ] as const)("refreshes %s setup labels without resetting advanced access choices or starting connections", async (flow, englishLabels, russianLabels) => {
+    await i18n.changeLanguage("en");
+    mockSearch.value = flow === "zapier" ? "source=zapier" : "";
+    await render();
+    if (flow === "generic") {
+      const link = container.querySelector<HTMLInputElement>('input[placeholder^="https://"]')!;
+      expect(link).toBeTruthy();
+      await act(async () => setInputValue(link, "https://mcp.example.test/original-path"));
+      await act(async () => buttonByText("Continue")!.click());
+      await flushReact();
+    }
+    await openAccessAdvanced();
+    const onlyAgents = radioContaining("Just agents I pick")!;
+    expect(onlyAgents).toBeTruthy();
+    await act(async () => onlyAgents.click());
+    await flushReact();
+    expect(stepLabelsOnScreen()).toEqual(englishLabels);
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(stepLabelsOnScreen()).toEqual(language === "ru" ? russianLabels : englishLabels);
+      expect(container.textContent).toContain(i18n.t(flow === "generic" ? "localizationConnections.advancedAuthentication107" : "localizationApps.authentication264"));
+      expect(container.contains(onlyAgents)).toBe(true);
+      expect(onlyAgents.getAttribute("aria-checked")).toBe("true");
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("retranslates 1Password credential guidance without resetting the token or changing its source definition", async () => {
+    const app = getAppStoreDefinition("1password")!;
+    const original = JSON.stringify(app);
+    const field = app.methods[0]!.credentialFields![0]!;
+    listGalleryMock.mockResolvedValue({ apps: [app] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="1password" />);
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => setInputValue(input, "ops_locale-fixture"));
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(input)).toBe(true);
+      expect(input.value).toBe("ops_locale-fixture");
+      expect(input.getAttribute("aria-label")).toBe(language === "ru"
+        ? "Вставьте токен сервисного аккаунта 1Password"
+        : "Paste your 1Password Service Account token");
+      expect(container.textContent).toContain(i18n.t("oct26Metadata.1password_methods_0_credentialFields_0_helperMd"));
+      expect(container.textContent?.includes(field.helperMd!)).toBe(language === "en");
+      expect(container.querySelector('a[href="https://www.1password.dev/service-accounts/get-started#create-a-service-account"]')).not.toBeNull();
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(app)).toBe(original);
+    }
+
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "1password",
+      connectionMethodKey: "service-account",
+      credentialValues: { "credentials.authorization": "ops_locale-fixture" },
+    }));
+  });
+
+  it("retranslates Unikraft region labels while retaining the selected API value and credential draft", async () => {
+    const app = getAppStoreDefinition("unikraft")!;
+    const original = JSON.stringify(app);
+    listGalleryMock.mockResolvedValue({ apps: [app] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="unikraft" />);
+    await openAccessAdvanced();
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    const region = container.querySelector<HTMLSelectElement>('select[aria-label="Default metro"]')!;
+    expect(region).toBeTruthy();
+    await act(async () => {
+      setInputValue(input, "unikraft_locale-fixture");
+      region.value = "sfo";
+      region.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const optionValues = Array.from(region.options, (option) => option.value);
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(input)).toBe(true);
+      expect(input.value).toBe("unikraft_locale-fixture");
+      expect(container.contains(region)).toBe(true);
+      expect(region.value).toBe("sfo");
+      expect(region.getAttribute("aria-label")).toBe(language === "ru" ? "Регион по умолчанию" : "Default metro");
+      expect(region.selectedOptions[0]?.textContent).toBe(language === "ru" ? "Сан-Франциско (sfo)" : "San Francisco (sfo)");
+      expect(Array.from(region.options, (option) => option.value)).toEqual(optionValues);
+      expect(container.textContent).toContain(i18n.t("oct26Metadata.unikraft_methods_0_credentialFields_0_helperMd"));
+      expect(container.textContent).toContain("Unikraft");
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(app)).toBe(original);
+    }
+
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "unikraft",
+      connectionMethodKey: "api-token",
+      configValues: { metro: "sfo" },
+      credentialValues: { "credentials.authorization": "unikraft_locale-fixture" },
+    }));
+  });
 
   it("connects 1Password using only its service-account token and links official creation instructions", async () => {
     const app = CONNECTABLE_APP_DEFINITIONS.find(entry => entry.slug === "1password")!;
@@ -1798,6 +1937,105 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
   });
 
+  it("localizes unavailable GitHub sign-in and its pending retry without losing the dedicated identity", async () => {
+    await i18n.changeLanguage("en");
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    const storageKey = "paperclip.connector-enrollment-access:github";
+    const accessIntent = {
+      companyId: "company-1", grantKind: "agent", installChoice: "specific", agentIds: ["agent-1"],
+    };
+    window.sessionStorage.setItem(storageKey, JSON.stringify(accessIntent));
+    const unavailableGallery = {
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    };
+    const canonicalGallery = JSON.stringify(unavailableGallery);
+    listGalleryMock.mockResolvedValue(unavailableGallery);
+    await render();
+
+    const heading = [...container.querySelectorAll("h2")].find((node) => node.textContent === "GitHub sign-in is unavailable")!;
+    expect(heading).toBeTruthy();
+    const description = heading.nextElementSibling!;
+    const retry = buttonByText("Try again")!;
+    const back = buttonByText("Back")!;
+    expect(retry).toBeTruthy();
+    expect(back).toBeTruthy();
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(heading)).toBe(true);
+      expect(heading.textContent).toBe(language === "ru" ? "Вход в GitHub недоступен" : "GitHub sign-in is unavailable");
+      expect(description.textContent).toBe(language === "ru"
+        ? "Этот экземпляр подключён к Paperclip, но вход в GitHub сейчас недоступен. Повторите попытку чуть позже или обратитесь к администратору экземпляра."
+        : "This instance is connected to Paperclip, but GitHub sign-in is not currently available. Try again shortly or contact your instance administrator.");
+      expect(container.contains(retry)).toBe(true);
+      expect(retry.textContent).toBe(language === "ru" ? "Повторить попытку" : "Try again");
+      expect(retry.disabled).toBe(false);
+      expect(container.contains(back)).toBe(true);
+      expect(back.textContent).toBe(language === "ru" ? "Назад" : "Back");
+      expect(container.querySelector('input[type="password"]')).toBeNull();
+      expect(container.textContent).not.toContain("Your GitHub key");
+      expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      expect(JSON.stringify(unavailableGallery)).toBe(canonicalGallery);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+
+    let resolveGallery!: (value: { apps: typeof GITHUB_MANAGED[] }) => void;
+    const refreshedGallery = new Promise<{ apps: typeof GITHUB_MANAGED[] }>((resolve) => { resolveGallery = resolve; });
+    listGalleryMock.mockReturnValueOnce(refreshedGallery);
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    await act(async () => { retry.click(); });
+    await flushReact();
+    expect(listGalleryMock).toHaveBeenCalledTimes(readCounts[0] + 1);
+    expect(listGalleryMock).toHaveBeenLastCalledWith("company-1");
+    const retryReadCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(heading)).toBe(true);
+      expect(heading.textContent).toBe(language === "ru" ? "Вход в GitHub недоступен" : "GitHub sign-in is unavailable");
+      expect(container.contains(retry)).toBe(true);
+      expect(retry.textContent).toBe(language === "ru" ? "Повторить попытку" : "Try again");
+      expect(retry.disabled).toBe(true);
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(retryReadCounts);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+    }
+    await act(async () => { resolveGallery({ apps: [GITHUB_MANAGED] }); });
+    await flushReact();
+    expect(container.contains(heading)).toBe(false);
+    expect(buttonByText("Continue to GitHub")?.disabled).toBe(false);
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    const continueToGitHub = buttonByText("Перейти в GitHub")!;
+    expect(continueToGitHub).toBeTruthy();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => { continueToGitHub.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github", grantKind: "agent", subjectAgentId: "agent-1",
+    }));
+    expect(accessIntent).toEqual({
+      companyId: "company-1", grantKind: "agent", installChoice: "specific", agentIds: ["agent-1"],
+    });
+    expect(JSON.stringify(unavailableGallery)).toBe(canonicalGallery);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
   it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
@@ -1962,6 +2200,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       const fieldsRegion = document.getElementById(managedAuth!.getAttribute("aria-controls")!);
       expect(fieldsRegion?.getAttribute("role")).toBe("region");
       expect(fieldsRegion?.textContent).toContain("Client ID");
+      const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!;
+      const clientSecret = container.querySelector<HTMLInputElement>("#curated-oauth-client-secret")!;
+      await act(async () => {
+        setInputValue(clientId, "raw-google-client-id");
+        setInputValue(clientSecret, "raw-google-client-secret");
+      });
+      for (const locale of ["ru", "en"] as const) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(managedAuth?.textContent?.trim()).toBe(locale === "ru" ? "Использовать Paperclip" : "Use Paperclip instead");
+        expect(fieldsRegion?.getAttribute("aria-label")).toBe(locale === "ru" ? "Ваше приложение OAuth" : "Your OAuth app");
+        expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
+        expect(document.getElementById(managedAuth!.getAttribute("aria-controls")!)).toBe(fieldsRegion);
+        expect(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")).toBe(clientId);
+        expect(clientId.value).toBe("raw-google-client-id");
+        expect(clientSecret.value).toBe("raw-google-client-secret");
+        expect(connectAppMock).not.toHaveBeenCalled();
+        expect(startOAuthMock).not.toHaveBeenCalled();
+      }
       await act(async () => {
         managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
@@ -2993,6 +3249,15 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await vi.waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
     });
+    const navigationCount = mockNavigate.mock.calls.length;
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(mockNavigate).toHaveBeenCalledTimes(navigationCount);
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+    }
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(finishAppMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
@@ -4007,6 +4272,18 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
     await act(async () => setInputValue(keyField!, "replacement-key"));
     await flushReact();
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    const navigationCount = mockNavigate.mock.calls.length;
+    for (const language of ["en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.querySelector("input[type=password]")).toBe(keyField);
+      expect(keyField!.value).toBe("replacement-key");
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      expect(mockNavigate).toHaveBeenCalledTimes(navigationCount);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) expect(mutation).not.toHaveBeenCalled();
+    }
     await act(async () => {
       buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });

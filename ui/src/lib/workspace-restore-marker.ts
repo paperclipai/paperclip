@@ -16,3 +16,16 @@ export function workspaceRestoreMarkerDetail(input: {
   if (relativePath) parts.push(`Affected path: ${relativePath}.`);
   return parts.join(" ");
 }
+
+/** Recognize only this module's built-in marker text, never arbitrary diagnostics. */
+export function parseWorkspaceRestoreMarkerDetail(value: string): {
+  savedPlan: boolean;
+  missingFinalResponse: boolean;
+  relativePath: string | null;
+} | null {
+  const match = /^Workspace restore failed( after the plan was saved\. The saved plan is available)?\. Workspace files need recovery\.( No final response was recorded\.)?(?: Affected path: (.+)\.)?$/.exec(value);
+  if (!match || match[0] !== value) return null;
+  const relativePath = match[3] ?? null;
+  if (relativePath !== null && safeWorkspaceRestorePath(relativePath) !== relativePath) return null;
+  return { savedPlan: Boolean(match[1]), missingFinalResponse: Boolean(match[2]), relativePath };
+}

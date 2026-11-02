@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ToolMcpGatewayWithTokens, ToolProfileWithDetails } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditGatewayDialog } from "./EditGatewayDialog";
+import { i18n } from "@/i18n";
 
 const updateGatewayMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
@@ -102,16 +103,18 @@ describe("EditGatewayDialog", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     vi.clearAllMocks();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   it("updates an editable gateway name, description, and access profile", async () => {
@@ -154,6 +157,13 @@ describe("EditGatewayDialog", () => {
       profileSelect.value = "profile-2";
       profileSelect.dispatchEvent(new Event("change", { bubbles: true }));
     });
+
+    await i18n.changeLanguage("ru");
+    await flushReact();
+    expect(container.textContent).toContain("Изменить шлюз");
+    expect(nameInput.value).toBe("Shared Notion");
+    expect(descriptionInput.value).toBe("For the research team");
+    expect(profileSelect.value).toBe("profile-2");
 
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flushReact();

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { splitSecretPath } from "./secret-path";
 
@@ -23,6 +24,7 @@ interface SecretPathNameProps {
  * everywhere. See PAP-14698 plan §Search.
  */
 export function SecretPathName({ name, basePath = "", className, leafClassName }: SecretPathNameProps) {
+  useTranslation();
   const segments = splitSecretPath(name);
   const baseSegments = splitSecretPath(basePath);
   const withinBase =

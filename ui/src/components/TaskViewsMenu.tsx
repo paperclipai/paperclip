@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { Check, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +27,7 @@ export function TaskViewsMenu({
   /** Unread count surfaced next to the My-work group, mirroring the nav badge. */
   badgeCount?: number;
 }) {
+  useTranslation();
   const active = taskView(value);
   return (
     <DropdownMenu>
@@ -34,7 +36,7 @@ export function TaskViewsMenu({
           size="sm"
           variant="outline"
           className="h-8 gap-1.5"
-          aria-label={`Change view — currently ${active.label}`}
+          aria-label={t("oct5Core.changeView", { label: active.label })}
         >
           <span className="max-w-(--sz-160px) truncate font-medium">{active.label}</span>
           <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -42,7 +44,7 @@ export function TaskViewsMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-(--sz-260px)">
         {TASK_VIEW_GROUPS.map((group, groupIndex) => (
-          <div key={group.label}>
+          <div key={groupIndex}>
             {groupIndex > 0 ? <DropdownMenuSeparator /> : null}
             <DropdownMenuLabel className="flex items-center justify-between gap-2">
               <span>{group.label}</span>

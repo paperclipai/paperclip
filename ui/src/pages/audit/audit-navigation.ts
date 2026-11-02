@@ -1,4 +1,10 @@
+import { t } from "@/i18n";
+
 export type AuditSection = "activity" | "runs" | "costs" | "budgets" | "timeline" | "commentary";
+
+export function auditSectionLabel(section: AuditSection): string {
+  return t(section === "commentary" ? "oct26Audit.commentary.title" : `localizationActivity.section_${section}`);
+}
 
 export const AUDIT_SECTIONS: ReadonlyArray<{
   value: AuditSection;

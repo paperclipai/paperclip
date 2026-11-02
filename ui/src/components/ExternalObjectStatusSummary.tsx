@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ExternalObjectSummary } from "@paperclipai/shared";
 import {
   dominantExternalObjectTone,
@@ -29,14 +30,29 @@ function dominantObject(summary: ExternalObjectSummary) {
 }
 
 function buildBreakdownTitle(summary: ExternalObjectSummary): string {
+  const categories = new Set([
+    "unknown",
+    "open",
+    "waiting",
+    "running",
+    "succeeded",
+    "failed",
+    "blocked",
+    "closed",
+    "archived",
+    "auth_required",
+    "unreachable",
+  ]);
   const parts: string[] = [];
   for (const [category, count] of Object.entries(summary.byStatusCategory)) {
     if (!count) continue;
-    parts.push(`${count} ${externalObjectCategoryLabel(category).toLowerCase()}`);
+    parts.push(categories.has(category)
+      ? t(`localizationExternalChrome.breakdown_${category}`, { count })
+      : t("localizationExternalChrome.breakdownUnknownCategory", { count, category: externalObjectCategoryLabel(category).toLowerCase() }));
   }
-  if (summary.staleCount > 0) parts.push(`${summary.staleCount} stale`);
-  parts.push(`${summary.total} total`);
-  return `External objects: ${parts.join(", ")}`;
+  if (summary.staleCount > 0) parts.push(t("localizationExternalChrome.breakdownStale", { count: summary.staleCount }));
+  parts.push(t("localizationExternalChrome.breakdownTotal", { count: summary.total }));
+  return t("localizationExternalChrome.externalBreakdown", { breakdown: parts.join(", ") });
 }
 
 /**
@@ -51,6 +67,7 @@ export function ExternalObjectStatusSummary({
   compact,
   className,
 }: ExternalObjectStatusSummaryProps) {
+  useTranslation();
   const reducedMotion = usePrefersReducedMotion();
   const tone = dominantExternalObjectTone(summary);
   const total = summary?.total ?? 0;

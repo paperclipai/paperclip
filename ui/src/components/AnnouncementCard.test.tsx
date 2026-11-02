@@ -3,11 +3,35 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AnnouncementCard } from "./AnnouncementCard";
+import { i18n } from "@/i18n";
 import { announcementPreview, announcementAnimationPreview } from "@/lib/announcement-preview";
 
 vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a> }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 describe("AnnouncementCard", () => {
+  it("translates controls but preserves remote publication content, URLs and dismissal", async () => {
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    const dismiss = vi.fn();
+    const announcement = Object.freeze({ ...announcementPreview, title: "Provider announcement title", description: "Remote publisher's content" });
+    try {
+      await act(async () => root.render(<AnnouncementCard announcement={announcement} onDismiss={dismiss} />));
+      const originalLinks = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+      for (const locale of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(container.querySelector("button")?.getAttribute("aria-label")).toBe(locale === "ru" ? "Закрыть объявление" : "Dismiss announcement");
+        expect(container.querySelector("h2")?.textContent).toBe(announcement.title);
+        expect(container.textContent).toContain(announcement.description);
+        expect([...container.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(originalLinks);
+        expect(dismiss).not.toHaveBeenCalled();
+      }
+      await act(async () => container.querySelector("button")!.click());
+      expect(dismiss).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => root.unmount()); container.remove();
+      await i18n.changeLanguage("en");
+    }
+  });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
   async function animatedCard() {
     const div = document.createElement("div"); document.body.append(div);

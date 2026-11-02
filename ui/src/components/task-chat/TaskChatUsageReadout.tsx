@@ -1,6 +1,9 @@
+import { t, useTranslation, i18n } from "@/i18n";
+import { taskChatDisplayLabel } from "./task-chat-display";
 import { cn } from "@/lib/utils";
 import { Gauge } from "lucide-react";
 import type { TaskChatUsageItem } from "./task-chat-model";
+import { taskChatUsageDetail } from "./transcript-display-copy";
 
 /**
  * Second-tier live token/cost readout (ACP UsageUpdate). Concrete progress —
@@ -8,27 +11,29 @@ import type { TaskChatUsageItem } from "./task-chat-model";
  * Recedes to metadata weight so it never competes with message content.
  */
 export function TaskChatUsageReadout({ item }: { item: TaskChatUsageItem }) {
+  useTranslation();
   const { used, size, inputTokens, outputTokens, costUsd } = item.usage;
+  const detail = taskChatUsageDetail(item);
   const contextWindowSize = typeof size === "number" && size > 0 ? size : null;
   const pct = contextWindowSize ? Math.min(100, Math.round((used / contextWindowSize) * 100)) : 0;
   return (
     <div className="flex flex-col gap-1 px-1 py-1 text-(length:--text-micro) text-muted-foreground">
       <div className="flex items-center gap-1.5">
         <Gauge className="h-3 w-3" />
-        {item.label ? <span className="font-medium">{item.label}</span> : null}
+        {item.label ? <span className="font-medium">{taskChatDisplayLabel(item.label)}</span> : null}
         {contextWindowSize ? (
           <span>
-            {used.toLocaleString()}/{contextWindowSize.toLocaleString()} ctx ({pct}%)
+            {t("localizationTaskRuntime.contextUsagePercent", { used: used.toLocaleString(i18n.resolvedLanguage), size: contextWindowSize.toLocaleString(i18n.resolvedLanguage), percent: pct })}
           </span>
         ) : null}
         {inputTokens != null || outputTokens != null ? (
           <span>
-            · ↑{(inputTokens ?? 0).toLocaleString()} ↓{(outputTokens ?? 0).toLocaleString()}
+            · ↑{(inputTokens ?? 0).toLocaleString(i18n.resolvedLanguage)} ↓{(outputTokens ?? 0).toLocaleString(i18n.resolvedLanguage)}
           </span>
         ) : null}
-        {costUsd != null ? <span>· ${costUsd.toFixed(4)}</span> : null}
+        {costUsd != null ? <span>· ${new Intl.NumberFormat(i18n.resolvedLanguage, { minimumFractionDigits: 4, maximumFractionDigits: 4, useGrouping: false }).format(costUsd)}</span> : null}
       </div>
-      {item.detail ? <div>{item.detail}</div> : null}
+      {detail ? <div>{detail}</div> : null}
       {contextWindowSize ? (
         <div className="h-1 w-full overflow-hidden rounded-full bg-border">
           <div

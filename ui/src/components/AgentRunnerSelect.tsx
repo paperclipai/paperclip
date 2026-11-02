@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { Field } from "./agent-config-primitives";
 import { SelectPopover } from "./ui/select";
@@ -22,22 +23,23 @@ export function AgentRunnerSelect({
   error?: string;
   onRetry?: () => void;
 }) {
+  useTranslation();
   return (
-    <Field label="Runner">
+    <Field label={t("oct19Core.coverage026")}>
       <SelectPopover
-        aria-label="Runner"
+        aria-label={t("oct19Core.coverage026")}
         disabled={disabled}
         value={value}
-        displayValue={value === "auto" ? (defaultRunner ? `${defaultRunner === "paperclip" ? "Paperclip Runner" : "Legacy runner"} (default)` : pending ? "Checking runner availability…" : "Automatic selection unavailable") : undefined}
+        displayValue={value === "auto" ? (defaultRunner ? t("oct19Core.runnerDefault", { runner: defaultRunner === "paperclip" ? "Paperclip Runner" : t("oct19Core.coverage027") }) : pending ? t("oct19Core.coverage028") : t("oct19Core.coverage029")) : undefined}
         onValueChange={next => onChange(next as AgentRunnerChoice)}
         options={[
-          { value: "paperclip", label: `Paperclip Runner${defaultRunner === "paperclip" ? " (default)" : ""}`, disabled: !supportedRunners.includes("paperclip") && value !== "paperclip" },
-          { value: "legacy", label: `Legacy runner${defaultRunner === "legacy" ? " (default)" : ""}`, disabled: !supportedRunners.includes("legacy") && value !== "legacy" },
+          { value: "paperclip", label: defaultRunner === "paperclip" ? t("oct19Core.runnerDefault", { runner: "Paperclip Runner" }) : "Paperclip Runner", disabled: !supportedRunners.includes("paperclip") && value !== "paperclip" },
+          { value: "legacy", label: defaultRunner === "legacy" ? t("oct19Core.runnerDefault", { runner: t("oct19Core.coverage027") }) : t("oct19Core.coverage027"), disabled: !supportedRunners.includes("legacy") && value !== "legacy" },
         ]}
       />
       {error && <div className="mt-2 space-y-2">
         <p role="alert" className="text-sm text-destructive">{error}</p>
-        {onRetry && <Button type="button" variant="outline" size="sm" disabled={pending || disabled} onClick={onRetry}>Retry runner discovery</Button>}
+        {onRetry && <Button type="button" variant="outline" size="sm" disabled={pending || disabled} onClick={onRetry}>{t("oct19Core.coverage030")}</Button>}
       </div>}
     </Field>
   );

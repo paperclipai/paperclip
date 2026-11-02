@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
@@ -6,23 +7,24 @@ import { Loader2 } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 
-const phases = {
-  preparing: ["Preparing agent", "Required resources are being prepared. Work stays queued."],
-  verifying: ["Verifying agent", "The saved execution configuration is being checked. Work stays queued."],
-  pausing: ["Pausing agent", "Waiting for execution and required resources to stop."],
-  resuming: ["Resuming agent", "Required resources are being started. Work stays queued."],
-  terminating: ["Terminating agent", "Stopping execution before resource cleanup."],
-  cleaning_up: ["Cleaning up agent", "Required resources are being removed. Termination is not complete."],
-} satisfies Partial<Record<AgentLifecycleState, [string, string]>>;
+const phases = () => ({
+  preparing: [t("oct19Core.coverage004"), t("oct19Core.coverage005")],
+  verifying: [t("oct19Core.coverage006"), t("oct19Core.coverage007")],
+  pausing: [t("oct19Core.coverage008"), t("oct19Core.coverage009")],
+  resuming: [t("oct19Core.coverage010"), t("oct19Core.coverage011")],
+  terminating: [t("oct19Core.coverage012"), t("oct19Core.coverage013")],
+  cleaning_up: [t("oct19Core.coverage014"), t("oct19Core.coverage015")],
+} satisfies Partial<Record<AgentLifecycleState, [string, string]>>);
 
-const failedPhases = {
-  preparing: "Agent preparation failed", verifying: "Agent verification failed",
-  pausing: "Agent pause failed", resuming: "Agent resume failed",
-  terminating: "Agent termination failed", cleaning_up: "Agent cleanup failed",
-};
+const failedPhases = () => ({
+  preparing: t("oct19Core.coverage016"), verifying: t("oct19Core.coverage017"),
+  pausing: t("oct19Core.coverage018"), resuming: t("oct19Core.coverage019"),
+  terminating: t("oct19Core.coverage020"), cleaning_up: t("oct19Core.coverage021"),
+});
 
 function pendingPhase(state?: AgentLifecycleState) {
-  return state && state in phases ? phases[state as keyof typeof phases] : undefined;
+  const current = phases();
+  return state && state in current ? current[state as keyof typeof current] : undefined;
 }
 
 export function agentLifecycleRefetchInterval(state?: AgentLifecycleState) {
@@ -47,23 +49,24 @@ export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshErro
   retryPending: boolean;
   refreshError?: boolean;
 }) {
+  useTranslation();
   const phase = pendingPhase(agent.lifecycleState);
   if (!phase && !refreshError) return null;
   return <div role="status" aria-live="polite" className="space-y-2 text-sm">
-    {refreshError && <p className="text-destructive">Could not refresh agent lifecycle status.</p>}
+    {refreshError && <p className="text-destructive">{t("oct19Core.coverage022")}</p>}
     {phase && <div className="flex flex-wrap items-center gap-2">
       <Badge variant={agent.lifecycleError ? "destructive" : "secondary"}>
         {!agent.lifecycleError && <Loader2 aria-hidden="true" className="mr-1 size-3 animate-spin motion-reduce:animate-none" />}
-        {agent.lifecycleError ? failedPhases[agent.lifecycleState as keyof typeof failedPhases] : phase[0]}
+        {agent.lifecycleError ? failedPhases()[agent.lifecycleState as keyof ReturnType<typeof failedPhases>] : phase[0]}
       </Badge>
       {!agent.lifecycleError && <span className="text-muted-foreground">{phase[1]}</span>}
     </div>}
     {phase && agent.lifecycleError && <div className="flex flex-wrap items-center gap-2 text-destructive">
       <span>{agent.lifecycleError}</span>
       <Button variant="outline" size="sm" disabled={retryPending} onClick={onRetry}>
-        {retryPending ? "Retrying…" : "Retry now"}
+        {retryPending ? t("oct19Core.coverage023") : t("oct19Core.coverage024")}
       </Button>
     </div>}
-    {phase && agent.lifecycleError && <p className="text-muted-foreground">Paperclip retries automatically; Retry now checks again immediately.</p>}
+    {phase && agent.lifecycleError && <p className="text-muted-foreground">{t("oct19Core.coverage025")}</p>}
   </div>;
 }

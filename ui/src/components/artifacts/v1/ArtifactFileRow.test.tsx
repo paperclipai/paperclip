@@ -8,6 +8,7 @@ import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { ArtifactFileRow } from "./ArtifactFileRow";
 import { testSubject } from "./test-subject";
+import { i18n } from "@/i18n";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -51,9 +52,35 @@ describe("ArtifactFileRow", () => {
     csvLoader.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
+  });
+
+  it("keeps a requested CSV preview and raw file destinations across mounted locale changes", async () => {
+    const file = source({ filename: "Raw {{filename}}.csv" });
+    const subject = testSubject({ kind: "sheet", filename: file.filename, contentType: "text/csv" });
+    const before = JSON.stringify({ file, subject });
+    mount(<ArtifactFileRow subject={subject} source={file} />);
+    act(() => Array.from(container.querySelectorAll("button")).find(el => el.textContent === "Preview data")!.click());
+    for (let i = 0; i < 20 && !container.textContent?.includes("unit_price"); i += 1) await act(flush);
+    expect(container.textContent).toContain("unit_price");
+    const reads = csvLoader.mock.calls.length;
+    const row = container.querySelector('[data-testid="artifact-v1-row-open"]')!;
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(row.getAttribute("aria-label")).toBe(`Открыть ${file.filename}`);
+    expect(row.getAttribute("href")).toBe(file.openPath);
+    expect(container.textContent).toContain(file.filename);
+    expect(container.textContent).toContain("unit_price");
+    expect(container.querySelector('a[title="Открыть исходный файл"]')?.getAttribute("href")).toBe(file.openPath);
+    const download = container.querySelector('a[title="Скачать"]')!;
+    expect(download.getAttribute("href")).toBe(file.downloadPath);
+    expect(download.getAttribute("download")).toBe(file.filename);
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(row.getAttribute("aria-label")).toBe(`Open ${file.filename}`);
+    expect(csvLoader).toHaveBeenCalledTimes(reads);
+    expect(JSON.stringify({ file, subject })).toBe(before);
   });
 
   it("keeps the CSV data preview: Preview data loads the table under the row", async () => {

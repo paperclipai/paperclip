@@ -5,6 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueAccessGrant } from "@paperclipai/shared";
+import { act as reactAct } from "react";
+import { i18n } from "@/i18n";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -141,6 +143,35 @@ describe("IssueShareSheet", () => {
     expect(scope.textContent).toContain("project-managed");
   });
 
+  it("keeps the add flow and raw identity stable while its language changes", async () => {
+    listAccessGrants.mockResolvedValue([]);
+    listUserDirectory.mockResolvedValue({ users: [{ user: { id: "person/raw", name: "Board", email: "raw@example.test", image: null } }] });
+    createAccessGrant.mockResolvedValue(grant({ subjectId: "person/raw" }));
+    await renderSheet();
+    try {
+      await reactAct(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim() === "Add someone")!.click());
+      await settle();
+      await reactAct(async () => (document.body.querySelector('[role="combobox"]') as HTMLElement).click());
+      await settle();
+      const option = [...document.body.querySelectorAll('[role="option"]')].find(node => node.textContent?.includes("Board"))!;
+      await reactAct(async () => (option as HTMLElement).click());
+      await settle();
+      const picker = document.body.querySelector('[role="combobox"]');
+      for (const language of ["ru", "en", "ru"]) {
+        await reactAct(async () => { await i18n.changeLanguage(language); });
+        expect(document.body.querySelector('[role="combobox"]')).toBe(picker);
+        expect(picker?.textContent).toContain("Board");
+        expect(document.body.textContent).toContain(language === "ru" ? "У кого есть доступ к задаче" : "Who can access this task");
+        expect(createAccessGrant).not.toHaveBeenCalled();
+      }
+      await reactAct(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim() === "Добавить")!.click());
+      await settle();
+      expect(createAccessGrant).toHaveBeenCalledWith("i1", { subjectType: "user", subjectId: "person/raw" });
+    } finally {
+      await reactAct(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("removes a saved grant while explaining that assignment access remains", async () => {
     listAccessGrants.mockResolvedValue([grant({ id: "g1", source: "assignment", subjectType: "agent", subjectId: "a1" })]);
     const client = await renderSheet(true, [{ id: "agent:a1", displayName: "Helper", roleLabel: "Current assignee" }]);
@@ -151,6 +182,10 @@ describe("IssueShareSheet", () => {
     act(() => removeSaved!.click());
     await settle();
     expect(document.body.textContent).toContain("saved grant?");
+    expect(document.body.querySelector('[role="alertdialog"] span.font-semibold')?.textContent).toBe("not");
+    await reactAct(async () => { await i18n.changeLanguage("ru"); });
+    expect(document.body.querySelector('[role="alertdialog"] span.font-semibold')?.textContent).toBe("не стирает");
+    await reactAct(async () => { await i18n.changeLanguage("en"); });
     revokeAccessGrant.mockResolvedValue({});
     const confirm = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim() === "Remove grant");
     act(() => confirm!.click());

@@ -1,6 +1,18 @@
+import { useTranslation } from "@/i18n";
 import type { ProviderTraceMetadata } from "@paperclipai/shared";
 import { Bug, CircleOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const TRACE_LABEL_KEYS: Record<string, string> = {
+  "Trace expired": "localizationCommonTail.traceExpired",
+  "Raw tracing enabled": "localizationCommonTail.traceEnabled",
+  "Trace captured": "localizationCommonTail.traceCaptured",
+  "Trace incomplete": "localizationCommonTail.traceIncomplete",
+  "Trace truncated": "localizationCommonTail.traceTruncated",
+  "Trace deleted": "localizationCommonTail.traceDeleted",
+  "Trace requested": "localizationCommonTail.traceRequested",
+  "Trace off": "localizationCommonTail.traceOff",
+};
 
 export function runRequestedProviderTrace(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -26,6 +38,7 @@ export function ProviderTraceStatusBadge({
   showOff?: boolean;
   className?: string;
 }) {
+  const { t, i18n } = useTranslation();
   const status = trace?.status;
   const expired = trace
     ? new Date(trace.expiresAt).getTime() <= Date.now()
@@ -70,14 +83,14 @@ export function ProviderTraceStatusBadge({
       )}
       title={
         trace
-          ? `${trace.frameCount} frames · ${trace.byteCount} bytes · expires ${new Date(trace.expiresAt).toLocaleString()}`
+          ? t("localizationCommonTail.traceSummary", { frames: trace.frameCount, bytes: trace.byteCount, expires: new Date(trace.expiresAt).toLocaleString(i18n.language) })
           : requested
-            ? "This run requested sensitive provider-frame capture."
-            : "Raw provider-frame capture was disabled for this run."
+            ? t("localizationCommonTail.sensitiveTraceRequested")
+            : t("localizationCommonTail.traceDisabled")
       }
     >
       <Icon className="h-3 w-3" />
-      {label}
+      {t(TRACE_LABEL_KEYS[label])}
     </span>
   );
 }

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   ToolCatalogEntry,
   ToolProfileDefaultAction,
@@ -31,9 +32,9 @@ export function toolCapability(tool: ToolCatalogEntry): ToolCapability {
 }
 
 export const CAPABILITY_LABEL: Record<ToolCapability, string> = {
-  read: "Read-only",
-  write: "Makes changes",
-  destructive: "Destructive",
+  get read() { return t("localizationSkills.readOnly459"); },
+  get write() { return t("localizationTools.makesChanges86"); },
+  get destructive() { return t("localizationTools.destructive87"); },
 };
 
 // --- App grouping ----------------------------------------------------------
@@ -66,7 +67,7 @@ export function groupCatalogByApp(
       const name =
         (tool.applicationId ? applicationsById.get(tool.applicationId) : null) ??
         connectionsById.get(tool.connectionId) ??
-        "Tools";
+        t("pages.agentDetail.tabTools");
       group = {
         appKey,
         applicationId: tool.applicationId,
@@ -131,16 +132,16 @@ export function appCheckState(group: AppGroup, selection: AppSelection | undefin
 export function appSelectionLabel(group: AppGroup, selection: AppSelection | undefined): string {
   const total = group.tools.length;
   const state = appCheckState(group, selection);
-  if (state === "unchecked") return "None selected";
+  if (state === "unchecked") return t("localizationTools.noneSelected89");
   if (selection?.kind === "all" || (selection?.kind === "all_except" && selection.excluded.length === 0)) {
-    return `All ${group.name} tools (${total})`;
+    return t("localizationTools.allGroupToolsCount", { name: group.name, count: total });
   }
   if (selection?.kind === "all_except") {
     const n = selection.excluded.length;
-    return `All ${group.name} except ${n}`;
+    return t("localizationTools.allGroupExcept", { name: group.name, count: n });
   }
   const n = selectedToolIds(group, selection).size;
-  return `${n} of ${total} ${group.name} tools`;
+  return t("localizationTools.someGroupTools", { name: group.name, count: n, total });
 }
 
 // --- Checkbox reducers -----------------------------------------------------
@@ -368,11 +369,11 @@ export interface TemplateDef {
 }
 
 export const TEMPLATES: TemplateDef[] = [
-  { key: "read_only", title: "Read-only", description: "See and fetch, but never change anything." },
-  { key: "everyday", title: "Everyday work", description: "Read and make routine changes — no destructive tools." },
-  { key: "full_access", title: "Full access", description: "Everything every connected app offers." },
-  { key: "scratch", title: "Start from scratch", description: "An empty profile you build up tool by tool." },
-  { key: "copy", title: "Copy an existing profile", description: "Start from a profile you already have." },
+  { key: "read_only", get title() { return t("localizationSkills.readOnly459"); }, get description() { return t("localizationTools.seeAndFetchButNeverChangeAnything93"); } },
+  { key: "everyday", get title() { return t("localizationTools.everydayWork94"); }, get description() { return t("localizationTools.readAndMakeRoutineChangesNoDestructiveTools95"); } },
+  { key: "full_access", get title() { return t("localizationTools.fullAccess96"); }, get description() { return t("localizationTools.everythingEveryConnectedAppOffers97"); } },
+  { key: "scratch", get title() { return t("localizationTools.startFromScratch98"); }, get description() { return t("localizationTools.anEmptyProfileYouBuildUpToolByTool99"); } },
+  { key: "copy", get title() { return t("localizationTools.copyAnExistingProfile100"); }, get description() { return t("localizationTools.startFromAProfileYouAlreadyHave101"); } },
 ];
 
 function capabilityPredicate(key: TemplateKey): (tool: ToolCatalogEntry) => boolean {

@@ -7,6 +7,7 @@ import type { RunnerGoalProjection } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { RunnerGoalWidget, useRunnerGoalControl } from "./RunnerGoalWidget";
+import { i18n } from "@/i18n";
 
 vi.mock("@/api/issues", () => ({ issuesApi: { getRunnerGoal: vi.fn(), actOnRunnerGoal: vi.fn() } }));
 vi.mock("@/context/LiveUpdatesProvider", () => ({ useCompanyLiveEvent: vi.fn() }));
@@ -56,6 +57,7 @@ async function render(agentId = "agent-goal") {
 }
 
 beforeEach(async () => {
+  await i18n.changeLanguage("en");
   vi.clearAllMocks();
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), projection);
@@ -70,9 +72,29 @@ afterEach(async () => {
   await act(async () => root.unmount());
   client.clear();
   container.remove();
+  await i18n.changeLanguage("en");
 });
 
 describe("session goal dialogs", () => {
+  it.each([[1, "1 итерация"], [2, "2 итерации"], [5, "5 итераций"], [21, "21 итерация"]] as const)("keeps an open goal draft while localizing %i iterations", async (count, russianCount) => {
+    await act(async () => {
+      client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), {
+        ...projection, goal: { ...projection.goal!, iterations: count, tokensUsed: count },
+      });
+    });
+    await click("Edit goal");
+    await objective("Original /goal objective with **markup**");
+    const field = document.querySelector("textarea")!;
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain(russianCount);
+    expect(button("Сохранить цель").disabled).toBe(false);
+    expect(document.querySelector("textarea")).toBe(field);
+    expect(field.value).toBe("Original /goal objective with **markup**");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain(`${count} iteration${count === 1 ? "" : "s"}`);
+    expect(document.querySelector("textarea")).toBe(field);
+    expect(issuesApi.actOnRunnerGoal).not.toHaveBeenCalled();
+  });
   it("hides the widget after an expanded goal is cleared", async () => {
     await click("Focus goal");
     vi.mocked(issuesApi.actOnRunnerGoal).mockResolvedValue({
@@ -110,6 +132,54 @@ describe("session goal dialogs", () => {
     vi.mocked(issuesApi.actOnRunnerGoal).mockRejectedValue(new Error("Session is unavailable."));
     await click("Request replacement");
     await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')?.textContent).toContain("Session is unavailable."));
+  });
+
+  it.each([
+    ["missing agent", "selectGoalAgent", 0],
+    ["unsupported capability", "sessionGoalUnsupported", 0],
+    ["unknown action failure", "goalActionFailed", 1],
+  ] as const)("retranslates %s errors without repeating an action", async (scenario, messageKey, calls) => {
+    await act(async () => {
+      client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), {
+        ...projection,
+        goal: null,
+        agentId: scenario === "missing agent" ? null : projection.agentId,
+        capability: scenario === "unsupported capability"
+          ? { ...projection.capability, availability: "unsupported" }
+          : projection.capability,
+      });
+    });
+    if (scenario === "unknown action failure") {
+      vi.mocked(issuesApi.actOnRunnerGoal).mockRejectedValue({ code: "unknown_failure" });
+    }
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')).toBeNull());
+    await click("Request replacement");
+    const key = `localizationTaskExecution.${messageKey}`;
+    const widget = () => document.querySelector('[data-testid="runner-goal-widget"]');
+    await vi.waitFor(() => expect(widget()?.textContent).toContain(i18n.t(key, { lng: "en" })));
+
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(widget()?.textContent).toContain(i18n.t(key, { lng: "ru" }));
+    expect(widget()?.textContent).not.toContain(i18n.t(key, { lng: "en" }));
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(widget()?.textContent).toContain(i18n.t(key, { lng: "en" }));
+    expect(issuesApi.actOnRunnerGoal).toHaveBeenCalledTimes(calls);
+  });
+
+  it("preserves provider error text across locale changes without retrying", async () => {
+    await act(async () => {
+      client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), { ...projection, goal: null });
+    });
+    const providerMessage = "Provider rejected model custom/model-42.";
+    vi.mocked(issuesApi.actOnRunnerGoal).mockRejectedValue(new Error(providerMessage));
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')).toBeNull());
+    await click("Request replacement");
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')?.textContent).toContain(providerMessage));
+    for (const locale of ["ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(document.querySelector('[data-testid="runner-goal-widget"]')?.textContent).toContain(providerMessage);
+    }
+    expect(issuesApi.actOnRunnerGoal).toHaveBeenCalledTimes(1);
   });
 
   it("opens a prefilled in-app editor and saves with the reviewed revision", async () => {

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import type { To } from "react-router-dom";
 import { Link } from "@/lib/router";
@@ -82,8 +83,9 @@ export interface StackTileProps {
 
 /** A task with several artifacts: its newest one on top of a stack, the task's title underneath. */
 export function ArtifactStackTile({ identifier, title, count, updatedAt, front, to, onClick, now }: StackTileProps) {
+  const { t } = useTranslation();
   return (
-    <ArtifactTile label={`Open ${identifier} ${title}, ${countLabel(count)}`} to={to} onClick={onClick} testId="artifact-v1-stack-tile" caption={<ArtifactCaption title={title} identifier={identifier} facts={[countLabel(count), `Updated ${updatedLabel(updatedAt, now)}`]} />}>
+    <ArtifactTile label={t("oct26Artifacts.openStack", { identifier, title, countLabel: countLabel(count) })} to={to} onClick={onClick} testId="artifact-v1-stack-tile" caption={<ArtifactCaption title={title} identifier={identifier} facts={[countLabel(count), t("oct26Artifacts.updated", { date: updatedLabel(updatedAt, now) })]} />}>
       <ArtifactStack front={front} />
     </ArtifactTile>
   );
@@ -91,9 +93,10 @@ export function ArtifactStackTile({ identifier, title, count, updatedAt, front, 
 
 /** One artifact on its own: its file name (or title) underneath. */
 export function ArtifactSingleTile({ subject, to, onClick, now }: { subject: ArtifactSubject; to?: To; onClick?: () => void; now?: Date }) {
+  const { t } = useTranslation();
   const name = subject.filename ?? subject.title;
   return (
-    <ArtifactTile label={`Open ${name}`} to={to} onClick={onClick} testId="artifact-v1-single-tile" caption={<ArtifactCaption title={name} identifier={subject.taskIdentifier} facts={subject.updatedAt ? [`Updated ${updatedLabel(subject.updatedAt, now)}`] : []} />}>
+    <ArtifactTile label={t("oct26Artifacts.open", { name })} to={to} onClick={onClick} testId="artifact-v1-single-tile" caption={<ArtifactCaption title={name} identifier={subject.taskIdentifier} facts={subject.updatedAt ? [t("oct26Artifacts.updated", { date: updatedLabel(subject.updatedAt, now) })] : []} />}>
       <ArtifactFront subject={subject} />
     </ArtifactTile>
   );

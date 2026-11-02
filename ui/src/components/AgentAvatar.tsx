@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { useState } from "react";
 import { resolveAgentAppearance, type AgentAppearance, type AgentAvatarSize, type CharacterState } from "@paperclipai/shared";
@@ -21,10 +22,11 @@ export interface AgentAvatarProps {
   className?: string;
 }
 export function AgentAvatar({ agent, appearance, size = 24, name, label, pose = "rest", muted = false, className }: AgentAvatarProps) {
+  const { t } = useTranslation();
   const identity = resolveAgentAppearance(appearance ?? agent?.appearance, agent?.id);
   const src = agentAvatarUrl(identity, size, 1, pose, muted);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const initials = useAvatarInitials(deriveInitials(name ?? agent?.name ?? "Agent"));
+  const initials = useAvatarInitials(deriveInitials(name ?? agent?.name ?? t("localizationSettings.agent")));
   return (
     <span data-slot="agent-avatar" className={cn("relative inline-flex shrink-0 items-center justify-center align-middle", avatarSizeClasses[size], className)}
       role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}>

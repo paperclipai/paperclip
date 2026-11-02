@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { Component, Suspense, useState, type ReactNode } from "react";
 import { captureBrowserException } from "../lib/sentry";
 import { PaperclipLoading } from "./AnimatedPaperclipIcon";
@@ -12,13 +13,15 @@ interface DeferredOverlayProps {
 }
 
 function OverlayNotice({ title, onClose, failed = false }: Pick<DeferredOverlayProps, "title" | "onClose"> & { failed?: boolean }) {
+  const { i18n } = useTranslation();
+  const displayTitle = i18n.resolvedLanguage?.startsWith("ru") ? title : title.toLowerCase();
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
     <DialogContent showCloseButton={false} aria-describedby={undefined}>
-      <DialogTitle>{failed ? `Couldn't open ${title.toLowerCase()}` : `Loading ${title.toLowerCase()}…`}</DialogTitle>
+      <DialogTitle>{t(failed ? "oct26Ui.overlay.failed" : "oct26Ui.overlay.loading", { title: displayTitle })}</DialogTitle>
       {failed
-        ? <p className="text-sm text-muted-foreground">Close this window to keep working. Reload the page before trying again.</p>
+        ? <p className="text-sm text-muted-foreground">{t("oct26Ui.overlay.recovery")}</p>
         : <PaperclipLoading className="min-h-0" />}
-      <div className="flex justify-end"><Button variant="outline" onClick={onClose}>{failed ? "Close" : "Cancel"}</Button></div>
+      <div className="flex justify-end"><Button variant="outline" onClick={onClose}>{t(failed ? "oct26Ui.overlay.close" : "oct26Ui.overlay.cancel")}</Button></div>
     </DialogContent>
   </Dialog>;
 }

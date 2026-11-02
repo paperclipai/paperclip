@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "@/lib/queryKeys";
+import { i18n } from "@/i18n";
 import { CompanySettings } from "./CompanySettings";
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -136,11 +137,12 @@ describe("CompanySettings archive departure", () => {
     observedPath = "";
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     container.remove();
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   function render(health: unknown) {
@@ -166,15 +168,37 @@ describe("CompanySettings archive departure", () => {
     return root;
   }
 
-  function clickArchive() {
+  function clickArchive(label = "Archive organization") {
     const button = Array.from(container.querySelectorAll("button")).find(
-      (element) => element.textContent?.trim() === "Archive organization",
+      (element) => element.textContent?.trim() === label,
     );
     expect(button).toBeDefined();
     flushSync(() => {
       button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
   }
+
+  it("uses one locale-specific pair of quotes and preserves cancellation when switching languages", async () => {
+    companyState.companies = [ARCHIVING_COMPANY];
+    vi.mocked(window.confirm).mockReturnValue(false);
+    const root = render(SELF_HOSTED_HEALTH);
+    try {
+      for (const locale of ["en", "ru", "en"] as const) {
+        await i18n.changeLanguage(locale);
+        await flushReact();
+        clickArchive(locale === "ru" ? "Архивировать организацию" : "Archive organization");
+        expect(window.confirm).toHaveBeenLastCalledWith(locale === "ru"
+          ? "Архивировать организацию «Old Co»? Она будет скрыта из боковой панели."
+          : 'Archive organization "Old Co"? It will be hidden from the sidebar.');
+        expect(mockCompaniesApi.archive).not.toHaveBeenCalled();
+        expect(mockSetSelectedCompanyId).not.toHaveBeenCalled();
+        expect(mockNavigateTopLevel).not.toHaveBeenCalled();
+        expect(observedPath).toBe("/OLD/company/settings");
+      }
+    } finally {
+      flushSync(() => root.unmount());
+    }
+  });
 
   it("switches to another active company with a toast", async () => {
     companyState.companies = [ARCHIVING_COMPANY, SIBLING_COMPANY];

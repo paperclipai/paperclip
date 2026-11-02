@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
 import { CatalogSourceFilters, type CatalogSource } from "./CatalogSourceFilters";
 
@@ -8,9 +9,10 @@ export function ConnectorsToolbar({ query, onQueryChange, source, onSourceChange
   source: CatalogSource;
   onSourceChange: (value: CatalogSource) => void;
 }) {
-  return <header data-canonical-toolbar="connectors" role="toolbar" aria-label="Connectors controls" className="flex flex-wrap items-center gap-3">
+  useTranslation();
+  return <header data-canonical-toolbar="connectors" role="toolbar" aria-label={t("oct26Toolbar.connectorsControls")} className="flex flex-wrap items-center gap-3">
     <div className="w-full">
-      <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search connectors" placeholder="Search connectors…" inputType="search" />
+      <ToolbarSearch query={query} onQueryChange={onQueryChange} label={t("oct26Toolbar.searchConnectors")} placeholder={t("oct26Toolbar.searchConnectorsPlaceholder")} inputType="search" />
     </div>
     <CatalogSourceFilters source={source} onChange={onSourceChange} />
   </header>;

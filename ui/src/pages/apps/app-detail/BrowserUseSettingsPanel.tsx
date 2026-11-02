@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { useEffect, useId, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
@@ -17,6 +19,7 @@ function CredentialSettings({
   companyId: string;
   grantId: string;
 }) {
+  useTranslation();
   const id = useId();
   const saved = useQuery({
     queryKey: ["browser-use-cloud-settings", grantId],
@@ -48,37 +51,22 @@ function CredentialSettings({
   return (
     <div className="space-y-3">
       <div className="space-y-2">
-        <Label htmlFor={`${id}-limit`}>
-          Maximum cost per browser run (USD)
-        </Label>
+        <Label htmlFor={`${id}-limit`}>{t("oct5Apps.copy068")}</Label>
         <Input
           id={`${id}-limit`}
           type="number"
           min="0"
           step="0.01"
           value={limit}
-          placeholder="Use the remaining Paperclip budget"
+          placeholder={t("oct5Apps.copy069")}
           onChange={(e) => setLimit(e.target.value)}
         />
-        <p className="text-sm text-muted-foreground">
-          The agent can choose a lower limit. Paperclip also applies any
-          remaining hard budget limit.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("oct5Apps.copy070")}</p>
       </div>
       <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Allowed saved profiles</legend>
+        <legend className="text-sm font-medium">{t("oct5Apps.copy071")}</legend>
         <p className="text-sm text-muted-foreground">
-          Fresh browsers are the default. Selected profiles let agents use their
-          saved website logins. Manage profiles in{" "}
-          <a
-            href="https://cloud.browser-use.com"
-            target="_blank"
-            rel="noreferrer"
-            className="underline"
-          >
-            Browser Use Cloud
-          </a>
-          .
+          <Trans i18nKey="oct5Apps.browserProfiles" components={{ cloud: <a href="https://cloud.browser-use.com" target="_blank" rel="noreferrer" className="underline" /> }} />
         </p>
         {profiles.data?.map((p) => (
           <Label key={p.id} className="flex items-center gap-2">
@@ -96,34 +84,26 @@ function CredentialSettings({
           </Label>
         ))}
         {profiles.data?.length === 0 && (
-          <p className="text-sm text-muted-foreground">No saved profiles.</p>
+          <p className="text-sm text-muted-foreground">{t("oct5Apps.copy072")}</p>
         )}
         {profiles.isLoading && (
-          <p className="text-sm text-muted-foreground">Loading profiles…</p>
+          <p className="text-sm text-muted-foreground">{t("oct5Apps.copy073")}</p>
         )}
         {profiles.isError && (
-          <p role="alert" className="text-sm text-destructive">
-            Could not load profiles.{" "}
+          <p role="alert" className="text-sm text-destructive">{t("oct5Apps.copy074")}{" "}
             <Button
               size="sm"
               variant="ghost"
               onClick={() => void profiles.refetch()}
-            >
-              Retry
-            </Button>
+            >{t("stable916Shell.retry")}</Button>
           </p>
         )}
       </fieldset>
       {saved.isError || save.isError ? (
-        <p role="alert" className="text-sm text-destructive">
-          Could not save or load browser settings. Check your credential access
-          and try again.
-        </p>
+        <p role="alert" className="text-sm text-destructive">{t("oct5Apps.copy075")}</p>
       ) : null}
       {save.isSuccess && (
-        <p role="status" className="text-sm text-muted-foreground">
-          Browser settings saved.
-        </p>
+        <p role="status" className="text-sm text-muted-foreground">{t("oct5Apps.copy076")}</p>
       )}
       <div className="flex justify-end">
         <Button
@@ -136,9 +116,7 @@ function CredentialSettings({
             )
           }
           onClick={() => save.mutate()}
-        >
-          Save browser settings
-        </Button>
+        >{t("oct5Apps.copy077")}</Button>
       </div>
     </div>
   );
@@ -150,6 +128,7 @@ export function BrowserUseSettingsPanel({
   connection: ToolConnection;
   grants?: ConnectionGrantsResponse;
 }) {
+  useTranslation();
   const eligible =
     grants?.grants.filter(
       (g) =>
@@ -162,18 +141,16 @@ export function BrowserUseSettingsPanel({
   const grantId = selected || eligible[0]?.id;
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold">Browser settings</h2>
+      <h2 className="text-lg font-semibold">{t("oct5Apps.copy078")}</h2>
       {eligible.length > 1 && (
-        <Label className="flex flex-col gap-2">
-          Credential
-          <select
+        <Label className="flex flex-col gap-2">{t("oct5Apps.copy135")}<select
             value={grantId}
             onChange={(e) => setSelected(e.target.value)}
             className="rounded-md border bg-background p-2"
           >
             {eligible.map((g, i) => (
               <option key={g.id} value={g.id}>
-                {g.kind === "user" ? "Personal" : "Shared"} credential {i + 1}
+                {t(g.kind === "user" ? "oct5Apps.personalCredential" : "oct5Apps.sharedCredential", { number: i + 1 })}
               </option>
             ))}
           </select>
@@ -186,10 +163,7 @@ export function BrowserUseSettingsPanel({
           grantId={grantId}
         />
       ) : (
-        <p className="text-sm text-muted-foreground">
-          The credential owner or a shared connection manager can configure
-          saved profiles and cost limits.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("oct5Apps.copy079")}</p>
       )}
     </section>
   );

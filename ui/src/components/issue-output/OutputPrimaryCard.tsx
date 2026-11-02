@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Download, ExternalLink, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ interface OutputPrimaryCardProps {
  * mobile and uses a single horizontal meta row on desktop.
  */
 export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPrimaryCardProps) {
+  const { t } = useTranslation();
   const meta = item.metadata;
   const filename = outputFilename(item);
   const contentType = meta?.contentType;
@@ -44,7 +46,7 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
           <button
             type="button"
             className="block aspect-video w-full overflow-hidden bg-black"
-            aria-label={`Browse ${filename} in gallery`}
+            aria-label={t("localizationIssueAux.browseGalleryFile", { filename })}
             onClick={() => onMediaClick(item)}
           >
             <img src={meta.contentPath} alt={filename} className="h-full w-full object-contain" />
@@ -55,7 +57,7 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
             target="_blank"
             rel="noreferrer"
             className="block aspect-video w-full overflow-hidden bg-black"
-            aria-label={`Open ${filename}`}
+            aria-label={t("localizationIssueAux.openFile", { filename })}
           >
             <img src={meta.contentPath} alt={filename} className="h-full w-full object-contain" />
           </a>
@@ -72,13 +74,13 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
           <p className="break-words text-sm font-semibold text-foreground">{filename}</p>
           {item.degraded ? (
             <p className="mt-0.5 text-(length:--text-micro) text-destructive">
-              Output metadata is unavailable — this file can’t be played or downloaded here.
+              {t("localizationIssuePanels.ui_Output_metadata_is_unavailable_this_file_can_t_be_played_or_downl_19bue86")}
             </p>
           ) : (
             <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-(length:--text-micro) text-muted-foreground">
               {item.isPrimary && (
                 <Badge variant="secondary" className="px-1.5 py-0 text-(length:--text-nano)">
-                  Primary
+                  {t("localizationIssuePanels.ui_Primary_1jcui61")}
                 </Badge>
               )}
               {meta && <span>{meta.contentType}</span>}
@@ -102,21 +104,21 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
                 onClick={() => onMediaClick(item)}
               >
                 <Maximize2 className="h-4 w-4" />
-                Browse
+                {t("localizationIssuePanels.ui_Browse_42k35z")}
               </Button>
             ) : null}
             {!isMedia || !onMediaClick || isVideo ? (
               <Button asChild variant="outline" size="sm" className="max-md:flex-1">
                 <a href={meta.openPath} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
-                  Open
+                  {t("localizationIssuePanels.ui_Open_n6hn1l")}
                 </a>
               </Button>
             ) : null}
             <Button asChild size="sm" className="max-md:flex-1">
-              <a href={meta.downloadPath} aria-label={`Download ${filename}`}>
+              <a href={meta.downloadPath} aria-label={t("localizationIssueAux.downloadFile", { filename })}>
                 <Download className="h-4 w-4" />
-                Download
+                {t("localizationIssuePanels.ui_Download_t8quxl")}
               </a>
             </Button>
           </div>

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   ToolApplication,
   ToolConnection,
@@ -38,10 +39,10 @@ export function tokenStatus(
 }
 
 export const TOKEN_STATUS_LABEL: Record<TokenStatus, string> = {
-  active: "Active",
-  expiring: "Expiring",
-  expired: "Expired",
-  revoked: "Revoked",
+  get active() { return t("status.active"); },
+  get expiring() { return t("localizationApps.expiring145"); },
+  get expired() { return t("localizationApps.expired146"); },
+  get revoked() { return t("localizationAgents.ui96_Revoked"); },
 };
 
 /** Count of tokens that can currently authenticate (not revoked, not expired). */
@@ -77,23 +78,27 @@ export function formatScope(
 ): string {
   if (gateway.contextScopeType !== "none" && gateway.contextScopeId) {
     if (gateway.contextScopeType === "project") {
-      return `Project · ${projectNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId)}`;
+      return t("localizationApps.scopeProject", { name: projectNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId) });
     }
     if (gateway.contextScopeType === "agent") {
-      return `Agent · ${agentNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId)}`;
+      return t("localizationApps.scopeAgent", { name: agentNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId) });
     }
-    return `${gateway.contextScopeType} · ${shortId(gateway.contextScopeId)}`;
+    return gateway.contextScopeType === "routine"
+      ? t("localizationApps.scopeRoutine", { id: shortId(gateway.contextScopeId) })
+      : gateway.contextScopeType === "issue"
+        ? t("localizationApps.scopeIssue", { id: shortId(gateway.contextScopeId) })
+        : t("localizationApps.scopeCompany", { id: shortId(gateway.contextScopeId) });
   }
-  if (gateway.projectId) return `Project · ${projectNames.get(gateway.projectId) ?? shortId(gateway.projectId)}`;
-  if (gateway.agentId) return `Agent · ${agentNames.get(gateway.agentId) ?? shortId(gateway.agentId)}`;
-  return "Organization";
+  if (gateway.projectId) return t("localizationApps.scopeProject", { name: projectNames.get(gateway.projectId) ?? shortId(gateway.projectId) });
+  if (gateway.agentId) return t("localizationApps.scopeAgent", { name: agentNames.get(gateway.agentId) ?? shortId(gateway.agentId) });
+  return t("nav.company");
 }
 
 export function formatOwner(gateway: ToolMcpGatewayWithTokens, agentNames: Map<string, string>): string {
   if (gateway.createdByAgentId) {
-    return agentNames.get(gateway.createdByAgentId) ?? `Agent ${shortId(gateway.createdByAgentId)}`;
+    return agentNames.get(gateway.createdByAgentId) ?? t("localizationApps.agentIdLabel", { id: shortId(gateway.createdByAgentId) });
   }
-  return "Board";
+  return t("pages.cliAuth.board");
 }
 
 /** Whether the gateway is exposing tools to clients right now. */
@@ -103,14 +108,14 @@ export function isGatewayOn(gateway: ToolMcpGatewayWithTokens): boolean {
 
 /** Human summary of how many tools a profile allows. */
 export function allowedToolsLabel(profile: ToolProfileWithDetails | undefined): string {
-  if (!profile) return "Profile unavailable";
+  if (!profile) return t("localizationApps.profileUnavailable156");
   const { accessMode, allowedToolCount, totalToolCount, excludedToolCount } = profile.summary;
   const count =
     accessMode === "all_except"
       ? Math.max(totalToolCount - excludedToolCount, 0)
       : allowedToolCount;
-  if (count === 0) return "No tools allowed";
-  return `${count} ${count === 1 ? "tool" : "tools"}`;
+  if (count === 0) return t("localizationApps.noToolsAllowed157");
+  return t("localizationApps.toolCount", { count });
 }
 
 export type GatewayAppRow = {
@@ -175,7 +180,7 @@ export function deriveGatewayApps(
       toolCount: toolCountByApp.get(applicationId) ?? 0,
       needsAttention: Boolean(attentionConnection),
       attentionReason: attentionConnection
-        ? "Sign-in expired — reconnect to restore access."
+        ? t("localizationApps.signInExpiredReconnectToRestoreAccess159")
         : null,
     });
   }

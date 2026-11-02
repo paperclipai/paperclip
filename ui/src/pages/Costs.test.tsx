@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Costs } from "./Costs";
+import { i18n } from "@/i18n";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { MemoryRouter } from "react-router-dom";
 
@@ -92,6 +93,7 @@ describe("Shared Costs surfaces", () => {
     act(() => root?.unmount());
     container.remove();
     vi.clearAllMocks();
+    void i18n.changeLanguage("en");
   });
 
   it.each(["overview", "budgets"] as const)("explains unavailable Muse accounting on its scoped %s page", async (tab) => {
@@ -170,6 +172,12 @@ describe("Shared Costs surfaces", () => {
     expect(container.querySelector('[role="tab"]')).toBeFalsy();
     expect(setBreadcrumbsMock).not.toHaveBeenCalled();
     for (const mock of Object.values(costsApiMocks)) expect(mock).not.toHaveBeenCalled();
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain("Управление бюджетом");
+    expect(container.textContent).toContain("Активные инциденты");
+    expect(budgetOverviewMock).toHaveBeenCalledWith("company-1");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain("Budget control plane");
   });
 
   it.each(surfaces)("shows unknown billing separately from complete prices only on the %s Overview", async (_name, props) => {
@@ -380,7 +388,8 @@ describe("Shared Costs surfaces", () => {
     try {
       for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
       costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
-      costsApiMocks.summary.mockResolvedValue({ spendCents: 800, budgetCents: 1000, pricingComplete: true });
+      costsApiMocks.summary.mockResolvedValue({ spendCents: 800, budgetCents: 1000, utilizationPercent: 80, pricingComplete: true });
+      costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
       const row = { model: "test", billingType: "metered_api", inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
         apiRunCount: 1, subscriptionRunCount: 0, subscriptionInputTokens: 0, subscriptionCachedInputTokens: 0, subscriptionOutputTokens: 0 };
       costsApiMocks.byProvider.mockResolvedValue([

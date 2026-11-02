@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Artifacts } from "./Artifacts";
+import { i18n } from "@/i18n";
 import type { CompanyArtifact, CompanyArtifactGroup } from "../api/artifacts";
 
 const companyState = vi.hoisted(() => ({
@@ -173,9 +174,48 @@ describe("Artifacts page", () => {
     window.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     window.IntersectionObserver = originalIntersectionObserver as typeof IntersectionObserver;
     container.remove();
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([false, true])("preserves search drafts, grouping, raw titles and requests through EN/RU/EN with V1=%s", async (v1) => {
+    artifactsV1Flag.enabled = v1;
+    const artifact = sampleArtifact({ title: "Raw artifact {{name}}" });
+    const group = sampleGroup({ title: "Raw group {{title}}", previewArtifacts: [artifact] });
+    const before = JSON.stringify(group);
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], groups: [group], nextCursor: null });
+    const { root, queryClient } = renderArtifacts(container, ["/artifacts?q=committed&groupBy=parent_task"]);
+    try {
+      await waitForAssertion(() => expect(container.textContent).toContain(group.title));
+      const input = container.querySelector<HTMLInputElement>('input[aria-label="Search artifacts"]')!;
+      const links = [...container.querySelectorAll("a")].map(link => link.getAttribute("href"));
+      const requests = artifactsApiMock.list.mock.calls.length;
+      vi.useFakeTimers();
+      flushSync(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Draft {{query}} /raw");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      flushSync(() => { void i18n.changeLanguage("ru"); });
+      expect(input.value).toBe("Draft {{query}} /raw");
+      expect(input.getAttribute("aria-label")).toBe("Поиск артефактов");
+      expect(container.querySelector('[data-testid="artifact-group-control"]')?.getAttribute("data-group-by")).toBe("parent_task");
+      expect(container.querySelector('[data-testid="artifact-group-control"]')?.getAttribute("aria-label")).toBe("Группировка артефактов (сейчас: Родительская задача)");
+      expect(container.textContent).toContain(group.title);
+      if (v1) expect(container.querySelector('[aria-label="Показать артефакты по задачам или типам"]')).not.toBeNull();
+      else expect(container.querySelector('[aria-label="Фильтр артефактов по типу"]')).not.toBeNull();
+      expect([...container.querySelectorAll("a")].map(link => link.getAttribute("href"))).toEqual(links);
+      flushSync(() => { void i18n.changeLanguage("en"); });
+      expect(input.value).toBe("Draft {{query}} /raw");
+      expect(input.getAttribute("aria-label")).toBe("Search artifacts");
+      expect(artifactsApiMock.list).toHaveBeenCalledTimes(requests);
+      expect(JSON.stringify(group)).toBe(before);
+    } finally {
+      flushSync(() => root.unmount());
+      queryClient.clear();
+      vi.useRealTimers();
+    }
   });
 
   it("requests task-grouped artifact stacks by default", async () => {

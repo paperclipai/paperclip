@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { NativeVoiceConversation, type NativeVoiceConversationProps } from "./NativeVoiceConversation";
@@ -8,6 +9,7 @@ import { VoiceCallContext } from "./VoiceCallContext";
 export function VoiceCallProvider({ children, companyId, userId }: {
   children: ReactNode; companyId: string | null; userId: string | null;
 }) {
+  useTranslation();
   const [call, setCall] = useState<{ props: NativeVoiceConversationProps; userId: string | null; id: string } | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const [ended, setEnded] = useState(false);
@@ -21,9 +23,9 @@ export function VoiceCallProvider({ children, companyId, userId }: {
   const value = useMemo(() => ({ active: Boolean(current), open }), [current, open]);
   return <VoiceCallContext.Provider value={value}>
     {children}
-    {current && <aside aria-label="Current voice call" className="fixed inset-x-4 bottom-4 z-50 max-h-(--sz-calc-18) overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg sm:left-auto sm:w-96">
+    {current && <aside aria-label={t("oct19Voice.currentVoiceCall_2yfs0")} className="fixed inset-x-4 bottom-4 z-50 max-h-(--sz-calc-18) overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg sm:left-auto sm:w-96">
       <NativeVoiceConversation {...current.props} key={current.id} managed autoStart onEndedChange={setEnded} />
-      {ended && <Button variant="ghost" size="sm" onClick={() => { setCall(null); requestAnimationFrame(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }); }}>Close voice panel</Button>}
+      {ended && <Button variant="ghost" size="sm" onClick={() => { setCall(null); requestAnimationFrame(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }); }}>{t("oct19Voice.closeVoicePanel_h5yx6n")}</Button>}
     </aside>}
   </VoiceCallContext.Provider>;
 }

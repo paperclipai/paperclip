@@ -11,7 +11,7 @@ import type { Agent } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { resolveCommentAttribution } from "@/lib/comment-attribution";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
-import type { CompanyUserProfile } from "@/lib/company-members";
+import { isGeneratedCompanyUserLabel, type CompanyUserProfile } from "@/lib/company-members";
 import type { TaskChatAuthorKind, TaskChatItem, TaskChatMessageItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
@@ -132,6 +132,12 @@ export function commentsToTaskChatItems(
         authorUserId: comment.authorUserId,
         authorAvatarUrl: humanAuthor.avatarUrl,
         isCurrentUser: humanAuthor.isCurrentUser,
+        humanAuthorFallback: (
+          (!comment.authorUserId || (!ctx.userProfileMap?.get(comment.authorUserId)?.label?.trim()
+            && !ctx.userLabelMap?.get(comment.authorUserId)?.trim()))
+          || isGeneratedCompanyUserLabel(comment.authorUserId, ctx.userLabelMap)
+        ) ? comment.authorUserId === "local-board" ? "board" as const
+          : humanAuthor.isCurrentUser ? "you" as const : "user" as const : undefined,
       } : {}),
       agent: effectiveAgentId(comment) ? ctx.agentMap?.get(effectiveAgentId(comment)!) ?? { id: effectiveAgentId(comment)! } : undefined,
       text: comment.body,
@@ -149,8 +155,9 @@ export function commentsToTaskChatItems(
       // layer (PAP-443); other authors keep the item lean.
       presentation: kind === "system" ? comment.presentation ?? null : undefined,
       metadata: kind === "system" ? comment.metadata ?? null : undefined,
+      sourceAuthorType: kind === "system" ? comment.authorType : undefined,
       runAgentId: kind === "system" ? comment.runAgentId ?? null : undefined,
-      createdAtIso: kind === "system" ? createdAtIso : undefined,
+      createdAtIso,
     });
   }
   return items;

@@ -6,6 +6,7 @@
  * only showing a response after the turn settles.
  */
 import type { TranscriptEntry } from "@/adapters";
+import { nativeRunEntryDisplayCopy } from "../transcript/native-run-events";
 import type {
   TaskChatDiff,
   TaskChatActivityPhaseItem,
@@ -476,6 +477,8 @@ function providerActivityItem(
     status: entry.status,
     title: entry.title,
     summary,
+    ...(nativeRunEntryDisplayCopy(entry)?.title === "providerNotice" ? { titleMessage: "providerNotice" as const } : {}),
+    ...(nativeRunEntryDisplayCopy(entry)?.summary === "providerNotice" ? { summaryMessage: "providerNotice" as const } : {}),
     details,
     steps,
     links,
@@ -1044,6 +1047,9 @@ export function transcriptToTaskChatItems(
           ...(entry.subtype === "paperclip_runner_session_usage"
             ? {
                 label: "Provider session total",
+                ...(nativeRunEntryDisplayCopy(entry)?.detail === "providerSessionUsage"
+                  ? { detailMessage: "providerSessionUsage" as const }
+                  : !entry.text ? { detailMessage: "cumulativeSessionUsage" as const } : {}),
                 detail:
                   entry.text ||
                   "This cumulative usage can include earlier runs in the resumed provider session.",

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { IssueLockedStub, IssueRelationIssueSummary } from "@paperclipai/shared";
@@ -26,6 +27,7 @@ export function IssueReferencePill({
   /** Reserves space for a separate hover/focus action without moving the task link. */
   onRemove?: (issueId: string) => void;
 }) {
+  const { t } = useTranslation();
   // Private issue referenced from a visible edge — never leak a title or a link.
   if (isLockedIssueStub(issue)) {
     return <LockedIssueChip identifier={issue.identifier} className={className} />;
@@ -82,7 +84,7 @@ export function IssueReferencePill({
         data-mention-kind="issue"
         className={classNames}
         title={issue.title}
-        aria-label={`Task: ${issue.title}`}
+        aria-label={t("localizationIssueChrome.taskAria", { title: issue.title })}
       >
         {content}
       </span>
@@ -96,7 +98,7 @@ export function IssueReferencePill({
       data-mention-kind="issue"
       className={classNames}
       title={issue.title}
-      aria-label={`Task ${issueLabel}: ${issue.title}`}
+      aria-label={t("localizationIssueChrome.taskIdentifierAria", { identifier: issueLabel, title: issue.title })}
     >
       {content}
     </Link>

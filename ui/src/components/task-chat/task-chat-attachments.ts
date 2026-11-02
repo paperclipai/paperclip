@@ -5,6 +5,7 @@
  * ("[name](/api/attachments/<id>/content)") so posted bubbles can render them
  * as the same chips instead of bare links.
  */
+import { i18n, t } from "@/i18n";
 import {
   FileArchive,
   FileAudio,
@@ -145,6 +146,36 @@ export function formatFileSize(bytes: number | undefined): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const FILE_KIND_KEYS: Readonly<Record<string, string>> = {
+  Doc: "document", Text: "text", Sheet: "sheet", Archive: "archive", Audio: "audio",
+  Video: "video", Code: "code", Log: "log", Patch: "patch", File: "file",
+};
+
+function displayFileKind(kind: FileKind): FileKind {
+  const key = FILE_KIND_KEYS[kind.label];
+  return key ? { ...kind, label: t(`localizationTaskRuntime.fileKind.${key}`) } : kind;
+}
+
+/** Display-only wrappers: MIME fallback detection continues to use raw kind labels. */
+export function fileKindForNameDisplay(name: string): FileKind {
+  return displayFileKind(fileKindForName(name));
+}
+
+export function fileKindForAttachmentDisplay(ref: AttachmentRef): FileKind {
+  return displayFileKind(fileKindForAttachment(ref));
+}
+
+export function formatFileSizeDisplay(bytes: number | undefined): string {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes <= 0) return "";
+  const unit = bytes < 1024 ? "bytes" : bytes < 1024 * 1024 ? "kilobytes" : "megabytes";
+  const size = bytes < 1024 ? bytes : bytes < 1024 * 1024 ? bytes / 1024 : bytes / (1024 * 1024);
+  const number = new Intl.NumberFormat(i18n.resolvedLanguage, {
+    minimumFractionDigits: bytes < 1024 ? 0 : 1, maximumFractionDigits: bytes < 1024 ? 0 : 1,
+    useGrouping: false,
+  }).format(size);
+  return t(`localizationIssueDetail.${unit}`, { size: number });
 }
 
 export interface AttachmentRef {

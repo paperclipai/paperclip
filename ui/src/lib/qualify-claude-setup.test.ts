@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterInfo } from "../api/adapters";
 import { qualifyClaudeSetup } from "./qualify-claude-setup";
+import { AgentSetupError, agentSetupErrorText } from "./agent-setup-error";
+import { i18n, t } from "@/i18n";
 
 const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
 const discovery = (runner: "paperclip" | "legacy", overrides = {}) => [
@@ -19,6 +21,26 @@ function setup() {
 }
 
 describe("Claude explicit setup qualification", () => {
+  it("keeps trusted fallback errors translatable after rejection and preserves raw diagnostic text", async () => {
+    const s = setup();
+    s.probeEnvironment.mockResolvedValue({ ok: false, details: {} });
+    const error = await qualifyClaudeSetup(s).catch(cause => cause);
+    expect(error).toBeInstanceOf(AgentSetupError);
+    try {
+      for (const locale of ["en", "ru", "en"]) {
+        await i18n.changeLanguage(locale);
+        expect(agentSetupErrorText(error, t)).toBe(t("oct26Onboarding.setup.platformQualificationError"));
+        expect(s.probeEnvironment).toHaveBeenCalledTimes(1);
+      }
+      const raw = setup();
+      const diagnostic = "The environment's platform qualification could not be confirmed. Retry the connection probe or select Legacy runner in Advanced.";
+      raw.probeEnvironment.mockResolvedValue({ ok: false, details: { platformQualificationDiagnostic: diagnostic } });
+      const rawError = await qualifyClaudeSetup(raw).catch(cause => cause);
+      await i18n.changeLanguage("ru");
+      expect(rawError).not.toBeInstanceOf(AgentSetupError);
+      expect(agentSetupErrorText(rawError, t)).toBe(diagnostic);
+    } finally { await i18n.changeLanguage("en"); }
+  });
   it("qualifies a named Daytona snapshot through the normal Connect action", async () => {
     const s = setup();
     const input: Parameters<typeof qualifyClaudeSetup>[0] = { ...s, environment: { driver: "sandbox", config: { provider: "daytona", snapshot: "managed-snapshot" } } };

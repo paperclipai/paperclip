@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   useEffect,
   useId,
@@ -80,28 +81,28 @@ export function describeUnavailable(reason: string): { title: string; body: stri
   if (lower.includes("remote")) {
     return {
       icon: <Cloud aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
-      title: "Remote workspace preview not supported",
-      body: "This workspace is hosted remotely and is not available for inline preview yet.",
+      get ["title"]() { return t("localizationWorkspaces.ui_Remote_workspace_preview_not_supported"); },
+      get ["body"]() { return t("localizationWorkspaces.ui_This_workspace_is_hosted_remotely_and_is_not_available_for_inline_preview_yet_"); },
     };
   }
   if (lower.includes("no_workspace") || lower.includes("no_local")) {
     return {
       icon: <FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
-      title: "No workspace yet",
-      body: "This issue does not have a workspace to browse. Files appear here once a run creates one.",
+      get ["title"]() { return t("localizationWorkspaces.ui_No_workspace_yet"); },
+      get ["body"]() { return t("localizationWorkspaces.ui_This_issue_does_not_have_a_workspace_to_browse_Files_appear_here_once_a_run_creates_one_"); },
     };
   }
   if (lower.includes("archiv") || lower.includes("cleaned") || lower.includes("unavailable")) {
     return {
       icon: <FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
-      title: "Workspace is no longer available",
-      body: "The isolated worktree for this issue has been cleaned up, so files cannot be previewed.",
+      get ["title"]() { return t("localizationWorkspaces.ui_Workspace_is_no_longer_available"); },
+      get ["body"]() { return t("localizationWorkspaces.ui_The_isolated_worktree_for_this_issue_has_been_cleaned_up_so_files_cannot_be_previewed_"); },
     };
   }
   return {
     icon: <AlertTriangle aria-hidden="true" className="h-5 w-5 text-amber-500" />,
-    title: "Workspace unavailable",
-    body: "These workspace files can't be browsed right now.",
+    get ["title"]() { return t("localizationWorkspaces.ui_Workspace_unavailable"); },
+    get ["body"]() { return t("localizationWorkspaces.ui_These_workspace_files_can_t_be_browsed_right_now_"); },
   };
 }
 
@@ -116,6 +117,7 @@ function StateMessage({
   body?: string;
   actions?: ReactNode;
 }) {
+  useTranslation();
   return (
     <div className="flex items-start gap-3 px-1 py-8 text-sm">
       {icon}
@@ -137,11 +139,12 @@ function WorkspaceFileBreadcrumbs({
   folderPath: string | null;
   onOpenFolder: (path: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const segments = folderPath?.split("/").filter(Boolean) ?? [];
   if (!rootLabel && segments.length === 0) return null;
 
   return (
-    <nav aria-label="Current folder" className="min-w-0 overflow-hidden text-(length:--text-micro) text-muted-foreground">
+    <nav aria-label={t("localizationWorkspaces.ui_Current_folder")} className="min-w-0 overflow-hidden text-(length:--text-micro) text-muted-foreground">
       <ol className="flex min-w-0 items-center gap-1 overflow-hidden">
         {rootLabel ? (
           <li className="min-w-0 shrink">
@@ -188,6 +191,7 @@ interface WorkspaceFileRowProps {
 }
 
 function WorkspaceFileRow({ item, treeItemId, selected, highlighted, depth, onOpen, onHover, downloadUrl }: WorkspaceFileRowProps) {
+  const { t } = useTranslation();
   const name = basename(item.relativePath);
   return (
     <div
@@ -209,8 +213,8 @@ function WorkspaceFileRow({ item, treeItemId, selected, highlighted, depth, onOp
         <a
           href={downloadUrl}
           download={name}
-          aria-label={`Download ${name}`}
-          title={`Download ${name}`}
+          aria-label={t("localizationWorkspaces.downloadFile", { name })}
+          title={t("localizationWorkspaces.downloadFile", { name })}
           onClick={(event) => event.stopPropagation()}
           className="ml-auto inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-70 hover:bg-background/70 hover:text-foreground hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
@@ -381,6 +385,7 @@ function WorkspaceFileTree({
   onHoverFile,
   getDownloadUrl,
 }: WorkspaceFileTreeProps) {
+  const { t } = useTranslation();
   function renderNode(node: WorkspaceFileTreeNode): ReactNode {
     if (node.kind === "folder") {
       const expanded = node.lazy
@@ -417,7 +422,7 @@ function WorkspaceFileTree({
                   style={{ paddingLeft: `${1 + (node.depth + 1) * 0.875}rem` }}
                 >
                   <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
-                  <span>Loading folder…</span>
+                  <span>{t("localizationSkills.loadingFolder707")}</span>
                 </div>
               ) : null}
               {truncated ? (
@@ -428,7 +433,7 @@ function WorkspaceFileTree({
                   style={{ paddingLeft: `${1 + (node.depth + 1) * 0.875}rem` }}
                 >
                   <span className="h-3.5 w-3.5 shrink-0" />
-                  <span>Load more from this folder</span>
+                  <span>{t("localizationWorkspaces.ui_Load_more_from_this_folder")}</span>
                 </button>
               ) : null}
             </>
@@ -453,7 +458,7 @@ function WorkspaceFileTree({
   }
 
   return (
-    <div role="tree" id={listboxId} aria-label="Workspace files" className="space-y-0.5 py-1">
+    <div role="tree" id={listboxId} aria-label={t("localizationWorkspaces.ui_Workspace_files")} className="space-y-0.5 py-1">
       {nodes.map(renderNode)}
     </div>
   );
@@ -509,6 +514,7 @@ export function WorkspaceFileBrowser({
   active = true,
   className,
 }: WorkspaceFileBrowserProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { visible: pageVisible } = usePageVisibility();
   const source: BrowserSource =
@@ -835,12 +841,12 @@ export function WorkspaceFileBrowser({
   ]);
 
   const announcement = useMemo(() => {
-    if (listQuery.isFetching) return "Loading workspace files…";
-    if (listQuery.isError) return "Unable to load workspace files.";
+    if (listQuery.isFetching) return t("localizationWorkspaces.files_Loading_workspace_files_");
+    if (listQuery.isError) return t("localizationWorkspaces.files_Unable_to_load_workspace_files_");
     if (data?.state === "unavailable") return describeUnavailable(data.unavailableReason ?? "").title;
-    if (items.length === 0) return "No matching files.";
-    return `${items.length} item${items.length === 1 ? "" : "s"} found.`;
-  }, [data, items.length, listQuery.isError, listQuery.isFetching]);
+    if (items.length === 0) return t("localizationWorkspaces.files_No_matching_files_");
+    return t("localizationWorkspaces.itemsFound", { count: items.length });
+  }, [data, items.length, listQuery.isError, listQuery.isFetching, t]);
 
   function openTypedPath() {
     const value = searchInput.trim();
@@ -987,24 +993,24 @@ export function WorkspaceFileBrowser({
     body = (
       <StateMessage
         icon={<FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />}
-        title="No organization selected"
-        body="Choose an organization before browsing another project workspace."
+        title={t("localizationWorkspaces.ui_No_organization_selected")}
+        body={t("localizationWorkspaces.files_Choose_an_organization_before_browsing_another_project_workspace_")}
       />
     );
   } else if (source === "other" && projectsQuery.isFetching && projectsWithWorkspaces.length === 0) {
     body = (
       <StateMessage
         icon={<Loader2 aria-hidden="true" className="h-5 w-5 animate-spin text-muted-foreground" />}
-        title="Loading project workspaces"
-        body="Registered workspaces will appear here."
+        title={t("localizationWorkspaces.ui_Loading_project_workspaces")}
+        body={t("localizationWorkspaces.files_Registered_workspaces_will_appear_here_")}
       />
     );
   } else if (source === "other" && !canListFiles) {
     body = (
       <StateMessage
         icon={<FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />}
-        title="No project workspaces"
-        body="No same-organization project has a registered workspace to browse."
+        title={t("localizationWorkspaces.ui_No_project_workspaces")}
+        body={t("localizationWorkspaces.files_No_same_organization_project_has_a_registered_workspace_to_browse_")}
       />
     );
   } else if (listQuery.isFetching && !data) {
@@ -1032,13 +1038,13 @@ export function WorkspaceFileBrowser({
     body = (
       <StateMessage
         icon={<AlertTriangle aria-hidden="true" className="h-5 w-5 text-amber-500" />}
-        title={changedFilesTemporarilyUnavailable ? "Changed files temporarily unavailable" : "Couldn't load files"}
+        title={changedFilesTemporarilyUnavailable ? t("localizationWorkspaces.ui_Changed_files_temporarily_unavailable") : t("localizationWorkspaces.ui_Couldn_t_load_files")}
         body={
           changedFilesTemporarilyUnavailable
-            ? "Paperclip is limiting workspace scans to keep the server responsive. Try again in a moment."
+            ? t("localizationWorkspaces.files_Paperclip_is_limiting_workspace_scans_to_keep_the_server_responsive_Try_again_in_a_moment_")
             : status === 404
-            ? "Workspace browsing isn't available for this issue."
-            : "Something went wrong loading workspace files."
+            ? t("localizationWorkspaces.files_Workspace_browsing_isn_t_available_for_this_issue_")
+            : t("localizationWorkspaces.files_Something_went_wrong_loading_workspace_files_")
         }
         actions={changedFilesTemporarilyUnavailable ? (
           <Button
@@ -1048,8 +1054,7 @@ export function WorkspaceFileBrowser({
             disabled={!queriesEnabled}
             onClick={() => void listQuery.refetch()}
           >
-            <RefreshCcw aria-hidden="true" className="mr-1 h-3 w-3" /> Retry
-          </Button>
+            <RefreshCcw aria-hidden="true" className="mr-1 h-3 w-3" />{t("localizationWorkspaces.ui_Retry")}</Button>
         ) : null}
       />
     );
@@ -1060,8 +1065,8 @@ export function WorkspaceFileBrowser({
     body = (
       <StateMessage
         icon={<Search aria-hidden="true" className="h-5 w-5 text-muted-foreground" />}
-        title={isSearch ? `No files match “${q}”` : "No recently changed files yet"}
-        body="Try searching by name or path."
+        title={isSearch ? t("localizationWorkspaces.noFilesMatch", { query: q }) : t("localizationWorkspaces.ui_No_recently_changed_files_yet")}
+        body={t("localizationWorkspaces.files_Try_searching_by_name_or_path_")}
       />
     );
   } else {
@@ -1100,8 +1105,8 @@ export function WorkspaceFileBrowser({
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
             onKeyDown={handleSearchKeyDown}
-            placeholder="Search files by name or path…"
-            aria-label="Search workspace files"
+            placeholder={t("localizationWorkspaces.ui_Search_files_by_name_or_path_")}
+            aria-label={t("localizationWorkspaces.ui_Search_workspace_files")}
             role="combobox"
             aria-expanded={items.length > 0}
             aria-controls={items.length > 0 ? listboxId : undefined}
@@ -1118,8 +1123,8 @@ export function WorkspaceFileBrowser({
           size="icon-sm"
           onClick={() => void listQuery.refetch()}
           disabled={!queriesEnabled || listQuery.isFetching}
-          aria-label="Refresh workspace files"
-          title="Refresh workspace files"
+          aria-label={t("localizationWorkspaces.ui_Refresh_workspace_files")}
+          title={t("localizationWorkspaces.ui_Refresh_workspace_files")}
           className="h-8 w-8 shrink-0"
         >
           <RefreshCcw aria-hidden="true" className={cn("h-3.5 w-3.5", listQuery.isFetching && "animate-spin")} />
@@ -1145,11 +1150,9 @@ export function WorkspaceFileBrowser({
               type="button"
               onClick={() => loadMoreFolder(currentFolderKey)}
               className="rounded px-1 py-0.5 text-left hover:bg-accent hover:text-foreground"
-            >
-              Load more from this folder
-            </button>
+            >{t("localizationWorkspaces.ui_Load_more_from_this_folder")}</button>
           ) : (
-            <>Showing first {items.length} — refine the search to narrow.</>
+            t("localizationWorkspaces.showingFirst", { count: items.length })
           )}
         </div>
       ) : null}

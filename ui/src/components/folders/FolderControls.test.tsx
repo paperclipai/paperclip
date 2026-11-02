@@ -4,6 +4,9 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FolderListResult } from "@paperclipai/shared";
+import { act as reactAct } from "react";
+import { setLocale } from "@/i18n";
+import { reservedRootLabel, skillFolderPathDisplayFallback } from "./skill-folder-tree";
 import {
   AllUnfiledBanner,
   BulkBar,
@@ -130,6 +133,7 @@ describe("FolderControls", () => {
   let root: Root | null;
 
   beforeEach(() => {
+    setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -143,6 +147,54 @@ describe("FolderControls", () => {
     }
     container.remove();
     document.body.innerHTML = "";
+    setLocale("en");
+  });
+
+  it("changes folder form labels without resetting the name or color payload", async () => {
+    const onSubmit = vi.fn();
+    root = createRoot(container);
+    await reactAct(async () => {
+      root?.render(<FolderFormDialog open kind="routine" folder={null} onOpenChange={vi.fn()} onSubmit={onSubmit} />);
+    });
+    const input = document.querySelector<HTMLInputElement>("#folder-name")!;
+    await reactAct(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Raw folder draft");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector<HTMLButtonElement>('[aria-label="Use folder color cyan"]')!.click();
+    });
+    await reactAct(async () => setLocale("ru"));
+    expect(input.value).toBe("Raw folder draft");
+    expect(document.body.textContent).toContain("Создать папку");
+    expect(document.querySelector('[aria-label="Цвет папки: бирюзовый"]')).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
+    const submit = [...document.querySelectorAll("button")].find((button) => button.textContent === "Создать папку")!;
+    await reactAct(async () => submit.click());
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith({ name: "Raw folder draft", color: "cyan" });
+    await reactAct(async () => setLocale("en"));
+    expect(input.value).toBe("Raw folder draft");
+    expect(document.body.textContent).toContain("Create folder");
+  });
+
+  it.each([1, 2, 5, 21, 22, 25])("keeps the exact item count in the Russian delete warning (%i)", async (count) => {
+    root = createRoot(container);
+    await reactAct(async () => {
+      setLocale("ru");
+      root?.render(<DeleteFolderDialog open folder={{ ...folderResult.folders[0]!, itemCount: count }} itemLabelPlural="регламенты" onOpenChange={vi.fn()} onConfirm={vi.fn()} />);
+    });
+    expect(document.body.textContent).toContain(`регламенты: ${count}`);
+    expect(document.body.textContent).toContain("сохранится в разделе «Без папки»");
+  });
+
+  it("localizes only reserved display roots, never folder values or URL selections", () => {
+    setLocale("ru");
+    const raw = { systemKey: "my", name: "My raw folder" };
+    expect(reservedRootLabel(raw)).toBe("Мои навыки");
+    expect(reservedRootLabel({ systemKey: null, name: raw.name })).toBe(raw.name);
+    expect(skillFolderPathDisplayFallback("projects/raw-folder")).toBe("Проекты / Raw Folder");
+    expect(raw).toEqual({ systemKey: "my", name: "My raw folder" });
+    expect(folderSearchValue("unfiled")).toBe("unfiled");
+    setLocale("en");
+    expect(reservedRootLabel(raw)).toBe("My Skills");
   });
 
   it("normalizes URL selection values for folder persistence", () => {
