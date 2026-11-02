@@ -60,6 +60,10 @@ const descriptions: Record<AgentLocalDetailView, string> = {
   "api-keys": "Manage the keys this agent uses to authenticate with Paperclip.",
   revisions:
     "Review past configuration changes and restore an earlier version.",
+  activity: "Everything this agent did and everything done to it.",
+  runs: "Every execution of this agent, newest first.",
+  costs: "What this agent spent, by model.",
+  budgets: "This agent’s monthly budget and how much of it is used.",
 };
 type Feedback = Parameters<
   NonNullable<ComponentProps<typeof AgentConfigForm>["onTestFeedbackChange"]>

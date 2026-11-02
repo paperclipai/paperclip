@@ -427,6 +427,16 @@ function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** The pinned SDK stores response statusCode as data; never read messages or headers. */
+function creationHttpStatus(error: unknown): number | undefined {
+  try {
+    if (!error || typeof error !== "object") return undefined;
+    const status = Object.getOwnPropertyDescriptor(error, "statusCode")?.value;
+    return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+      ? status : undefined;
+  } catch { return undefined; }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1039,8 +1049,9 @@ async function createSandbox(
       // error so cleanup can be reconciled rather than declaring success.
       await destroyFailedCreation(config, cleanup, params.driverKey);
     } catch (cleanupError) {
+      const status = creationHttpStatus(createError);
       throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
-        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
+        `Daytona sandbox creation failed${status === undefined ? "" : ` (HTTP ${status})`}; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
   }

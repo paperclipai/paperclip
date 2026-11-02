@@ -28,6 +28,10 @@ Agent access: [companion](../agent-access-map/recovery.md).
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
+  The failed-attempt notice has padding, a tinted background and an error icon;
+  its message and Retry remain readable on narrow screens in both themes. Verify
+  with [the browser layout checks](../../tests/e2e/execution-recovery/failed-attempt-notice.spec.ts)
+  against an owned Storybook server using `RECOVERY_STORYBOOK_URL`.
   Internal repair stays system-owned; genuine user decisions retain their
   specific action.
 - `workspace`: `recovery/workspace` — workspace divergence/export failures show the applicable repair,

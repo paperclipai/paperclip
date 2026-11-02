@@ -76,11 +76,13 @@ export function shouldUseRemoteWorkspaces(input: {
  * remote controller may replace its local projection; host-owned execution
  * cannot make that promise. External conversation providers own no task disk. */
 export function assertEphemeralWorkspaceExecution(input: {
-  externalConversation: boolean; native: boolean; adapterType: string;
+  externalConversation: boolean; adapterType: string;
   pluginTaskWorkspace: boolean; remoteAuthority: boolean;
 }) {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" || input.externalConversation) return;
-  if (!input.native || input.adapterType !== "paperclip_runner"
+  // Runtime selection has not promoted a fresh run yet. Validate storage here;
+  // the runtime selector separately admits only its resolved warm native policy.
+  if (input.adapterType !== "paperclip_runner"
     || (!input.pluginTaskWorkspace && !input.remoteAuthority)) {
     throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
@@ -89,7 +91,7 @@ export function assertEphemeralWorkspaceExecution(input: {
 
 /** The runtime selector calls this after environment, credentials and saved
  * execution policy have resolved. Raw agent settings are not lifecycle authority. */
-export function assertEphemeralNativeLifecycle(mode: "warm" | "per_turn") {
+export function assertEphemeralNativeLifecycle(mode: "warm" | "per_turn" | undefined) {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && mode !== "warm") {
     throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
@@ -163,7 +165,7 @@ export async function reserveRemoteWorkspace(input: {
     const authority = readRemoteWorkspaceAuthority(existing?.metadata);
     if (existing && !authority) throw conflict("Import this existing workspace before enabling remote storage.", { code: "remote_workspace_migration_required" });
     if (existing && authority) {
-      if ((existing.sourceIssueId !== input.issueId && existing.mode !== "shared_workspace") || ["archived", "cleanup_failed"].includes(existing.status)) throw conflict("Workspace ownership changed.");
+      if (["archived", "cleanup_failed"].includes(existing.status)) throw conflict("Workspace ownership changed.");
       if (existing.sourceIssueId !== input.issueId) {
         const actor = { type: "agent", source: "agent_jwt", companyId: input.companyId,
           agentId: input.agentId, runId: input.runId,
