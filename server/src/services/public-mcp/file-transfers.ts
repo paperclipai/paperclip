@@ -228,6 +228,26 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
           ...(publication ? { publication } : {}) };
         // An older upload can lack publication proof. Verify the same bytes
         // through another bounded PUT; never manufacture a receipt from metadata.
+        await db.transaction(async tx => {
+          const [current] = await tx.select().from(mcpAttachmentUploads)
+            .where(eq(mcpAttachmentUploads.id, upload.id)).for("update");
+          if (!current || current.companyId !== p.grant.companyId || current.userId !== p.grant.userId
+            || current.argumentsHash !== hash || current.workSessionId !== sessionId
+            || current.grantId && current.grantId !== p.grant.id
+            || current.attachmentId !== attachment.id || current.storageProvider !== storage.provider
+            || current.cleanedAt || current.cleanupVerifiedAt) throw unavailable();
+          const owner = await workSession(p, sessionId, current.taskId, true, tx as unknown as Db);
+          const live = await attachmentAccess(p, attachment.id, tx as unknown as Db, sessionId);
+          if (!owner || live.issueId !== current.taskId || live.provider !== current.storageProvider
+            || live.objectKey !== current.objectKey || live.originalFilename !== current.originalFilename
+            || live.byteSize !== current.byteSize || live.sha256 !== current.sha256
+            || live.originatingRunId !== owner.runId || live.createdByAgentId !== owner.agentId) throw unavailable();
+          // Keep the committed attachment and cleanup identity immutable. A
+          // concurrent deletion still removes that attachment/stamps this row;
+          // PUT rechecks both and never stores bytes for a committed upload.
+          await tx.update(mcpAttachmentUploads).set({ expiresAt: new Date(Date.now() + lifetime) })
+            .where(eq(mcpAttachmentUploads.id, current.id));
+        });
       }
       return { ...await ticket(p, { uploadId: upload.id }, sessionId), method: "PUT", headers: { "Content-Type": a.contentType }, uploadId: upload.id, maxBytes: MAX_ATTACHMENT_BYTES,
         instructions: "Send the exact file bytes with the given Content-Type. Success saves the attachment and returns its ID. An agent upload also returns a verified publication receipt; cite its evidenceRef in your completion report. There is no separate upload completion tool. Do not share this temporary file credential. Reuse requestId after a lost response." };

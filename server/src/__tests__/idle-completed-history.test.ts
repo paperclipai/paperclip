@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import * as tables from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -232,6 +232,120 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       expect(await blocked("mcp_attachment_uploads")).toBe(false);
       await db.update(tables.mcpAttachmentUploads).set({ cleanupVerifiedAt: null }).where(eq(tables.mcpAttachmentUploads.id, removed.id));
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
+    } finally { await p.cleanup(); }
+  }, 60_000);
+
+  it("renews only an expired live agent attachment's publication repair window", async () => {
+    const { createPublicMcpTransfers } = await import("../services/public-mcp/file-transfers.js");
+    const { createPublicMcpOAuth } = await import("../services/public-mcp/oauth.js");
+    const { instanceSettingsService } = await import("../services/instance-settings.js");
+    const { default: express } = await import("express");
+    const { default: request } = await import("supertest");
+    const f = await seed(), p = await connectedMcp(f);
+    try {
+      const board = await p.oauth.authenticate(p.token), sessionId = randomUUID();
+      const resource = `${p.oauth.config.origin}/mcp/runner`;
+      await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: true });
+      await db.update(tables.mcpOauthGrants).set({ purpose: "agent", agentId: f.agentId,
+        resource, scopes: ["paperclip:agent", "offline_access"] }).where(eq(tables.mcpOauthGrants.id, p.grantId));
+      await db.update(tables.issues).set({ status: "in_progress" }).where(eq(tables.issues.id, f.issueId));
+      await db.update(tables.heartbeatRuns).set({ status: "running", finishedAt: null, runtimeMode: "native",
+        driverKind: "grok_bot_mcp", nativeIssueId: f.issueId }).where(eq(tables.heartbeatRuns.id, f.runId));
+      const oauth = createPublicMcpOAuth(db, { ...p.oauth.config, resource });
+      const principal = await oauth.authenticate(p.token);
+      let ownerAvailable = true;
+      let ownerRunId = f.runId;
+      let pauseRepair = false, repairLocked!: () => void, releaseRepair!: () => void;
+      const locked = new Promise<void>(resolve => { repairLocked = resolve; });
+      const released = new Promise<void>(resolve => { releaseRepair = resolve; });
+      // Named work-session boundary; OAuth, transfer HTTP, storage, attachment
+      // registration and native publication receipt all use their real owners.
+      const transfers = createPublicMcpTransfers(db, oauth, p.api, p.storage, { agentSession: {
+        authorize: async (actor, session, taskId, _write, queryDb) => {
+          if (!ownerAvailable || actor.grant.id !== p.grantId || actor.grant.agentId !== f.agentId
+            || session !== sessionId || taskId !== f.issueId) throw new Error("work session unavailable");
+          if (pauseRepair && queryDb) { pauseRepair = false; repairLocked(); await released; }
+          return { agentId: f.agentId, runId: ownerRunId };
+        },
+      } });
+      const app = express(); app.use(transfers.router);
+      const bytes = Buffer.from("expired live publication repair");
+      const args = { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(), filename: "repair.txt",
+        contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+      const upload = await transfers.getUploadUrl(principal, args, sessionId);
+      const put = async (value: unknown) => {
+        const url = new URL(String(value));
+        return request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
+          .timeout({ response: 5000, deadline: 10_000 });
+      };
+      const initial = await put(upload.url);
+      expect(initial.status).toBe(200);
+      const uploadId = String(upload.uploadId), attachmentId = initial.body.attachment.id;
+      const current = async () => (await db.select().from(tables.mcpAttachmentUploads)
+        .where(eq(tables.mcpAttachmentUploads.id, uploadId)))[0];
+      const loseReceipt = async () => {
+        const [run] = await db.select().from(tables.heartbeatRuns).where(eq(tables.heartbeatRuns.id, f.runId));
+        const receipts = { ...run.resultJson?.semanticToolReceipts as Record<string, unknown> };
+        delete receipts[`external-upload:${uploadId}`];
+        await db.update(tables.heartbeatRuns).set({ resultJson: { ...run.resultJson, semanticToolReceipts: receipts } })
+          .where(eq(tables.heartbeatRuns.id, f.runId));
+        await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0) })
+          .where(eq(tables.mcpAttachmentUploads.id, uploadId));
+      };
+      await loseReceipt();
+      const expired = await current();
+      expect((await put(upload.url)).status).toBe(403);
+      const repair = await transfers.getUploadUrl(principal, args, sessionId);
+      const renewed = await current();
+      expect(renewed).toEqual({ ...expired, expiresAt: expect.any(Date) });
+      expect(renewed.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      const repaired = await put(repair.url);
+      expect(repaired.status).toBe(200);
+      expect(repaired.body).toMatchObject({ attachment: { id: attachmentId }, publication: {
+        source: "authenticated_upload", evidenceRef: `deliverable:${attachmentId}` } });
+      expect(await transfers.getUploadUrl(principal, args, sessionId)).toMatchObject({ status: "completed",
+        attachment: { id: attachmentId }, publication: repaired.body.publication });
+      expect(await current()).toEqual(renewed);
+      expect(await db.select().from(tables.issueAttachments).where(eq(tables.issueAttachments.issueId, f.issueId))).toHaveLength(1);
+      await loseReceipt();
+      const beforeDenied = await current();
+      ownerAvailable = false;
+      await expect(transfers.getUploadUrl(principal, args, sessionId)).rejects.toThrow("work session unavailable");
+      expect(await current()).toEqual(beforeDenied);
+      ownerAvailable = true;
+      ownerRunId = randomUUID();
+      await expect(transfers.getUploadUrl(principal, args, sessionId)).rejects.toThrow();
+      expect(await current()).toEqual(beforeDenied);
+      ownerRunId = f.runId;
+      await db.update(tables.mcpAttachmentUploads).set({ cleanedAt: new Date(), cleanupVerifiedAt: new Date() })
+        .where(eq(tables.mcpAttachmentUploads.id, uploadId));
+      const contradictory = await current();
+      await expect(transfers.getUploadUrl(principal, args, sessionId)).rejects.toThrow();
+      expect(await current()).toEqual(contradictory);
+      expect((await put(repair.url)).status).toBe(403);
+      await db.update(tables.mcpAttachmentUploads).set({ cleanedAt: null, cleanupVerifiedAt: null })
+        .where(eq(tables.mcpAttachmentUploads.id, uploadId));
+      // Deletion owns metadata/cleanup settlement. Overlap it with the locked
+      // repair to prove renewal cannot revive a pointer or recreate its bytes.
+      pauseRepair = true;
+      const repairing = transfers.getUploadUrl(principal, args, sessionId);
+      await locked;
+      const deleting = p.api(board, "DELETE", `/attachments/${attachmentId}`);
+      let overlappingRepair: Awaited<typeof repairing>;
+      try {
+        await vi.waitFor(async () => expect(await p.storage.headObject(f.companyId, renewed.objectKey)).toEqual({ exists: false }),
+          { timeout: 5000, interval: 20 });
+      } finally {
+        releaseRepair();
+        [overlappingRepair] = await Promise.all([repairing, deleting]);
+      }
+      const deleted = await current();
+      expect(deleted).toMatchObject({ attachmentId, cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
+      await expect(transfers.getUploadUrl(principal, args, sessionId)).rejects.toThrow();
+      expect(await current()).toEqual(deleted);
+      expect((await put(repair.url)).status).toBe(403);
+      expect((await put(overlappingRepair.url)).status).toBe(403);
+      expect(await p.storage.headObject(f.companyId, deleted.objectKey)).toEqual({ exists: false });
     } finally { await p.cleanup(); }
   }, 60_000);
 
