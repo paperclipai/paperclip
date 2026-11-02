@@ -1099,6 +1099,41 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(result?.status).toBe("cancelled");
   });
 
+  it("retries routine recovery after company lock contention instead of dropping the candidate", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId, assigneeAgentId: coderId, prefix, issueNumber: 915, withExecutionRun: true,
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const input = {
+      issue: routineIssue,
+      previousStatus: "in_progress" as const,
+      latestRun: {
+        id: randomUUID(), agentId: coderId, status: "failed",
+        error: "adapter connection refused", errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    };
+    const editorDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    await editorDb.transaction(async (tx) => {
+      await tx.select({ id: companies.id }).from(companies)
+        .where(eq(companies.id, companyId)).for("update");
+      // A rejected check remains in the recovery worker's retry queue; null
+      // would remove it without a future deadline or notification.
+      await expect(recovery.escalateStrandedAssignedIssue(input)).rejects.toThrow(
+        "Routine recovery deferred: company row is locked",
+      );
+      const [preserved] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+      expect(preserved?.status).toBe("in_progress");
+      expect(preserved?.executionRunId).toBe(routineIssue.executionRunId);
+    });
+    const result = await recovery.escalateStrandedAssignedIssue(input);
+    expect(result?.status).toBe("cancelled");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments).toHaveLength(1);
+  });
+
   it("takes the project lock before the issue lock so it cannot deadlock with a project edit (GH #9201)", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     const routineIssue = await seedRoutineExecutionIssue({

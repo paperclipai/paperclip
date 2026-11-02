@@ -4340,13 +4340,14 @@ export function recoveryService(
           eq(routines.id, originRoutineId),
         )).for("share").then((rows) => rows[0] ?? null);
         // A company pause/archive can already hold this row before cascading
-        // to routines. Do not wait in the reverse order: leave this candidate
-        // untouched for a later sweep. Once acquired, keep eligibility stable
+        // to routines. Do not wait in the reverse order: reject this attempt
+        // so the recovery worker retains the candidate with its retry backoff.
+        // Once acquired, keep eligibility stable
         // until cancellation commits.
         const lockedCompany = await tx.select({ id: companies.id }).from(companies).where(
           eq(companies.id, input.issue.companyId),
         ).for("share", { skipLocked: true }).then((rows) => rows[0] ?? null);
-        if (!lockedCompany) return null;
+        if (!lockedCompany) throw new Error("Routine recovery deferred: company row is locked");
         // The project row comes next, still before the issue row: a project
         // edit locks the project and then rewrites its issues, so reading the
         // project after the issue (inside `routineExecutionWillFireAgain`)
