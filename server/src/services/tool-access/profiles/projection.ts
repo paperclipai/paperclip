@@ -128,22 +128,18 @@ export function summarizeProfile(input: {
   catalog: ProfileCatalogEntry[];
   agentIds: string[];
 }): ToolProfileSummary {
-  const includes = input.entries.filter((entry) => entry.effect === "include");
-  const excludes = input.entries.filter((entry) => entry.effect === "exclude");
+  const included = profileCatalogMatcher(input.entries.filter((entry) => entry.effect === "include"));
+  const excluded = profileCatalogMatcher(input.entries.filter((entry) => entry.effect === "exclude"));
   const allowedCatalogIds = new Set<string>();
   const allowedApplicationIds = new Set<string>();
   const excludedCatalogIds = new Set<string>();
 
   for (const catalogEntry of input.catalog) {
-    const excluded = excludes.some((entry) =>
-      profileEntryMatchesCatalog(entry, catalogEntry),
-    );
-    if (excluded) excludedCatalogIds.add(catalogEntry.id);
-    if (excluded) continue;
-    const included = includes.some((entry) =>
-      profileEntryMatchesCatalog(entry, catalogEntry),
-    );
-    if (input.profile.defaultAction === "allow" || included) {
+    if (excluded(catalogEntry)) {
+      excludedCatalogIds.add(catalogEntry.id);
+      continue;
+    }
+    if (input.profile.defaultAction === "allow" || included(catalogEntry)) {
       allowedCatalogIds.add(catalogEntry.id);
       if (catalogEntry.applicationId)
         allowedApplicationIds.add(catalogEntry.applicationId);

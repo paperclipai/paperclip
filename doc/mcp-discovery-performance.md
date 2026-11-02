@@ -106,3 +106,35 @@ Catalog payload memory and policy-matching CPU still grow with the catalog.
 The measurements do not establish a safe production heap limit or the share of
 active installations affected. Verify restart bursts and sustained traffic on the
 actual deployment before reducing its temporary heap allowance.
+
+## Profile selector matching
+
+Effective profile resolution and profile summaries index each profile's include
+and exclude selectors once per decision. Catalog rows then use exact set
+membership checks for application, connection, catalog entry, tool name, and
+risk level. Exclusions still take precedence within a profile; effective profiles
+still contribute the union of their allowed tools. Null application selectors
+retain their exact-match behavior.
+
+These indexes live only for the current computation. Each resolver call still
+reads current company-scoped bindings, profiles, and rules. Query counts and
+returned database rows are unchanged. This reduces JavaScript matching work when
+a profile selects many individual tools; it does not cache authorization or
+remove the runtime assignment digest check.
+
+For a real PostgreSQL comparison, save `projection.ts` and `resolution.ts` from
+the baseline commit beside their current versions as `.baseline-projection.ts`
+and `.baseline-resolution.ts`. Change only the baseline resolver's projection
+import to `./.baseline-projection.js`. Then run from `server/`:
+
+```sh
+node --import tsx scripts/benchmark-tool-profile-matching.ts --baseline "$PWD/src/services/tool-access/profiles/.baseline-resolution.ts"
+```
+
+Remove the two baseline files afterward. The probe uses 1,890 catalog tools,
+1,575 individual include/exclude rules, one effective profile, and 12 agents. It
+checks full assignment-result equality, warms both versions, and alternates
+seven samples of ten resolutions. It reports actual query and returned-row
+counts, process CPU, and elapsed time. The installation dependency returns an
+empty list for this fixture, which has no installed connections. It does not
+measure provider work, whole-run latency, or hosted performance.
