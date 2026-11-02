@@ -273,6 +273,10 @@ For native OpenCode with assigned connections, inspect the provider tool surface
 on both local and sandbox execution. It should contain bounded assigned-tool
 search/call schemas. Confirm the search description states the 1–20 page limit
 and default of 5. Follow `nextOffset` to inspect later pages.
+Repeat discovery with empty and whitespace-only `schemaTool` values, including
+`schemaOffset: 0`, and confirm it still returns searchable tools. An unknown
+schema reference or a positive schema offset without a reference must explain
+how to correct the call.
 Discover an allowed tool, call its returned alias, revoke
 its grant, and confirm discovery and execution enforce that revocation. Repeat
 in planning/ask mode with a write tool and confirm denial. The controller must
