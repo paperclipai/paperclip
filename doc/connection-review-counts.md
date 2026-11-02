@@ -77,3 +77,19 @@ instrumentation and inflated CPU. That run was discarded; the results above come
 from a fresh alternating run with byte accounting outside timing. Initial HTTP
 fixtures lacked agent membership/management grants and correctly received 403;
 the accepted fixture supplies both and retains revocation denial checks.
+
+The built static UI was also exercised in Chromium against an owned local-trusted
+server and disposable PostgreSQL. The connection Permissions page showed Review 3,
+issued the scoped count request, and made no company attention request. After
+resolving requests and clearing quarantines, reload removed the badge. An archived
+connection returned zero counts. This browser path uses board authority; separate
+authenticated HTTP fixtures prove delegated agent authority. The first ad hoc
+browser launcher omitted required decision-service options and failed at startup;
+adding the standard no-op wake callback allowed the same journey to pass. No
+product behavior was changed to recover that harness setup failure.
+
+Required local recursive typecheck and full build passed. The first sandboxed
+typecheck could not open the tsx IPC socket; the escalated rerun passed. Greptile
+identified an invalid resolved-request fixture label (`denied`); it was corrected
+to the declared `rejected` status. This preserves the non-pending exclusion that
+the differential test verifies.

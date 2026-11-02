@@ -37,7 +37,7 @@ describe("connection review counts on PostgreSQL", () => {
     expect(await compare(f.connection.id)).toEqual(zero);
     await db.update(toolConnections).set({ status: "active" }).where(eq(toolConnections.id, f.connection.id));
     expect(await compare(f.connection.id)).toEqual({ pendingActionRequestCount: 2, quarantinedCatalogEntryCount: 3 });
-    await db.update(toolActionRequests).set({ status: "denied" }).where(eq(toolActionRequests.companyId, f.company.id));
+    await db.update(toolActionRequests).set({ status: "rejected" }).where(eq(toolActionRequests.companyId, f.company.id));
     await db.update(toolCatalogEntries).set({ status: "active" }).where(and(eq(toolCatalogEntries.companyId, f.company.id), eq(toolCatalogEntries.status, "quarantined")));
     expect(await compare(f.connection.id)).toEqual(zero);
     expect(await compare(f.sibling.id)).toEqual(zero); // unhealthy-only remains a zero badge
