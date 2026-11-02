@@ -5,7 +5,7 @@ import { agentApiKeys, agents, budgetPolicies, chatDeliveries, chatEndpoints, co
   companyTransferRuns, connectionEventDeliveries, createDb, heartbeatRuns, issues,
   routineTriggers, routines, toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 const now = Date.UTC(2026, 10, 2);
@@ -25,7 +25,7 @@ if (!support.supported) console.warn(`Skipping idle sleep diagnostics Postgres t
     db = createDb(externalDatabaseUrl ?? temporary!.connectionString, { maxConnections: 4 });
   }, 60_000);
   afterEach(async () => { await db.execute(sql`TRUNCATE companies, plugins, environments CASCADE`); });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   const read = (scheduled = false, monitors = false) => readIdleSleepSafety(db, hold, () => now, ownerId,
     localNone, undefined, undefined, scheduled, monitors, { collectDiagnostics: true });

@@ -20,6 +20,7 @@ import type {
   IssueHarnessKind,
   IssueOriginKind,
   IssuePriority,
+  IssueDisplayStatus,
   IssueReviewPolicy,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
@@ -270,6 +271,7 @@ export interface AcceptedPlanDecompositionSummary extends AcceptedPlanDecomposit
 }
 
 export interface IssueRelationIssueSummary {
+  displayStatus?: IssueDisplayStatus;
   id: string;
   identifier: string | null;
   title: string;
@@ -850,12 +852,14 @@ export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export type IssueSummary = Pick<
   Issue,
-  "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt"
+  "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "updatedAt"
 > & {
   externalConversationState: "active" | "waiting" | null;
 };
 
 export interface Issue {
+  /** Read-only status for task presentation; never use it for execution admission. */
+  displayStatus?: IssueDisplayStatus;
   /** Collection projections omit task bodies and cannot seed the detail cache. */
   listProjection?: "index" | "rows";
   statusVersion?: number;
@@ -985,6 +989,7 @@ export type CompactIssue = Pick<
   | "privacyRootIssueId"
   | "title"
   | "description"
+  | "displayStatus"
   | "status"
   | "workMode"
   | "priority"

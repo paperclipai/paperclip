@@ -1,3 +1,4 @@
+import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
@@ -1072,15 +1073,21 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       && !(nativeExecution && "access" in nativeExecution.workspace && nativeExecution.workspace.access === "none")) {
       input.effects.onProviderResourceDisposition("stop_and_retain");
     }
-    await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
-      .update(heartbeatRuns)
-      .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
-      .where(
-        and(
-          eq(heartbeatRuns.id, run.id),
-          eq(heartbeatRuns.status, "running"),
-        ),
-      ), { companyId: run.companyId });
+    try {
+      await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
+        .update(heartbeatRuns)
+        .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        ), { companyId: run.companyId });
+    } catch (writeError) {
+      if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
+      throw writeError;
+    }
+    if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
     if (
       issueRef &&
       context.resumeSessionGoalHeartbeat === true &&

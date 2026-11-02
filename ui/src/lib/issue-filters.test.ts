@@ -69,6 +69,14 @@ function makeExternalObjectSummary(overrides: Partial<ExternalObjectSummary> = {
   };
 }
 
+it("separates monitored waits from In Progress in task filters", () => {
+  const monitored = makeIssue({ id: "waiting", status: "in_progress", displayStatus: "monitoring" });
+  const working = makeIssue({ id: "working", status: "in_progress" });
+  const rows = [monitored, working];
+  expect(applyIssueFilters(rows, { ...defaultIssueFilterState, statuses: ["monitoring"] }).map(row => row.id)).toEqual(["waiting"]);
+  expect(applyIssueFilters(rows, { ...defaultIssueFilterState, statuses: ["in_progress"] }).map(row => row.id)).toEqual(["working"]);
+});
+
 describe("issue filters", () => {
   it("hides automation by default while an opt-in includes every creation source", () => {
     const issues = [makeIssue({ id: "human", createdByUserId: "person" }), makeIssue({ id: "agent", createdByAgentId: "agent" }), makeIssue({ id: "routine", originKind: "routine_execution", createdByUserId: "person" }), makeIssue({ id: "system" })];
