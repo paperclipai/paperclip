@@ -15,6 +15,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
+import { readIssueSortParams } from "../lib/issue-sort";
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -428,6 +429,20 @@ describe("IssuesList", () => {
         sort={{ sortField: "created", sortDir: "asc" }} onSortChange={onSortChange} onUpdateIssue={() => undefined} />
     </TooltipProvider></QueryClientProvider>));
     await waitForAssertion(() => expect(titles()[0]).toContain("Alpha older task"));
+    await act(() => root.unmount()); queryClient.clear();
+  });
+
+  it.each([true, false])("honors a Coordinator task-ID link in the other task interfaces (streamlined=%s)", async (enableStreamlinedUi) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi });
+    const issues = [
+      createIssue({ id: "ten", identifier: "PAP-10", title: "Alpha", updatedAt: new Date("2026-03-01") }),
+      createIssue({ id: "two", identifier: "PAP-2", title: "Zulu", updatedAt: new Date("2026-01-01") }),
+    ];
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={issues} agents={[]} projects={[]} viewStateKey="cross-interface-sort"
+      sort={readIssueSortParams(new URLSearchParams("sortField=taskId&sortDir=asc"))}
+      onUpdateIssue={() => undefined} />, container);
+    await waitForAssertion(() => expect([...container.querySelectorAll('[data-testid="issue-row"]')].map(row => row.textContent))
+      .toEqual([expect.stringContaining("Zulu"), expect.stringContaining("Alpha")]));
     await act(() => root.unmount()); queryClient.clear();
   });
 

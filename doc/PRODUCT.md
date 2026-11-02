@@ -145,6 +145,9 @@ link opens `/issues?view=all&originKind=routine_execution&sortField=created&sort
 selected. The URL retains the selection across reloads and task navigation.
 Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
 saved collection sorting, and the routines link opens newest-created tasks first.
+Shared sort links work across Coordinator, Streamlined UI, and Classic UI, including
+sort fields without a visible column in the selected interface. Search relevance
+and board-column membership keep their existing server order.
 Search and pagination apply the routine origin filter on the server. Creation-time
 sorting also runs before pagination, with task ID as a stable tie-breaker.
 

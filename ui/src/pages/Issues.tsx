@@ -200,6 +200,7 @@ function OrganizationIssues({
   }, [searchOverride, urlSearch, location.search]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, "paperclip:issues-view");
   const sort = useMemo(() => readIssueSortParams(searchParams), [searchParams]);
+  const includeBlockedBy = sort?.sortField === "workflow";
   const serverSortField = sort?.sortField === "created" ? "created" : "updated";
   const serverSortDir = sort?.sortField === "created" || sort?.sortField === "updated" ? sort.sortDir : "desc";
   const handleSortChange = useCallback((nextSort: IssueSort) => {
@@ -306,6 +307,7 @@ function OrganizationIssues({
       issuePageSize,
       serverSortField,
       serverSortDir,
+      includeBlockedBy,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       projection: streamlinedUiEnabled ? "index" : undefined,
@@ -318,6 +320,7 @@ function OrganizationIssues({
       offset: pageParam,
       sortField: serverSortField,
       sortDir: serverSortDir,
+      includeBlockedBy: includeBlockedBy || undefined,
     }, { signal }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
@@ -379,7 +382,7 @@ function OrganizationIssues({
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={{ participantAgentId, workspaceId: workspaceIdFilter, originKind, sortField: serverSortField, sortDir: serverSortDir }}
+      searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy ? { participantAgentId, workspaceId: workspaceIdFilter, originKind, ...(includeBlockedBy ? { includeBlockedBy: true } : {}) } : undefined}
     />
   );
 }

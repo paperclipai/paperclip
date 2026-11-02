@@ -21,13 +21,14 @@ vi.mock("../api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("../api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: async () => [] } }));
 vi.mock("../hooks/useUpdateIssueMutation", () => ({ useUpdateIssueMutation: () => ({ mutate: vi.fn() }) }));
-vi.mock("../components/IssuesList", () => ({ IssuesList: ({ issues, routineTasksOnly, onRoutineTasksOnlyChange, onLoadMoreIssues, sort, onSortChange }: {
+vi.mock("../components/IssuesList", () => ({ IssuesList: ({ issues, routineTasksOnly, onRoutineTasksOnlyChange, onLoadMoreIssues, sort, onSortChange, searchFilters }: {
+  searchFilters?: Record<string, unknown>;
   sort?: IssueSort; onSortChange: (sort: IssueSort) => void; issues: Issue[]; routineTasksOnly: boolean; onRoutineTasksOnlyChange: (checked: boolean) => void; onLoadMoreIssues: () => void;
 }) => <>
   <label><input type="checkbox" checked={routineTasksOnly} onChange={event => onRoutineTasksOnlyChange(event.target.checked)} />Routine tasks</label>
   <button onClick={onLoadMoreIssues}>Load more</button>
   <button data-sort onClick={() => onSortChange({ sortField: "created", sortDir: sort?.sortDir === "desc" ? "asc" : "desc" })}>Created</button>
-  <output>{issues.map(issue => issue.id).join(",")}</output>
+  <output data-search-filters={JSON.stringify(searchFilters)}>{issues.map(issue => issue.id).join(",")}</output>
   <p>{useLocation().search}</p>
 </> }));
 
@@ -69,6 +70,9 @@ it("restores URL sorting, resets paging on a sort click, and preserves routine f
     flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc&participantAgentId=agent"]}><Issues /></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("desc-99"));
     expect(mocks.list.mock.lastCall?.[1]).toMatchObject({ sortField: "created", sortDir: "desc", originKind: "routine_execution", offset: 0 });
+    expect(JSON.parse(host.querySelector("output")!.getAttribute("data-search-filters")!)).toEqual({
+      originKind: "routine_execution", participantAgentId: "agent",
+    });
     flushSync(() => host.querySelector("button")!.click());
     await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("desc-100"));
     flushSync(() => host.querySelector<HTMLButtonElement>("[data-sort]")!.click());

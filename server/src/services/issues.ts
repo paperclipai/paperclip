@@ -8198,6 +8198,9 @@ export function issueService(db: Db) {
       if (filters?.sortField === "id" && filters.attention) {
         throw unprocessable("ID ordering is not supported for blocked attention lists");
       }
+      if (filters?.sortField === "created" && filters.attention) {
+        throw unprocessable("Creation-time ordering is not supported for blocked attention lists");
+      }
       if (filters?.afterId !== undefined && (
         !isUuidLike(filters.afterId) || filters.sortField !== "id" ||
         filters.sortDir !== "asc" || (filters.offset ?? 0) !== 0

@@ -56,6 +56,13 @@ describeEmbeddedPostgres("issue list status query parsing", () => {
   it("returns every status when ?status is absent", async () => {
     expect(await listStatuses("")).toEqual(["done", "in_progress", "todo"]);
   });
+  it.each(["", "&view=compact", "&view=compact&projection=index"])("rejects unsupported creation sorting for blocked attention (%s)", async projection => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Blocked sorting");
+    await request(routeApp(ctx.db, actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?attention=blocked&sortField=created&sortDir=asc${projection}`)
+      .expect(422);
+  });
+
   it.each(["", "&view=compact", "&view=compact&projection=index"])("sorts routine tasks by creation time before pagination (%s)", async (projection) => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Creation sorting");
     const ids = Array.from({ length: 4 }, (_, index) => `00000000-0000-4000-8000-00000000000${index}`);

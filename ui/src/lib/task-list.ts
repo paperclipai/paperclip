@@ -1,3 +1,5 @@
+import { readIssueSortParams, type IssueSort, type IssueSortField } from "./issue-sort";
+
 /** Ordered columns and token references shared by the proposed header and rows. */
 export const taskListColumns = [
   { id: "task", label: "Task", width: "var(--task-list-column-task)" },
@@ -13,7 +15,7 @@ export const taskListColumns = [
 
 export type TaskListColumnId = (typeof taskListColumns)[number]["id"];
 export type TaskListSort<Column extends string = TaskListColumnId> = { column: Column; direction: "ascending" | "descending" };
-export type TaskListOrder = TaskListSort | TaskListSort<"created">;
+export type TaskListOrder = TaskListSort<TaskListColumnId | "created" | "status" | "priority" | "workflow">;
 export type TaskListSortValue = string | number | null | undefined;
 export const allTaskListColumns: readonly TaskListColumnId[] = taskListColumns.map(column => column.id);
 export const defaultTaskListColumns: readonly TaskListColumnId[] = ["task", "taskId", "lastUpdated"];
@@ -55,13 +57,29 @@ export function sortTaskListItems<T, Column extends TaskListOrder["column"]>(ite
   });
 }
 
-/** Match the task table's column sorts to the addressable collection sort. */
+const issueSortFieldByColumn = {
+  task: "title", lastUpdated: "updated", taskId: "taskId", createdBy: "createdBy",
+  assignee: "assignee", project: "project", parentTask: "parentTask", tags: "tags",
+  worktree: "worktree", created: "created", status: "status", priority: "priority", workflow: "workflow",
+} as const satisfies Record<TaskListOrder["column"], IssueSortField>;
+
+export function isTaskListColumnSort(sort: TaskListOrder): sort is TaskListSort {
+  return allTaskListColumns.some(column => column === sort.column);
+}
+
+export function taskListOrderToIssueSort(sort: TaskListOrder): IssueSort {
+  return { sortField: issueSortFieldByColumn[sort.column], sortDir: sort.direction === "ascending" ? "asc" : "desc" };
+}
+
+/** Read shared links even when the selected field has no visible table column. */
 export function readTaskListSortParams(params: URLSearchParams): TaskListOrder | undefined {
-  const field = params.get("sortField");
-  const column = field === "updated" ? "lastUpdated" : field === "title" ? "task" : field;
-  if (column !== "created" && !allTaskListColumns.includes(column as TaskListColumnId)) return undefined;
+  const sort = readIssueSortParams(params);
+  if (!sort) return undefined;
+  const column = (Object.keys(issueSortFieldByColumn) as TaskListOrder["column"][])
+    .find(column => issueSortFieldByColumn[column] === sort.sortField);
+  if (!column) return undefined;
   return {
-    column: column as TaskListOrder["column"],
-    direction: params.get("sortDir") === "asc" ? "ascending" : "descending",
+    column,
+    direction: sort.sortDir === "asc" ? "ascending" : "descending",
   };
 }

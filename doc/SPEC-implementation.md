@@ -2716,6 +2716,10 @@ link opens `/issues?view=all&originKind=routine_execution&sortField=created&sort
 selected. The URL retains the selection across reloads and task navigation.
 Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
 saved collection sorting, and the routines link opens newest-created tasks first.
+Shared sort links retain their order across task interfaces. Workflow sorting
+requests the existing authorized dependency-edge projection. Search and board
+queries keep their existing server order. Blocked-attention lists reject
+`sortField=created` with `422` because they use their own activity order.
 Search and pagination apply the routine origin filter on the server. Creation-time
 sorting also runs before pagination, with task ID as a stable tie-breaker.
 

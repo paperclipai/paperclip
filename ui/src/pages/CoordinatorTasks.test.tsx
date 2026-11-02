@@ -86,6 +86,16 @@ describe("Coordinator tasks using the proposed table", () => {
     });
   });
 
+  it("keeps search relevance when a shared link selects creation order", async () => {
+    await mount("/issues?sortField=created&sortDir=asc&q=report");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ q: "report", sortField: "updated", sortDir: "desc" }), expect.anything());
+  });
+
+  it("requests dependency edges for shared workflow links", async () => {
+    await mount("/issues?sortField=workflow&sortDir=asc");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ includeBlockedBy: true }), expect.anything());
+  });
+
   it("filters pending-decision batches by routine origin without treating excluded IDs as missing", async () => {
     const routine = createIssue({ id: "routine-decision", companyId: "company", parentId: null, originKind: "routine_execution", title: "Routine decision" });
     mocks.attention.mockResolvedValue({ taskIds: [pending.id, routine.id] });
