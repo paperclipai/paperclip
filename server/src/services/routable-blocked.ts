@@ -5,6 +5,7 @@ export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
 type RoutableBlockedIssue = {
   id: string;
   status: string;
+  assigneeAgentId?: string | null;
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
@@ -40,6 +41,13 @@ export async function deliverAgentUnblockNotification(input: {
 
   const owner = issue.unblockDescriptor.owner;
   if (owner === "board" || !("agentId" in owner)) return false;
+
+  // An agent parking its own issue names itself. Waking it at once only re-runs it to find nothing
+  // has changed, so count it as notified and let comments and finished children wake it as usual.
+  if (issue.assigneeAgentId && owner.agentId === issue.assigneeAgentId) {
+    await input.markNotified((input.now ?? (() => new Date()))());
+    return false;
+  }
 
   await input.wakeup(owner.agentId, {
     source: "automation",

@@ -9,10 +9,12 @@ const agentId = "00000000-0000-4000-8000-000000000001";
 function blockedIssue(input: {
   transitionAt?: Date | null;
   notifiedAt?: Date | null;
+  assigneeAgentId?: string | null;
 } = {}) {
   return {
     id: "00000000-0000-4000-8000-000000000002",
     status: "blocked",
+    assigneeAgentId: input.assigneeAgentId ?? null,
     unblockDescriptor: { owner: { agentId }, action: "Review the finding" } as const,
     blockedTransitionAt: input.transitionAt === undefined
       ? new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1)
@@ -36,6 +38,33 @@ describe("routable blocked notifications", () => {
       payload: { issueId: issue.id, action: "Review the finding" },
     }));
     expect(markNotified).toHaveBeenCalledWith(now);
+  });
+
+  it("does not wake an agent that names itself on its own issue, and records it as notified", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+    const now = new Date("2026-11-02T12:00:00.000Z");
+
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue({ assigneeAgentId: agentId }),
+      wakeup,
+      markNotified,
+      now: () => now,
+    })).resolves.toBe(false);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(markNotified).toHaveBeenCalledWith(now);
+  });
+
+  it("still wakes the named agent when another agent holds the issue", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue({ assigneeAgentId: "00000000-0000-4000-8000-000000000003" }),
+      wakeup,
+      markNotified,
+    })).resolves.toBe(true);
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ reason: "issue_unblock_requested" }));
   });
 
   it("leaves pre-existing blocked issues untouched", async () => {
