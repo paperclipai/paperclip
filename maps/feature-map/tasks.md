@@ -53,6 +53,11 @@ the personal workspace preference. Verify explicit history expansion afterward.
 ### `new-task`
 
 Use New task from the global launcher, task list, or project task view.
+Images selected, pasted, or dropped into either the new-task or thread composer
+appear as equal-size rounded thumbnails above the text. Check mixed image/file
+selections, removal, thread upload failure/retry, and restored thread drafts.
+The Storybook new-task and add-menu suites have desktop and mobile image examples;
+their upload and submit boundaries are fixtures.
 
 ### `task-list`
 

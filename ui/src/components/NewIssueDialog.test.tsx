@@ -1840,6 +1840,34 @@ describe("NewIssueDialog", () => {
     } finally { storage?.mockRestore(); act(() => root.unmount()); queryClient.clear(); }
   });
 
+  it("shows staged images above the text and uploads only retained images when creating", async () => {
+    dialogState.newIssueDefaults = { title: "Review image references" };
+    mockIssuesApi.create.mockResolvedValue({ id: "image-task", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      await typeTextareaValue(editor, "Keep this caption");
+      const retained = new File(["image"], "reference.png", { type: "image/png" });
+      const removed = new File(["other"], "removed.png", { type: "image/png" });
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [retained, removed] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      await flush();
+      const row = container.querySelector('[data-testid="task-chat-composer-images"]')!;
+      expect(row.querySelectorAll("img")).toHaveLength(2);
+      expect(row.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(editor.value).toBe("Keep this caption");
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Remove removed.png"]')!.click(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "image-task", retained);
+      expect(mockIssuesApi.create.mock.calls[0][1].description).toBe("Keep this caption");
+      expect(mockAssetsApi.uploadImage).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it.each(["create", "upload"] as const)("stops old staged work after an account change during %s", async (during) => {
     dialogState.newIssueDefaults = { title: "Account A in-flight task" };
     let finish!: (value: unknown) => void;

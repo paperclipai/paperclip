@@ -13,7 +13,6 @@ import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { assetsApi } from "../api/assets";
 import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { useNavigate } from "../lib/router";
@@ -1329,7 +1328,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     [orderedProjects],
   );
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
-  const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
+  const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment" && !file.file.type.startsWith("image/"));
 
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
@@ -1467,11 +1466,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
               placeholder="Describe a task…"
               mobile={isMobile}
               mentions={mentionOptions}
-              onImageUpload={async (file) => {
-                if (!effectiveCompanyId) throw new Error("No organization selected");
-                const asset = await assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
-                return asset.contentPath;
-              }}
               companyId={effectiveCompanyId}
               enableReassign
               reassignOptions={assigneeOptions}
@@ -1512,6 +1506,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                 submitLabel: isSubIssueMode ? "Create sub-task" : "Create task",
                 canSubmitWithoutBody: Boolean(title.trim()),
                 onSelectFiles: stageFiles,
+                images: stagedFiles.filter(item => item.file.type.startsWith("image/")).map(item => ({ id: item.id, name: item.file.name, file: item.file })),
+                onRemoveImage: removeStagedFile,
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
@@ -1591,7 +1587,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                           : "The selected worktree is no longer available. Choose another worktree or start a new one."}
                       </p>
                     ) : null}
-                    {stagedFiles.length > 0 ? (
+                    {stagedDocuments.length > 0 || stagedAttachments.length > 0 ? (
                       <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
                         {stagedDocuments.length > 0 ? (
                           <div className="space-y-2">
