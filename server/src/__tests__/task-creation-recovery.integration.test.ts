@@ -164,17 +164,20 @@ it.each(["mismatched", "unknown"])("retains ownership when inspection is %s", as
   } finally { f.context.finish(); }
 });
 
-it("does not substitute a generic cleanup envelope for a contextual task identity", async () => {
+it.each(["pending", "needs_reconciliation"] as const)("does not substitute a generic cleanup envelope for a contextual task identity: %s", async initialState => {
   const f = await fixture();
   try {
     await expect(f.start()).rejects.toThrow(); await f.request(); f.legacyCleanup();
+    if (initialState === "needs_reconciliation") await db.update(sandboxCreationOperations).set({ state: initialState, nextAttemptAt: new Date(0) })
+      .where(eq(sandboxCreationOperations.id, (await f.creation()).id));
     await f.runtime.flushDeferredOrphanCleanups();
     const swept = await f.recovery.sweepPendingCleanupLeases({ backoffMs: 0 });
     const cancelled = await f.control.cancelRunInternal(f.runId, "Startup cleanup retry").then(() => true, () => false);
     const operation = await f.creation(), lease = operation.leaseId ? await environmentService(db).getLeaseById(operation.leaseId) : null;
     expect({ state: operation.state, cleanupLease: operation.leaseId, destroyed: swept.destroyed,
       stoppedReceipt: lease ? hasRemoteTerminationReceipt(lease) : false, cancelled, ownerRetained: (await f.owner()).leaseOwner !== null })
-      .toEqual({ state: "pending", cleanupLease: null, destroyed: 0, stoppedReceipt: false, cancelled: false, ownerRetained: true });
+      .toEqual({ state: initialState, cleanupLease: null, destroyed: 0, stoppedReceipt: false, cancelled: false, ownerRetained: true });
+    expect(operation.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
   } finally { f.context.finish(); }
 });
 
