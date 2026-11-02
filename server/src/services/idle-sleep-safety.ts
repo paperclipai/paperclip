@@ -1,3 +1,4 @@
+import type { ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { readIdleIncomingWakeProof, incomingWakeWorkQuery, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
 import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
 import { idleWorkSnapshot } from "./task-admission.js";
@@ -28,6 +29,7 @@ export interface IdleSleepSafety {
   scheduledWake?: ScheduledWake;
   diagnostics?: IdleSleepDiagnostics;
   incomingWake?: IdleIncomingWakeCapability;
+  apiWakeAdmission?: ApiWakeAdmission;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
@@ -301,7 +303,8 @@ export async function readIdleSleepSafety(
     if (backgroundWork === "none" && diagnostics?.checks.some(check =>
       check.state === "unknown" || check.state === "not_checked")) backgroundWork = "unknown";
     return { version: backgroundWork === "none" && incomingProof ? 3 : backgroundWork === "none" && scheduledWake ? 2 : 1, backgroundWork,
-      ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability } : {}),
+      ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability,
+        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}) } : {}),
       ...(backgroundWork === "none" && scheduledWake ? { scheduledWake } : {}),
       ...(diagnostics ? { diagnostics } : {}) };
   };

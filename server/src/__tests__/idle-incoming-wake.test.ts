@@ -1,3 +1,4 @@
+import { matchesApiWakeAdmission } from "../services/idle-api-wake-admission.js";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -81,7 +82,8 @@ const capability: IdleIncomingWakeCapability = {
   version: 1,
   ownerId,
   generation: "a".repeat(64),
-  routes: ["tenant-api-http-v1"],
+  apiKeyProof: { version: 1 as const, challenge: "c".repeat(64) },
+  routes: ["tenant-api-http-v2"],
 };
 function verified(incomingWake = capability): VerifiedIdleCapabilities {
   const pair = generateKeyPairSync("ed25519"),
@@ -135,6 +137,7 @@ function verified(incomingWake = capability): VerifiedIdleCapabilities {
       db = createDb(url ?? database!.connectionString, { maxConnections: 4 });
       await db.execute(sql`SELECT 1 FROM agent_api_keys LIMIT 1`); // Coordinator migrates the fresh fixture; no embedded fallback.
       vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "fixture-only");
+      vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "fixture-stack");
       setCloudRuntimeConfigSnapshot({ version: 1, revision: 0, config: null });
     });
     afterAll(async () => {
@@ -238,6 +241,17 @@ function verified(incomingWake = capability): VerifiedIdleCapabilities {
         backgroundWork: "none",
         incomingWake: capability,
       });
+      const receipt = (await read(verified())).apiWakeAdmission!;
+      expect(receipt.keys).toHaveLength(2);
+      expect(matchesApiWakeAdmission(receipt, { stackId: "fixture-stack", token: f.board.token, now })).toBe(true);
+      expect(matchesApiWakeAdmission(receipt, { stackId: "fixture-stack", token: f.agent.token, now })).toBe(true);
+      const serialized = JSON.stringify(receipt);
+      expect(serialized).not.toContain(f.board.token);
+      expect(serialized).not.toContain(f.agent.token);
+      await db.update(boardApiKeys).set({ revokedAt: new Date() }).where(eq(boardApiKeys.id, f.board.id));
+      const changedReceipt = (await read(verified())).apiWakeAdmission!;
+      expect(changedReceipt.generation).not.toBe(receipt.generation);
+      expect(matchesApiWakeAdmission(changedReceipt, { stackId: "fixture-stack", token: f.board.token, now })).toBe(false);
       expect(
         (await read(verified({ ...capability, ownerId: randomUUID() })))
           .backgroundWork,
@@ -456,7 +470,7 @@ function verified(incomingWake = capability): VerifiedIdleCapabilities {
       const stop = registerConnectionEventWake(db, () => {});
       const botCap: IdleIncomingWakeCapability = {
         ...capability,
-        routes: ["github-broker-events-v1", "tenant-api-http-v1"],
+        routes: ["github-broker-events-v1", "tenant-api-http-v2"],
         githubBroker: {
           instanceId: "fixture-instance",
           bindingsFingerprint: incomingWakeFingerprint([botTuple]),
@@ -534,7 +548,7 @@ function verified(incomingWake = capability): VerifiedIdleCapabilities {
       vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL", "http://127.0.0.1");
       const brokerCap: IdleIncomingWakeCapability = {
         ...capability,
-        routes: ["github-broker-events-v1", "tenant-api-http-v1"],
+        routes: ["github-broker-events-v1", "tenant-api-http-v2"],
         githubBroker: {
           instanceId: "fixture-instance",
           bindingsFingerprint: incomingWakeFingerprint([

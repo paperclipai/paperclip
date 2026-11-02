@@ -1177,7 +1177,7 @@ describe("instance settings routes", () => {
       const publicJwk = { ...keyPair.publicKey.export({ format: "jwk" }), kid: "idle-route-test", alg: "EdDSA", use: "sig" };
       const ownerId = "d0b833f4-4098-42de-8420-1907f3aa4895";
       const catalog = {
-        incomingWake: { version: 1, ownerId, generation: "a".repeat(64), routes: ["tenant-api-http-v1"] },
+        incomingWake: { version: 1, ownerId, generation: "a".repeat(64), apiKeyProof: { version: 1, challenge: "c".repeat(64) }, routes: ["tenant-api-http-v2"] },
         deadlineCatalog: "domain_deadlines_v1",
       };
       const path = `/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`;

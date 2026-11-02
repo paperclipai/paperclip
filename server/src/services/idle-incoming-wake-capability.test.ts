@@ -12,7 +12,8 @@ const incoming = {
   version: 1 as const,
   ownerId: "00000000-0000-4000-8000-000000000001",
   generation: "a".repeat(64),
-  routes: ["tenant-api-http-v1" as const],
+  apiKeyProof: { version: 1 as const, challenge: "c".repeat(64) },
+  routes: ["tenant-api-http-v2" as const],
 };
 const invalid: unknown[] = [
   null,
@@ -24,7 +25,7 @@ const invalid: unknown[] = [
   {
     incomingWake: {
       ...incoming,
-      routes: ["tenant-api-http-v1", "tenant-api-http-v1"],
+      routes: ["tenant-api-http-v2", "tenant-api-http-v2"],
     },
   },
   { incomingWake: { ...incoming, ownerId: "other" } },
@@ -52,7 +53,7 @@ describe("signed idle capabilities", () => {
     };
     const parsed = parseIdleCapabilities(source);
     source.incomingWake.routes.length = 0;
-    expect(parsed.incomingWake?.routes).toEqual(["tenant-api-http-v1"]);
+    expect(parsed.incomingWake?.routes).toEqual(["tenant-api-http-v2"]);
     expect(Object.isFrozen(parsed.incomingWake?.routes)).toBe(true);
   });
   it("binds capability to signed stack, action and replay fence", () => {

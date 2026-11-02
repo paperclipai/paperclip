@@ -156,3 +156,29 @@ describe("bounded incoming wake owner projection", () => {
     expect(sql.select).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("bounded API admission projection", () => {
+  const api = { incomingWake: { version: 1, ownerId, generation: "a".repeat(64), routes: ["tenant-api-http-v2"],
+    apiKeyProof: { version: 1, challenge: "c".repeat(64) } } } as VerifiedIdleCapabilities;
+  it.each(["overflow", "duplicate", "malformed"])("refuses complete eligibility for %s key state", async kind => {
+    vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "fixture-stack");
+    const row = { keyHash: "a".repeat(64), expiresAt: null };
+    const rows = kind === "overflow" ? Array.from({ length: 1001 }, () => row)
+      : kind === "duplicate" ? [row, row] : [{ keyHash: "not-a-digest", expiresAt: null }];
+    const execute = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce(rows);
+    await expect(readIdleIncomingWakeProof({ execute } as unknown as Pick<Db, "select" | "execute">,
+      { ownerId, receiverOwner: {}, capabilities: api })).rejects.toThrow();
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+  it("has an explicit complete empty-key receipt and shares the inspection time budget", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "fixture-stack");
+    const execute = vi.fn(async () => []);
+    const proof = await readIdleIncomingWakeProof({ execute } as unknown as Pick<Db, "select" | "execute">,
+      { ownerId, receiverOwner: {}, capabilities: api });
+    expect(proof?.apiWakeAdmission?.keys).toEqual([]);
+    let clock = 0;
+    const slow = vi.fn(async () => { clock += 1100; return []; });
+    await expect(readIdleIncomingWakeProof({ execute: slow } as unknown as Pick<Db, "select" | "execute">,
+      { ownerId, receiverOwner: {}, capabilities: api, now: () => clock })).rejects.toThrow(/budget exhausted/);
+  });
+});

@@ -1,3 +1,4 @@
+import { apiWakeFingerprint, createApiWakeAdmission, type ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import {
@@ -17,6 +18,7 @@ import { hasConnectionEventWakeReceiver } from "./connection-event-wake.js";
 
 export interface IdleIncomingWakeProof {
   capability: IdleIncomingWakeCapability;
+  apiWakeAdmission?: ApiWakeAdmission;
   connectionIds: string[];
   endpointIds: string[];
   /** A broker enrollment cannot discharge these credential continuity obligations. */
@@ -59,7 +61,6 @@ export async function readIdleIncomingWakeProof(
     endpointIds: [],
     requiredContinuityConnectionIds: [],
   };
-  if (!capability.routes.includes("github-broker-events-v1")) return proof;
   const monotonic = input.now ?? (() => performance.now());
   const started = monotonic();
   const remaining = () => {
@@ -75,6 +76,28 @@ export async function readIdleIncomingWakeProof(
     );
     remaining();
   };
+  if (capability.routes.includes("tenant-api-http-v2")) {
+    const stackId = process.env.PAPERCLIP_CLOUD_STACK_ID;
+    if (!stackId || !capability.apiKeyProof) throw new Error("API wake challenge is missing");
+    await beforeRead();
+    const rows = await tx.execute<{ keyHash: string; expiresAt: Date | null }>(sql`
+      SELECT key_hash AS "keyHash", NULL::timestamptz AS "expiresAt" FROM agent_api_keys WHERE revoked_at IS NULL
+      UNION ALL SELECT key_hash AS "keyHash", expires_at AS "expiresAt" FROM board_api_keys
+        WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) LIMIT 1001`);
+    remaining();
+    if (rows.length > 1000) throw new Error("Too many API keys to certify wake admission");
+    proof.apiWakeAdmission = createApiWakeAdmission({ stackId, ownerId: input.ownerId,
+      capabilityGeneration: capability.generation, challenge: capability.apiKeyProof.challenge,
+      keys: rows.map(row => ({ fingerprint: apiWakeFingerprint({ stackId, ownerId: input.ownerId,
+        challenge: capability.apiKeyProof!.challenge, keyHash: row.keyHash }),
+        expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString() })),
+    });
+  }
+  if (!capability.routes.includes("github-broker-events-v1")) {
+    await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+    remaining();
+    return proof;
+  }
   const broker = capability.githubBroker;
   const config = paperclipCloudConnectorConfigFromEnv();
   if (
@@ -264,11 +287,11 @@ export function incomingWakeWorkQuery(
     ) ?? []),
   ];
   if (reason === "agent_api_keys")
-    return proof?.capability.routes.includes("tenant-api-http-v1")
+    return proof?.apiWakeAdmission !== undefined
       ? sql`SELECT 1 WHERE false`
       : sql`SELECT 1 FROM agent_api_keys WHERE revoked_at IS NULL`;
   if (reason === "board_api_keys")
-    return proof?.capability.routes.includes("tenant-api-http-v1")
+    return proof?.apiWakeAdmission !== undefined
       ? sql`SELECT 1 WHERE false`
       : sql`SELECT 1 FROM board_api_keys WHERE revoked_at IS NULL
     AND (expires_at IS NULL OR expires_at > now())`;
