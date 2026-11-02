@@ -1496,6 +1496,46 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { fetchSpy.mockRestore(); }
   });
 
+  it("reads provider identity only for an authorized credential and preserves connected state when profile access is denied", async () => {
+    const owner = "identity-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "identity-selected-secret");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } }));
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = req.header("x-test-anonymous") ? { type: "none" }
+        : req.header("x-agent") ? { type: "agent", agentId, companyId, companyIds: [companyId], onBehalfOfUserId: owner }
+          : { type: "board", source: "session", userId: req.header("x-test-user") ?? owner, companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const url = `/api/companies/${companyId}/ai-connections/${account.connectionId}/identity?grantId=${account.grantId}`;
+    try {
+      const result = await request(app).get(url);
+      expect(result.status).toBe(200);
+      expect(result.headers["cache-control"]).toBe("no-store");
+      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" });
+      expect(fetchSpy).toHaveBeenCalledWith("https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
+      for (const value of ["identity-selected-secret", "private-account-id", "private-org-id"]) expect(JSON.stringify(result.body)).not.toContain(value);
+      fetchSpy.mockReset();
+      expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
+      expect((await request(app).get(url.replace(companyId, otherCompanyId))).status).toBe(403);
+      expect((await request(app).get(url.replace(account.grantId, randomUUID()))).status).toBe(404);
+      expect((await request(app).get(url).set("x-test-anonymous", "yes")).status).toBe(401);
+      expect((await request(app).get(url).set("x-agent", "yes")).status).toBe(403);
+      expect((await request(app).get(url.replace(account.connectionId, "invalid"))).status).toBe(404);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockResolvedValue(Response.json({ error: "private-provider-error" }, { status: 403 }));
+      expect((await request(app).get(url)).body).toMatchObject({ status: "unavailable", errorCode: "permission_denied", accountLabel: null });
+      expect((await service.list(companyId, owner)).find(item => item.id === account.connectionId)?.status).toBe("connected");
+      fetchSpy.mockClear();
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+      expect((await request(app).get(url)).body).toMatchObject({ status: "unavailable", errorCode: "connection_unavailable" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally { fetchSpy.mockRestore(); }
+  });
+
   it("uses the same usage probe for shared accounts across legacy and native runner selections", async () => {
     const account = await service.save(companyId, "alice", { provider: "anthropic", method: "subscription", ownership: "shared", name: "Shared usage account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "shared-usage-secret");
     const selected = { provider: "anthropic", method: "subscription", mode: "shared", ...account } as const;

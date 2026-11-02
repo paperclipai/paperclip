@@ -66,7 +66,7 @@ import type {
   ToolConnectionCreateCapabilities,
   ToolAppMetadataPreflightResult,
 } from "@paperclipai/shared";
-import { api, detachInflightGet } from "./client";
+import { api, detachInflightGet, type RequestOptions } from "./client";
 
 /**
  * Tools & Access API client (Phase 6, PAP-10389).
@@ -367,8 +367,8 @@ export const toolsApi = {
   // --- Identity grants (PAP-17835): who a connection acts as. The response
   // carries server-computed capabilities and the audience member directory, so
   // the UI never rebuilds the permission matrix from `membershipRole`.
-  listConnectionGrants: (connectionId: string) =>
-    api.get<ConnectionGrantsResponse>(`/tool-connections/${connectionId}/grants`),
+  listConnectionGrants: (connectionId: string, options?: RequestOptions) =>
+    api.get<ConnectionGrantsResponse>(`/tool-connections/${connectionId}/grants`, { timeoutMs: 15_000, ...options }),
   createConnectionGrantDelegation: (connectionId: string, grantId: string, agentId: string) =>
     api.post<ConnectionGrantDelegation>(
       `/tool-connections/${connectionId}/grants/${grantId}/delegations`,

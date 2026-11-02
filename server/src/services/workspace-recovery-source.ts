@@ -25,6 +25,10 @@ export class WorkspaceSourceInspectionLimit extends Error {}
 
 export function workspaceRecoverySourceEligible(includeCompleted = false) {
   const actionEligible = sql`(${issueRecoveryActions.status} in ('active', 'escalated') or
+    (${issueRecoveryActions.status} = 'cancelled'
+      and ${inArray(issueRecoveryActions.cause, workspaceExportCauses)}
+      and jsonb_typeof(${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}') = 'array'
+      and ${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}' <> '[]'::jsonb) or
     (${issueRecoveryActions.status} = 'resolved' and (
       (${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'
         and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'

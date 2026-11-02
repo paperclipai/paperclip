@@ -9,7 +9,7 @@ import {
   heartbeatRuns, issues, issueWatchdogs, issueThreadInteractions, issueQuestionResponseDeliveries,
   projects, projectWorkspaces, routines, routineTriggers, toolApplications, toolConnections, workspaceOperations, executionWorkspaceRuntimeLeases, type Db,
 } from "@paperclipai/db";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
 
@@ -175,7 +175,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     db = createDb(externalDatabaseUrl ?? database.connectionString, { maxConnections: 4 });
   }, 60_000);
   afterEach(async () => { await db.execute(sql`TRUNCATE companies, plugins, environments CASCADE`); });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   const read = () => readIdleSleepSafety(db, owned, () => now, ownerId, emptyLocal);
   const readScheduled = () => readIdleSleepSafety(db, owned, () => now, ownerId, emptyLocal, undefined, undefined, true);
@@ -204,6 +204,19 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
       if (previous === undefined) delete process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED;
       else process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = previous;
     }
+  });
+
+  it("keeps a failed startup intent awake after its local worker counter settles", async () => {
+    const f = await seed();
+    expect(await read()).toEqual(none);
+    const finish = beginIdleTrackedWork();
+    await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativePhase: "observed",
+      runnerProfileJson: { nativeStartupContext: { contextId: randomUUID(), deadlineAtMs: now - 1 } } }).where(eq(heartbeatRuns.id, f.runId));
+    finish();
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(await read()).toEqual(present);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await read()).toEqual(none);
   });
 
   it("retains committed budget stop intent until its exact generation is delivered", async () => {

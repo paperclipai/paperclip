@@ -38,6 +38,7 @@ import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
+import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -623,22 +624,41 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
+      const startupContext = readNativeStartupContext(row.run, row.coordinator);
+      const startupRetryAt = startupContext ? new Date(Math.max(now.getTime() + 30_000,
+        startupContext.deadlineAtMs, row.coordinator.leaseExpiresAt?.getTime() ?? 0)) : undefined;
       if (input.liveRunExecutions?.has(row.run.id)) {
         return {
           kind: "awaiting_evidence",
           runId: row.run.id,
           reason: "current_controller_preparing",
+          ...(startupRetryAt ? { retryAt: startupRetryAt } : {}),
         } as const;
+      }
+      if (startupContext) {
+        if (await promoteNativeStartupCleanup(tx as unknown as Db, row.run, row.coordinator, now)) {
+          return { kind: "blocked", runId: row.run.id, reason: "native_startup_cleanup_pending" } as const;
+        }
+        return { kind: "awaiting_evidence", runId: row.run.id, reason: "native_startup_cleanup_pending", retryAt: startupRetryAt } as const;
       }
 
       const profile = row.run.runnerProfileJson ?? {};
       const storedRemoteWorkspace = remoteWorkspaceRunReferenceSchema.safeParse(profile.remoteWorkspace);
       const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync)
         ?? (storedRemoteWorkspace.success ? storedRemoteWorkspace.data : null);
-      const [pluginTask] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      const [pluginTask] = await tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
         eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.heartbeatRunId, row.run.id),
         sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
       )).orderBy(desc(environmentLeases.createdAt)).limit(1);
+      const startup = pluginTask?.metadata?.runnerTaskStartup as { contextId?: unknown; deadlineAtMs?: unknown; runId?: unknown } | undefined;
+      if (startup?.runId === row.run.id && typeof startup.contextId === "string" &&
+          Number.isSafeInteger(startup.deadlineAtMs) && Number(startup.deadlineAtMs) <= now.getTime() &&
+          !row.run.sessionIdAfter && row.coordinator.leaseOwner && row.coordinator.leaseExpiresAt && row.coordinator.leaseExpiresAt <= now) {
+        await requestNativeStartupCleanup(tx as unknown as Db, { companyId: row.run.companyId, agentId: row.run.agentId,
+          runId: row.run.id, contextId: startup.contextId, deadlineAtMs: Number(startup.deadlineAtMs),
+          leaseOwner: row.coordinator.leaseOwner, requiresPreparationStop: true, leaseId: pluginTask!.id }, { publish: false });
+        return { kind: "blocked", runId: row.run.id, reason: "native_startup_cleanup_pending" } as const;
+      }
       const remoteSandbox = profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null;
       const remoteProcess = remoteSandbox || !!pluginTask;
       const durableAuthority = (remoteWorkspace || pluginTask) && await hasNativeRunnerCheckpoint(tx, {

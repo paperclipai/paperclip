@@ -148,6 +148,15 @@ agent/company/user, waiting state, no checkout, active run, accounting, monitor
 or pending delivery, and a finished wake for every accepted user-comment outbox
 entry. An idle presentation state does not exempt an ordinary runnable task.
 
+Sandbox creation records in `pending` or `needs_reconciliation` remain blockers,
+including manual uncertainty after company deletion. The pending-only catalog
+omission predates the new startup-cleanup recovery path; no complete-instance
+unsafe sleep outcome has been demonstrated. A late identified resource transfers
+its obligation to the exact cleanup lease, and only the owning successful cleanup
+can resolve that creation. Settled startup cancellations without a committed
+native result manifest remain conservatively blocked by native finalization;
+their cleanup marker alone is not a history exemption.
+
 Workspace runtime inspection also reads the owner's process-local resource
 state. Startup reconstruction must succeed before that probe becomes quiet.
 Adopted/live services, provisioning/control/replacement work, live allocation
