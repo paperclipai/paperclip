@@ -52,7 +52,21 @@ vi.mock("../api/agents", () => ({
   },
 }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { get, events: async () => [], workspaceOperations: async () => [], list: async () => [] } }));
-vi.mock("../api/client", () => ({ api: { get: async () => [] } }));
+vi.mock("../api/client", () => ({
+  api: {
+    get: async (url?: string) => {
+      if (typeof url === "string" && url.includes("/budgets/overview")) {
+        return {
+          policies: [],
+          activeIncidents: [],
+          pausedAgentCount: 0,
+          pausedProjectCount: 0,
+        };
+      }
+      return [];
+    },
+  },
+}));
 vi.mock("../api/resourceMemberships", () => ({
   resourceMembershipsApi: {
     listMine: async () => ({
@@ -123,6 +137,12 @@ it.each([
     agentStarredAt: {},
     documentStarredAt: {},
     updatedAt: null,
+  });
+  client.setQueryData(queryKeys.budgets.overview("company-1"), {
+    policies: [],
+    activeIncidents: [],
+    pausedAgentCount: 0,
+    pausedProjectCount: 0,
   });
   const element = document.createElement("div"); document.body.append(element);
   const root = createRoot(element);
