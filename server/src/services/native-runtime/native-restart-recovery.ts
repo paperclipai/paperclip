@@ -38,7 +38,7 @@ import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
-import { requestNativeStartupCleanup } from "./native-startup-cleanup.js";
+import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -624,12 +624,22 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
+      const startupContext = readNativeStartupContext(row.run, row.coordinator);
+      const startupRetryAt = startupContext ? new Date(Math.max(now.getTime() + 30_000,
+        startupContext.deadlineAtMs, row.coordinator.leaseExpiresAt?.getTime() ?? 0)) : undefined;
       if (input.liveRunExecutions?.has(row.run.id)) {
         return {
           kind: "awaiting_evidence",
           runId: row.run.id,
           reason: "current_controller_preparing",
+          ...(startupRetryAt ? { retryAt: startupRetryAt } : {}),
         } as const;
+      }
+      if (startupContext) {
+        if (await promoteNativeStartupCleanup(tx as unknown as Db, row.run, row.coordinator, now)) {
+          return { kind: "blocked", runId: row.run.id, reason: "native_startup_cleanup_pending" } as const;
+        }
+        return { kind: "awaiting_evidence", runId: row.run.id, reason: "native_startup_cleanup_pending", retryAt: startupRetryAt } as const;
       }
 
       const profile = row.run.runnerProfileJson ?? {};

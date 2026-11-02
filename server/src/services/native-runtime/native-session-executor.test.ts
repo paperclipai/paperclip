@@ -12150,7 +12150,7 @@ describe("runnerd provider runtime wiring", () => {
     };
   }
 
-  it.each(["reuse", "unsettled-describe"])("admits a warm follow-up after resuming a suspended plugin session (%s)", async mode => {
+  it.each(["reuse", "unsettled-describe", "claim-delay", "claim-expired", "claim-rollback", "unsupported", "fallback-clear-failed", "fallback-clear-expired", "fallback-clear-stopped"])("owns retained plugin startup through %s", async mode => {
     const first = { ...scopedNativeExecution(`plugin-cold-then-warm-${mode}`),
       schema: "paperclip.native-execution-input.v5" as const, executionMode: "default" as const,
       provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const },
@@ -12172,7 +12172,23 @@ describe("runnerd provider runtime wiring", () => {
     await mkdir(home);
     await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
     let finishWorker = () => {};
+    let finishFallbackClear = () => {};
+    let fallbackStop: Promise<unknown> | undefined;
+    let capturedContext: NativeExecutionContext | undefined;
+    const claimUpdates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const savedContext = () => {
+      const profile = claimUpdates.find(update => update.table === heartbeatRuns && update.values.runnerProfileJson)?.values.runnerProfileJson;
+      if (!profile) return undefined;
+      const query = new PgDialect().sqlToQuery(profile as SQL);
+      const value = query.params.find(value => typeof value === "string" && value.includes('"nativeStartupContext"'));
+      return value ? JSON.parse(String(value)).nativeStartupContext : undefined;
+    };
     const task = vi.fn(async (operation: any, options?: { executionContext?: NativeExecutionContext }) => {
+      if (operation.kind === "describe" && options?.executionContext) {
+        capturedContext = options.executionContext;
+        if (mode.startsWith("claim-") || mode === "unsupported") expect(savedContext()).toMatchObject({
+          contextId: capturedContext.id, deadlineAtMs: capturedContext.deadlineAtMs, leaseId: "followup-lease" });
+      }
       if (mode === "unsettled-describe" && operation.kind === "describe" && options?.executionContext) {
         finishWorker = options.executionContext.trackWorker();
         throw new Error("worker caller timeout");
@@ -12181,7 +12197,7 @@ describe("runnerd provider runtime wiring", () => {
       ? { kind: "state", taskId: "replacement-task", state: { ...durableRunnerState(identity, "suspended"),
           outbox: [], pendingTerminalDelivery: null } }
       : { kind: "description", taskId: "replacement-task", launchPreparationVersion: 1,
-          projectAuthCheckVersion: 1, warmTaskVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+          ...(mode === "claim-delay" ? { executionContextVersion: 1 } : {}), projectAuthCheckVersion: 1, warmTaskVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
     });
     const resumed = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-resumed` } };
     const followup = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-followup` } };
@@ -12203,7 +12219,7 @@ describe("runnerd provider runtime wiring", () => {
     const options = { runnerInstanceId: identity.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
       managedAiCredentialHome: home, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account" };
     const dbFor = (current: NativeExecutionInput, previous: NativeExecutionInput) => {
-      const db = leaseDb(current);
+      const db = leaseDb(current, {}, {}, current === followup ? claimUpdates : []);
       const select = db.select.bind(db);
       db.select = ((fields?: Record<string, unknown>) => fields?.status === heartbeatRuns.status
         && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson ? priorNativeRunDb(previous).select(fields as never)
@@ -12214,12 +12230,15 @@ describe("runnerd provider runtime wiring", () => {
       remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
       sandboxLeaseAcquisition: { outcome: "replacement" as const, providerLeaseId: "replacement-task" } };
     let budget: ReturnType<typeof vi.spyOn> | undefined;
+    const finish = NativeExecutionContext.prototype.finish;
+    const finished: NativeExecutionContext[] = [];
+    const finishSpy = vi.spyOn(NativeExecutionContext.prototype, "finish").mockImplementation(function (this: NativeExecutionContext) { finished.push(this); finish.call(this); });
     try {
       await expect(executePaperclipNativeSession({ ...options, execution: resumed, db: dbFor(resumed, first),
         runnerExecutionTarget: target as never })).resolves.toMatchObject({ exitCode: 0 });
       if (mode === "unsettled-describe") {
         const runtime = await import("../../vendor/paperclip-runner/index.js");
-        budget = vi.spyOn(runtime, "coldAdmissionTimeoutMs").mockReturnValue(10);
+        budget = vi.spyOn(runtime, "coldAdmissionTimeoutMs").mockReturnValue(1_000);
         await expect(executePaperclipNativeSession({ ...options, execution: followup, db: dbFor(followup, resumed),
           runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
             outcome: "resumed", providerLeaseId: "replacement-task" } } as never }))
@@ -12229,9 +12248,69 @@ describe("runnerd provider runtime wiring", () => {
         return;
       }
       const checkpointReads = task.mock.calls.filter(([operation]) => operation.kind === "read_state").length;
-      await expect(executePaperclipNativeSession({ ...options, execution: followup, db: dbFor(followup, resumed),
-        runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
-          outcome: "resumed", providerLeaseId: "replacement-task" } } as never })).resolves.toMatchObject({ exitCode: 0 });
+      const nextDb = dbFor(followup, resumed);
+      const transaction = nextDb.transaction.bind(nextDb);
+      if (mode === "claim-rollback") nextDb.transaction = (async (...args: Parameters<Db["transaction"]>) => {
+        const result = await transaction(...args);
+        if (savedContext()) throw new Error("claim rollback");
+        return result;
+      }) as Db["transaction"];
+      if (mode.startsWith("fallback-clear-")) {
+        const update = nextDb.update.bind(nextDb);
+        nextDb.update = ((table: unknown) => {
+          const builder = update(table as never);
+          return { ...builder, set: (values: Record<string, unknown>) => {
+            if (table === heartbeatRuns && values.runnerProfileJson &&
+                new PgDialect().sqlToQuery(values.runnerProfileJson as SQL).sql.includes("- 'nativeStartupContext'")) {
+              return { where: () => ({ returning: async () => {
+                if (mode === "fallback-clear-failed") return [];
+                if (mode === "fallback-clear-stopped") fallbackStop = cancelNativeSession(followup.binding.runId, "Stop during fallback clear");
+                return new Promise(resolve => { finishFallbackClear = () => resolve([{ id: followup.binding.runId }]); });
+              } }) };
+            }
+            return builder.set(values as never);
+          } };
+        }) as unknown as Db["update"];
+      }
+      if (mode.startsWith("claim-") || mode === "unsupported" || mode.startsWith("fallback-clear-")) {
+        const runtime = await import("../../vendor/paperclip-runner/index.js");
+        budget = vi.spyOn(runtime, "coldAdmissionTimeoutMs").mockReturnValue(mode === "claim-expired" ? 10 : mode === "fallback-clear-expired" ? 250 : 1_000);
+      }
+      const following = executePaperclipNativeSession({ ...options, execution: followup, db: nextDb,
+        onExecutionLeaseAcquired: async () => {
+          if (mode === "claim-delay" || mode === "claim-expired") {
+            expect(savedContext()).toMatchObject({ runId: followup.binding.runId, leaseId: "followup-lease" });
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        }, runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
+          outcome: "resumed", providerLeaseId: "replacement-task" } } as never });
+      if (mode === "claim-expired" || mode === "claim-rollback") {
+        await expect(following).rejects.toThrow(mode === "claim-expired" ? "native_execution_startup_expired" : "claim rollback");
+        expect(capturedContext).toBeUndefined();
+        expect(finished).toContainEqual(expect.objectContaining({ id: savedContext().contextId }));
+        expect(finished.find(context => context.id === savedContext().contextId)?.active).toBe(false);
+        expect(state.execute).toHaveBeenCalledOnce();
+        return;
+      }
+      if (mode === "fallback-clear-expired" || mode === "fallback-clear-stopped") {
+        await expect(following).rejects.toThrow(mode === "fallback-clear-expired" ? "native_execution_startup_expired" : "native_cancellation_pending_recovery");
+        expect(state.execute).toHaveBeenCalledOnce();
+        expect(rebind).not.toHaveBeenCalled();
+        return;
+      }
+      if (mode === "fallback-clear-failed") {
+        await expect(following).rejects.toThrow("Native startup fallback lost authority");
+        expect(state.execute).toHaveBeenCalledOnce();
+        expect(rebind).not.toHaveBeenCalled();
+        return;
+      }
+      await expect(following).resolves.toMatchObject({ exitCode: 0 });
+      const clears = claimUpdates.filter(update => update.table === heartbeatRuns && update.values.runnerProfileJson &&
+        new PgDialect().sqlToQuery(update.values.runnerProfileJson as SQL).sql.includes("- 'nativeStartupContext'"));
+      expect(clears).toHaveLength(mode === "claim-delay" ? 0 : 1);
+      if (mode === "claim-delay") expect(state.execute.mock.calls[1]![0].startup).toMatchObject({
+        id: savedContext().contextId, deadlineAtMs: savedContext().deadlineAtMs });
+      if (mode === "unsupported") expect(capturedContext?.active).toBe(false);
       expect(state.execute.mock.calls[1]![0].existingSession).toBe(session);
       expect(rebind).toHaveBeenCalledOnce();
       expect(session.close).not.toHaveBeenCalled();
@@ -12239,6 +12318,9 @@ describe("runnerd provider runtime wiring", () => {
       expect(existsSync(receiptPath)).toBe(false);
     } finally {
       finishWorker();
+      finishFallbackClear();
+      await fallbackStop;
+      finishSpy.mockRestore();
       budget?.mockRestore();
       owner.mockRestore();
       resume.mockRestore();

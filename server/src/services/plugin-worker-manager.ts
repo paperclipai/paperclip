@@ -3119,6 +3119,11 @@ export function createPluginWorkerHandle(
     // Read-only requests cannot continue in an exited worker. Do not infer
     // completion for execute/cleanup calls, whose provider work may outlive it.
     for (const finish of [...unsettledInspections]) finish();
+    for (const [id, observer] of observedResults) {
+      if (observer.response) continue;
+      observedResults.delete(id);
+      observer.finish();
+    }
 
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
     // clear the route one time. The pending pseudo-terminal calls

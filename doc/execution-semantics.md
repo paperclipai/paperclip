@@ -1923,13 +1923,20 @@ in that input and its existing Runner launch requirements. Provider configuratio
 changed after selection apply to later runs. A configuration edit does not hold
 startup open or delay its commit.
 
-This context starts after the existing controller claim and before retained
-session inspection. Its deadline is the smaller of the existing 30-second warm
+For a retained plugin task, this context starts inside the existing controller
+claim after its authority locks and checks. Its 30-second budget includes claim
+commit, retained cleanup, optional attachment staging and accounting setup before
+session inspection. The claim records its exact context, task lease, owner and
+deadline in the existing run profile update. Local retained sessions start the
+context after the claim; their deadline remains the smaller of the 30-second warm
 startup budget and the controller's remaining confirmed ownership budget. Fresh
 launches, checkpoint recovery, Pi and other providers retain their existing
 budgets. Inspection of a warm candidate can discover a stopped task and acquire
 a replacement within this bound. Once Core rejects reuse, the later cold launch
-uses its existing budget. The context adds no database operation to local startup.
+uses its existing budget. Before an unsupported-plugin or incompatible warm
+candidate falls back, Core clears the matching durable context with an ownership
+check; a failed clear prevents fallback. This adds one database response only to
+that remote fallback, and none to compatible warm or local startup.
 
 A compatible plugin receives an optional transient transport projection. It
 contains an attempt ID, an absolute deadline, plugin-owned instance secrets and
@@ -1956,9 +1963,12 @@ stop alone is insufficient. The compatible backend fences later writes to a
 retired physical task; retries allocate a new task ID. Missing proof or an
 unreachable backend leaves visible cleanup pending and automatic retries.
 
-Restart recovery uses the preparation breadcrumb only while the current run has
-no first session checkpoint and the prior controller and context deadlines have
-expired. It queues cleanup rather than replaying a provider. A completed result
+Restart recovery uses the claim breadcrumb only while the current run has no
+first session checkpoint and the prior controller and context deadlines have
+expired. A later preparation breadcrumb requires the stronger preparation-stop
+proof. A failed cleanup-intent write retains the original typed failure and
+rearms the existing restart retry after 30 seconds; the running run continues to
+block idle sleep. Recovery queues cleanup rather than replaying a provider. A completed result
 or a newer owner wins. The existing adopted-authentication and chat-workspace
 ownership holds retain their separate behavior. The startup budget does not bound
 the duration of remote cleanup. Existing Stop receipts and process cleanup still gate

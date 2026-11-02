@@ -59,7 +59,32 @@ async function startWorker(hostHandlers: Record<string, unknown> = {}) {
 }
 
 describe("Core startup responsibility across real worker IPC", () => {
-  it("retains a late acquisition reply through failed recording, duplicate replies, and verified retirement", async () => {
+  it("drops only a dead acquisition reply placeholder while retaining real writes until verified retirement", async () => {
+    let release!: () => void, writing!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), entered = new Promise<void>(resolve => { writing = resolve; });
+    const manager = await startWorker({ "companies.get": async () => { writing(); await gate; return {}; } });
+    const settled = vi.fn(), observe = vi.fn(async () => {});
+    try {
+      const acquisition = manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: { hostWrite: true }, runId: "run", agentId: "agent", adapterType: "paperclip_runner" },
+        10, undefined, settled, "dead-acquire", observe);
+      const rejected = expect(acquisition).rejects.toThrow("timed out");
+      await entered; await rejected;
+      await manager.stopWorker(manifest.id);
+      let drained = false;
+      const draining = manager.drainStartup!("dead-acquire").then(() => { drained = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      release(); await draining;
+      expect(observe).not.toHaveBeenCalled();
+      expect(settled).not.toHaveBeenCalled();
+      await manager.retireStartup!("dead-acquire");
+      expect(settled).toHaveBeenCalledOnce();
+    } finally { release(); await manager.stopAll(); }
+  }, 25_000);
+
+  it.each([false, true])("retains a received acquisition reply through failed recording and retirement (worker exits=%s)", async workerExits => {
     const manager = await startWorker(), settled = vi.fn();
     let release!: () => void, recording!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { recording = resolve; });
@@ -77,6 +102,7 @@ describe("Core startup responsibility across real worker IPC", () => {
       await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce());
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(settled).not.toHaveBeenCalled();
+      if (workerExits) await manager.stopWorker(manifest.id);
       unavailable = false;
       vi.useFakeTimers();
       const failed = manager.retireStartup!("late-acquire").catch(error => error.message);

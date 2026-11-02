@@ -35,6 +35,52 @@ export function readNativeStartupCleanup(run: Pick<Run, "id" | "companyId" | "ag
     ["pending", "complete"].includes(marker.state) ? marker : null;
 }
 
+export function readNativeStartupContext(run: Run,
+  owner: { leaseOwner: string | null; controllerGeneration: number; attempt: number; resultId: string | null }) {
+  const value = run.runnerProfileJson?.nativeStartupContext as { schema?: unknown; companyId?: unknown; agentId?: unknown; runId?: unknown;
+    contextId?: unknown; deadlineAtMs?: unknown; leaseId?: unknown; leaseOwner?: unknown; controllerGeneration?: unknown; attempt?: unknown } | undefined;
+  if (run.runtimeMode !== "native" || run.status !== "running" || run.sessionIdAfter || owner.resultId || isNativeRunnerOwnershipHeld(run) ||
+      !owner.leaseOwner || owner.controllerGeneration < 1 || owner.attempt < 1 || value?.schema !== "paperclip.native-startup-context.v1" ||
+      value.companyId !== run.companyId || value.agentId !== run.agentId || value.runId !== run.id || value.leaseOwner !== owner.leaseOwner ||
+      value.controllerGeneration !== owner.controllerGeneration || value.attempt !== owner.attempt ||
+      typeof value.contextId !== "string" || !value.contextId || typeof value.leaseId !== "string" || !value.leaseId ||
+      !Number.isSafeInteger(value.deadlineAtMs)) return null;
+  return { contextId: value.contextId, leaseId: value.leaseId, deadlineAtMs: Number(value.deadlineAtMs) };
+}
+
+export async function clearNativeStartupContext(db: Db, input: {
+  companyId: string; runId: string; contextId: string; leaseOwner: string; controllerGeneration: number;
+}): Promise<void> {
+  const cleared = await db.update(heartbeatRuns).set({
+    runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'nativeStartupContext'`,
+  }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
+    eq(heartbeatRuns.status, "running"),
+    sql`coalesce(${heartbeatRuns.resultJson}->'nativeStartupCleanup'->>'state', '') != 'pending'`,
+    sql`${heartbeatRuns.runnerProfileJson}->'nativeStartupContext'->>'contextId' = ${input.contextId}`,
+    sql`${heartbeatRuns.runnerProfileJson}->'nativeStartupContext'->>'leaseOwner' = ${input.leaseOwner}`,
+    sql`${heartbeatRuns.runnerProfileJson}->'nativeStartupContext'->>'controllerGeneration' = ${String(input.controllerGeneration)}`,
+    sql`exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${input.runId}
+      and ${nativeRunFinalizations.leaseOwner} = ${input.leaseOwner}
+      and ${nativeRunFinalizations.controllerGeneration} = ${input.controllerGeneration})`,
+  )).returning({ id: heartbeatRuns.id });
+  if (cleared.length !== 1) throw new Error("Native startup fallback lost authority");
+}
+
+export async function promoteNativeStartupCleanup(db: Db, run: Run,
+  owner: { leaseOwner: string | null; leaseExpiresAt: Date | null; controllerGeneration: number; attempt: number; resultId: string | null },
+  now: Date): Promise<boolean> {
+  const startup = readNativeStartupContext(run, owner);
+  if (!startup || startup.deadlineAtMs > now.getTime() || !owner.leaseOwner || !owner.leaseExpiresAt || owner.leaseExpiresAt > now || isNativeRunnerOwnershipHeld(run)) return false;
+  const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.id, startup.leaseId),
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`));
+  if (!lease) return false;
+  const prepared = lease.metadata?.runnerTaskStartup as { contextId?: unknown; runId?: unknown } | undefined;
+  return requestNativeStartupCleanup(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id,
+    ...startup, leaseOwner: owner.leaseOwner,
+    requiresPreparationStop: prepared?.contextId === startup.contextId && prepared.runId === run.id }, { publish: false });
+}
+
 export async function requestNativeStartupCleanup(db: Db, input: {
   companyId: string; agentId: string; runId: string; contextId: string; deadlineAtMs: number; leaseOwner: string;
   requiresPreparationStop: boolean;
@@ -57,7 +103,7 @@ export async function requestNativeStartupCleanup(db: Db, input: {
     if (coordinator.leaseOwner !== input.leaseOwner) return false;
     const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.heartbeatRunId, input.runId), input.leaseId ? eq(environmentLeases.id, input.leaseId) : undefined,
-      sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`));
+      sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`)).for("update");
     if (leases.length !== 1 || !leases[0]!.providerLeaseId) throw new Error("Native startup cleanup lease unavailable");
     const lease = leases[0]!;
     const activity = await persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system",
@@ -67,10 +113,12 @@ export async function requestNativeStartupCleanup(db: Db, input: {
         controllerGeneration: coordinator.controllerGeneration, reason: "startup_worker_unsettled" } });
     if (!activity.activity?.id) throw new Error("Native startup cleanup audit unavailable");
     publication = activity.publication;
+    const preparation = lease.metadata?.runnerTaskStartup as { contextId?: unknown; runId?: unknown } | undefined;
     const marker: NativeStartupCleanup = { schema: "paperclip.native-startup-cleanup.v1", companyId: run.companyId, agentId: run.agentId,
       runId: run.id, contextId: input.contextId, deadlineAtMs: input.deadlineAtMs, leaseOwner: input.leaseOwner,
       controllerGeneration: coordinator.controllerGeneration, attempt: coordinator.attempt, leaseId: lease.id,
-      taskId: lease.providerLeaseId!, requiresPreparationStop: input.requiresPreparationStop, state: "pending", auditId: activity.activity.id };
+      taskId: lease.providerLeaseId!, requiresPreparationStop: input.requiresPreparationStop ||
+        (preparation?.contextId === input.contextId && preparation.runId === run.id), state: "pending", auditId: activity.activity.id };
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.environmentCleanup);
     await tx.update(heartbeatRuns).set({ errorCode: NATIVE_STARTUP_CLEANUP_PENDING,

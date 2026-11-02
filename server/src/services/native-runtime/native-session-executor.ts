@@ -33,7 +33,7 @@ import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
-import { NativeStartupCleanupPendingError } from "./native-startup-cleanup.js";
+import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { coldAdmissionTimeoutMs } from "../../vendor/paperclip-runner/index.js";
 import { applyObservabilityEnvironment, type ProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 import { museRunnerBroker } from "../muse-runner-broker.js";
@@ -8509,6 +8509,7 @@ async function executePaperclipNativeSessionWithinScope(
   const providerPackAdmissionEpoch = randomUUID();
   let providerPackAdmissionSource: NativeProviderPackAdmissionSource | undefined;
   let confirmedLeaseDeadline = 0;
+  let claimedStartupContext: NativeExecutionContext | undefined;
   try {
     attempt = await trace.measure(
       "native.coordinator.claim",
@@ -8660,6 +8661,15 @@ async function executePaperclipNativeSessionWithinScope(
             : coordinator.controllerBootId === controller.bootId
               ? Math.max(1, coordinator.controllerGeneration)
               : coordinator.controllerGeneration + 1;
+          const target = input.runnerExecutionTarget;
+          const retained = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
+          if (!input.restartRecovery && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId &&
+              retained?.pluginTaskId && idleWarmNativeSessionOwnerRunId(input) !== undefined &&
+              (input.execution.provider.kind === "codex" || (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude"))) {
+            claimedStartupContext = new NativeExecutionContext(input.execution, Math.min(executionLeaseTtlMs,
+              coldAdmissionTimeoutMs(input.execution.provider.kind, input.execution.provider.kind === "acpx" ? input.execution.provider.agent : undefined, false)));
+            nativeSessionStartups.get(input.execution.binding.runId)!.executionContext = claimedStartupContext;
+          }
           const leaseNow = new Date();
           confirmedLeaseDeadline = performance.now() + executionLeaseTtlMs;
           const claimed = await tx
@@ -8706,7 +8716,12 @@ async function executePaperclipNativeSessionWithinScope(
             .set({
               nativePhase: "observed",
               nativePhaseUpdatedAt: leaseNow,
-              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(providerPackAdmissionEpoch) })}::jsonb`,
+              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(providerPackAdmissionEpoch),
+                ...(claimedStartupContext ? { nativeStartupContext: { schema: "paperclip.native-startup-context.v1",
+                  companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId, runId: input.execution.binding.runId,
+                  contextId: claimedStartupContext.id, deadlineAtMs: claimedStartupContext.deadlineAtMs, leaseId: target?.kind === "remote" ? target.leaseId : null,
+                  leaseOwner, controllerGeneration: nextControllerGeneration, attempt: nextAttempt } } : {}),
+              })}::jsonb`,
               updatedAt: leaseNow,
             })
             .where(eq(heartbeatRuns.id, coordinator.runId));
@@ -8730,7 +8745,9 @@ async function executePaperclipNativeSessionWithinScope(
                 : cancelNativeSession(input.execution.binding.runId, "native session execution lease lost");
             },
           });
+          claimedStartupContext?.assertOpen();
           await input.onExecutionLeaseAcquired?.();
+          claimedStartupContext?.assertOpen();
           return claimedAttempt;
         }),
       { parentName: "task.prepare" },
@@ -8748,7 +8765,9 @@ async function executePaperclipNativeSessionWithinScope(
       nativeSessionOwnerScope(input.execution, input.runnerExecutionTarget?.environmentId ?? null),
       nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution),
     );
+    claimedStartupContext?.assertOpen();
     if (prepareAfterClaim) input = await prepareAfterClaim();
+    claimedStartupContext?.assertOpen();
     await trace.end(taskPrepareScope);
   } catch (error) {
     await trace.end(taskPrepareScope, { outcome: "failed" });
@@ -9279,12 +9298,24 @@ async function executePaperclipNativeSessionWithinScope(
   let persistedWarmSession: PersistedNativeSession | null | undefined = stagedRestart && !stagedRestart.hasTargetCheckpoint
     ? stagedRestart.checkpoint : undefined;
   let executionContext: NativeExecutionContext | undefined;
+  let claimedStartupContextCleared = false;
+  const finishStartupContextForFallback = async () => {
+    if (claimedStartupContext && !claimedStartupContextCleared) {
+      const context = claimedStartupContext;
+      await context.wait(() => clearNativeStartupContext(input.db, { companyId: input.execution.binding.companyId,
+        runId: input.execution.binding.runId, contextId: context.id, leaseOwner, controllerGeneration }));
+      claimedStartupContextCleared = true;
+    }
+    (executionContext ?? claimedStartupContext)?.finish();
+    executionContext = undefined;
+    startupForAdmission!.executionContext = undefined;
+  };
   if (warmSessionId !== null && warmConfigDigest !== null && !input.restartRecovery) {
     const entry = warmNativeSessions.get(warmSessionId);
     if (entry) {
       if (input.execution.provider.kind === "codex" ||
           (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude")) {
-        executionContext = new NativeExecutionContext(input.execution,
+        executionContext = claimedStartupContext ?? new NativeExecutionContext(input.execution,
           Math.floor(Math.min(coldAdmissionTimeoutMs(input.execution.provider.kind, input.execution.provider.kind === "acpx" ? input.execution.provider.agent : undefined, false),
             startupForAdmission!.executionLeaseRenewal!.remainingMs())));
         startupForAdmission!.executionContext = executionContext;
@@ -9300,11 +9331,7 @@ async function executePaperclipNativeSessionWithinScope(
         if(description.kind !== "description") throw new Error("Plugin Runner description unavailable");
         pluginTaskDescription=description;
         if (executionContext && description.executionContextVersion === 1) executionContext.pluginSupported = true;
-        else if (executionContext) {
-          executionContext.finish();
-          executionContext = undefined;
-          startupForAdmission!.executionContext = undefined;
-        }
+        else if (executionContext) await finishStartupContextForFallback();
       }
       // Old run-scoped environments still require process replacement. A
       // session-owned broker can change run authority without replacing it.
@@ -9335,9 +9362,7 @@ async function executePaperclipNativeSessionWithinScope(
           (input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS ===
             "enabled")
       ) {
-        executionContext?.finish();
-        executionContext = undefined;
-        startupForAdmission!.executionContext = undefined;
+        await finishStartupContextForFallback();
         pluginTaskDescription=undefined;
         const preparedCopy = entry.instructionPreparationRunId === input.execution.binding.runId;
         if (entry.busy && !preparedCopy) throw new Error("native_session_supervisor_busy");
@@ -9400,10 +9425,8 @@ async function executePaperclipNativeSessionWithinScope(
       );
     }
   }
-  if (executionContext && !existingWarmSession) {
-    executionContext.finish();
-    executionContext = undefined;
-    startupForAdmission!.executionContext = undefined;
+  if ((claimedStartupContext && executionContext !== claimedStartupContext) || (executionContext && !existingWarmSession)) {
+    await finishStartupContextForFallback();
   }
   async function resolvePendingGovernedWait() {
     const handoff = await nativeCaseHandoffResult(input.db, { ...input.execution.binding,

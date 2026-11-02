@@ -5,7 +5,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases,
@@ -16,7 +16,7 @@ import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "../services/native-runtime/prepare-native-run.js";
 import {
   acknowledgeNativeStartupCleanup, NATIVE_STARTUP_CLEANUP_PENDING, readNativeStartupCleanup,
-  requestNativeStartupCleanup, verifyNativeStartupCleanup,
+  requestNativeStartupCleanup, verifyNativeStartupCleanup, clearNativeStartupContext,
 } from "../services/native-runtime/native-startup-cleanup.js";
 import { isNativeRunnerOwnershipHeld } from "../services/native-runtime/native-runner-ownership.js";
 import { cancelNativeSession } from "../services/native-runtime/native-session-executor.js";
@@ -95,6 +95,15 @@ describePostgres("durable cleanup after a native startup timeout", () => {
       return resultId;
     };
     return { request, reload, owner, lease, stopReceipt, acceptedResult };
+  }
+
+  async function saveEarlyContext(f: Awaited<ReturnType<typeof fixture>>) {
+    const run = await f.reload(), owner = await f.owner(), lease = await f.lease();
+    const context = { schema: "paperclip.native-startup-context.v1", companyId, agentId, runId: run.id,
+      contextId: f.request.contextId, deadlineAtMs: f.request.deadlineAtMs, leaseId: lease.id,
+      leaseOwner: owner.leaseOwner, controllerGeneration: owner.controllerGeneration, attempt: owner.attempt };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson, nativeStartupContext: context } }).where(eq(heartbeatRuns.id, run.id));
+    return context;
   }
 
   it("keeps ownership until a replacement queued after the first teardown snapshot is verified stopped", async () => {
@@ -321,6 +330,30 @@ rl.on("line",line=>{const m=JSON.parse(line);
     } finally { context.finish(); await manager.stopAll(); }
   });
 
+  it.each([false, true])("verifies an abandoned ephemeral startup without an inactive-owner acknowledgement (receipt=%s)", async stopped => {
+    const prior = process.env.PAPERCLIP_EPHEMERAL_SERVER;
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
+    try {
+      const f = await fixture(true);
+      await requestNativeStartupCleanup(db, f.request);
+      const deps = callbacks(db);
+      deps.verifyStartupCleanup = vi.fn(run => verifyNativeStartupCleanup(db, run, async () => { if (stopped) await f.stopReceipt({}, true); }));
+      const control = createHeartbeatRunControl(db, deps);
+      if (stopped) {
+        expect(await control.cancelRunInternal(f.request.runId, "Startup timeout")).toMatchObject({ status: "cancelled" });
+        expect((await f.owner()).leaseOwner).toBeNull();
+      } else {
+        await expect(control.cancelRunInternal(f.request.runId, "Startup timeout")).rejects.toThrow("Task cleanup is still pending");
+        expect((await f.reload()).status).toBe("running");
+        expect((await f.owner()).leaseOwner).toBe(f.request.leaseOwner);
+      }
+      expect(deps.verifyStartupCleanup).toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
+      else process.env.PAPERCLIP_EPHEMERAL_SERVER = prior;
+    }
+  }, 30_000);
+
   it("terminalizes through assembled run control only after verified cleanup succeeds", async () => {
     const f = await fixture(true);
     await requestNativeStartupCleanup(db, f.request);
@@ -465,4 +498,117 @@ rl.on("line",line=>{const m=JSON.parse(line);
     expect((await f.owner()).resultId).toBe(resultId);
     expect(readNativeStartupCleanup(await f.reload())).toBeNull();
   });
+  it("promotes a pre-capability context before an ordinary deadline after the audited intent write fails", async () => {
+    const f = await fixture();
+    await saveEarlyContext(f);
+    await db.execute(sql`create function reject_startup_intent() returns trigger language plpgsql as $$ begin
+      if new.action = 'native.startup_cleanup_requested' then raise exception 'Startup intent write unavailable'; end if; return new; end $$`);
+    await db.execute(sql`create trigger reject_startup_intent before insert on activity_log for each row execute function reject_startup_intent()`);
+    try { await expect(requestNativeStartupCleanup(db, f.request)).rejects.toThrow(); }
+    finally { await db.execute(sql`drop trigger reject_startup_intent on activity_log`); await db.execute(sql`drop function reject_startup_intent()`); }
+    expect(readNativeStartupCleanup(await f.reload())).toBeNull();
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(nativeRunFinalizations.runId, f.request.runId));
+    await db.update(heartbeatRuns).set({ executionControlDeadlineAt: new Date(Date.now() - 1_000) }).where(eq(heartbeatRuns.id, f.request.runId));
+    await reconcileAbandonedExecutionControl(db);
+    expect(readNativeStartupCleanup(await f.reload())).toMatchObject({ contextId: f.request.contextId, requiresPreparationStop: false, state: "pending" });
+    expect((await f.reload()).status).toBe("running");
+    expect((await f.owner()).leaseOwner).toBe(f.request.leaseOwner);
+    await verifyNativeStartupCleanup(db, await f.reload(), () => f.stopReceipt());
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.request.runId));
+    await acknowledgeNativeStartupCleanup(db, f.request);
+  });
+
+  it.each([false, true])("recovers an early context without replacing stronger preparation proof (prepared=%s)", async prepared => {
+    const f = await fixture();
+    await saveEarlyContext(f);
+    if (prepared) { const lease = await f.lease(); await db.update(environmentLeases).set({ metadata: { ...lease.metadata,
+      runnerTaskStartup: { contextId: f.request.contextId, deadlineAtMs: f.request.deadlineAtMs, runId: f.request.runId } } }).where(eq(environmentLeases.id, lease.id)); }
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(nativeRunFinalizations.runId, f.request.runId));
+    const onClaim = vi.fn();
+    const result = await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.request.runId],
+      controller: { bootId: randomUUID(), pid: process.pid, processStartedAt: new Date() }, onClaim });
+    expect(result).toEqual([{ kind: "blocked", runId: f.request.runId, reason: NATIVE_STARTUP_CLEANUP_PENDING }]);
+    expect(onClaim).not.toHaveBeenCalled();
+    expect(readNativeStartupCleanup(await f.reload())).toMatchObject({ requiresPreparationStop: prepared, state: "pending" });
+    await verifyNativeStartupCleanup(db, await f.reload(), () => f.stopReceipt({}, prepared));
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.request.runId));
+    await acknowledgeNativeStartupCleanup(db, f.request);
+  });
+
+  it.each([false, true])("defers an early context to a concrete owner deadline (locally active=%s)", async active => {
+    const f = await fixture();
+    await saveEarlyContext(f);
+    const owner = await f.owner();
+    const result = await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.request.runId],
+      liveRunExecutions: active ? new Set([f.request.runId]) : undefined,
+      controller: { bootId: randomUUID(), pid: process.pid, processStartedAt: new Date() } });
+    expect(result).toMatchObject([{ kind: "awaiting_evidence", runId: f.request.runId, retryAt: owner.leaseExpiresAt }]);
+    expect(readNativeStartupCleanup(await f.reload())).toBeNull();
+  });
+
+  it("does not turn an early context into cleanup after the current-run checkpoint", async () => {
+    const f = await fixture();
+    await saveEarlyContext(f);
+    await db.update(heartbeatRuns).set({ sessionIdAfter: "current-checkpoint" }).where(eq(heartbeatRuns.id, f.request.runId));
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(nativeRunFinalizations.runId, f.request.runId));
+    await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.request.runId],
+      controller: { bootId: randomUUID(), pid: process.pid, processStartedAt: new Date() } });
+    expect(readNativeStartupCleanup(await f.reload())).toBeNull();
+  });
+
+
+  it("locks the selected lease before choosing the stronger preparation proof", async () => {
+    const f = await fixture(), lease = await f.lease();
+    let changed!: () => void, commit!: () => void;
+    const written = new Promise<void>(resolve => { changed = resolve; });
+    const release = new Promise<void>(resolve => { commit = resolve; });
+    const preparing = db.transaction(async tx => {
+      await tx.update(environmentLeases).set({ metadata: { ...lease.metadata, runnerTaskStartup: {
+        contextId: f.request.contextId, deadlineAtMs: f.request.deadlineAtMs, runId: f.request.runId,
+      } } }).where(eq(environmentLeases.id, lease.id));
+      changed();
+      await release;
+    });
+    await written;
+    const requesting = requestNativeStartupCleanup(db, f.request);
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select query from pg_stat_activity where wait_event_type = 'Lock'
+          and query like 'select%from "environment_leases"%'`);
+        expect(rows.length).toBeGreaterThan(0);
+      });
+    } finally { commit(); }
+    await preparing;
+    await requesting;
+    expect(readNativeStartupCleanup(await f.reload())).toMatchObject({ requiresPreparationStop: true });
+    await expect(verifyNativeStartupCleanup(db, await f.reload(), () => f.stopReceipt())).rejects.toThrow("pending");
+    await verifyNativeStartupCleanup(db, await f.reload(), () => f.stopReceipt({}, true));
+  });
+
+  it("clears only its owned startup context before fallback and leaves no expired cleanup authority", async () => {
+    const f = await fixture();
+    await saveEarlyContext(f);
+    const scope = { companyId, runId: f.request.runId, contextId: f.request.contextId,
+      leaseOwner: f.request.leaseOwner, controllerGeneration: 1 };
+    await expect(clearNativeStartupContext(db, { ...scope, controllerGeneration: 2 })).rejects.toThrow("lost authority");
+    expect((await f.reload()).runnerProfileJson?.nativeStartupContext).toBeDefined();
+    await clearNativeStartupContext(db, scope);
+    expect((await f.reload()).runnerProfileJson?.nativeStartupContext).toBeUndefined();
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(nativeRunFinalizations.runId, f.request.runId));
+    await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.request.runId],
+      controller: { bootId: randomUUID(), pid: process.pid, processStartedAt: new Date() } });
+    expect(readNativeStartupCleanup(await f.reload())).toBeNull();
+  });
+
+  it.each(["cleanup", "terminal"])("does not clear the startup breadcrumb after %s wins", async winner => {
+    const f = await fixture();
+    await saveEarlyContext(f);
+    if (winner === "cleanup") await requestNativeStartupCleanup(db, f.request);
+    else await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.request.runId));
+    await expect(clearNativeStartupContext(db, { companyId, runId: f.request.runId, contextId: f.request.contextId,
+      leaseOwner: f.request.leaseOwner, controllerGeneration: 1 })).rejects.toThrow("lost authority");
+    expect((await f.reload()).runnerProfileJson?.nativeStartupContext).toBeDefined();
+    if (winner === "cleanup") expect(readNativeStartupCleanup(await f.reload())).toMatchObject({ state: "pending" });
+  });
+
 });

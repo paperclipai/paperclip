@@ -24,7 +24,7 @@ import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { NATIVE_STARTUP_CLEANUP_PENDING } from "./native-runtime/native-startup-cleanup.js";
+import { NATIVE_STARTUP_CLEANUP_PENDING, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -164,6 +164,17 @@ export async function reconcileAbandonedExecutionControl(
           )
             return false;
           if (coordinator?.failureCode === NATIVE_STARTUP_CLEANUP_PENDING) return false;
+          const startupContext = coordinator && readNativeStartupContext(run, coordinator);
+          if (startupContext) {
+            if (!await promoteNativeStartupCleanup(tx as unknown as Db, run, coordinator!, now)) {
+              const retryAt = new Date(Math.max(now.getTime() + EXECUTION_RECONCILIATION_INTERVAL_MS,
+                startupContext.deadlineAtMs, coordinator!.leaseExpiresAt?.getTime() ?? 0));
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
+              await tx.update(nativeRunFinalizations).set({ controlDeadlineAt: retryAt }).where(eq(nativeRunFinalizations.runId, run.id));
+              await tx.update(heartbeatRuns).set({ executionControlDeadlineAt: retryAt }).where(eq(heartbeatRuns.id, run.id));
+            }
+            return false;
+          }
           await tx
             .update(heartbeatRuns)
             .set({ executionControlDeadlineAt: null })

@@ -1396,13 +1396,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }
           let terminationSettled = false;
           try {
-            await cancelHeartbeatNativeRun({
-              db,
-              runId: run.id,
-              reason,
-              runtimeMode: run.runtimeMode,
-              ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
-            });
+            const startupCleanupRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
+            if (startupCleanupRun && readNativeStartupCleanup(startupCleanupRun) && !control && !running && !activeRunExecutions.has(run.id)) {
+              if (!dependencies.verifyStartupCleanup) throw conflict("Native startup cleanup worker unavailable");
+              await dependencies.verifyStartupCleanup(startupCleanupRun);
+            } else {
+              await cancelHeartbeatNativeRun({
+                db,
+                runId: run.id,
+                reason,
+                runtimeMode: run.runtimeMode,
+                ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
+              });
+            }
             if (running) {
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
