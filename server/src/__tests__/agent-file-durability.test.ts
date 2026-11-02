@@ -11,7 +11,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { agentFileStore, adoptAgentFiles, fileHash } from "../services/agent-file-store.js";
 import { invalidateAgentFileProjection, persistDurableAgentFiles } from "../services/agent-file-durability.js";
 import { materializeInstructionBytes } from "../services/agent-instruction-files.js";
-import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
+import { agentInstructionsService, resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import { AGENT_FILE_OBJECT_GRACE_MS, collectAgentFileObjects, migrateAgentFiles } from "../services/agent-file-maintenance.js";
 import { getStorageService } from "../storage/index.js";
 
@@ -88,6 +88,28 @@ describe("durable agent file authority", () => {
     vi.stubEnv("PAPERCLIP_HOME", home);
     root = resolveManagedInstructionsRoot({ id: agentId, companyId, name: "File owner", adapterConfig: {} });
   }
+
+  it("reads instruction compatibility from the committed head after deleting the entire home", async () => {
+    await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Original"));
+    await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root,
+      instructionsFilePath: path.join(root, "AGENTS.md"), instructionsEntryFile: "AGENTS.md" } }).where(eq(agents.id, agentId));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const instructions = agentInstructionsService(db);
+    expect(await instructions.getManagedEntryFingerprint(agent)).toBeNull();
+    await store().read(companyId, agentId, "AGENTS.md", actor());
+    const expected = { entryFile: "AGENTS.md", contentHash: `sha256:${fileHash(Buffer.from("Original"))}` };
+    expect(await instructions.getManagedEntryFingerprint(agent)).toEqual(expected);
+    await replaceFilesystem();
+    expect(await instructions.getManagedEntryFingerprint(agent)).toEqual(expected);
+    await expect(fs.stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await instructions.getManagedEntryFingerprint({ ...agent, companyId: randomUUID() })).toBeNull();
+    expect(await instructions.getManagedEntryFingerprint({ ...agent, adapterConfig: {
+      ...agent.adapterConfig, instructionsBundleMode: "external",
+    } })).toBeNull();
+    expect(await instructions.getManagedEntryFingerprint({ ...agent, adapterConfig: {
+      ...agent.adapterConfig, instructionsEntryFile: "missing.md",
+    } })).toEqual({ entryFile: "missing.md", contentHash: null });
+  });
 
   it("imports legacy bytes, modes and empty entries, then restores without any old filesystem", async () => {
     const binary = Buffer.alloc(2 * 1024 * 1024, 0x81);

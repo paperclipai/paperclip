@@ -241,7 +241,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
-  assertEphemeralWorkspaceExecution({ externalConversation: isDotRun, native: run.runtimeMode === "native",
+  assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
     adapterType: agent.adapterType,
     pluginTaskWorkspace, remoteAuthority });
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({
@@ -322,7 +322,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
                   issue: issueRef, agent, projectId: issueRef!.projectId, repoRef: null,
                 })) : null),
         });
-        if (sourceState.authority === "host") remoteAuthority = false;
+        if (sourceState.authority === "host") {
+          remoteAuthority = false;
+          // Source resolution can retain a configured host folder. Check the
+          // resolved authority before materializing it or acquiring a sandbox.
+          assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
+            adapterType: agent.adapterType, pluginTaskWorkspace, remoteAuthority });
+        }
         else {
           remoteSourceState.value = sourceState;
           if (!enrolledRemoteAuthority) await assertRemotePreparationOwned();

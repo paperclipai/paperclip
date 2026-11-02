@@ -37,11 +37,11 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
  * volume data is adopted by the owning maintenance commands before removal. */
 export async function assertEphemeralServerData(db: Db) {
   if (!ephemeralServerEnabled()) return;
-  const { blockers } = await readEphemeralServerDataEligibility(db);
+  const { blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
   if (blockers.length) throw new Error(`Volume-free server data is not eligible: ${blockers.join(", ")}`);
 }
 
-export async function readEphemeralServerDataEligibility(db: Db) {
+export async function readEphemeralServerDataEligibility(db: Db, options: { purpose?: "migration" | "startup" } = {}) {
   const blockers: string[] = [];
   const [missingFiles] = await db.select({ id: agents.id }).from(agents).leftJoin(agentFileRoots,
     and(eq(agentFileRoots.companyId, agents.companyId), eq(agentFileRoots.agentId, agents.id)))
@@ -67,7 +67,7 @@ export async function readEphemeralServerDataEligibility(db: Db) {
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
   for (;;) {
-    const page = await skills.eligibility({ after, limit: 50 });
+    const page = await skills.eligibility({ after, limit: 50, purpose: options.purpose });
     if (page.results.some(skill => skill.status !== "version_backed")) { blockers.push("skills_require_migration"); break; }
     if (page.inspected < 50 || !page.after) break;
     after = page.after;
