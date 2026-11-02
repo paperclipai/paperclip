@@ -1724,6 +1724,20 @@ sources without this proof remain ineligible. The preservation owner still
 requires an independently stopped, exclusively bound allocation and no host writer;
 it saves files and resumes the existing finalizer without another provider turn.
 
+Both the legacy native copyback descriptor and the remote-workspace descriptor
+keep an unfinished export under the execution hold. Task Retry saves its intent
+behind that hold; an accepted successful result resumes its existing finalizer
+after verified preservation instead of admitting another task run. Pending human
+review remains effective when the result commits.
+
+If a later failure supersedes the original recovery action, an explicit board
+`recover-workspace` request can still preserve that exact historical export.
+The cancelled action remains historical and the current action retains attention
+ownership. Preservation checks current writers and source identity, records a
+durable snapshot, and leaves the task's newer workspace binding unchanged. It
+does not apply an older accepted result over a newer run or authorize continuation.
+Cancelled history without a saved explicit recovery request remains ineligible.
+
 Startup and the retained-workspace sweep reconstruct these obligations through
 the retained workspace index. Committed Retry, recovery admission, and recovery
 progress writes wake a separate preservation worker. It follows the persisted
