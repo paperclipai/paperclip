@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { createDb, runDatabaseBackup, runDatabaseRestore, type RunDatabaseBackupOptions } from "@paperclipai/db";
-import { resolveExternalTestDatabaseUrl } from "../../src/__tests__/helpers/external-test-database.js";
+import { resolveExternalTestDatabaseUrl } from "../../src/lib/dedicated-test-database-url.js";
 import { verifyIdleDatabaseBackup } from "../../src/services/idle-database-backup.js";
 
 export const SOURCE_ENV = "PAPERCLIP_BACKUP_CHECKPOINT_SOURCE_TEST_DATABASE_URL";
@@ -52,9 +52,15 @@ export async function seedBackupQualificationFixture(sourceUrl: string) {
     await source`CREATE TABLE backup_qualification.parents (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value text NOT NULL)`;
     await source`CREATE TABLE backup_qualification.children (id integer PRIMARY KEY, parent_id bigint REFERENCES backup_qualification.parents(id),
       value text, bytes bytea)`;
+    await source`CREATE TABLE backup_qualification.binary_arrays (id integer PRIMARY KEY, payloads bytea[])`;
     await source.begin(async tx => {
       await tx`INSERT INTO backup_qualification.parents (value) VALUES ('last committed state — 雪 ☃')`;
       await tx`INSERT INTO backup_qualification.children VALUES (1, 1, NULL, decode('00ff10275c', 'hex')), (2, 1, 'empty bytes', decode('', 'hex')), (3, 1, 'null bytes', NULL)`;
+      await tx`INSERT INTO backup_qualification.binary_arrays VALUES
+        (1, ARRAY[decode('00ff10275c', 'hex'), convert_to('雪 ☃', 'UTF8'), decode('', 'hex'), NULL]::bytea[]),
+        (2, ARRAY[]::bytea[]), (3, NULL),
+        (4, ARRAY[[decode('00ff', 'hex'), NULL], [decode('', 'hex'), convert_to('雪', 'UTF8')]]::bytea[]),
+        (5, array_fill(decode('00ff', 'hex'), ARRAY[2,2], ARRAY[0,3]))`;
     });
   } finally { await source.end({ timeout: 5 }); }
 }
@@ -71,13 +77,29 @@ export async function inspectRestoredFixture(restoreUrl: string) {
     if (empty?.size !== 0) throw new Error("Restored empty binary value differs");
     const [nullBytes] = await target`SELECT bytes IS NULL AS is_null FROM backup_qualification.children WHERE id = 3`;
     if (nullBytes?.is_null !== true) throw new Error("Restored null binary value differs");
+    const arrays = await target`SELECT id, pg_typeof(payloads)::text AS type, array_dims(payloads) AS dimensions,
+      CASE id
+        WHEN 1 THEN payloads IS NOT DISTINCT FROM ARRAY[decode('00ff10275c', 'hex'), convert_to('雪 ☃', 'UTF8'), decode('', 'hex'), NULL]::bytea[]
+        WHEN 2 THEN payloads IS NOT DISTINCT FROM ARRAY[]::bytea[]
+        WHEN 3 THEN payloads IS NULL
+        WHEN 4 THEN payloads IS NOT DISTINCT FROM ARRAY[[decode('00ff', 'hex'), NULL], [decode('', 'hex'), convert_to('雪', 'UTF8')]]::bytea[]
+        WHEN 5 THEN payloads IS NOT DISTINCT FROM array_fill(decode('00ff', 'hex'), ARRAY[2,2], ARRAY[0,3])
+      END AS matches FROM backup_qualification.binary_arrays ORDER BY id`;
+    const expected = [
+      { id: 1, type: "bytea[]", dimensions: "[1:4]", matches: true },
+      { id: 2, type: "bytea[]", dimensions: null, matches: true },
+      { id: 3, type: "bytea[]", dimensions: null, matches: true },
+      { id: 4, type: "bytea[]", dimensions: "[1:2][1:2]", matches: true },
+      { id: 5, type: "bytea[]", dimensions: "[0:1][3:4]", matches: true },
+    ];
+    if (JSON.stringify(arrays) !== JSON.stringify(expected)) throw new Error("Restored binary array values, dimensions or types differ");
     const [next] = await target`INSERT INTO backup_qualification.parents (value) VALUES ('sequence after restore') RETURNING id::text`;
     if (next?.id !== "2") throw new Error("Restored identity sequence did not resume at 2");
     try {
       await target`INSERT INTO backup_qualification.children VALUES (999, 999, NULL, decode('', 'hex'))`;
       throw new Error("Restored foreign key was not enforced");
     } catch (error) { if ((error as { code?: string }).code !== "23503") throw error; }
-    return { relational: true, unicode: true, binary: true, emptyBinary: true, nullBinary: true, nullable: true, nextIdentity: next.id, foreignKeyEnforced: true };
+    return { relational: true, unicode: true, binary: true, emptyBinary: true, nullBinary: true, binaryArrays: true, nestedBinaryArrays: true, binaryArrayBounds: true, nullable: true, nextIdentity: next.id, foreignKeyEnforced: true };
   } finally { await target.end({ timeout: 5 }); }
 }
 
@@ -87,7 +109,9 @@ export async function qualifyBackupRestore(pair: QualificationPair, backupDir: s
     backupEngine: engine, verifyBeforePrune: verifyIdleDatabaseBackup });
   await assertDistinctEmptyRestore(pair);
   await runDatabaseRestore({ connectionString: pair.restoreUrl, backupFile: archive.backupFile });
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(archive.backupFile)) hash.update(chunk);
   return { engine, archive: archive.backupFile, sizeBytes: archive.sizeBytes,
-    sha256: createHash("sha256").update(await readFile(archive.backupFile)).digest("hex"),
+    sha256: hash.digest("hex"),
     restored: await inspectRestoredFixture(pair.restoreUrl) };
 }

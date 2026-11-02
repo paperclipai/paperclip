@@ -453,9 +453,12 @@ pnpm --filter @paperclipai/server exec tsx scripts/qualify-idle-database-backup.
 Use a fresh source/restore pair and output directory for a second run with
 `javascript` as the last argument. This exercises the supported fallback engine
 separately. The command verifies the full archive, syncs its bytes and directory,
-restores it, checks relational and binary (including empty bytes)/Unicode/null values, enforces the
-restored foreign key, and checks identity sequence progress. It writes a JSON
+restores it, checks relational, Unicode and null values, and verifies binary
+scalars and one- and two-dimensional arrays, including empty bytes, empty arrays
+and null elements, with array dimensions and bounds preserved. It enforces the
+restored foreign key and checks identity sequence progress. It writes a JSON
 receipt with binary versions, database names, archive size/hash, and results.
+Archive hashing reads a bounded stream rather than loading the archive into memory.
 It does not write credentials to the receipt. The fixture rows remain available
 for inspection. Dispose of these owned databases through the normal test-owner
 workflow after closing their clients.
