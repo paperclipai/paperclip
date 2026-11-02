@@ -121,3 +121,12 @@ seconds without app API traffic, then closes the browser before the server quiet
 window. Failure to establish real visibility fails that mode; it never substitutes
 a fake visibility event or frozen page. Without this explicit mode, the receipt
 claims closed-browser coverage only.
+
+The browser uses a fresh owned Chromium profile and loopback debugging endpoint.
+It attaches with `connectOverCDP({ noDefaults: true })` to the native default
+context. Normal Playwright contexts install focus emulation that kept real
+background tabs visible in the measured failure. This path avoids that override.
+The receipt includes native window IDs, initial/final visibility and passive
+visibility events for the entire 90-second interval. An intervening activation
+fails the observation. Cleanup disconnects, terminates only the owned process and
+removes its temporary profile. It never attaches to a user's existing browser.
