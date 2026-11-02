@@ -8,6 +8,8 @@ import { hash, validateSelection, catalogDefinition, model } from "./chat-comple
 import type { PilotContext, PilotSelection } from "./chat-completion-testops-contract.mjs";
 import type { RunnerE2EResult } from "./types.js";
 import { findSecretLeakInJsonValues } from "./redaction.js";
+import { privateArtifactKey } from "./private-history.js";
+import { manualCellKind } from "./manual-private-retention.js";
 
 export async function mergeCatalogProjections(root: string, output: string, selection: PilotSelection, context: PilotContext) {
   if (context.catalog !== "full") throw new Error("Full catalog context required");
@@ -85,7 +87,7 @@ export async function prepareRetainedCatalogReport(root: string, output: string,
   for (const gap of disposition.gaps) {
     if (!keys(gap, ["executionId", "archiveKey", "archiveStatus"]) || gaps.has(gap.executionId)
       || !selected.some(row => row.executionId === gap.executionId) || gap.archiveStatus !== "not_found"
-      || gap.archiveKey !== `runner-e2e-private/bounded-v1/campaigns/gha-${context.runId}-1/manual-cell-${hash(gap.executionId)}.zip`) throw new Error("Invalid reporting gap");
+      || gap.archiveKey !== privateArtifactKey(manualCellKind(gap.executionId), context.runId)) throw new Error("Invalid reporting gap");
     gaps.add(gap.executionId);
   }
   const stat = await lstat(root);

@@ -6,6 +6,8 @@ import os from 'node:os';
 import * as aggregate from './chat-full-catalog-testops-merge.js';
 import {hash,model} from './chat-completion-testops-contract.mjs';
 import {fullCatalogCases,catalogTargetSha} from './chat-full-catalog-testops-manifest.mjs';
+import {privateArtifactKey} from './private-history.js';
+import {manualCellKind} from './manual-private-retention.js';
 const roots:string[]=[];
 afterEach(async()=>{await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
 const context={catalog:'full' as const,runId:'123',attempt:'1',workflowSha:'a'.repeat(40),targetSha:catalogTargetSha};
@@ -22,7 +24,7 @@ async function fixture(t:any){
   for(const [name,data] of files)await writeFile(path.join(dir,name),data);
   await writeFile(path.join(dir,'binding.json'),JSON.stringify({schema:'paperclip.chat-completion-testops-export/v1',...context,campaignId:'gha-123-1',executionIds:[row.executionId],files:[...files].map(([name,data])=>({path:name,bytes:data.length,sha256:hash(data)})),privateEvidence:[{executionId:row.executionId,requiredEvidenceComplete:passed,finalScreenshot:passed?{sha256:'e'.repeat(64),bytes:24}:null}]}));
  }
- const disposition={schema:'paperclip.chat-catalog-retained-disposition/v1',origin:{...context,projectId:1,planId:102,jobId:100,launchId:12,allureJobRunId:'77'},selectionSha256:hash(JSON.stringify(selection,null,2)),upstream:{status:'completed',jobsSha256:'b'.repeat(64)},custodySha256:'c'.repeat(64),gaps:[{executionId:cases[2].executionId,archiveKey:`runner-e2e-private/bounded-v1/campaigns/gha-123-1/manual-cell-${hash(cases[2].executionId)}.zip`,archiveStatus:'not_found'}]};
+ const disposition={schema:'paperclip.chat-catalog-retained-disposition/v1',origin:{...context,projectId:1,planId:102,jobId:100,launchId:12,allureJobRunId:'77'},selectionSha256:hash(JSON.stringify(selection,null,2)),upstream:{status:'completed',jobsSha256:'b'.repeat(64)},custodySha256:'c'.repeat(64),gaps:[{executionId:cases[2].executionId,archiveKey:privateArtifactKey(manualCellKind(cases[2].executionId),context.runId),archiveStatus:'not_found'}]};
  return {root,input,selection,disposition,context,output:path.join(root,'report')};
 }
 async function prepare(f:any){return (aggregate.prepareRetainedCatalogReport ?? aggregate.mergeCatalogProjections)(f.input,f.output,f.selection,f.context,f.disposition,{kind:'operator',revisionSha:'d'.repeat(40)});}

@@ -3407,7 +3407,10 @@ any upload archive. Private originals, screenshots and traces stay private.
 
 Review the immutable payload and its file hashes before an authorized upload to
 the original jobrun. Persist a once-intent before transmission. After an ambiguous
-response, reconcile with GET requests; do not resend or regenerate UUIDs. Final
+response, reconcile with manual GET requests or an independently reviewed,
+gap-aware read-only check; do not resend or regenerate UUIDs. The existing
+`verify-upload` CLI accepts strict original outcomes only. It cannot verify the
+separate BROKEN gap shape and must not be used for this recovery bundle. Final
 coverage must match all selected case IDs and preserve the separate gap count.
 This mode prepares data only. It does not upload, start jobs, reopen launches,
 change credentials, or change evaluation and evidence limits.
