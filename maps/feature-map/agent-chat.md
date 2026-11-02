@@ -35,6 +35,8 @@ With Coordinator enabled, the composer exposes the shared model/thinking-level p
 
 Standing chats open with the latest 20 contiguous messages. Scroll upward to fetch earlier messages, answer receipts, and created tasks. The loading indicator stays in the thread; history failures offer an inline Retry while preserving the draft and reading position. Opening a chat does not fetch its lifetime comment, activity, or run history. Already observed messages survive live refresh and Back within the query-cache session.
 
+Click an agent's name or avatar above a message or active turn to open that agent's overview in the current company. The identity keeps its existing appearance, with no underline on hover. Identities without an agent ID remain plain text.
+
 Coordinator answer receipts from this conversation jump to the answer bubble without leaving chat. Answer updates from an execution task link to that source task and its decision context. Compact document links read “Open [document title] in the sidebar”.
 
 ### `project-handoff`
@@ -86,6 +88,7 @@ send. Confirm the same file stays in the composer after the chat is created.
 Send it once, reload, and confirm the file and message remain.
 
 Manual: Start a conversation, send a recognizable request, and inspect its reply.
+Click the responding agent's name, return with Back, then click its avatar; both should open that agent's overview without changing companies. Check that the identity looks unchanged at rest and on hover on desktop and mobile.
 Navigate away and reopen the same history. Use `/new` for a fresh session within
 the same standing conversation. Test an unavailable historical agent and an
 inaccessible saved conversation; verify no cross-user or cross-company history appears.
