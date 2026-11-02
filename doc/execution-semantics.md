@@ -202,6 +202,14 @@ and review run. The server reads these records from saved review state; it does
 not depend on the parent session remembering a separate review session. These
 records are evidence and do not grant permission to resolve another review.
 
+An automatic chat-completion wake retains its exact delivery receipt when
+admission waits on a dependency, budget, or pause. It does not merge into a
+replaceable dependency signal. The same gates still prevent execution.
+Workspace readiness accepts a completed operation enclosed by a successful
+finalize from the same company, workspace, issue, and run. A nested snapshot
+that finishes before that finalize finishes does not leave a permanent wait.
+Unfinished operations and work after the finalize still require a later save.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed
