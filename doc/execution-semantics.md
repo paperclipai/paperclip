@@ -780,6 +780,15 @@ conflict detection. Legacy adapter snapshots remain inline. Snapshot-only worker
 do not load the adapter process-launch helpers. The directory merge loads those
 helpers when it resolves its instance-scoped lock root.
 
+Portable remote workspace capture stages only self-contained Git metadata. It
+streams working files into the archive without a second working-tree copy and
+does not repack an already dissociated mirror. Each streamed file must match its
+recorded hash, size and mode and retain its filesystem identity while read.
+Capture rechecks the complete source inventory and Git state before returning a
+receipt. A changed source or cancelled capture removes its incomplete archive;
+an existing archive remains untouched. Temporary space must still hold the
+normalized Git metadata and the complete archive together.
+
 ### Remote Codex model compatibility
 
 Fresh remote Codex Runner runs check the selected image CLI before saving the
