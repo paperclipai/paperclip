@@ -1703,7 +1703,9 @@ A child or follow-up task can use a remote workspace inherited through its
 persisted task binding, including an isolated workspace or operator branch.
 Reservation checks current task/run access and all retained workspace sources.
 The original `sourceIssueId` remains provenance; it does not prevent authorized
-bound tasks from continuing saved work. The single-writer fence still applies.
+bound tasks from continuing saved work. Explicitly selected roots follow the
+same binding contract and the filesystem access boundary below. Task-assignment
+grants are not filesystem permissions. The single-writer fence still applies.
 
 Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
 for storage, import, retention, and lifecycle regression checks. These checks do

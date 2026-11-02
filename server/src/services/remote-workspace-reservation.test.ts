@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environments,
+import { agents, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environments,
   executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -13,6 +15,10 @@ import { createStorageService } from "../storage/service.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import { reserveRemoteWorkspace } from "./remote-workspaces.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
+import { accessService } from "./access.js";
+import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -83,6 +89,47 @@ describe.skipIf(!support.supported)("remote workspace reservation authority", ()
     await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, f.child.id));
     await expect(reserveRemoteWorkspace(f.input)).rejects.toThrow("Task workspace binding is unavailable");
     expect(await current(f.workspace.id)).toEqual(f.workspace);
+  });
+
+  it("uses an explicitly selected root without treating source assignment grants as filesystem permissions", async () => {
+    const f = await fixture();
+    await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "agent",
+      principalId: f.agent.id, status: "active", membershipRole: "member" });
+    await db.update(projects).set({ executionWorkspacePolicy: {
+      authorizationPolicy: { assignmentPolicy: { mode: "protected" } },
+    } }).where(eq(projects.id, f.workspace.projectId!));
+    await db.update(issues).set({ parentId: null, projectId: null, projectWorkspaceId: null,
+      executionWorkspaceId: null, workspaceBindingRevision: 0, status: "in_progress",
+      executionRunId: f.run.id, checkoutRunId: f.run.id }).where(eq(issues.id, f.child.id));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.child.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    const actor = { type: "agent" as const, source: "agent_jwt" as const,
+      companyId: f.company.id, agentId: f.agent.id, runId: f.run.id };
+    expect(await accessService(db).decide({ actor, action: "project:read", resource: {
+      type: "project", companyId: f.company.id, projectId: f.workspace.projectId!,
+    } })).toMatchObject({ allowed: true });
+    expect(await accessService(db).decide({ actor, action: "project:write_workspace", resource: {
+      type: "issue", companyId: f.company.id, projectId: f.workspace.projectId!,
+      issueId: f.parent.id, assigneeAgentId: f.agent.id,
+    } })).toMatchObject({ allowed: false });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = actor; next(); });
+    app.use("/api", taskWorkspaceRoutes(db));
+    app.use(errorHandler);
+    const response = await request(app).put(`/api/issues/${f.child.id}/workspace`).send({
+      selection: { kind: "existing", workspaceId: f.workspace.id },
+      expectedBindingRevision: 0, requestKey: randomUUID(),
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.child.id, status: "running", runtimeMode: "legacy", contextSnapshot: { issueId: f.child.id } }).returning();
+    const nextActor = { ...actor, runId: nextRun.id };
+    expect(await executionWorkspaceService(db).applyPendingTaskWorkspaceSelection({ companyId: f.company.id,
+      issueId: f.child.id, runId: nextRun.id, actor: nextActor })).toBe(true);
+    await expect(reserveRemoteWorkspace({ ...f.input, runId: nextRun.id })).resolves.toMatchObject({
+      id: f.workspace.id, sourceIssueId: f.parent.id,
+    });
   });
 
   it("keeps the original task's privacy boundary on an inherited workspace", async () => {
