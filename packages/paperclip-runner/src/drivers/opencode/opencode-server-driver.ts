@@ -992,12 +992,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         `/question/${encodeURIComponent(input.requestId)}/reject?${workspace}`,
         { method: "POST" },
       ),
-      api(
-        this.#fetch,
-        this.#runtime,
-        `/session/${encodeURIComponent(this.#providerSessionId)}/abort`,
-        { method: "POST" },
-      ),
+      this.interrupt({ turnId: input.turnId, reason: "Durable user input handoff." }),
     ]).then(() => undefined);
     return { result: "handed_off", cleanup };
   }
@@ -1874,12 +1869,14 @@ class OpenCodeHarnessSession implements HarnessSession {
       turnId
     ) {
       if (this.#recoverEmptyResponse(turnId)) return;
+      const interrupted = this.#interruptedTurnId === turnId;
+      const status = interrupted ? "cancelled" : "completed";
       const fingerprint = canonicalJson({
-        status: "completed",
+        status,
         semanticResult: this.#resultFingerprint,
       });
       this.#terminalTurns.set(turnId, fingerprint);
-      this.#emitSettledFinalAgentMessage(turnId);
+      if (!interrupted) this.#emitSettledFinalAgentMessage(turnId);
       const workspace = this.#workspaceChangesByTurn.get(turnId);
       if (workspace !== undefined)
         this.#emit(
@@ -1894,7 +1891,7 @@ class OpenCodeHarnessSession implements HarnessSession {
       // Emit while this turn is still `#activeTurnId`; the gate in `#emit`
       // drops any frame whose turnId is not the active turn, so nulling it
       // first would make `#emit` drop this very event.
-      this.#emit("turn.completed", { status: "completed" }, { turnId });
+      this.#emit(interrupted ? "turn.cancelled" : "turn.completed", { status }, { turnId });
       this.#activeTurnId = null;
       return;
     }
