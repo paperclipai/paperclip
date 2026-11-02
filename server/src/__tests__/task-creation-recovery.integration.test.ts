@@ -11,7 +11,7 @@ import { environmentService } from "../services/environments.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
 import { requestNativeStartupCleanup, verifyNativeStartupCleanup } from "../services/native-runtime/native-startup-cleanup.js";
 import { prepareNativeHeartbeatRun } from "../services/native-runtime/prepare-native-run.js";
-import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import type { PluginWorkerHandle, PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 
@@ -46,7 +46,7 @@ async function fixture(version = true, inspector = true) {
       runnerTaskLease: true, runnerTaskReused: true, providerMetadata: binding } });
   const context = new NativeExecutionContext({ binding: { companyId, agentId, runId } } as never, 30_000);
   const stopped = new Set([taskId]), calls: string[] = [];
-  let acquireSuccess = false, mismatched = false, inspectUnknown = false;
+  let acquireSuccess = false, mismatched = false, inspectUnknown = false, genericCleanup = false;
   let acquiredId = "", observed: ((lease: PluginEnvironmentLease) => Promise<void>) | undefined;
   const recoveredBinding = () => ({ ...binding, runId });
   const acquire = vi.fn(async (_method: string, params: any, _timeout: unknown, _sink: unknown, settled?: () => void,
@@ -69,7 +69,8 @@ async function fixture(version = true, inspector = true) {
           leaseMetadata: { creationOperationVersion: 1, runnerTaskCreationContextId: context.id, agentId, runId, providerMetadata: binding } });
         return { providerLeaseId: acquiredId, state: "unknown", ...(!inspectUnknown ? {
           creationLease: { providerLeaseId: mismatched ? "foreign-task" : acquiredId, metadata: recoveredBinding() },
-        } : {}) };
+        } : {}), ...(genericCleanup ? { creationCleanup: { providerLeaseId: acquiredId, companyId, environmentId,
+          runId, attemptId: acquiredId, accountFingerprint: "a".repeat(64), labels: {} } } : {}) };
       }
       if (method === "environmentReleaseLease") return undefined;
       if (params.operation.kind === "stop") stopped.add(params.taskId);
@@ -102,6 +103,7 @@ async function fixture(version = true, inspector = true) {
     reload, owner, originalWorker, replacementAcquire, acquire, workers,
     succeed: () => { acquireSuccess = true; }, replaceWorker: () => { currentWorker = oldWorker; },
     mismatch: () => { mismatched = true; }, unknown: () => { inspectUnknown = true; },
+    legacyCleanup: () => { inspectUnknown = true; genericCleanup = true; },
     lateReply: () => observed!({ providerLeaseId: acquiredId, metadata: recoveredBinding() }) };
 }
 
@@ -159,6 +161,20 @@ it.each(["mismatched", "unknown"])("retains ownership when inspection is %s", as
     expect((await f.creation()).nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
     await expect(f.control.cancelRunInternal(f.runId, "Startup cleanup retry")).rejects.toThrow("cleanup is still pending");
     expect((await f.owner()).leaseOwner).not.toBeNull();
+  } finally { f.context.finish(); }
+});
+
+it("does not substitute a generic cleanup envelope for a contextual task identity", async () => {
+  const f = await fixture();
+  try {
+    await expect(f.start()).rejects.toThrow(); await f.request(); f.legacyCleanup();
+    await f.runtime.flushDeferredOrphanCleanups();
+    const swept = await f.recovery.sweepPendingCleanupLeases({ backoffMs: 0 });
+    const cancelled = await f.control.cancelRunInternal(f.runId, "Startup cleanup retry").then(() => true, () => false);
+    const operation = await f.creation(), lease = operation.leaseId ? await environmentService(db).getLeaseById(operation.leaseId) : null;
+    expect({ state: operation.state, cleanupLease: operation.leaseId, destroyed: swept.destroyed,
+      stoppedReceipt: lease ? hasRemoteTerminationReceipt(lease) : false, cancelled, ownerRetained: (await f.owner()).leaseOwner !== null })
+      .toEqual({ state: "pending", cleanupLease: null, destroyed: 0, stoppedReceipt: false, cancelled: false, ownerRetained: true });
   } finally { f.context.finish(); }
 });
 

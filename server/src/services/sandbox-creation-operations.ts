@@ -176,6 +176,7 @@ export async function recoverSandboxCreations(db: Db,
         await queueSandboxCreationCleanup(db, identity);
         continue;
       }
+      if (existingCompany && recoverableTaskCreation(candidate)) throw new Error("Task creation identity is not available yet");
       const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
         schema: "paperclip/environment-creation-cleanup/v1", cleanup: observation.creationCleanup,
       } }) : null;
@@ -183,7 +184,6 @@ export async function recoverSandboxCreations(db: Db,
         cleanup.runId !== candidate.runId || cleanup.attemptId !== candidate.id || cleanup.providerLeaseId !== observation!.providerLeaseId)) {
         throw new Error("Sandbox creation recovery returned foreign ownership");
       }
-      if (existingCompany && recoverableTaskCreation(candidate) && !cleanup) throw new Error("Task creation identity is not available yet");
       await db.transaction(async tx => {
         const [company] = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).for("key share");
         await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, candidate.originalEnvironmentId)).for("update");
