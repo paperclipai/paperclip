@@ -20,6 +20,9 @@ Agent access: [companion](../agent-access-map/tasks.md).
 
 - `discussion`: `tasks/discussion` — persist comments, references, and files on the task.
 - `completion`: `tasks/completion` — distinguish backlog, active work, review, blocked, done, and cancelled outcomes.
+  A board user closing an active native task must stop its run before the task
+  releases execution ownership, including providers without session goals.
+  Verify Done and Cancelled, an unconfirmed stop, and ordinary agent completion.
 - `privacy`: `tasks/privacy` — create private tasks, share or revoke access, and inspect parent/project inheritance before changing visibility.
 
 The [Product task-properties journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)

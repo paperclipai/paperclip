@@ -2,6 +2,10 @@ export const endpoint = 'https://paperclip.testops.cloud';
 export const planName = 'Chat feature evals';
 export const fullName = 'paperclip.Product E2E.chat-features.create-backlog';
 export const aliases = [fullName, 'paperclip.Product E2E.chat-features.tasks.create-backlog'];
+export function launchNameSearch(name) {
+  // TestOps search uses the UI's typed filter carrier, not plain search text.
+  return Buffer.from(JSON.stringify([{ id: 'name', type: 'string', value: name }]), 'utf8').toString('base64');
+}
 class SetupFailure extends Error {
   constructor(code, status = null) { super(code); this.code = code; this.status = status; }
 }
@@ -326,7 +330,7 @@ export async function launchChatPlan(api, env, markOnce, admission) {
   const assignments = await api(`/api/testplan/${known.planId}/job`);
   if (!Array.isArray(assignments) || assignments.length > 1 || assignments.some(row => row.job?.id !== known.jobId || row.testCasesCount !== 1)) fail('chat_testops_plan_job_mismatch');
   const launchName = `${planName} · ${nonce}`;
-  const existing = rows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: launchName, page: '0', size: '100' })}`));
+  const existing = rows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: launchNameSearch(launchName), page: '0', size: '100' })}`));
   if (existing.length) {
     if (existing.length !== 1 || existing[0].name !== launchName || !id(existing[0].id)) fail('chat_testops_nonce_conflict');
     return { schema: 'paperclip.chat-feature-testops-launch/v1', ...source, nonce, planId: known.planId,

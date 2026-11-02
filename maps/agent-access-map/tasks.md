@@ -349,6 +349,12 @@ Agent access: `partial` — authorized REST/call_api and CLI status updates; nat
 
 Policy: Task mutation/run/assignment/recovery/resolver gates. Blocked requires unresolved blocker/pending input/approval or unblockDescriptor; agent can name only SELF unblock owner. In_review requires actionable path. Native bound completion contract/criterion revision, deliverable evidence and verification must agree; done rejects unfinished work; needs_review names valid different reviewer. Pending input/approval/review/blocker can keep task open. Final state commits after provider turn/workspace finalization; report never overwrites successor/already terminal state.
 
+Board PATCH to Done or Cancelled stops an active native run before releasing
+execution ownership, even when it has no session goal. An unconfirmed stop
+returns 409 without updating the task. Native self-completion still uses its
+semantic finish tools. Route regression:
+[issue-update-comment-wakeup-routes.test.ts](../../server/src/__tests__/issue-update-comment-wakeup-routes.test.ts).
+
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [native-completion-feedback.ts](../../server/src/services/native-runtime/native-completion-feedback.ts), [native-completion-feedback.test.ts](../../server/src/services/native-runtime/native-completion-feedback.test.ts), [native-deliverable-feedback.test.ts](../../server/src/services/native-runtime/native-deliverable-feedback.test.ts), [paperclip-runner-tool-authority.test.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.test.ts), [issue-stalled-review-decision-routes.test.ts](../../server/src/__tests__/issue-stalled-review-decision-routes.test.ts). No live execution claimed.
 
 Verification: `not-run` — Actual native accepted report→provider stop→workspace finalization→persisted status/output; stale/failed report correction without repeating work. Test blocked/review/done, pending question/blocker, invalid/self/foreign reviewer, missing output and duplicate report.

@@ -194,6 +194,10 @@ or mutation marker. Shared transport, evidence, export and verification helpers
 remain for the full-catalog workflow and retained historical evidence. Retiring a
 plan does not delete its cases, results, launches or private evidence.
 
+Retained launch helpers encode TestOps name filters as Base64 of UTF-8 JSON in
+`search`. Plain name text returns HTTP 400. Their nonce and once-only guards
+remain unchanged; this transport contract does not restore the retired plans.
+
 ## Full catalog in TestOps
 
 The [Chat catalog TestOps workflow](../../.github/workflows/chat-catalog-testops.yml)

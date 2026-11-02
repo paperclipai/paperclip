@@ -1,4 +1,4 @@
-import { testopsClient, endpoint } from './chat-feature-testops-api.mjs';
+import { testopsClient, endpoint, launchNameSearch } from './chat-feature-testops-api.mjs';
 import { cases, planName, positive, reject, validateSelection, catalogDefinition } from './chat-completion-testops-contract.mjs';
 
 import { reconcileFullCatalog } from './chat-full-catalog-testops-reconcile.mjs';
@@ -205,7 +205,7 @@ export async function launchPilotPlan(api, env, context, workflowId, markOnce) {
   if (!Array.isArray(assignments) || assignments.length !== 1 || assignments[0].job?.id !== binding.jobId
     || assignments[0].testCasesCount !== cases.length) reject('plan_job_mismatch');
   const name = `${planName} · ${env.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE}`;
-  const existing = pageRows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: name, page: '0', size: '100' })}`));
+  const existing = pageRows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: launchNameSearch(name), page: '0', size: '100' })}`));
   if (existing.length) reject('launch_already_requested');
   await markOnce('launch_plan');
   const launched = await api(`/api/testplan/${binding.planId}/run`, 'POST', { launchName: name });
