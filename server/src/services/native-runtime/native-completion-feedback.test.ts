@@ -236,6 +236,7 @@ describe("native final-response feedback", () => {
   });
   it("accepts its generated document guidance link when the objective requests only a CSV", async () => {
     const value = await fixture();
+    await db.update(issues).set({ title: "Export the results as a CSV" }).where(eq(issues.id, value.issueId));
     const report = await publishedFileReport(value, "Export the results as a CSV.");
     const feedback = await nativeCompletionFeedback(db, value.runId, report);
     const href = /\[Saved document\]\(([^)]+)\)/u.exec(feedback)?.[1];
