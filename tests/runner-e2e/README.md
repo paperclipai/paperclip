@@ -3384,7 +3384,7 @@ Do not run agents again or change the original grades.
 The aggregate owner has an explicit offline data preparation mode:
 
 ```sh
-node --import tsx tests/runner-e2e/chat-full-catalog-testops-merge.ts retained-reporting \
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/chat-full-catalog-testops-merge.ts retained-reporting \
   <safe-singleton-projection-root> <new-output-directory> \
   <authenticated-original-selection.json> <retained-disposition.json> <executor-commit-sha>
 ```
