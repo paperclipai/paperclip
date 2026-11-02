@@ -53,13 +53,22 @@ try {
     }
   }
 } finally {
-  await writeFile(path.join(output, 'responsiveness.json'), JSON.stringify(records, null, 2));
-  if (probe && probe.exitCode === null && probe.signalCode === null) {
-    const exited = once(probe, 'exit');
-    if (probe.connected) probe.send({ kind: 'close' });
-    else probe.kill();
-    await exited;
+  try {
+    await writeFile(path.join(output, 'responsiveness.json'), JSON.stringify(records, null, 2));
+  } finally {
+    try {
+      if (probe && probe.exitCode === null && probe.signalCode === null) {
+        const exited = once(probe, 'exit');
+        if (probe.connected) probe.send({ kind: 'close' });
+        else probe.kill();
+        await exited;
+      }
+    } finally {
+      try { await new Promise(resolve => server.close(resolve)); }
+      finally {
+        try { await db.$client.end({ timeout: 1 }); }
+        finally { await database.cleanup(); }
+      }
+    }
   }
-  await new Promise(resolve => server.close(resolve));
-  await db.$client.end({ timeout: 1 }); await database.cleanup();
 }

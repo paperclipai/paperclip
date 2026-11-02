@@ -86,6 +86,10 @@ try {
     }
   }
 } finally {
-  await writeFile(`${output}/measurements.json`, JSON.stringify(records, null, 2));
-  await db.$client.end({ timeout: 1 }); await database.cleanup();
+  try {
+    await writeFile(`${output}/measurements.json`, JSON.stringify(records, null, 2));
+  } finally {
+    try { await db.$client.end({ timeout: 1 }); }
+    finally { await database.cleanup(); }
+  }
 }
