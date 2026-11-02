@@ -54,8 +54,9 @@ export function evaluateSleepQualification(receipt, expected) {
       output.databaseSuspension = result('VERIFIED', 'Exact endpoint idle from live Neon control-plane metadata');
     }
     const services = provider.railway?.services;
-    if (untouched && provider.railway?.identityVerified === true && Array.isArray(services) && services.length > 0
-      && services.every(service => service.identityVerified === true && service.allDeploymentsStopped === true)) {
+    if (untouched && provider.railway?.identityVerified === true && provider.railway.state === 'OBSERVED' && Array.isArray(services) && services.length > 0
+      && services.every(service => service.identityVerified === true && service.state === 'OBSERVED' && service.allDeploymentsStopped === true
+        && typeof service.backupsEnabled === 'boolean' && (service.backupsEnabled === false || service.backupStorageVerified === true))) {
       output.hostSuspension = result('VERIFIED', 'Every exact owned service has stopped deployments');
     }
     const storage = provider.storage;
@@ -76,6 +77,7 @@ export function evaluateSleepQualification(receipt, expected) {
       && Date.parse(wake.stimulusAt) > Date.parse(provider.observedAt) && Date.parse(wake.finishedAt) >= Date.parse(wake.stimulusAt);
     const alarm = kind !== 'deadline' || (inRun(wake.alarmPersistedAt)
       && Date.parse(wake.alarmPersistedAt) < Date.parse(provider.observedAt) && wake.sameFinalGeneration === true);
+    if (!sleeping) { output[layer] = result('INCONCLUSIVE', 'Exact provider sleep and known backup policy have not been established'); continue; }
     const verified = sleeping && chronology && alarm && wake.ordinaryProducer === true
       && wake.authorizationVerified === true && wake.persistedOutcomeVerified === true && wake.duplicateEffects === 0;
     output[layer] = result(verified ? 'VERIFIED' : 'NOT VERIFIED', verified ? `Useful authorized ${kind} wake after provider sleep` : `Missing provider sleep, chronology, authorization or useful ${kind} outcome`);

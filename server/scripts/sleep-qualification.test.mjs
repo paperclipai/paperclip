@@ -12,7 +12,7 @@ function deployed() {
   const f = fixture();
   f.provider = { ...expected, live: true, observedAt: '2099-01-01T00:14:00Z', observerRequests: [{ method: 'GET', boundary: 'provider-control-plane' }],
     neon: { identityVerified: true, currentState: 'idle', pendingState: null },
-    railway: { identityVerified: true, services: [{ identityVerified: true, allDeploymentsStopped: true }] } };
+    railway: { identityVerified: true, state: 'OBSERVED', services: [{ identityVerified: true, state: 'OBSERVED', backupsEnabled: false, backupStorageVerified: false, allDeploymentsStopped: true }] } };
   return f;
 }
 test('local configured quiet leaves every provider and wake claim inconclusive', () => {
@@ -49,4 +49,19 @@ test('writable path alone cannot establish backup persistence across stop and wa
   for (const change of [x => delete x.provider.storage.volumeId, x => x.provider.storage.afterVolumeId = 'replacement', x => x.provider.storage.backupsEnabledAfter = false, x => x.provider.storage.sentinelAfter = 'e'.repeat(64)]) {
     const x = structuredClone(f); change(x); assert.equal(evaluateSleepQualification(x, expected).layers.backupPersistence.verdict, 'INCONCLUSIVE');
   }
+});
+
+test('unknown backup policy and unverified enabled storage cannot certify a stopped host or wake', () => {
+  for (const change of [x => delete x.provider.railway.state, x => x.provider.railway.state = 'INCONCLUSIVE',
+    x => delete x.provider.railway.services[0].backupsEnabled, x => x.provider.railway.services[0].backupsEnabled = null,
+    x => x.provider.railway.services[0].state = 'INCONCLUSIVE', x => x.provider.railway.services[0].backupsEnabled = true]) {
+    const f = deployed(); change(f);
+    f.inboundWake = { stimulusAt: '2099-01-01T00:20:00Z', finishedAt: '2099-01-01T00:21:00Z', ordinaryProducer: true, authorizationVerified: true, persistedOutcomeVerified: true, duplicateEffects: 0 };
+    f.timedWake = { ...f.inboundWake, alarmPersistedAt: '2099-01-01T00:13:30Z', sameFinalGeneration: true };
+    const r = evaluateSleepQualification(f, expected).layers;
+    assert.equal(r.hostSuspension.verdict, 'INCONCLUSIVE'); assert.equal(r.inboundWake.verdict, 'INCONCLUSIVE'); assert.equal(r.timedWake.verdict, 'INCONCLUSIVE');
+  }
+  const f = deployed(); assert.equal(evaluateSleepQualification(f, expected).layers.hostSuspension.verdict, 'VERIFIED');
+  f.provider.railway.services[0].backupsEnabled = true; f.provider.railway.services[0].backupStorageVerified = true;
+  assert.equal(evaluateSleepQualification(f, expected).layers.hostSuspension.verdict, 'VERIFIED');
 });
