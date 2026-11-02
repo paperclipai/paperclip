@@ -2829,6 +2829,8 @@ without trusting old MCP settings. No new turn starts before source reconciliati
 Live process adoption and preconfigured homes do not rewrite credentials. A
 missing selected credential removes retained remote authentication and never
 enables ambient account fallback.
+Remote launch files reject symlinks and shared inodes. SSH file transfers publish
+a private replacement atomically; a failed transfer preserves the prior file.
 
 The staged controller format is
 `paperclip.runner.durable.control-plane-state.staged-attachment.v1`. It contains

@@ -20,6 +20,7 @@ import {
   chmod,
   cp,
   lstat,
+  link,
   mkdir,
   mkdtemp,
   open,
@@ -417,6 +418,7 @@ import {
   semanticProviderPlanMarkdown,
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
+  stageRemoteRunnerFile,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
@@ -3460,6 +3462,70 @@ describe("remote provider checkpoint snapshots", () => {
 });
 
 describe("remote provider checkpoint restores", () => {
+  it.each(["auth.json", "config.toml"].flatMap(name => ["hard", "symbolic"].map(kind => ({ name, kind }))))("atomically stages an SSH launch file without following a retained $kind link ($name)", async ({ name, kind }) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-"));
+    try {
+      const sourcePath = join(root, "selected"), outside = join(root, "outside");
+      const targetPath = join(root, `target with 'quotes'`, name);
+      await mkdir(dirname(targetPath));
+      await writeFile(sourcePath, "selected launch file");
+      await writeFile(outside, "untouched");
+      if (kind === "hard") await link(outside, targetPath);
+      else await symlink(outside, targetPath);
+      const execute = vi.fn(async (command: { command: string; args: string[]; stdin?: string }) => {
+        const result = spawnSync(command.command, command.args, { input: command.stdin, encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 });
+      expect(await readFile(outside, "utf8")).toBe("untouched");
+      expect(await readFile(targetPath, "utf8")).toBe("selected launch file");
+      expect((await lstat(targetPath)).isSymbolicLink()).toBe(false);
+      expect((await lstat(targetPath)).nlink).toBe(1);
+      expect((await lstat(targetPath)).mode & 0o777).toBe(0o600);
+      expect(await readdir(dirname(targetPath))).toEqual([name]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves the prior SSH launch file and clears temporary data after a failed transfer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-failure-"));
+    try {
+      const sourcePath = join(root, "selected"), targetPath = join(root, "target", "auth.json");
+      await mkdir(dirname(targetPath));
+      await writeFile(sourcePath, "selected launch file");
+      await writeFile(targetPath, "prior launch file");
+      const execute = vi.fn(async (command: { command: string; args: string[] }) => {
+        const result = spawnSync(command.command, command.args, { input: "%%%%", encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await expect(stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 })).rejects.toThrow("runner_remote_staging_failed");
+      expect(await readFile(targetPath, "utf8")).toBe("prior launch file");
+      expect(await readdir(dirname(targetPath))).toEqual(["auth.json"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])("rejects an SSH file destination that resolves to a directory (linked: %s)", async linked => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-directory-"));
+    try {
+      const sourcePath = join(root, "selected"), outside = join(root, "outside");
+      const targetPath = linked ? join(root, "directory-link") : outside;
+      await writeFile(sourcePath, "selected launch file");
+      await mkdir(outside);
+      await writeFile(join(outside, "keep"), "untouched");
+      if (linked) await symlink(outside, targetPath);
+      const execute = vi.fn(async (command: { command: string; args: string[]; stdin?: string }) => {
+        const result = spawnSync(command.command, command.args, { input: command.stdin, encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await expect(stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 })).rejects.toThrow("runner_remote_staging_failed");
+      expect(await readdir(outside)).toEqual(["keep"]);
+      expect(await readFile(join(outside, "keep"), "utf8")).toBe("untouched");
+      expect((await readdir(root)).filter(name => name.startsWith(".paperclip-runner-file."))).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("stages and verifies read-only context with non-contiguous archive entries", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-readonly-restore-"));
     const sourcePath = join(root, "source");

@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -147,6 +147,24 @@ it("refuses source credentials when safe recovery configuration is missing", asy
   await expect(stageRemoteLaunchAssets({ ...f.input, scope: "recovery" })).rejects.toThrow("runner_remote_codex_recovery_config_missing");
   expect(write).not.toHaveBeenCalled();
   expect(existsSync(join(f.remote, "auth.json"))).toBe(false);
+});
+
+it.each(["auth.json", "config.toml"])("rejects a retained hard-linked launch file before a write through its inode (%s)", async name => {
+  const f = await filesystemFixture();
+  f.input.transport = "ssh";
+  writeFileSync(join(f.root, "codex-home", "auth.json"), "selected credential", { mode: 0o600 });
+  mkdirSync(f.remote, { recursive: true });
+  const outside = join(f.root, "outside-file");
+  writeFileSync(outside, "untouched");
+  linkSync(outside, join(f.remote, name));
+  const write = vi.fn(async ({ sourcePath, targetPath }: { sourcePath: string; targetPath: string }) => {
+    writeFileSync(targetPath, readFileSync(sourcePath));
+  });
+  f.input.stageFile = write;
+  const result = stageRemoteLaunchAssets({ ...f.input, scope: "recovery" });
+  await expect(result).rejects.toThrow("runner_remote_codex_credentials_path_invalid");
+  expect(write).not.toHaveBeenCalled();
+  expect(readFileSync(outside, "utf8")).toBe("untouched");
 });
 
 it("replaces poisoned provider routing before restoring credentials and keeps retained skills", async () => {

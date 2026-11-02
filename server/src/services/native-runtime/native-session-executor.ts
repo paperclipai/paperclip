@@ -11032,10 +11032,15 @@ export async function stageRemoteRunnerFile(input: {
   }
   const bytes = readFileSync(input.sourcePath);
   const directory = posix.dirname(input.targetPath);
+  const escapedDirectory = directory.replaceAll("'", "'\\''");
+  const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
   const script =
-    `umask 077; mkdir -p '${directory.replaceAll("'", "'\\''")}' && ` +
-    `base64 -d > '${input.targetPath.replaceAll("'", "'\\''")}' && ` +
-    `chmod ${input.mode.toString(8)} '${input.targetPath.replaceAll("'", "'\\''")}'`;
+    `umask 077; mkdir -p '${escapedDirectory}' && ` +
+    `paperclip_stage_file=$(mktemp '${escapedDirectory}/.paperclip-runner-file.XXXXXX') && ` +
+    `trap 'rm -f "$paperclip_stage_file"' EXIT HUP INT TERM && ` +
+    `base64 -d > "$paperclip_stage_file" && ` +
+    `chmod ${input.mode.toString(8)} "$paperclip_stage_file" && ` +
+    `[ ! -d '${escapedTarget}' ] && mv -f "$paperclip_stage_file" '${escapedTarget}'`;
   const result = await runner.execute({
     command: "sh",
     args: ["-c", script],

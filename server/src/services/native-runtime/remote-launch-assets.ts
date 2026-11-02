@@ -72,7 +72,7 @@ for (const segment of relative.split(path.sep)) {
 }
 for (const name of ["auth.json", "config.toml"]) {
   const file = fs.lstatSync(path.join(current, name), { throwIfNoEntry: false });
-  if (file && (!file.isFile() || file.isSymbolicLink())) throw Error("unsafe_codex_launch_file");
+  if (file && (!file.isFile() || file.isSymbolicLink() || file.nlink > 1)) throw Error("unsafe_codex_launch_file");
 }
 `;
 
