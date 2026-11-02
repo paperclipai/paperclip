@@ -1,3 +1,4 @@
+import { readConnectionGrantCredentialState } from "../connection-credentials.js";
 import { randomUUID } from "node:crypto";
 import { notifyGitHubCredentialChange } from "../github-connection-notifications.js";
 import type { ActorInfo } from "./types.js";
@@ -394,4 +395,46 @@ export function githubGrantContinuityDeadline(
 export function githubContinuityRevision(grant: Pick<typeof connectionGrants.$inferSelect, "providerTenant">): string {
   return JSON.stringify([grant.providerTenant?.oauth?.accessTokenExpiresAt, grant.providerTenant?.oauth?.refreshedAt,
     grant.providerTenant?.github?.lastAccessRefreshAt, grant.providerTenant?.github?.bindingSync?.id]);
+}
+
+export async function readIdleGitHubGrantContinuity(tx: Pick<Db, "select">, now: number) {
+  const rows = await tx.select({ grant: connectionGrants, connection: toolConnections, companyStatus: companies.status })
+    .from(connectionGrants).leftJoin(toolConnections, eq(toolConnections.id, connectionGrants.connectionId))
+    .leftJoin(companies, eq(companies.id, connectionGrants.companyId))
+    .where(and(eq(connectionGrants.status, "active"), sql`${connectionGrants.providerTenant}->'github' IS NOT NULL`))
+    .orderBy(connectionGrants.id).limit(10_001);
+  const proof = projectIdleGitHubGrantContinuity(rows, now);
+  if (proof.blocked) return proof;
+  const credentials: unknown[] = [];
+  const eligible = new Set(proof.connectionIds);
+  for (const row of rows) {
+    if (!row.connection || !eligible.has(row.connection.id)) continue;
+    const state = await readConnectionGrantCredentialState(tx, row.connection, row.grant);
+    if (!state) return { ...proof, blocked: true, connectionIds: [], deadlines: [] };
+    credentials.push([row.grant.id, state]);
+  }
+  return { ...proof, state: [rows, credentials] };
+}
+export function projectIdleGitHubGrantContinuity(rows: {
+  grant: typeof connectionGrants.$inferSelect;
+  connection: typeof toolConnections.$inferSelect | null;
+  companyStatus: string | null;
+}[], now: number) {
+  const deadlines: number[] = [];
+  const connectionIds = new Set<string>();
+  const blocked = () => ({ blocked: true, state: rows, deadlines: [], connectionIds: [] as string[] });
+  if (rows.length > 10_000) return blocked();
+  for (const { grant, connection, companyStatus } of rows) {
+    if (!connection || connection.companyId !== grant.companyId || !companyStatus) return blocked();
+    if (companyStatus !== "active" || connection.status !== "active" || !connection.enabled) continue;
+    const oauth = asRecord(grant.providerTenant?.oauth);
+    const github = grant.providerTenant?.github;
+    if (!github || github.bindingSync || github.continuityRetry || oauth.refreshLease) return blocked();
+    const deadline = githubGrantContinuityDeadline(connection, grant);
+    if (deadline === null || !Number.isFinite(deadline) || deadline <= now) return blocked();
+    if (!grant.credentialSecretRefs.some(ref => ref.configPath === "oauth.access_token")) return blocked();
+    deadlines.push(deadline);
+    connectionIds.add(connection.id);
+  }
+  return { blocked: false, state: rows, deadlines, connectionIds: [...connectionIds].sort() };
 }

@@ -56,9 +56,17 @@ Use New task from the global launcher, task list, or project task view.
 
 ### `task-list`
 
+Scheduled ordinary monitor waits display **Monitoring** with a blue clock in
+current task indicators, groups, board columns, and filters. Compare Monitoring
+with In Progress, then start the check and verify the status returns to its
+execution presentation. Retained monitors must not override blocked/review or
+terminal states. Inspect due/overdue copy separately; no runner is implied.
+
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 Filters → **Routine tasks** selects tasks created by routine runs. The
-`/issues?view=all&originKind=routine_execution` link opens that selection.
+`/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` link opens that selection with newest-created tasks first. Sort controls update
+`sortField` and `sortDir` in the URL. Reloads and task return links keep that order.
+Shared sort links also retain their order when opened in another task interface.
 
 ### `task-detail`
 

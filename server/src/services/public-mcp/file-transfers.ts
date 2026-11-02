@@ -80,13 +80,22 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
   }
   async function sweep() {
     await db.delete(mcpFileTickets).where(lt(mcpFileTickets.expiresAt, new Date()));
-    // Serialize cleanup against completion/reissue. Never remove a committed file.
+    // Serialize cleanup against completion/reissue. Requalify old optimistic
+    // cleanup and orphaned removed attachments, never a still-linked file.
     await db.transaction(async tx => {
-      const abandoned = await tx.select().from(mcpAttachmentUploads).where(and(isNull(mcpAttachmentUploads.attachmentId), isNull(mcpAttachmentUploads.cleanedAt), lt(mcpAttachmentUploads.expiresAt, new Date()))).limit(20).for("update", { skipLocked: true });
+      const abandoned = await tx.select().from(mcpAttachmentUploads).where(and(
+        isNull(mcpAttachmentUploads.cleanupVerifiedAt), lt(mcpAttachmentUploads.expiresAt, new Date()),
+        sql`(${mcpAttachmentUploads.attachmentId} IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue_attachments attachment WHERE attachment.id = ${mcpAttachmentUploads.attachmentId}))`,
+      )).limit(20).for("update", { skipLocked: true });
       for (const upload of abandoned) {
         if (upload.storageProvider !== storage.provider) continue;
         await storage.deleteObject(upload.companyId, upload.objectKey);
-        await tx.update(mcpAttachmentUploads).set({ cleanedAt: new Date() }).where(eq(mcpAttachmentUploads.id, upload.id));
+        if ((await storage.headObject(upload.companyId, upload.objectKey)).exists !== false) {
+          throw new Error("MCP upload storage cleanup could not be confirmed");
+        }
+        const verifiedAt = new Date();
+        await tx.update(mcpAttachmentUploads).set({ cleanedAt: verifiedAt, cleanupVerifiedAt: verifiedAt }).where(eq(mcpAttachmentUploads.id, upload.id));
       }
     });
   }
@@ -133,6 +142,7 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
     const published = await db.transaction(async tx => {
       const [upload] = await tx.select().from(mcpAttachmentUploads).where(eq(mcpAttachmentUploads.id, row.uploadId!)).for("update");
       if (!upload || upload.companyId !== principal.grant.companyId || upload.userId !== principal.grant.userId || upload.workSessionId !== row.workSessionId || upload.grantId && upload.grantId !== row.grantId || upload.storageProvider !== storage.provider) throw unavailable();
+      if (upload.expiresAt <= new Date() || upload.cleanedAt || upload.cleanupVerifiedAt) throw unavailable();
       if (upload.sha256 !== digest || upload.byteSize !== bytes.length || req.get("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== upload.contentType) throw new McpCapabilityError("Upload bytes, size or Content-Type do not match the requested file.");
       await taskAccess(principal, upload.taskId, principal.grant.purpose !== "agent", tx as unknown as Db, row.workSessionId ?? undefined);
       const stored = upload.attachmentId ? null : await storage.putFile({ companyId: upload.companyId, namespace: "mcp-transfers", objectKey: upload.objectKey, originalFilename: upload.originalFilename, contentType: upload.contentType, body: bytes });
@@ -200,7 +210,11 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
             objectKey: `${p.grant.companyId}/mcp-transfers/${id}`, storageProvider: storage.provider, expiresAt: new Date(Date.now() + lifetime) }).returning();
         }
         if (!found || found.argumentsHash !== hash) throw new McpCapabilityError("requestId was already used for a different upload.");
-        await tx.update(mcpAttachmentUploads).set({ expiresAt: new Date(Date.now() + lifetime), cleanedAt: null }).where(eq(mcpAttachmentUploads.id, found.id));
+        // A committed identity is immutable, including after user deletion.
+        // A rejected replay must not erase verified cleanup or permit new bytes.
+        if (!found.attachmentId) await tx.update(mcpAttachmentUploads)
+          .set({ expiresAt: new Date(Date.now() + lifetime), cleanedAt: null, cleanupVerifiedAt: null })
+          .where(eq(mcpAttachmentUploads.id, found.id));
         return found;
       });
       if (upload.attachmentId) {

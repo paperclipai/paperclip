@@ -1028,6 +1028,13 @@ receipt preserves the original skipped receipt and older failed native result.
 Current access and normal native stop/cleanup guards still govern execution;
 board wake metadata alone cannot manufacture chat authority or replay old work.
 
+After a successful connected run, board Retry can resume a newer deferred inbound
+receipt through the original chat owner. It rechecks the board's current task
+permission and the saved source's current authority, and waits for prior cleanup.
+It grants no permission to replay the successful result or manufacture a chat
+request. Concurrent clicks share the canonical retry receipt; completed tasks
+and superseding execution retire unadmitted retry intent.
+
 Deferred chat Retry excludes independent board queues from its pinned batch.
 An explicit board Retry can restore a historical mixed batch only with exact
 never-started evidence, current source authority, unchanged board comments and

@@ -1901,6 +1901,49 @@ name to `sandbox.daytona.<name>`. The host maps any other value to
 daytona provider emits these spans today, so the segment is the literal
 `daytona`.
 
+### Daytona lease acquisition and resume
+
+The worker invocation carries nested, monotonic timing receipts for lease work.
+The host also admits the following fixed `lease.*` names and prefixes them with
+`sandbox.daytona.`. These use the existing opt-in endpoint and host-owned parent
+context; they do not create an exporter or first-party Telemetry events.
+
+```text
+execution.plugin_dispatch
+└── plugin.worker
+    ├── sandbox.daytona.lease.wait_for_teardown  (only when teardown blocks resume)
+    ├── sandbox.daytona.lease.lookup
+    ├── sandbox.daytona.lease.refresh            (missing-container confirmation)
+    ├── sandbox.daytona.lease.channel_cleanup    (before restart)
+    ├── sandbox.daytona.lease.start              (or lease.recover)
+    └── sandbox.daytona.lease.verify
+        ├── sandbox.daytona.lease.workspace
+        ├── sandbox.daytona.lease.sentinel
+        └── sandbox.daytona.lease.shell
+```
+
+`lease.lookup` includes cached-handle lookup and any required provider refresh.
+`lease.start` and `lease.recover` measure the actual SDK operation, including its
+internal readiness wait. They also cover starts triggered by execution or sync.
+They do not separate SDK-internal requests or provider-side queue time.
+Their `paperclip.sandbox.startup.state` attribute records the state before the
+call: `started`, `stopped`, `archived`, `error`, or `other`. Both the plugin and
+host restrict this value; no provider error text or resource identity is sent.
+
+Fresh acquisition emits `lease.create`, `lease.workspace`, `lease.shell`,
+`lease.expiry`, and `lease.sentinel`. `lease.create` covers the existing creation
+helper, including qualification-only snapshot resolution and creation-failure
+cleanup. Setup-failure deletion is a separate `lease.cleanup` sibling, so it
+does not inherit a failed workspace or verification phase. Existing deadlines,
+ownership, cleanup and retry behavior are unchanged. Failed awaited steps close
+with error status; the receipt contains no exception message.
+
+Children nest beneath the current `plugin.worker` receipt and verification
+children nest beneath `lease.verify`. Never add parent and child durations.
+Receipt budgets and clock validation still apply. Older workers without
+`tracer.withSpan` keep the original behavior without these detail spans. Tracing
+failures preserve the operation's result or error and never repeat it.
+
 The `sandbox.daytona.*` spans use this closed attribute allowlist. The host
 drops every other key, so a command, an argument, a path, an id, a standard
 output, or a standard error never rides a provider span. The host records only
@@ -1909,6 +1952,7 @@ the attributes that the producer sends for one span.
 | Attribute                                        | Type   | Optional | Meaning                                                                                                   |
 | ------------------------------------------------ | ------ | -------- | --------------------------------------------------------------------------------------------------------- |
 | `paperclip.sandbox.startup.provider`             | string | no       | The normalized provider family.                                                                           |
+| `paperclip.sandbox.startup.state`                | string | yes      | State before start/recovery: `started`, `stopped`, `archived`, `error`, or `other`.                            |
 | `paperclip.sandbox.startup.outcome`              | string | yes      | The step outcome (`ok`, `skipped`, or `failed`).                                                          |
 | `paperclip.sandbox.startup.pack.wall_ms`         | number | yes      | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span.                      |
 | `paperclip.sandbox.startup.transfer.wall_ms`     | number | yes      | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span.                         |

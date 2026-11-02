@@ -181,82 +181,31 @@ backlog is 5/5 and delegation is 5/6. The local
 `results/chat-feature-recheck/verification.md` records the follow-up evidence;
 its standard dashboard is explicitly scoped to the latest campaign.
 
-## TestOps completion pilot
+## Retired TestOps plans
 
-The separate `Chat completion TestOps` workflow connects only these preserved
-catalog cases to the private Paperclip Evals project:
+The one-case **Chat feature evals** plan and three-case
+**Chat completion pilot — OpenCode 1017** plan are retired. Their scenarios are
+included in the [full catalog](#full-catalog-in-testops). Use that plan or select
+cases from it; do not recreate the smoke or pilot plans.
 
-- `projects.project-work`
-- `projects.project-defaults`
-- `instance-operations.restart-service`
+The former `chat-feature-testops.yml` and `chat-completion-testops.yml` workflows
+are removed. Their bootstrap functions reject registration before any API call
+or mutation marker. Shared transport, evidence, export and verification helpers
+remain for the full-catalog workflow and retained historical evidence. Retiring a
+plan does not delete its cases, results, launches or private evidence.
 
-It evaluates the immutable catalog source in
-`chat-completion-testops-contract.mjs`. This keeps the broader catalog on its
-integration branch. The source includes the bounded TestOps host prerequisite
-from #18515. Changing the pin requires source review. The original DeepSeek
-1017 model, case clocks, independent checks, and zero retries remain fixed.
-Source registration does not establish a new live result.
-
-Run the named plan **Chat completion pilot — OpenCode 1017** in TestOps. The
-adapter validates the actual project, plan, job, launch and selected cases before
-build or provider access. A selected subset runs only those cases. The AWS matrix
-has concurrency one and does not cancel sibling cases after a failure.
-
-The main-only reporter uses the existing protected `ALLURE_TOKEN`; the evaluated
-app and worker never receive it. Original evidence stays in the existing private
-AWS storage with the unchanged validators, scanners, byte bounds and exact-key
-policies. A separate trusted projection carries verdicts, checks, accounting and
-private-evidence receipts. The final PNGs are verified in protected storage;
-only their checksums and availability are recorded in TestOps. GitHub artifacts
-contain metadata only. Raw logs, screenshots, hidden
-reasoning, API snapshots, credentials and provider sessions are not attachments.
-Original failed grades and cleanup failures remain failed. Same-run readback
-requires matching results and complete result-owned attachment metadata within
-the existing bounded processing window; it does not claim remote byte hashes.
-
-Initial setup uses the existing workflow operations:
-
-1. Dispatch reviewed `master` once with `operation=bootstrap`. This creates or
-   reconciles only the three exact automated cases and the dedicated plan. It
-   registers the GitHub job with an empty Allure results directory. It reuses
-   only the existing enabled GitHub integration from
-   `CHAT_TESTOPS_INTEGRATION_ID`. No model or fabricated result is created.
-   The observation receipt captures a closed parameter-shape inspection before
-   binding. Only the observed single `Branch/defaultValue` definition for
-   `refs/heads/master` is accepted. Bootstrap enables the job and assigns cases
-   while preserving that definition; the plan uses its default branch.
-   Assignment inspection records unassigned and existing-job counts before
-   binding. A single unassigned bucket must cover the exact selected cases;
-   foreign jobs and unknown or incomplete buckets stop before writes.
-2. Read the closed registration receipt. Store its observed `binding` JSON as
-   `CHAT_COMPLETION_TESTOPS_BINDING` in `runner-e2e-testops-reporting`.
-3. Use TestOps **Run**. For the initial operator launch, set an exact next
-   workflow run number in `CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER`, set a new
-   32-hex `CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE`, then dispatch `launch-plan`
-   once. Its request produces the TestOps-owned `evaluate` dispatch. Do not
-   manually dispatch an additional evaluation after an uncertain launch.
-4. Verify the fresh TestOps launch, all selected case results, source links,
-   independent checks, private-evidence receipts and cleanup. Inspect screenshots
-   through authenticated private-history retrieval. Retain earlier failed attempts.
-
-Launch preflight searches use TestOps' typed name filter, encoded as Base64 of
-UTF-8 JSON in the `search` query parameter. Plain name text returns HTTP 400.
-The backlog and completion launchers share this encoding; the full-catalog
-launcher uses the completion adapter. Existing nonce and once-only guards still
-apply before a plan-run request.
-
-The runtime accepts only `operation`, `ALLURE_JOB_RUN_ID` and reserved username
-metadata. It rejects arbitrary source/model/budget selectors, branch workflows,
-replays and foreign cases. All secret-bearing jobs recheck actual GitHub run and
-actor identities. The existing one-case backlog plan remains independent.
+Retained launch helpers encode TestOps name filters as Base64 of UTF-8 JSON in
+`search`. Plain name text returns HTTP 400. Their nonce and once-only guards
+remain unchanged; this transport contract does not restore the retired plans.
 
 ## Full catalog in TestOps
 
 The [Chat catalog TestOps workflow](../../.github/workflows/chat-catalog-testops.yml)
 registers all 244 scenarios from the 35 YAML areas in a separate
 **Chat feature catalog — OpenCode 1017 (candidate)** plan. Its source-derived
-manifest is `chat-full-catalog-testops-manifest.json`. The existing backlog plan
-and three-case completion pilot keep their own jobs, selections and history.
+manifest is `chat-full-catalog-testops-manifest.json`. This is the active chat
+plan. The former backlog and three-case pilot plans are retired; their cases
+and measured history are preserved.
 Legacy aliases reuse existing TestOps case identities without renaming them.
 
 The catalog contains 236 Agent Chat routes, five browser boundaries, one external
@@ -322,77 +271,3 @@ and credentials do not enter the public artifact path. Additional credentials
 reach only cases that declare them. External inputs use the existing selected-case
 private-input owner, disposable-resource checks and oracle commitments.
 Unconfigured inputs remain setup blockers.
-
-## TestOps-backed AWS backlog cell
-
-The dedicated `Chat feature TestOps` workflow accepts only the shipped default
-branch and the fixed OpenCode backlog cell. `evaluate` is the default operation
-and requires TestOps' `ALLURE_JOB_RUN_ID`. A protected reporting job verifies the
-project, singleton plan, assigned public workflow, selected case and current
-GitHub run before any build or provider access. The evaluated process receives
-no TestOps token. It retains the original one-query, one-work-run, 120-second
-turn, 420-second attempt, 300-second settled-state and zero-retry limits.
-
-Two metadata operations prepare that route. `bootstrap` registers the actual
-public CI job through pinned `allurectl` with an empty results directory and
-reconciles only the dedicated case and singleton plan. It produces no passing
-test result. After the registered job and protected case/plan/job identifiers
-are verified, `launch-plan` sends one TestOps plan-run request and exits.
-The TestOps job then dispatches `evaluate`; an operator must not dispatch a
-second evaluation manually. Missing or ambiguous registration and selection
-metadata stops before inference.
-
-The workflow reuses the existing AWS fleet and strict private evidence storage.
-Its shipped-main authority is separate from manual candidate approval. Original
-logs, provider records and failure evidence remain private. The reporting adapter
-exports only a source/run-bound normalized result, JUnit and screenshots already
-marked by the owned fixture screenshot producer with matching file hashes.
-A separate protected reporting job converts that projection to the exact TestOps
-case. Failed grades and cleanup failures remain failed.
-
-Reporting setup uses the master-only `runner-e2e-testops-reporting` environment,
-with the existing reporting token delivered through the reviewed sealed-box
-bootstrap. `CHAT_TESTOPS_CASE_ID`, `CHAT_TESTOPS_PLAN_ID` and
-`CHAT_TESTOPS_JOB_ID` must name the observed dedicated mapping; the numeric
-`CHAT_TESTOPS_GITHUB_WORKFLOW_ID` supports TestOps' registered workflow URL.
-No arbitrary source, model, case, retry or budget input is accepted.
-
-The initial `launch-plan` administrator operation also requires a protected
-`CHAT_TESTOPS_LAUNCH_RUN_NUMBER`. After registration, the trusted operator creates
-this variable once with the reviewed next workflow run number and reads it back.
-The launcher compares GitHub's actual run number, attempt, workflow, source and
-actors before any TestOps mutation. A later dispatch or replay cannot reuse that
-approved number. Missing or uncertain metadata stops; an uncertain request needs
-reconciliation rather than a new send. The nonce and launch search provide
-additional evidence. Normal TestOps **Run** uses `evaluate` and is independent of
-this one-time administrator fence. The launch nonce is protected configuration,
-not a dispatch input. Job parameter IDs are opaque. The launcher preserves the
-API's exact ID/value pair for `refs/heads/master` and uses the fixed workflow's
-`evaluate` default. An operation parameter is used only when the protected
-`CHAT_TESTOPS_OPERATION_PARAMETER_ID` matches a returned ID with a `bootstrap`
-or `evaluate` value; the launcher then sets it to `evaluate`. Other values,
-duplicate IDs and conflicting configuration are rejected. No relationship to
-global environment-variable IDs or names is inferred.
-
-`CHAT_TESTOPS_INTEGRATION_ID` names the reviewed existing project GitHub
-integration. The launcher verifies its project, type and enabled state, then binds
-only the newly registered public job to it. It never changes integration settings
-or credentials. Since the job response does not expose that association, only the
-real TestOps-to-GitHub dispatch can qualify it.
-
-After `allurectl watch` finishes, the same protected reporter checks the actual
-TestOps job-run, launch, selected case, result source/status and attachment
-metadata. Processing reads are bounded to 12 polls, five-second gaps and a
-120-second processing deadline. Unknown or missing results remain unverified.
-The check downloads no attachment content and claims no server-side attachment
-byte hash. Its closed receipt is retained separately. An upload success alone
-is not a passing feature result, and verifying an original failure cannot turn
-that failure into a pass.
-
-Build and worker installs use the existing reviewed report-lock policy. Only its
-committed input or output lock is accepted; its authenticated correction is the
-only allowed normalization. Dependency manifests, patch inputs and policy must
-remain unchanged. Installs are frozen with lifecycle scripts disabled. The
-credential-free build rechecks that boundary before packaging, and the worker
-matches the source/lock receipt before installing. Arbitrary resolver drift is
-rejected before provider access.

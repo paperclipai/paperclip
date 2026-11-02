@@ -145,6 +145,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await row(call.id)).toBeUndefined(); expect(coordinator!.nextWakeAt()).toBeNull(); await quiet();
   });
   it("rounds PostgreSQL submillisecond deadlines up and never deletes early", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: false });
     const call = await admission(); const dueAt = Math.trunc(Date.now()) + 60_000;
     await db.execute(sql`UPDATE chat_voice_inbound_calls SET updated_at = to_timestamp(${dueAt - week}::double precision / 1000) + interval '0.0005 seconds' WHERE id = ${call.id}`);
     const service = voiceInboundRetention(db), [entry] = await service.load({ kind: "admission", id: call.id });
