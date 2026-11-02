@@ -21,6 +21,16 @@ Git metadata. New regressions cover both available and unavailable OS birth time
 The two-second startup limit and release gates remain unchanged. Linux release
 verification must pass before the new source can enter hosted qualification.
 
+The follow-up is [#18649](https://github.com/paperclipai/paperclip/pull/18649).
+Its first head received two 5/5 reviews and passed every CI test shard except
+an existing voice-retention precision test. That test advances its fake clock
+automatically while asserting behavior across a one-millisecond boundary. A
+controlled 60 ms database-entry delay reproduced the exact failure. Holding the
+clock fixed makes the same assertion pass with that delay; the final correction
+only disables automatic clock advancement in that one precision test. The
+original CI failure and both controlled results are retained. No production
+voice code or assertion was weakened.
+
 The earlier ten-roll result remains evidence for its recorded images. Neither
 the cleanup fix nor the controller-identity follow-up has reached the staging
 fixture. Final acceptance still requires a qualified compatible image pair,
