@@ -3,13 +3,6 @@ import { and, eq } from "drizzle-orm";
 import { deliveryAttestations, heartbeatRuns, issues, projectWorkspaces, type Db } from "@paperclipai/db";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
-/**
- * The delivery target an issue's `workspace_delivery` requirement resolves
- * to, derived only from server-held configuration (never from caller input).
- * A `project_primary` folder whose repository locator is null is not a
- * repository checkout (doc/execution-semantics.md) and resolves to `null`
- * here, so it can never produce or satisfy an attestation.
- */
 export async function resolveWorkspaceDeliveryTargetFingerprint(
   db: Db,
   input: { companyId: string; projectWorkspaceId: string | null },
@@ -23,14 +16,6 @@ export async function resolveWorkspaceDeliveryTargetFingerprint(
   return createHash("sha256").update(`${workspace.repoUrl}@@${workspace.repoRef ?? ""}`).digest("hex");
 }
 
-/**
- * Records that `runId` delivered its issue's workspace_delivery target.
- * Both `declarationRevision` and `targetFingerprint` are resolved here from
- * server state, never accepted from the caller, so a run cannot claim a
- * revision or target it didn't actually run against. One attestation per
- * run (enforced by a unique index on run_id): a retry reports from a new
- * run, producing a new row rather than rewriting earlier evidence.
- */
 export async function recordDeliveryAttestation(
   db: Db,
   input: {
@@ -97,13 +82,6 @@ export async function recordDeliveryAttestation(
   return attestation;
 }
 
-/**
- * Terminal-gate lookup: a `succeeded` attestation only satisfies completion
- * when it was generated for the issue's current completion-requirement
- * revision AND the current target fingerprint. Scoping by both prevents a
- * stale attestation from before a workspace reconfiguration (a different
- * `targetFingerprint`) from satisfying a later, unrelated delivery.
- */
 export async function findSucceededAttestation(
   db: Db,
   input: { companyId: string; issueId: string; declarationRevision: number; targetFingerprint: string },
@@ -124,12 +102,6 @@ export async function findSucceededAttestation(
   return attestation ?? null;
 }
 
-/**
- * Terminal `done`-transition gate for `workspace_delivery` issues
- * (doc/execution-semantics.md, "Terminal transition contract"). No-op for
- * any other (including null/undefined) completion requirement, so no
- * pre-existing issue's behavior changes.
- */
 export async function assertDeliveryAttestationSatisfied(
   db: Db,
   input: { companyId: string; issueId: string; projectWorkspaceId: string | null; completionRequirement: string | null; completionRequirementRevision: number },
