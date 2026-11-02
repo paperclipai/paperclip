@@ -257,14 +257,17 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
     };
 
     const scopes: Scope[] = [];
+    const degradedOwners = new Set<string>();
     const { owners, failed: listingFailed } = await listTranscriptDirs(root);
     if (listingFailed) result.failed++;
     for (const owner of owners) {
+      const ownerKey = `${owner.companyId}\0${owner.agentId}`;
       const transcriptsDir = transcriptsDirOf(root, owner);
       await settleLeftovers(transcriptsDir).catch((err) => logger.warn({ err }, "managed Claude transcript cleanup skipped leftovers"));
       const { names, failed: scanFailed } = await readdirOrFail(transcriptsDir);
       if (scanFailed) {
         result.failed++;
+        degradedOwners.add(ownerKey);
         logger.warn({ ...owner }, "managed Claude transcript cleanup could not list a transcripts directory");
         continue;
       }
@@ -275,6 +278,7 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
           scopes.push({ ...owner, dir, task: await readTaskKey(dir) });
         } catch (err) {
           result.failed++;
+          degradedOwners.add(ownerKey);
           logger.warn({ err, ...owner }, "managed Claude transcript cleanup could not read a task file");
         }
       }
@@ -295,7 +299,9 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
       result.checked++;
       cursor = scope.dir;
       try {
-        const sessionInUse = Boolean(scope.task) && inUse.has(`${path.dirname(scope.dir)}\0${scope.task!.taskKey}`);
+        const sessionInUse =
+          (Boolean(scope.task) && inUse.has(`${path.dirname(scope.dir)}\0${scope.task!.taskKey}`)) ||
+          degradedOwners.has(`${scope.companyId}\0${scope.agentId}`);
         await expireScope(scope, cutoff, retentionDays, sessionInUse, result);
       } catch (err) {
         result.failed++;

@@ -306,6 +306,33 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     }
   });
 
+  it("keeps a task session when a sibling scope's task file can't be read this tick", async () => {
+    const seeded = await seed({ closedDaysAgo: 10, lastUsedDaysAgo: 9 });
+    const unreadableScopeDir = path.join(seeded.transcriptsDir, randomBytes(8).toString("hex"));
+    await fs.mkdir(path.join(unreadableScopeDir, "projects", "-workspace"), { recursive: true });
+    await fs.writeFile(path.join(unreadableScopeDir, "projects", "-workspace", "session.jsonl"), "turn");
+    const unreadableTaskFile = path.join(unreadableScopeDir, "task.json");
+    await fs.writeFile(unreadableTaskFile, JSON.stringify({ taskKey: seeded.taskKey }));
+
+    const readFile = fs.readFile.bind(fs);
+    const spy = vi.spyOn(fs, "readFile").mockImplementation((async (...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]) === unreadableTaskFile) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      return readFile(...args);
+    }) as typeof fs.readFile);
+
+    try {
+      const result = await service().tick();
+
+      expect(result.failed).toBeGreaterThan(0);
+      expect(result.clearedTaskSessions).toBe(0);
+      expect(await taskSessionCount()).toBe(1);
+      expect(await exists(seeded.scopeDir)).toBe(false);
+      expect(await exists(unreadableScopeDir)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("continues a bounded batch on the next tick", async () => {
     await seed();
     await seed();
