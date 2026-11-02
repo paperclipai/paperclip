@@ -123,7 +123,8 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
-import { isNativeRunnerOwnershipHeld } from "../native-runtime/native-runner-ownership.js";
+import { isNativeRunnerOwnershipHeld, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
+import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
   withCurrentBudgetEnforcement,
   type BudgetEnforcementScope,
@@ -177,6 +178,7 @@ export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof 
   Pick<ReturnType<typeof createHeartbeatLifecycle>,
     "mergeRunStopMetadataForAgent" | "setRunStatusFromLive" | "setRunStatus" | "setWakeupStatus" | "appendRunEvent">,
   Pick<HeartbeatRetryDependencies, "finalizeAgentStatus"> {
+  verifyStartupCleanup?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>;
   options: {
     closeWarmNativeSessionsForRun?: (input: {
       runId: string;
@@ -1399,13 +1401,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }
           let terminationSettled = false;
           try {
-            await cancelHeartbeatNativeRun({
-              db,
-              runId: run.id,
-              reason,
-              runtimeMode: run.runtimeMode,
-              ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
-            });
+            const startupCleanupRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
+            if (startupCleanupRun && readNativeStartupCleanup(startupCleanupRun) && !control && !running && !activeRunExecutions.has(run.id)) {
+              if (!dependencies.verifyStartupCleanup) throw conflict("Native startup cleanup worker unavailable");
+              await dependencies.verifyStartupCleanup(startupCleanupRun);
+            } else {
+              await cancelHeartbeatNativeRun({
+                db,
+                runId: run.id,
+                reason,
+                runtimeMode: run.runtimeMode,
+                ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
+              });
+            }
             if (running) {
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
@@ -1466,12 +1474,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }
 
           const finishedAt = new Date();
-          const persistedCancellationResult =
-            run.runtimeMode === "native"
-              ? await getRun(run.id).then((current) =>
-                  parseObject(current?.resultJson),
-                )
-              : {};
+          let persistedCancellationRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
+          if (persistedCancellationRun && readNativeStartupCleanup(persistedCancellationRun)) {
+            if (!dependencies.verifyStartupCleanup) throw conflict("Native startup cleanup worker unavailable");
+            await dependencies.verifyStartupCleanup(persistedCancellationRun);
+            persistedCancellationRun = await getRun(run.id);
+          }
+          const persistedCancellationResult = parseObject(persistedCancellationRun?.resultJson);
           return await setRunStatusFromLive(
             run.id,
             "cancelled",
@@ -1520,12 +1529,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                               persistedCancellationResult.nativeCancellation,
                           }
                         : {}),
+                      ...(Object.hasOwn(persistedCancellationResult, "nativeStartupCleanup")
+                        ? { nativeStartupCleanup: persistedCancellationResult.nativeStartupCleanup } : {}),
                     },
                   }
                 : {}),
             },
             undefined,
-            pendingNativeRetry ? nativeRetryCancellationCommitCondition(persistedCancellationResult) : undefined,
+            and(pendingNativeRetry ? nativeRetryCancellationCommitCondition(persistedCancellationResult)
+              : persistedCancellationRun && readNativeStartupCleanup(persistedCancellationRun) ? and(nativeRunnerOwnershipNotHeldCondition(),
+                sql`not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${run.id} and ${nativeRunFinalizations.resultId} is not null)`)
+                : undefined,
+              run.runtimeMode === "native" ? sql`coalesce(${heartbeatRuns.resultJson}->'nativeStartupCleanup'->>'state', '') <> 'pending'` : undefined),
           );
         } catch (error) {
           if (processCancellationSettlement) {
@@ -1557,6 +1572,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const cancelled = cancellation.run;
 
       if (cancellation.updated && cancelled) {
+        if (readNativeStartupCleanup(cancelled)) await acknowledgeNativeStartupCleanup(db, { companyId: cancelled.companyId, runId: cancelled.id });
         await setWakeupStatus(run.wakeupRequestId, "cancelled", {
           finishedAt: cancelled.finishedAt ?? new Date(),
           error: reason,

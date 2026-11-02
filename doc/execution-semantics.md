@@ -1960,6 +1960,24 @@ That is the execution contract Paperclip should present to operators.
 
 ### Cancellation during native startup
 
+Core supports verified cleanup for explicitly recorded startup obligations. This
+support does not create startup contexts, advertise transport support, or capture
+a transport binding. Existing callers retain their legacy payloads and startup
+budgets. This support alone makes no startup-latency claim.
+
+Restart recovery uses the claim breadcrumb only while the current run has no
+first session checkpoint and the prior controller and context deadlines have
+expired. A later preparation breadcrumb requires the stronger preparation-stop
+proof. A failed cleanup-intent write retains the original typed failure and
+rearms the existing restart retry after 30 seconds; the running run continues to
+block idle sleep. Recovery queues cleanup rather than replaying a provider. A completed result
+or a newer owner wins. The existing adopted-authentication and chat-workspace
+ownership holds retain their separate behavior. The startup budget does not bound
+the duration of remote cleanup. Existing Stop receipts and process cleanup still gate
+destructive lifecycle or binding changes. Operator plugin restarts and external
+machine changes can still interrupt startup.
+
+
 Cancellation records a preparation fence while holding the run row lock. Native
 runtime selection checks that fence, the running status, and the current startup
 controller lease in the same transaction that creates the native coordinator.
@@ -1997,6 +2015,15 @@ Admission atomically settles an unclaimed coordinator and admits one fresh turn,
 preserving history, unknown action outcomes, and attempt counts. Pauses, approvals,
 budgets, task ownership, and terminal task status still gate admission. No
 automatic provider replay is authorized by a cancelled startup.
+
+A failed cleanup attempt saves its next retry time in the existing control-work
+deadlines. The startup marker retains the original admission deadline. Both
+candidate batches use stable deadline order, and pending cleanup cannot enter
+ordinary forced finalization. A late replacement-task reply remains owned until
+its resource identity is durable. It is queued for cleanup instead of attached
+after cancellation. The old task's Stop receipt cannot settle cleanup of a new
+replacement task. A lost reply with no known resource identity remains unresolved
+until provider inspection or operator reconciliation establishes its outcome.
 
 ### Delivering queued messages after a legacy run stops
 
