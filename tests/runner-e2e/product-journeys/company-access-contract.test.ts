@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isolationAgentRunSnapshot, isolationEntryMatches, isolationTaskMatches, restrictedCreateAllowed, restrictedForeignDenied, restrictedPositiveControl, workspacePairMatches, type IsolationTask } from "./company-access-contract.js";
+import { isolationAgentRunIds, isolationAgentRunSnapshot, isolationEntryMatches, isolationTaskMatches, restrictedCreateAllowed, restrictedForeignDenied, restrictedPositiveControl, workspacePairMatches, type IsolationTask } from "./company-access-contract.js";
 
 const primary = { stackId: "qa-one", stackSlug: "one", companyId: "company-one", origin: "https://one.test.paperclip.app", displayName: "One", issuePrefix: "ONE" };
 const secondary = { stackId: "qa-two", stackSlug: "two", companyId: "company-two", origin: "https://two.test.paperclip.app", displayName: "Two", issuePrefix: "TWO" };
@@ -52,14 +52,30 @@ describe("Cloud company isolation evidence", () => {
   });
 });
 
-it("accepts only a complete, bound, settled actor run snapshot", () => {
+it("accepts only a complete, bound, settled actor run list", () => {
   const actor = { id: "actor", companyId: "company" };
   const row = { id: "past", agentId: actor.id, companyId: actor.companyId, status: "succeeded" };
-  expect(isolationAgentRunSnapshot([row], actor)).toEqual(["past"]);
-  expect(isolationAgentRunSnapshot([], actor)).toEqual([]);
+  expect(isolationAgentRunIds([row], actor)).toEqual(["past"]);
+  expect(isolationAgentRunIds([], actor)).toEqual([]);
   for (const patch of [{ agentId: "other" }, { companyId: "other" }, { status: "running" }, { nativePhase: "retryable_failure" }, { runId: "different" }])
+    expect(isolationAgentRunIds([{ ...row, ...patch }], actor)).toBeNull();
+  expect(isolationAgentRunIds([row, row], actor)).toBeNull();
+  expect(isolationAgentRunIds(Array.from({ length: 100 }, (_, id) => ({ ...row, id: String(id) })), actor)).toBeNull();
+  expect(isolationAgentRunIds(null, actor)).toBeNull();
+});
+
+it("requires detailed terminal native state and detects same-ID revisions", () => {
+  const actor = { id: "actor", companyId: "company" }, timestamp = "2026-11-01T12:00:00.000Z";
+  const row = { id: "past", agentId: actor.id, companyId: actor.companyId, status: "succeeded", runtimeMode: "native",
+    nativePhase: "committed", nativePhaseUpdatedAt: timestamp, updatedAt: timestamp, startedAt: timestamp, finishedAt: timestamp };
+  const before = isolationAgentRunSnapshot([row], actor);
+  expect(before).toHaveLength(1);
+  expect(isolationAgentRunSnapshot([], actor)).toEqual([]);
+  expect(isolationAgentRunSnapshot([{ ...row, runtimeMode: "legacy", nativePhase: null, nativePhaseUpdatedAt: null }], actor)).toHaveLength(1);
+  for (const patch of [{ nativePhase: "retryable_failure" }, { nativePhase: "result_accepted" }, { nativePhase: undefined },
+    { nativePhaseUpdatedAt: undefined }, { runtimeMode: undefined }, { updatedAt: undefined }, { finishedAt: null }, { updatedAt: "invalid" }, { companyId: "other" }])
     expect(isolationAgentRunSnapshot([{ ...row, ...patch }], actor)).toBeNull();
-  expect(isolationAgentRunSnapshot([row, row], actor)).toBeNull();
-  expect(isolationAgentRunSnapshot(Array.from({ length: 100 }, (_, id) => ({ ...row, id: String(id) })), actor)).toBeNull();
+  for (const field of ["nativePhaseUpdatedAt", "updatedAt", "startedAt", "finishedAt"])
+    expect(isolationAgentRunSnapshot([{ ...row, [field]: "2026-11-02T12:00:00.000Z" }], actor)).not.toEqual(before);
   expect(isolationAgentRunSnapshot(null, actor)).toBeNull();
 });

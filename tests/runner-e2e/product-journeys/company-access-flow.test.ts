@@ -8,7 +8,7 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign(
     async toContainText(value: string) { expect(locator.text).toContain(value); },
   }), { poll: (read: () => Promise<unknown>) => ({ async toBe(value: unknown) { expect(await read()).toBe(value); } }) },
 ) }));
-function system(newPrimaryRun: boolean) {
+function system(options: { newPrimaryRun?: boolean; retryableHistorical?: boolean; changedHistorical?: boolean; detailUnavailable?: boolean } = {}) {
   const primary: IsolationWorkspace = { stackId: "one", stackSlug: "one", companyId: "company-one", origin: "https://one.example.test", displayName: "One", issuePrefix: "ONE" };
   const secondary: IsolationWorkspace = { stackId: "two", stackSlug: "two", companyId: "company-two", origin: "https://two.example.test", displayName: "Two", issuePrefix: "TWO" };
   const workspaces = { primary, secondary }, actors = { primary: { kind: "agent" as const, id: "agent-one", companyId: primary.companyId }, secondary: { kind: "agent" as const, id: "agent-two", companyId: secondary.companyId } };
@@ -18,14 +18,30 @@ function system(newPrimaryRun: boolean) {
       createdByAgentId: agentId, createdByUserId: agentId ? null : "owner", status: "backlog", assigneeAgentId: null, assigneeUserId: null };
     tasks.set(value.id, value); return structuredClone(value);
   };
-  const historical = { id: "historical", companyId: primary.companyId, agentId: actors.primary.id, status: "succeeded" };
+  const historical = { id: "historical", companyId: primary.companyId, agentId: actors.primary.id,
+    status: options.retryableHistorical ? "failed" : "succeeded", runtimeMode: "native",
+    nativePhase: options.retryableHistorical ? "retryable_failure" : "committed",
+    nativePhaseUpdatedAt: "2026-11-01T12:00:00.000Z", updatedAt: "2026-11-01T12:00:00.000Z",
+    startedAt: "2026-11-01T11:00:00.000Z", finishedAt: "2026-11-01T12:00:00.000Z" };
+  // The real list projection omits runtimeMode, nativePhase and nativePhaseUpdatedAt.
+  const listed = (id = historical.id) => {
+    const { runtimeMode: _runtime, nativePhase: _phase, nativePhaseUpdatedAt: _phaseAt, ...row } = historical;
+    return { ...row, id };
+  };
   const apis = Object.fromEntries((["primary", "secondary"] as const).map(scope => [scope, {
     origin: workspaces[scope].origin,
     async post(_route: string, body: { title: string; description: string }) { return task(scope, body.title, body.description, null); },
     async get(route: string) {
       const url = new URL(route, workspaces[scope].origin);
       if (url.pathname === "/api/companies") return [{ id: workspaces[scope].companyId }];
-      if (url.pathname.endsWith("/heartbeat-runs")) return scope === "secondary" ? [] : [historical, ...(created && newPrimaryRun ? [{ ...historical, id: "new-outside-task" }] : [])];
+      if (url.pathname.endsWith("/heartbeat-runs")) return scope === "secondary" ? [] : [listed(), ...(created && options.newPrimaryRun ? [listed("new-outside-task")] : [])];
+      if (url.pathname.startsWith("/api/heartbeat-runs/")) {
+        if (options.detailUnavailable) throw new Error("detail_unavailable");
+        const id = url.pathname.split("/").at(-1)!;
+        return { ...historical, id, ...(created && options.changedHistorical ? {
+          nativePhaseUpdatedAt: "2026-11-02T12:00:00.000Z", updatedAt: "2026-11-02T12:00:00.000Z", finishedAt: "2026-11-02T12:00:00.000Z",
+        } : {}) };
+      }
       if (url.pathname.endsWith("/issues")) return [...tasks.values()].filter(row => row.companyId === workspaces[scope].companyId && row.title.includes(url.searchParams.get("q") ?? ""));
       if (url.pathname.endsWith("/runs")) return [];
       const row = tasks.get(url.pathname.split("/").at(-1)!);
@@ -66,12 +82,27 @@ function system(newPrimaryRun: boolean) {
 }
 describe("isolation agent work observation", () => {
   it("rejects a new primary run outside all four owned tasks", async () => {
-    const f = system(true);
+    const f = system({ newPrimaryRun: true });
     await expect(companyAccessIsolation(f.context, f.session, "journey-123-abcd1234", f.evidence)).rejects.toThrow("no_agent_work");
     expect(f.evidence.checks).toContainEqual({ id: "no-agent-work", passed: false });
   });
   it("accepts unchanged historical primary runs and zero work on owned tasks", async () => {
-    const f = system(false); await companyAccessIsolation(f.context, f.session, "journey-123-abcd1234", f.evidence);
+    const f = system(); await companyAccessIsolation(f.context, f.session, "journey-123-abcd1234", f.evidence);
     expect(f.evidence.checks).toContainEqual({ id: "no-agent-work", passed: true });
+  });
+  it("blocks retryable native history even when its terminal list row omits native phase", async () => {
+    const f = system({ retryableHistorical: true });
+    await expect(companyAccessIsolation(f.context, f.session, "journey-123-abcd1234", f.evidence)).rejects.toThrow("isolation_primary_run_baseline_unproven");
+    expect(f.evidence.checks).toEqual([]);
+  });
+  it("rejects resumed work that finishes under the same historical run ID", async () => {
+    const f = system({ changedHistorical: true });
+    await expect(companyAccessIsolation(f.context, f.session, "journey-123-abcd1234", f.evidence)).rejects.toThrow("no_agent_work");
+    expect(f.evidence.checks).toContainEqual({ id: "no-agent-work", passed: false });
+  });
+  it("cannot qualify without the historical run detail", async () => {
+    const f = system({ detailUnavailable: true });
+    await expect(companyAccessIsolation(f.context, f.session, "journey-123-abcd1234", f.evidence)).rejects.toThrow();
+    expect(f.evidence.checks).toEqual([]);
   });
 });

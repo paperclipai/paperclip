@@ -70,8 +70,8 @@ export function restrictedCreateAllowed(input: {
     && after[0].companyId === expected.companyId && after[0].title === expected.title;
 }
 
-/** A bounded complete history can contain settled earlier work, never active work. */
-export function isolationAgentRunSnapshot(value: unknown, actor: { id: string; companyId: string }): string[] | null {
+/** Validate the bounded list projection, which does not include native retry state. */
+export function isolationAgentRunIds(value: unknown, actor: { id: string; companyId: string }): string[] | null {
   if (!Array.isArray(value) || value.length >= 100) return null;
   const ids = new Set<string>();
   for (const row of value) {
@@ -83,4 +83,22 @@ export function isolationAgentRunSnapshot(value: unknown, actor: { id: string; c
     ids.add(id);
   }
   return [...ids].sort();
+}
+
+/** Detailed terminal state and its persisted revision must stay unchanged. */
+export function isolationAgentRunSnapshot(value: unknown, actor: { id: string; companyId: string }): string[] | null {
+  const ids = isolationAgentRunIds(value, actor);
+  if (!ids) return null;
+  const timestamp = (field: unknown) => typeof field === "string" && Number.isFinite(Date.parse(field)) && new Date(field).toISOString() === field;
+  const states = new Map<string, string>();
+  for (const row of value as Record<string, unknown>[]) {
+    if (typeof row.id !== "string" || !timestamp(row.updatedAt) || !timestamp(row.finishedAt)
+      || row.startedAt !== null && !timestamp(row.startedAt)) return null;
+    if (row.runtimeMode === "native") {
+      if (!["committed", "terminal_failure"].includes(row.nativePhase as string) || !timestamp(row.nativePhaseUpdatedAt)) return null;
+    } else if (row.runtimeMode !== "legacy" || row.nativePhase !== null || row.nativePhaseUpdatedAt !== null) return null;
+    states.set(row.id, JSON.stringify([row.id, row.status, row.runtimeMode, row.nativePhase, row.nativePhaseUpdatedAt,
+      row.startedAt, row.finishedAt, row.updatedAt]));
+  }
+  return ids.map(id => states.get(id)!);
 }

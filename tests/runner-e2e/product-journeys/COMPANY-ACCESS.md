@@ -34,7 +34,11 @@ before key creation. It has no model connection, no model budget and no schedule
 heartbeat. The case requires zero task and secondary-agent heartbeat runs. It
 compares complete, settled primary-agent history snapshots and rejects any new
 primary run, including work outside the owned tasks. A busy or incomplete
-primary baseline cannot qualify. Saved passes also reject collected runs or
+primary baseline cannot qualify. The list API omits native retry state, so each
+historical run must also have a readable detail receipt with a settled native
+phase (or explicit legacy state). Persisted run revisions and lifecycle timestamps
+must remain unchanged, including when work resumes under an existing run ID.
+Saved passes also reject collected runs or
 nonempty model usage. Credentials
 stay private to the provider. Both keys must be revoked, and each old key must
 return 401 on a previously successful read. Cleanup terminates the owned
