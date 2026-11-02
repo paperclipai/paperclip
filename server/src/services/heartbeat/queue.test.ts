@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
@@ -74,14 +75,15 @@ describe("heartbeat queue module boundary", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_QUEUE_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Skipping queue module database tests: ${support.reason}`);
 describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-queue-module");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-queue-module");
+    db = createDb(external ?? database!.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();
@@ -89,6 +91,24 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   });
   beforeEach(async () => {
     await db.execute(sql`truncate table companies restart identity cascade`);
+  });
+
+  it.each([
+    { provider: "codex" }, { provider: "acpx", acpxAgent: "antigravity" }, { provider: "muse" },
+  ])("rejects direct taskless timer wakes for $provider before a run or request can be persisted", async adapterConfig => {
+    const [company] = await db.insert(companies).values({ name: "Timer scope", issuePrefix: "TS" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Ready for a task", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60 } } }).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    const queue = createHeartbeatQueue(db, deps);
+    expect(await queue.enqueueWakeup(agent.id, { source: "timer", reason: "heartbeat_timer", requestedByActorType: "system" })).toBeNull();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0])
+      .toMatchObject({ status: "idle", lastHeartbeatAt: null });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    expect(deps.budgets.getInvocationBlock).not.toHaveBeenCalled();
   });
 
   async function fixture(status = "running") {

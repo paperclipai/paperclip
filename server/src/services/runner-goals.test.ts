@@ -24,7 +24,9 @@ import {
   runnerGoalService,
 } from "./runner-goals.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RUNNER_GOALS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("runner goal service", () => {
@@ -32,8 +34,8 @@ describeEmbeddedPostgres("runner goal service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-runner-goals-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-runner-goals-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -46,6 +48,7 @@ describeEmbeddedPostgres("runner goal service", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 

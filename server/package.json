@@ -115,6 +115,7 @@
     "smol-toml": "^1.9.1",
     "ssh2": "^1.17.0",
     "svix": "1.76.1",
+    "tar-stream": "3.2.0",
     "ws": "^8.22.0",
     "zod": "^4.4.3",
     "@opentelemetry/resources": "2.10.0"
@@ -142,6 +143,7 @@
     "@types/node": "^24.0.0",
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^7.2.1",
+    "@types/tar-stream": "^3.1.5",
     "@types/ws": "^8.18.2",
     "cross-env": "^10.1.0",
     "supertest": "^7.0.0",

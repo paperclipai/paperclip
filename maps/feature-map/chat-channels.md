@@ -195,6 +195,12 @@ addressed user's exact endpoint identity before expecting task continuation.
 For GitHub, submit a disposable PR and verify the summary heading uses the bot's
 display name and the check remains **Paperclip Review**. For two separate bots on one PR, verify
 their App-scoped checks and comments remain independent.
+For a newly configured bot, verify `submit_review` describes body-only summary
+and rationale fields. Submit a summary with repeated current-bot or legacy
+score headings, including an old score; verify publication keeps one heading
+with the structured score, preserves findings and rationale, and retains the
+original assessment. The PostgreSQL-backed publication fixture covers this with
+simulated GitHub responses; live model compliance remains separate evidence.
 
 For GitHub publication recovery, interrupt a response after GitHub accepts a
 write and verify one summary, finding, and App-scoped check. Retry the same tool
@@ -284,3 +290,12 @@ refusal effective. Check the restoration audit and unchanged failed-run history.
 Endpoint activity hides private-task events while retaining a next-page cursor across private-only windows, so older readable history stays reachable. Actual-JWT fixtures verify this separately from live provider delivery.
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+GitHub finding category contract (2026-10-31): manual and automatic review
+instructions list the repository policy categories. `begin_review` returns the
+assessment snapshot's `findingCategories`; later settings do not change that
+snapshot. Submit an unknown category and confirm rejection before publication,
+then submit a listed custom category and inspect the saved assessment and
+processed publication. The channel integration fixture covers real PostgreSQL
+and the service path with simulated GitHub HTTP; live model behavior remains
+unverified.

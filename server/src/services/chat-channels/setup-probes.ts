@@ -300,7 +300,7 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
             )).limit(1).then((rows) => rows[0]);
             if (!linked || !(await lockCurrentPrincipalAuthorization(tx, endpoint, linked.principalId)).allowed) throw forbidden("Your connected account is no longer authorized");
           }
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           const [activated] = await tx
             .update(chatEndpoints)
             .set({

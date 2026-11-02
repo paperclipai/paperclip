@@ -11,7 +11,7 @@ pub(crate) enum RunAttachmentPolicy {
 
 pub(crate) fn run_attachment_policy(agent: &str) -> RunAttachmentPolicy {
     match agent {
-        "cursor" | "copilot" | "pi" => RunAttachmentPolicy::AuthenticatedRunGrants,
+        "cursor" | "copilot" | "pi" | "kimi" => RunAttachmentPolicy::AuthenticatedRunGrants,
         "claude" => RunAttachmentPolicy::AuthenticatedAssetPaths,
         _ => RunAttachmentPolicy::ImmutableInstructions,
     }

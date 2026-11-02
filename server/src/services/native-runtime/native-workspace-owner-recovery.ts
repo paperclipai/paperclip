@@ -1,3 +1,7 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
+import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import os from "node:os";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -24,8 +28,7 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
   const admitted = await input.db.transaction(async tx => {
     // Share the physical copyback lock. Do not wait behind an active exporter
     // and then apply a confirmation that described an earlier owner.
-    const locks = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`native-workspace-finalization:${input.companyId}:${input.runId}`}, 0)) as acquired`);
-    if (locks[0]?.acquired !== true) throw conflict("Workspace copyback is still active. Wait for it to stop before confirming recovery.");
+    if (!await tryLockNativeWorkspaceFinalization(tx as unknown as Db, input)) throw conflict("Workspace copyback is still active. Wait for it to stop before confirming recovery.");
     // Match the status arbiter's coordinator -> issue -> run lock order.
     const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId))).for("update");
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
@@ -65,6 +68,9 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
     const now = new Date();
     const proof = { owner: prior, resultId: result.id, actorId: input.actorId,
       stopEvidence: confirmation.stopEvidence, confirmedAt: now.toISOString() };
+    await notifyNativeResultCommit(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
+    await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
+    await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
     await tx.update(heartbeatRuns).set({
       runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - ${OWNER_KEY}`, updatedAt: now,
     }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, run.id),

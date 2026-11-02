@@ -732,8 +732,21 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface RequiredQualityReview {
+  version: 1;
+  /** Named outputs whose exact versions require a human quality verdict. */
+  deliverables: Array<{ key: string; label: string }>;
+}
+
+export interface QualityReviewBinding {
+  key: string;
+  /** Server-stamped fingerprint; input values are never trusted. */
+  requirementHash?: string;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
+  requiredQualityReview?: RequiredQualityReview;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
@@ -1165,6 +1178,12 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  chatMessage?: {
+    sourceTaskId: string;
+    sourceTaskIdentifier: string;
+    sourceRunId: string;
+    contentHash: string;
+  };
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
   recoveryResponsibility?: "system" | "user";
   /** Inbound channel attribution; never an authorization input. */
@@ -1206,6 +1225,9 @@ export interface SuggestedTaskDraft {
   parentId?: string | null;
   title: string;
   description?: string | null;
+  /** Persisted atomically as the new task's initial plan after acceptance. */
+  initialPlan?: string | null;
+  requiredQualityReview?: RequiredQualityReview;
   priority?: IssuePriority | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
@@ -1239,6 +1261,25 @@ export interface SuggestTasksResult {
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
   rejectionReason?: string | null;
+}
+
+/** Server-recorded task creation in a standing chat's current session. */
+export interface ConversationTaskHandoff {
+  id: string;
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  createdAt: string;
+  /** Durable creation provenance; null for older or human-created handoffs. */
+  sourceRunId: string | null;
+  /** When present, the accepted suggestion already renders this task card. */
+  suggestionInteractionId: string | null;
+}
+
+export interface ConversationTaskHandoffPage {
+  items: ConversationTaskHandoff[];
+  nextCursor: string | null;
 }
 
 export interface AskUserQuestionsQuestionOption {
@@ -1365,8 +1406,20 @@ export interface RequestConfirmationCustomTarget {
   href?: string | null;
 }
 
+/** An uploaded artifact's immutable bytes, independent of its display name. */
+export interface RequestConfirmationIssueAttachmentTarget {
+  type: "issue_attachment";
+  issueId?: string | null;
+  attachmentId: string;
+  assetId: string;
+  sha256: string;
+  label?: string | null;
+  href?: string | null;
+}
+
 export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
+  | RequestConfirmationIssueAttachmentTarget
   | RequestConfirmationCustomTarget;
 
 /**
@@ -1488,6 +1541,7 @@ export interface ConnectionIntentResult {
 }
 
 export interface RequestConfirmationPayload {
+  qualityReview?: QualityReviewBinding;
   version: 1;
   prompt: string;
   acceptLabel?: string | null;
@@ -1531,6 +1585,8 @@ export interface RequestCheckboxConfirmationPayload {
 export type RequestItemVerdictValue = "approve" | "reject" | "defer";
 
 export interface RequestItemVerdictsItem {
+  qualityReview?: QualityReviewBinding;
+  target?: RequestConfirmationTarget | null;
   id: string;
   label: string;
   description?: string | null;
@@ -1729,6 +1785,7 @@ export interface IssueAttachment {
 /** Bounded cold-open window; the complete chronological feed stays paginated. */
 export interface IssueRecentComments {
   latestCommentId: string | null;
+  oldestCommentId?: string | null;
   comments: IssueComment[];
   hasMore: boolean;
 }

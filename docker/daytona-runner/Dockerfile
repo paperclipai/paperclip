@@ -9,6 +9,7 @@ WORKDIR /workspace/packages/paperclip-runner/runner
 COPY packages/paperclip-runner/runner/Cargo.toml packages/paperclip-runner/runner/Cargo.lock ./
 COPY packages/paperclip-runner/runner/crates ./crates
 COPY packages/paperclip-runner/protocol ../protocol
+COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ../
 RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd
 

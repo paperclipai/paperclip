@@ -33,7 +33,10 @@ import {
   type ConnectionSetupFlowProps,
 } from "./ConnectionSetupFlow";
 
+import { DecisionCardFooter } from "@/components/DecisionCardFooter";
+
 export interface ConnectionIntentInteractionBodyProps {
+  footerSlot?: ReactNode;
   interaction: ConnectionIntentInteraction;
   currentUserId?: string | null;
   addresseeLabel: string;
@@ -42,6 +45,7 @@ export interface ConnectionIntentInteractionBodyProps {
 }
 
 export function ConnectionIntentInteractionBody({
+  footerSlot,
   interaction,
   currentUserId,
   addresseeLabel,
@@ -295,6 +299,7 @@ export function ConnectionIntentInteractionBody({
             {status.body ? <p className="mt-1 text-sm text-muted-foreground">{status.body}</p> : null}
           </div>
         </div>
+        <DecisionCardFooter leading={footerSlot} className="mt-4" />
       </div>
     );
   }
@@ -322,6 +327,7 @@ export function ConnectionIntentInteractionBody({
             </p> : null}
           </div>
         </div>
+        <DecisionCardFooter leading={footerSlot} className="mt-4" />
       </div>
     );
   }
@@ -348,12 +354,14 @@ export function ConnectionIntentInteractionBody({
         </ul>
         {setupQuery.isError || completeMutation.isError || declineMutation.isError ? <p role="alert" className="text-sm text-destructive">{(completeMutation.error ?? declineMutation.error ?? setupQuery.error)?.message ?? "Couldn’t update this access request."}</p> : null}
         {setupQuery.data?.canGrantAccess === false ? <p role="status" className="text-sm text-muted-foreground">Connection manager required.</p> : null}
-        <div className="flex items-center justify-between gap-2">
+        <DecisionCardFooter leading={footerSlot}>
+          <div className={footerSlot ? "flex flex-wrap items-center justify-end gap-2" : "flex items-center justify-between gap-2"}>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => declineMutation.mutate()}>Not now</Button>
           <Button size="sm" disabled={busy || !setupQuery.data?.canGrantAccess} onClick={() => completeMutation.mutate(accessRequest.connectionId)}>
             {completeMutation.isPending ? "Granting access…" : "Grant access"}
           </Button>
-        </div>
+          </div>
+        </DecisionCardFooter>
       </div>
     </div>;
   }
@@ -503,52 +511,55 @@ export function ConnectionIntentInteractionBody({
           onComplete={async connectionId => { await completeMutation.mutateAsync(connectionId); }}
           onDecline={() => declineMutation.mutate()}
           declining={declineMutation.isPending}
-        /> : <div className="mt-4 flex flex-wrap justify-end gap-2">
-          {!isAi && <Button
-            type="button"
-            variant="ghost"
-            disabled={declineMutation.isPending || completeMutation.isPending || authorizing}
-            onClick={() => declineMutation.mutate()}
-          >
-            Not now
-          </Button>}
-          {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
-            <Plug className="h-4 w-4" />{open ? "Close setup" : readyForAdoption ? "Continue setup" : needsOwnAiConnection ? `Connect ${aiProviderName}` : "Fix connection"}
-          </Button> : <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button type="button">
-                {authorizing ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plug className="h-4 w-4" />
-                )}
-                {authorizing
-                  ? "Continue setup"
-                  : needsRetry
-                    ? "Try again"
-                    : setupQuery.data?.existingConnections.length ? "Connect / Use existing" : "Connect"}
-              </Button>
-            </DialogTrigger>
-            <DialogContent
-              className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl"
-              showCloseButton={false}
-              onCloseAutoFocus={(event) => {
-                event.preventDefault();
-                focusTargetRef.current?.focus();
-              }}
+        /> : <DecisionCardFooter leading={footerSlot} className="mt-4">
+          <div className={footerSlot ? "flex flex-wrap items-center justify-end gap-2" : "mt-4 flex flex-wrap justify-end gap-2"}>
+            {!isAi && <Button
+              type="button"
+              variant="ghost"
+              disabled={declineMutation.isPending || completeMutation.isPending || authorizing}
+              onClick={() => declineMutation.mutate()}
             >
-              <DialogHeader className="sr-only">
-                <DialogTitle>
-                  Connect {interaction.payload.serviceName}
-                </DialogTitle>
-                <DialogDescription>
-                  Complete connection setup without leaving this task.
-                </DialogDescription>
-              </DialogHeader>
-              {setupContent}
-            </DialogContent>
-          </Dialog>}
-        </div>}
+              Not now
+            </Button>}
+            {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
+              <Plug className="h-4 w-4" />{open ? "Close setup" : readyForAdoption ? "Continue setup" : needsOwnAiConnection ? `Connect ${aiProviderName}` : "Fix connection"}
+            </Button> : <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger asChild>
+                <Button type="button">
+                  {authorizing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plug className="h-4 w-4" />
+                  )}
+                  {authorizing
+                    ? "Continue setup"
+                    : needsRetry
+                      ? "Try again"
+                      : setupQuery.data?.existingConnections.length ? "Connect / Use existing" : "Connect"}
+                </Button>
+              </DialogTrigger>
+              <DialogContent
+                className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl"
+                showCloseButton={false}
+                onCloseAutoFocus={(event) => {
+                  event.preventDefault();
+                  focusTargetRef.current?.focus();
+                }}
+              >
+                <DialogHeader className="sr-only">
+                  <DialogTitle>
+                    Connect {interaction.payload.serviceName}
+                  </DialogTitle>
+                  <DialogDescription>
+                    Complete connection setup without leaving this task.
+                  </DialogDescription>
+                </DialogHeader>
+                {setupContent}
+              </DialogContent>
+            </Dialog>}
+          </div>
+        </DecisionCardFooter>}
+        {isEmail ? <DecisionCardFooter leading={footerSlot} className="mt-4" /> : null}
         {isAi && open ? <div className="mt-4 border-t border-border pt-4" data-testid="ai-connection-inline-repair">{inlineContent}</div> : null}
 
         {(!isEmail && completeMutation.isError) ||

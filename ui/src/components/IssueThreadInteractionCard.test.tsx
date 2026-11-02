@@ -200,7 +200,9 @@ describe("IssueThreadInteractionCard", () => {
     host.remove();
     const reopened = renderCard({ interaction: canonicalDraftInteraction, onSubmitInteractionAnswers: submit });
     expect(reopened.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
-    expect(Array.from(reopened.querySelectorAll("button")).find((button) => button.textContent === "Submit answers")!.disabled).toBe(true);
+    expect(reopened.querySelector('[role="alert"]')).toBeNull();
+    await act(() => Array.from(reopened.querySelectorAll("button")).find((button) => button.textContent === "Submit answers")!.click());
+    expect(reopened.textContent).toContain("This question is required.");
     expect(submit).not.toHaveBeenCalled();
   });
 
@@ -282,6 +284,67 @@ describe("IssueThreadInteractionCard", () => {
     );
     expect(otherLink?.getAttribute("role")).toBeNull();
     expect(otherLink?.className).toContain("underline");
+  });
+
+  it("keeps Coordinator decision questions focused while preserving answers and accessible requirements", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({
+      presentationVariant: "coordinator-decision",
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers,
+    });
+    expect(host.querySelector('[data-presentation="coordinator-decision"]')?.classList.contains("border")).toBe(false);
+    expect(host.querySelector('[data-testid="interaction-status-badge"]')).toBeNull();
+    expect(host.textContent).not.toContain("Ask user questions");
+    expect(host.textContent).not.toContain("Question 1");
+    expect(host.textContent).not.toContain("proposed by");
+    const group = host.querySelector('[role="radiogroup"]');
+    expect(group?.getAttribute("aria-required")).toBe("true");
+    expect(group?.getAttribute("aria-describedby")).toBe("interaction-questions-default-collapse-depth-requirements");
+    await act(() => {
+      (host.querySelector('[role="radio"]') as HTMLButtonElement).click();
+      (host.querySelector('[role="checkbox"]') as HTMLButtonElement).click();
+    });
+    const submit = [...host.querySelectorAll("button")].find(button => button.textContent === "Send answers")!;
+    await act(() => submit.click());
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(pendingAskUserQuestionsInteraction, [
+      { questionId: "collapse-depth", optionIds: ["visible-root"] },
+      { questionId: "post-submit-summary", optionIds: ["answers-inline"] },
+    ]);
+  });
+
+  it("keeps Coordinator confirmation details collapsed while preserving context, exact target, and approval", async () => {
+    const onAcceptInteraction = vi.fn(async () => undefined);
+    const interaction = { ...pendingRequestConfirmationInteraction, title: "Repeated approval context", summary: "Repeated approval context", payload: { ...pendingRequestConfirmationInteraction.payload, prompt: "Repeated approval context", detailsMarkdown: "Revision proof: sha256-test-proof" } };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction, onAcceptInteraction });
+    expect(host.textContent?.split("Repeated approval context")).toHaveLength(2);
+    expect(host.querySelector('[data-testid="interaction-status-badge"]')).toBeNull();
+    const documentLink = host.querySelector('a[href*="#document-"]');
+    expect(documentLink?.getAttribute("href")).toContain("revision=11111111-1111-4111-8111-111111111111");
+    expect(documentLink?.getAttribute("href")).toContain(`interaction=${interaction.id}`);
+    const details = host.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")?.textContent?.trim()).toBe("Details");
+    expect(details.textContent).toContain("Revision proof: sha256-test-proof");
+    expect(documentLink?.closest("details")).toBeNull();
+    expect(host.querySelector("[data-decision-prompt]")?.closest("details")).toBeNull();
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(false);
+    const approve = [...host.querySelectorAll("button")].find(button => button.textContent?.includes(interaction.payload.acceptLabel ?? "Approve"))!;
+    expect(approve.closest("details")).toBeNull();
+    await act(() => approve.click());
+    expect(onAcceptInteraction).toHaveBeenCalledWith(interaction);
+  });
+
+  it("retains inline confirmation details in the Classic presentation", () => {
+    const host = renderCard({ interaction: {
+      ...pendingRequestConfirmationInteraction,
+      payload: { ...pendingRequestConfirmationInteraction.payload, detailsMarkdown: "Original review context" },
+    } });
+    expect(host.textContent).toContain("Original review context");
+    expect(host.querySelector("details")).toBeNull();
   });
 
   it("submits written Other answers for pending questions", async () => {
@@ -1083,6 +1146,35 @@ describe("IssueThreadInteractionCard", () => {
       expect.objectContaining({ kind: "request_confirmation" }),
       "![bug.png](https://cdn.example/shot.png)",
     );
+  });
+
+  it("opens a bound attachment directly without experimental panel routing", () => {
+    const host = renderCard({ interaction: { ...pendingRequestItemVerdictsInteraction,
+      payload: { ...pendingRequestItemVerdictsInteraction.payload, items: [{ id: "file", label: "Reviewed file", target: {
+        type: "issue_attachment", attachmentId: "immutable-file", assetId: "asset", sha256: "hash",
+      } }] },
+    } });
+    const link = host.querySelector('a[href="/api/attachments/immutable-file/content"]');
+    expect(link?.getAttribute("target")).toBe("_blank");
+  });
+
+  it.each([undefined, "/stale-display-link"])("opens a confirmation's bound attachment in Classic when href is %s", href => {
+    const host = renderCard({ interaction: { ...pendingRequestConfirmationInteraction, payload: {
+      version: 1, prompt: "Review the attached copy", target: {
+        type: "issue_attachment", attachmentId: "immutable-file", assetId: "asset", sha256: "hash", href,
+      },
+    } } });
+    expect(host.querySelector('a[href="/api/attachments/immutable-file/content"]')?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("links a bound review item to its exact document without requiring href", () => {
+    const host = renderCard({ interaction: { ...pendingRequestItemVerdictsInteraction,
+      payload: { ...pendingRequestItemVerdictsInteraction.payload, items: [{ id: "copy", label: "Reviewed copy", target: {
+        type: "issue_document", issueId: "document-owner", key: "copy", revisionId: "reviewed-v1",
+      } }] },
+    } });
+    expect(host.querySelector('a[href*="document-copy&revision=reviewed-v1"]')?.getAttribute("href"))
+      .toBe(`/issues/document-owner#document-copy&revision=reviewed-v1&interaction=${pendingRequestItemVerdictsInteraction.id}`);
   });
 
   it("submits an approve verdict once a draft is marked and applied", async () => {

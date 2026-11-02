@@ -26,7 +26,7 @@ export function expectedFixtureFeedback(nonce: string) {
 export function feedbackPersistenceTask(base: RunnerTaskFixture): RunnerTaskFixture {
   return {
     ...base, id: "complaint-and-suggestion", label: "Retain submitted feedback", automaticRetryPolicy: "single_attempt",
-    attemptTimeoutMs: { local: 5 * 60_000, daytona: 5 * 60_000 },
+    attemptTimeoutMs: { local: 5 * 60_000, daytona: base.attemptTimeoutMs.daytona },
     buildPrompt(nonce) {
       const bodies = expectedFixtureFeedback(nonce);
       return [

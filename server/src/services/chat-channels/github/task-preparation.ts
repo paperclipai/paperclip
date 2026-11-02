@@ -1,3 +1,5 @@
+import { notifyGitHubReviewProjection } from "./review-projection-work.js";
+import { notifyGitHubReviewChecks } from "./review-check-work.js";
 import { agents, chatDeliveries, chatGitHubReviews } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { LOW_TRUST_REVIEW_PRESET, type GitHubReviewEventContext, type GitHubIssueEventContext, type GitHubReviewPolicy } from "@paperclipai/shared";
@@ -41,6 +43,9 @@ export async function retainGitHubDeliveryAuthority(
 }
 
 export async function retainGitHubReviewReceipt(taskTx: DbOrTransaction, endpoint: EndpointRow, issueId: string, deliveryId: string, githubAutomatic: AutomaticRequest): Promise<void> {
+          await notifyGitHubReviewChecks(taskTx, { companyId: endpoint.companyId, endpointId: endpoint.id,
+            repositoryId: githubAutomatic.context.repositoryId, number: githubAutomatic.context.pullNumber });
+          await notifyGitHubReviewProjection(taskTx, { companyId: endpoint.companyId, endpointId: endpoint.id });
           await taskTx.insert(chatGitHubReviews).values({
             companyId: endpoint.companyId, endpointId: endpoint.id, issueId: issueId,
             repositoryId: githubAutomatic.context.repositoryId, repository: githubAutomatic.context.repository,

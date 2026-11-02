@@ -193,7 +193,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Prepare hosted image build capacity
-        if: (inputs.build_eval_image || inputs.publish_eval_image) && inputs.release_run_id == ''
+        if: inputs.build_eval_image || inputs.publish_eval_image
         run: |
           # These preinstalled SDKs are absent from the image build context.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc

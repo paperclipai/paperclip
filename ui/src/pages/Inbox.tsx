@@ -1,3 +1,6 @@
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
+import { describeError } from "../api/errors";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -831,7 +834,8 @@ export interface InboxSurfaceProps {
 
 export function Inbox(props: InboxSurfaceProps = {}) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
-  return streamlinedUiEnabled ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
+  const coordinator = useCoordinatorPresentation();
+  return streamlinedUiEnabled || coordinator ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
 }
 
 function StreamlinedInbox({
@@ -1822,7 +1826,7 @@ function StreamlinedInbox({
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(describeError(err, { action: "approve this request" }).body);
     },
   });
 
@@ -1833,7 +1837,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(describeError(err, { action: "reject this request" }).body);
     },
   });
 
@@ -2480,6 +2484,7 @@ function StreamlinedInbox({
     if (initialSourcesSettled && !listError) setRevealedScope(revealScope);
   }, [initialSourcesSettled, listError, revealScope]);
   const allLoaded = initialSourcesSettled || revealedScope === revealScope;
+  useWarmTaskDetailCode(allLoaded && !listError && tab !== "blocked" && showWorkItemsSection);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(

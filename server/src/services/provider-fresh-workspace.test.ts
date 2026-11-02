@@ -5,12 +5,34 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
+import { isBoundFreshPluginTaskDirectory, releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 const state = vi.hoisted(() => ({ getObject: vi.fn() }));
 vi.mock("../storage/index.js", () => ({ getStorageService: () => ({ getObject: state.getObject }) }));
 let home: string | undefined;
 afterEach(async () => { vi.unstubAllEnvs(); state.getObject.mockReset(); if (home) await rm(home, { recursive: true, force: true }); });
 describe("fresh provider recovery transfer staging", () => {
+  it.each(["valid", "company", "task", "binding", "owner", "path", "attempt", "closed", "repository", "strategy"])(
+    "recognizes only the bound provider directory: %s", scenario => {
+      const companyId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
+      const owner = { agentId: randomUUID(), environmentId: randomUUID(), pluginKey: "test.tasks", driverKey: "tasks" };
+      const workspace = { id: workspaceId, companyId, sourceIssueId: issueId, status: "active", mode: "isolated_workspace",
+        strategyType: "project_primary", providerType: "adapter_managed", repoUrl: null, branchName: null,
+        cwd: `/workspaces/${workspaceId}`, metadata: { runnerTaskWorkspaceOwner: owner,
+          runnerTaskFreshWorkspace: { attemptId: workspaceId, sourceRunId: randomUUID(), previousWorkspaceId: null, recoverySnapshots: [] } },
+      } as unknown as ExecutionWorkspace;
+      if (scenario === "company") workspace.companyId = randomUUID();
+      if (scenario === "task") workspace.sourceIssueId = randomUUID();
+      if (scenario === "binding") workspace.id = randomUUID();
+      if (scenario === "owner") workspace.metadata!.runnerTaskWorkspaceOwner = { ...owner, agentId: randomUUID() };
+      if (scenario === "path") workspace.cwd = "/workspaces/other";
+      if (scenario === "attempt") workspace.metadata!.runnerTaskFreshWorkspace = { attemptId: randomUUID() };
+      if (scenario === "closed") workspace.status = "archived";
+      if (scenario === "repository") workspace.repoUrl = "https://github.com/example/repo.git";
+      if (scenario === "strategy") workspace.strategyType = "git_worktree";
+      expect(isBoundFreshPluginTaskDirectory({ companyId, issueId, workspaceId, workspace, owner })).toBe(scenario === "valid");
+    });
+
   it("verifies immutable transfer files and reuses stable descriptors after interruption", async () => {
     home = await mkdtemp(path.join(tmpdir(), "provider-recovery-")); vi.stubEnv("PAPERCLIP_HOME", home);
     const companyId = randomUUID(), sourceRunId = randomUUID(), leaseId = randomUUID(), operationId = randomUUID();

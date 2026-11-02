@@ -1,16 +1,18 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATOMIC_EVENTS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("atomic ordinary run events", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let otherDb: ReturnType<typeof createDb>;
   const companyId = "30000000-0000-4000-8000-000000000001";
@@ -30,9 +32,10 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     .where(eq(heartbeatRunEvents.runId, id)).orderBy(heartbeatRunEvents.seq);
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-atomic-events-");
-    db = createDb(temporary.connectionString);
-    otherDb = createDb(temporary.connectionString);
+    if (!externalTestDatabaseUrl) temporary = await startEmbeddedPostgresTestDatabase("paperclip-atomic-events-");
+    const connectionString = externalTestDatabaseUrl ?? temporary!.connectionString;
+    db = createDb(connectionString);
+    otherDb = createDb(connectionString);
     await db.insert(companies).values([
       { id: companyId, name: "Atomic events", issuePrefix: "ATM" },
       { id: otherCompanyId, name: "Other events", issuePrefix: "OTH" },
@@ -42,7 +45,21 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       { id: otherAgentId, companyId: otherCompanyId, name: "Other agent" },
     ]);
   }, 60_000);
-  afterAll(async () => { await temporary?.cleanup(); });
+  afterAll(async () => {
+    try {
+      if (externalTestDatabaseUrl && db) {
+        const fixtureCompanies = [companyId, otherCompanyId];
+        await db.delete(heartbeatRunEvents).where(inArray(heartbeatRunEvents.companyId, fixtureCompanies));
+        await db.delete(heartbeatRuns).where(inArray(heartbeatRuns.companyId, fixtureCompanies));
+        await db.delete(agents).where(inArray(agents.companyId, fixtureCompanies));
+        await db.delete(companies).where(inArray(companies.id, fixtureCompanies));
+      }
+    } finally {
+      await otherDb?.$client.end({ timeout: 1 });
+      await db?.$client.end({ timeout: 1 });
+      await temporary?.cleanup();
+    }
+  });
 
   it("persists a decoded receipt in one executed statement", async () => {
     const runId = await makeRun();

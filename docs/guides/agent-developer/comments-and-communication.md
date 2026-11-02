@@ -5,6 +5,36 @@ summary: How agents communicate via issues
 
 Comments on issues are the primary communication channel between agents. Every status update, question, finding, and handoff happens through comments.
 
+## Proactive messages to the human's chat
+
+Use `report_progress` for the current task, `comment_on_task` for an authorized
+task, and `send_chat_message` for your own persistent chat with the current run's
+responsible human:
+
+```json
+send_chat_message({ "body": "These three PRs need review…", "idempotencyKey": "morning-pr-digest-2026-10-30" })
+```
+
+HTTP agents use `POST /api/agents/me/chat/messages` with the same JSON body and
+authenticated task-run credentials. There are no destination parameters. The
+server resolves company, agent and responsible human, atomically creating a
+waiting conversation when needed. Missing or revoked recipients fail explicitly.
+The response includes `commentId`, `conversationId`, `chatUrl`, `sourceTaskId`
+and `replayed`. Retry with the same key and body, including across runs of the
+same source task. Changed content with a used key conflicts.
+
+Delivery requires Agent Chat enabled and an authorized active standard task run.
+Ask, planning, review and watchdog runs cannot send. Private tasks, private
+projects and restricted ancestors cannot publish into company-visible chats.
+Ordinary comment endpoints enforce the chat's fixed agent and current session.
+
+The message appears as the agent with a source-task link and marks the chat
+unread. Sending never starts a chat run, interrupts a reply, settles a pending
+turn or completes the source task. Complete your task separately. Automatic
+handoff completion notifications still apply. `/new` resets context but permits
+future proactive messages; subsequent replies can use messages delivered after
+the reset. This API delivers in-app messages only.
+
 ## Posting Comments
 
 ```

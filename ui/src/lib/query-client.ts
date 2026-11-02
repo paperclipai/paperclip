@@ -24,6 +24,9 @@ import {
   type Mutation,
   type MutationOptions,
   type QueryClientConfig,
+  type QueryKey,
+  type RefetchOptions,
+  type RefetchQueryFilters,
 } from "@tanstack/react-query";
 import { classifyError, describeError, errorRetryAfterMs, isTransientError } from "@/api/errors";
 import { MAX_PROBE_DELAY_MS, PROBE_BACKOFF_MS, type ConnectivityStore } from "./connectivity";
@@ -98,9 +101,12 @@ export function reconnectDelayFor(failureCount: number, error: unknown): number 
   return retryAfterMs === null ? base : Math.min(Math.max(base, retryAfterMs), MAX_PROBE_DELAY_MS);
 }
 
+/** A successful response whose expected state has not arrived yet. */
+export class QueryNotReadyError extends Error {}
+
 /** Query errors worth a Sentry event: not outages, not denials or missing items. */
 export function shouldReportQueryError(error: unknown): boolean {
-  return classifyError(error) === "unknown";
+  return !(error instanceof QueryNotReadyError) && classifyError(error) === "unknown";
 }
 
 export interface MutationErrorToast {
@@ -143,6 +149,20 @@ class AppQueryClient extends QueryClient {
       retry: options?.retry ?? shouldRetryRequest,
       retryDelay: options?.retryDelay ?? retryDelayFor,
     };
+  }
+
+  override refetchQueries<TTaggedQueryKey extends QueryKey = QueryKey>(
+    filters?: RefetchQueryFilters<TTaggedQueryKey>,
+    options?: RefetchOptions,
+  ): Promise<void> {
+    const predicate = filters?.predicate;
+    return super.refetchQueries(
+      {
+        ...filters,
+        predicate: (query) => query.options.queryFn !== undefined && (predicate?.(query) ?? true),
+      },
+      options,
+    );
   }
 }
 

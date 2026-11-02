@@ -41,6 +41,7 @@ export function createPluginRunnerTaskOwner(input: {
   onDispatched?: () => Promise<void> | void;
   pollMs?: number;
   warmTaskVersion?: 1;
+  githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const pollMs = input.pollMs ?? 500;
@@ -58,6 +59,7 @@ export function createPluginRunnerTaskOwner(input: {
   let failReady!: (error: unknown) => void;
   let confirmStopped: (code: number) => void = () => {};
   let stoppedState: Extract<PluginEnvironmentTaskResult, { kind: "status" }> | undefined;
+  let completed = false;
   let rejectFailure!: (error: unknown) => void;
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
   void failure.catch(() => undefined);
@@ -97,11 +99,19 @@ export function createPluginRunnerTaskOwner(input: {
       await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
+    if (input.githubBroker) {
+      const description = await call({ kind: "describe" });
+      if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
+        throw new Error("Update the environment plugin to support the GitHub credential broker v1");
+      }
+    }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
+      ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(launched && preparedIdentity && requirements.identity.runId !== preparedIdentity.runId
-        ? { priorIdentity: preparedIdentity, accountIdentity: input.accountIdentity } : {}),
+        ? { priorIdentity: preparedIdentity } : {}),
     }));
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     if (result.kind !== "prepared") throw new Error("Plugin Runner preparation unavailable");
@@ -275,7 +285,10 @@ export function createPluginRunnerTaskOwner(input: {
           }
           await input.onSessionRetained(state);
         }
-        if (submitted) await call({ kind: "complete" });
+        if (submitted) {
+          await call({ kind: "complete" });
+          completed = true;
+        }
       },
       release: async (reason?: "detach") => {
         registrationReleased = true;
@@ -319,6 +332,9 @@ export function createPluginRunnerTaskOwner(input: {
     return bytes;
   };
   return { launcher, registration, driver, readWorkspaceFile,
+    // This is a lease-bound Launcher receipt, not a terminal phase or a sent
+    // stop request. Completion also proves credential/writeback obligations ran.
+    isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||

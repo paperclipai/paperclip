@@ -346,9 +346,13 @@ admission override must never become the production installation recipe.
 
 Pass the actual registered profile through every execution-input parser, not only
 the runtime registry. Derive version types from one declaration so a new profile
-cannot be admitted by one layer and rejected by another. Generators must preserve
-historical identity fixtures; creating today's profile must not rewrite yesterday's
-digest. Also check generated catalogs against their authoring source.
+cannot be admitted by one layer and rejected by another. A provider's
+`commandDigest` attests only its own upstream release: upstream versions, platform
+closure pins and any launcher bytes. Never bind Paperclip source, the shared ACPX
+version or patch, absolute paths or the pack layout into it. Every harness gets
+the ACPX layer the same way: the profile's `acpxVersion` and the provider pack's
+`contractDigest`, which also covers the Runner's ACPX patch and Runner source
+compatibility. Also check generated catalogs against their authoring source.
 
 ### 6.3 Qualify the ordinary setup path as its own integration
 
@@ -371,6 +375,13 @@ Include both agent configuration and task-level model selection where supported.
 
 These checks establish correct routing and authority. They do not turn a discovery
 list into a model allowlist: explicit compatible models still follow section 6.1.
+
+For Kimi Code, when `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` selects a
+controller pack, remote Test prepares and verifies that current pack through the
+normal installer before its 35-second metadata/catalog budget starts.
+Installation adds to total Test time. Without a selected pack, remote targets
+retain manual setup and preinstalled-runtime verification. Neither path sends a
+model prompt.
 
 ## 7. Deliver instructions, tools, and credentials
 
@@ -680,7 +691,8 @@ Remote packaging has both a worker and a controller side. Verify that the normal
 controller package can locate the correct platform companion and provider-pack
 manifest using production resolution, without extracting it manually from a
 qualification image. Docker copy/include lists must include new declarations,
-patches, and the **active** identity fixture. Bind the manifest to the directory
+patches, and the release attestation inputs that `generate:acpx-profiles` reads.
+Bind the manifest to the directory
 the loader actually consumes; a valid manifest in another directory is not proof.
 
 For remote execution, build on an appropriate host, record an immutable OCI

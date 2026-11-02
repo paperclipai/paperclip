@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { canSelectFreshWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
@@ -474,7 +475,7 @@ export async function admitExplicitNativeContinuation(input: {
   }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.queuedCommentInterruptId),
     eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
   if (cancelledStartupIds.size) await db.transaction(async tx => {
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId, agentId });
     for (const runId of cancelledStartupIds) {
       await tx.update(nativeRunFinalizations).set({
         phase: "terminal_failure", failureCode: "native_startup_cancelled", nextAttemptAt: null,
@@ -490,8 +491,10 @@ export async function admitExplicitNativeContinuation(input: {
     failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({ replacementDenied: "explicit_user_continuation" })}::jsonb`,
     updatedAt: new Date(),
   }).where(and(eq(nativeRunFinalizations.companyId, companyId), inArray(nativeRunFinalizations.runId, nativeSources.map(run => run.id))));
+  if (actions.length) await db.transaction(async tx => {
+    await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
   for (const action of actions) {
-    await db.update(issueRecoveryActions).set({
+    await tx.update(issueRecoveryActions).set({
       status: "resolved", outcome: "cancelled", resolvedAt: new Date(), updatedAt: new Date(),
       nextAction: "The user started a fresh conversation turn. Prior action outcomes remain recorded.",
       resolutionNote: "The user continued after the prior execution stopped. No action outcomes were inferred.",
@@ -507,6 +510,7 @@ export async function admitExplicitNativeContinuation(input: {
       },
     }).where(eq(issueRecoveryActions.id, action.id));
   }
+  });
   await persistActivity(db, { companyId, actorType: "user", actorId,
     action: "issue.execution_recovery_settled", entityType: "issue", entityId: issueId,
     details: { continuation: retry ? "explicit_user_retry" : "explicit_user_message", ...authorization,

@@ -104,10 +104,8 @@ export function directHumanCommentCondition() {
   )`;
 }
 
-export function pendingUserRequestCondition(companyId: string, userId: string, after?: SQL) {
-  return sql<boolean>`EXISTS (
-    SELECT 1 FROM ${issueThreadInteractions}
-    WHERE ${issueThreadInteractions.companyId} = ${companyId}
+export function pendingUserRequestRowCondition(companyId: string, userId: string, after?: SQL) {
+  return sql<boolean>`(${issueThreadInteractions.companyId} = ${companyId}
       AND ${issueThreadInteractions.issueId} = ${issues.id}
       AND ${issueThreadInteractions.status} = 'pending'
       AND ${issues.status} NOT IN ('done', 'cancelled')
@@ -122,6 +120,31 @@ export function pendingUserRequestCondition(companyId: string, userId: string, a
   )`;
 }
 
+export function pendingUserRequestCondition(companyId: string, userId: string, after?: SQL) {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM ${issueThreadInteractions}
+    WHERE ${pendingUserRequestRowCondition(companyId, userId, after)}
+  )`;
+}
+
+export function userParticipationActivityCondition(companyId: string, userId: string) {
+  return sql<boolean>`(
+    ${activityLog.entityType} = 'issue'
+    AND ${activityLog.companyId} = ${companyId}
+    AND ${activityLog.actorType} = 'user'
+    AND ${activityLog.actorId} = ${userId}
+    AND NOT ${automaticReadRecoveryCleanupCondition()}
+    AND NOT (
+      ${activityLog.action} = 'issue.inbox_touched'
+      AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'
+    )
+    AND ${activityLog.action} IN (${sql.join(
+      ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+      sql`, `,
+    )})
+  )`;
+}
+
 export function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -131,22 +154,8 @@ export function touchedByUserCondition(companyId: string, userId: string) {
       OR EXISTS (
         SELECT 1
         FROM ${activityLog}
-        WHERE ${activityLog.entityType} = 'issue'
-          AND ${activityLog.entityId} = ${issues.id}::text
-          AND ${activityLog.companyId} = ${companyId}
-          AND ${activityLog.actorType} = 'user'
-          AND ${activityLog.actorId} = ${userId}
-          AND NOT ${automaticReadRecoveryCleanupCondition()}
-          AND NOT (
-            ${activityLog.action} = 'issue.inbox_touched'
-            AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'
-          )
-          AND ${activityLog.action} IN (${sql.join(
-            ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS.map(
-              (action) => sql`${action}`,
-            ),
-            sql`, `,
-          )})
+        WHERE ${activityLog.entityId} = ${issues.id}::text
+          AND ${userParticipationActivityCondition(companyId, userId)}
       )
       OR EXISTS (
         SELECT 1

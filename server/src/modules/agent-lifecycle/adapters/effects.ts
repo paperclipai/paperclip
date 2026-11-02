@@ -8,6 +8,7 @@ import type { ActivityPublication } from "../../../types/activity-publication.js
 export interface LifecycleEffects {
   setupRequiresPreparation(db: Db, companyId: string, environmentId?: string | null): Promise<boolean>;
   notifyWork(db: Db): Promise<void>;
+  beforeStatusChange(db: Db, companyId: string, agentId: string, before: string, after: string): Promise<void>;
   reportFailure(context: LifecycleFailure, error: unknown): void;
   deleteDependencies(db: Db, companyId: string, agentId: string): Promise<void>;
   prepareConfiguration(db: Db, current: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch>;

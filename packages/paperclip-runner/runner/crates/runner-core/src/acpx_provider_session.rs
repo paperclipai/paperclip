@@ -89,6 +89,7 @@ pub struct AcpxProviderRuntimePolicy {
 
 #[derive(Clone, Debug)]
 pub struct AcpxProviderSessionConfig {
+    pub candidate_admission: Option<crate::acpx_candidate_admission::AcpxCandidateAdmission>,
     pub transport: AcpxSidecarTransportConfig,
     pub agent: String,
     pub model: String,
@@ -117,6 +118,18 @@ impl AcpxProviderSessionConfig {
         let profile = acpx_release_profile(&self.agent).ok_or_else(|| {
             LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
         })?;
+        if let Some(admission) = &self.candidate_admission {
+            admission.validate_binding(
+                &self.agent,
+                &self.model,
+                &self.run_id,
+                &self.normalized_session_id,
+            )?;
+        } else if profile.qualification_pending {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider qualification is pending; this build cannot launch the provider",
+            ));
+        }
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
         if self.claude_effort.as_ref().is_some_and(|effort| {
             self.agent != "claude"
@@ -452,6 +465,16 @@ impl AcpxProviderSession {
         message: &str,
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_timed(turn_id, message, working_directory, false)
+    }
+
+    pub fn start_turn_timed(
+        &mut self,
+        turn_id: &str,
+        message: &str,
+        working_directory: &Path,
+        performance: bool,
+    ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
         if self.runtime_retired {
             return Err(LocalRunnerError::invalid(
@@ -474,6 +497,14 @@ impl AcpxProviderSession {
             return Err(LocalRunnerError::invalid(
                 "ACPX provider session still has unsettled semantic tools",
             ));
+        }
+        if let Some(admission) = &self.config.candidate_admission {
+            admission.validate_binding(
+                &self.config.agent,
+                &self.config.model,
+                &self.config.run_id,
+                &self.config.normalized_session_id,
+            )?;
         }
         let rotate_turn_identity_ledger = self.state.settled_turn_identity_capacity_reached();
         let identity_validation = if rotate_turn_identity_ledger {
@@ -534,7 +565,7 @@ impl AcpxProviderSession {
         }
         let response = match self.transport.request(
             GeneratedAcpxSidecarCommand::TurnStart,
-            json!({"turnId":turn_id,"message":message}),
+            json!({"turnId":turn_id,"message":message,"performance":performance}),
         ) {
             Ok(response) => response,
             Err(error) => return Err(self.fail_closed(error)),
@@ -1367,6 +1398,9 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
         "tools": &sidecar_tools,
         "expectedIdentity": config.expected_identity,
     });
+    if let Some(admission) = &config.candidate_admission {
+        params["candidateAdmission"] = json!(admission);
+    }
     if let Some(effort) = &config.claude_effort {
         params["claudeEffort"] = json!(effort);
     }
@@ -1385,6 +1419,14 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
     params
 }
 
+fn initialize_params(config: &AcpxProviderSessionConfig) -> Value {
+    let mut params = json!({"agent": config.agent, "model": config.model});
+    if let Some(admission) = &config.candidate_admission {
+        params["candidateAdmission"] = json!(admission);
+    }
+    params
+}
+
 fn bootstrap(
     transport: &mut AcpxSidecarTransport,
     config: &AcpxProviderSessionConfig,
@@ -1399,7 +1441,7 @@ fn bootstrap(
     let sidecar_tools = sidecar_run_tool_operations(&config.tool_set);
     let initialized = transport.request(
         GeneratedAcpxSidecarCommand::Initialize,
-        json!({"agent": config.agent, "model": config.model}),
+        initialize_params(config),
     )?;
     verify_initialize_response(&initialized, transport.process_id())?;
 
@@ -1813,6 +1855,7 @@ mod mode_tests {
     fn config() -> AcpxProviderSessionConfig {
         let operations = Vec::new();
         AcpxProviderSessionConfig {
+            candidate_admission: None,
             transport: AcpxSidecarTransportConfig {
                 command: std::env::current_exe().unwrap(),
                 args: Vec::new(),
@@ -1866,6 +1909,62 @@ mod mode_tests {
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         }
     }
+    #[test]
+    fn pending_profile_cannot_launch_even_with_explicit_policy() {
+        let mut config = config();
+        config.agent = "antigravity".to_owned();
+        config.pi_thinking_level = None;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("qualification is pending"));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
+        let mut cfg = config();
+        assert!(initialize_params(&cfg).get("candidateAdmission").is_none());
+        assert!(session_open_params(&cfg, &[])
+            .get("candidateAdmission")
+            .is_none());
+        cfg.agent = "antigravity".to_owned();
+        cfg.mode = None;
+        let admission = crate::acpx_candidate_admission::test_admission(
+            &cfg.run_id,
+            &cfg.normalized_session_id,
+        );
+        cfg.candidate_admission = Some(admission.clone());
+        cfg.validate().unwrap();
+        assert_eq!(
+            initialize_params(&cfg)["candidateAdmission"],
+            json!(admission)
+        );
+        assert_eq!(
+            session_open_params(&cfg, &[])["candidateAdmission"],
+            json!(admission)
+        );
+        for (field, value) in [
+            ("run", "different-run"),
+            ("session", "different-session"),
+            ("model", "different-model"),
+            ("agent", "codex"),
+        ] {
+            let mut invalid = cfg.clone();
+            match field {
+                "run" => invalid.run_id = value.to_owned(),
+                "session" => invalid.normalized_session_id = value.to_owned(),
+                "model" => invalid.model = value.to_owned(),
+                "agent" => invalid.agent = value.to_owned(),
+                _ => unreachable!(),
+            }
+            assert!(invalid.validate().is_err(), "{field}");
+        }
+        cfg.candidate_admission.as_mut().unwrap().expires_at = 0;
+        assert!(cfg.validate().is_err());
+    }
+
     #[test]
     fn model_is_explicit_and_provider_verified_for_every_agent() {
         let mut config = config();

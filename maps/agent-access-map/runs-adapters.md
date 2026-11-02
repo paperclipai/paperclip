@@ -4,6 +4,18 @@ Product map: [runs-adapters](../feature-map/runs-adapters.md).
 
 Feature ID: `runs-adapters`.
 
+Scoped local Git author contract (`runs-adapters/runs`): an admitted execution
+with managed launchers can create a local commit without a GitHub grant. A
+private per-operation Git config supplies `Paperclip <noreply@paperclip.ing>`
+only as a default. Repository/command configuration and captured managed identity
+retain precedence. The default conveys no API, repository-network or credential
+authority; current run, company, trust and GitHub-grant checks stay in force.
+The [launcher controls](../../packages/adapter-utils/src/github-launcher.test.ts)
+exercise real Git with controlled broker responses; the
+[staging controls](../../packages/adapter-utils/src/github-launcher-environment.test.ts)
+exercise real local shells through a simulated sandbox transport. Neither
+qualifies live cloud execution or GitHub writes. No REST operation changes.
+
 Delegated native entries inherit the [native admission and work-mode limits](README.md#native-rest-transport).
 
 Review date: 2026-10-26. Source base: `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; implementation: [#17737](https://github.com/paperclipai/paperclip/pull/17737).
@@ -43,7 +55,14 @@ Policy: Company model discovery requires company access; account-backed discover
 also enforces its account/pool and target-agent rules. Instance adapter inventory
 and installation retain board/admin gates. Delegated managed
 AI-account login operations are enumerated under `model-accounts`; they do not
-grant raw host administration or execution-session reset.
+grant raw host administration or execution-session reset. On Cloud-managed
+instances, external adapter install, reinstall, reload, removal and override
+operations return `403` with `adapter_install_platform_managed`, including for
+instance admins. Built-in metadata remains available to board users. Startup
+and UI parser reads do not consume saved external registrations or package code.
+[Local fixture controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+and [route controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+cover this boundary; they do not establish live agent or provider qualification.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -58,13 +77,28 @@ qualified selection, not successful authentication or task execution. Native
 Claude retains existing account grants and company/responsible-user boundaries.
 Source: [adapter discovery](../../server/src/adapters/registry.ts).
 
+Kimi Code has a qualified native ACPX profile on Mac ARM64 and Linux x64. It
+requires an explicit model and a company-secret `KIMI_API_KEY` binding, and uses
+the global Code API. Ordinary selection, setup and Runtime Test require no
+candidate grant. Runtime Test queries the authenticated Code model catalog and
+sends no model prompt. Future pending profiles retain exact trusted startup
+admission; saved agent configuration and public requests cannot supply authority.
+Inactive setup drafts can precede model entry; Test and hire still require it.
+The native model route returns no suggestions and accepts typed identifiers.
+Managed Kimi account connections, ambient OAuth borrowing, and automatic legacy
+migration are outside this release. Source/control evidence only; see the
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md)
+for the separately recorded runtime and product results.
+
 Gaps: Raw instance adapter listing requires board, while company model discovery exists
 for eligible agents.
 
 Scoped source-only evidence: [adapter discovery](../../server/src/routes/adapters.ts)
 reports supported runners/effective default for the selected company/environment;
 [selection policy](../../server/src/services/agent-runner-selection.ts) reads
-server-owned immutable sandbox facts without provisioning. New Codex defaults
+server-owned immutable sandbox facts without provisioning. Managed Cloud images
+skip saved qualification after company access checks; custom environments and
+active captured custom images retain the existing policy. New Codex defaults
 and explicit overrides follow the [shared runner contract](../../packages/shared/src/agent-runner.ts);
 Claude follows its qualified rollout described above. The board inventory does not grant a
 native agent an equivalent discovery binding. See
@@ -108,6 +142,12 @@ Agent access: `partial` — Permitted agent-creation validation through REST / n
 Policy: Environment tests follow agent creation/configuration authority. Supported
 managed-account login initiation follows `model-accounts` below; human codes and
 consent, raw host login and adapter installation retain their specific gates.
+
+The board-driven [Antigravity saved-subscription journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+uses this ordinary environment Test after selecting the same signed-in owner's
+saved personal Google grant. It also verifies actual task outputs and native
+settlement independently. This does not establish agent-authored environment
+validation, fresh provider consent or access under another owner's grant.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -171,7 +211,8 @@ remain separate from live latency and permitted/denied agent acceptance.
 Scoped OpenCode assigned-tool source evidence: local and remote native sessions
 use the server-owned authenticated relay. The provider sees bounded
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` schemas,
-then uses pinned aliases. Search intersects fresh grants and work modes; calls
+then uses pinned aliases. Search describes its 1–20 page limit and default of 5
+in the tool and parameter descriptions. It intersects fresh grants and work modes; calls
 retain the run's original gateway policy, validation, approvals, revocation and
 audit path. Prompt arguments cannot select gateway authority. Assigned gateway
 launch credentials stay on the controller. Former direct-catalog OpenCode
@@ -244,6 +285,12 @@ The sandbox uses its injected run credential. See
 
 Policy: Same company, company-scope read authority and run/task visibility still
 apply. Task-bound history and recovery records require task read authority.
+Generic interval scheduling and direct unscoped timer requests cannot create
+taskless native Runner runs. Task-bound monitors, routines, assignments and
+timer requests retain existing authorization; Legacy intervals are unchanged.
+The [queue](../../server/src/services/heartbeat/queue.test.ts) and
+[scheduler](../../server/src/services/heartbeat/scheduling.test.ts) PostgreSQL
+regressions use synthetic execution and grant no new agent API or credential authority.
 Each run-linked task is filtered by the caller's task-read predicate; a readable
 company run cannot expose inaccessible private task titles. Existing content
 and credential redaction apply. Adapter installation, raw host login, execution
@@ -271,6 +318,41 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Scoped source evidence: restart preparation transfers its lease renewal to the
+native executor after the executor acquires its own reference. Completion stops
+renewal before coordinator release, while real ownership loss retains the detach
+guard. This changes no actor permission or session-reset authority. Follow the
+[session recipe](../feature-map/runs-adapters.md#session) for recovery followed by
+ordinary turns; deterministic runner checks do not establish live provider access.
+
+Sandbox export carries shallow Git boundaries through the full-bundle fallback
+and uses normal Git fetch connectivity checks. Existing host ancestry and merge
+guards remain effective. This grants no task retry or operator recovery authority;
+the saved-result export API still requires board runtime management permission.
+Follow the [session recipe](../feature-map/runs-adapters.md#session) for separately
+fetched shallow history; filesystem controls do not establish live recovery.
+
+Plugin suspension receipts remain required through recovery and admission, then
+are removed when the admitted session becomes live. A later warm run therefore
+does not inherit an obsolete stopped-run identity. Repository-free fresh plugin
+directories retain their saved company, task, workspace, provider owner and
+attempt bindings on follow-up. This does not grant session-reset authority or
+discard an explicit repository strategy. See the
+[session recipe](../feature-map/runs-adapters.md#session) for the continuation
+checks; source regressions do not establish live provider acceptance.
+
+Scoped source evidence: completed warm-runner retirement can persist maintenance
+under the same process's live, task-bound preparation lease before native
+coordinator admission. Original controller generation, committed-result and
+no-new-work checks remain required. This changes no actor permission or session
+reset authority. Follow the [session recipe](../feature-map/runs-adapters.md#session)
+for configuration invalidation and expired or foreign owner rejection.
+
+Fresh-session admission with external checkpoints reads current canonical state
+from the registered controller. A local marker does not grant bootstrap or
+session-reset authority. Exact run/session/runner/lease binding, no prior activity,
+backup checks and atomic remote directory admission retain their existing gates.
+
 Capability ID: `runs-adapters/session`.
 
 Review: `baseline`.
@@ -286,6 +368,16 @@ continuation.
 Policy: Task-session listing and execution-context reset require board agent
 management at their HTTP routes. These controls are separate from delegated
 managed AI-account authentication attempts under `model-accounts`.
+
+Ordinary remote `per_turn` continuation restores an external controller marker
+through the existing company/task-bound checkpoint store, with the expected
+normalized session. Prior-owner, lifecycle and backup admission checks remain
+authoritative. Prior-run projections refresh when that checkpoint exists; legacy
+file-backed admission remains available when it does not. This changes no agent
+grant or session-control endpoint. The
+[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+provide source-level restoration and denial evidence; live provider continuity
+is a separate verification step.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.

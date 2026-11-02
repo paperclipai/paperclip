@@ -5,6 +5,11 @@ import {
   fastResponseRequests, chatPublications,
   type Db,
 } from "@paperclipai/db";
+import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
+import { githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
+import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { conflict, forbidden, HttpError } from "../errors.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import { githubAutomaticAdmission } from "./chat-github-events.js";
@@ -25,51 +30,8 @@ type Api = { request<T>(path: string, options?: { method?: string; body?: unknow
 type Lease = { commit<T>(write: (tx: Transaction) => Promise<T>): Promise<T> };
 type Source = GitHubResponseSource;
 type Comment = { id: number; body?: string; html_url: string; user?: { login?: string } };
-const responseRunColumns = {
-  id: heartbeatRuns.id,
-  companyId: heartbeatRuns.companyId,
-  agentId: heartbeatRuns.agentId,
-  responsibleUserId: heartbeatRuns.responsibleUserId,
-  activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
-  nativeIssueId: heartbeatRuns.nativeIssueId,
-  issueId: heartbeatRuns.issueId,
-  status: heartbeatRuns.status,
-  updatedAt: heartbeatRuns.updatedAt,
-  // Terminal execution can precede native presentation commit. Until its
-  // durable decision exists, missing output is undecided rather than failure.
-  nativePresentationPending: sql<boolean>`coalesce(
-    ${heartbeatRuns.status} = 'succeeded'
-    and ${heartbeatRuns.runtimeMode} = 'native'
-    and (${heartbeatRuns.nativePhase} is distinct from 'committed'
-      or ${heartbeatRuns.resultJson}->'presentationDecision'->>'schema' is distinct from 'paperclip.run_presentation_decision.v1'
-      or coalesce(${heartbeatRuns.resultJson}->'presentationDecision'->>'commentAction', '') not in ('none', 'create', 'reuse')),
-    false
-  )`,
-  // Project only the server-committed no-publication decision, never the
-  // potentially large native result or model-authored summary.
-  passiveResponseWait: sql<boolean>`coalesce(
-    ${heartbeatRuns.status} = 'succeeded'
-    and ${heartbeatRuns.runtimeMode} = 'native'
-    and ${heartbeatRuns.nativePhase} = 'committed'
-    and ${heartbeatRuns.resultJson}->>'finalizationPhase' = 'committed'
-    and ${heartbeatRuns.resultJson}->>'finalizationReasonCode' = 'external_chat_response_waiting'
-    and ${heartbeatRuns.resultJson}->'nativeResult'->>'schema' = 'paperclip.run_result.v1'
-    and ${heartbeatRuns.resultJson}->'nativeResult'->>'reportedWorkDisposition' = 'yielded'
-    and ${heartbeatRuns.resultJson}->'nativeResult'->'continuation'->>'kind' = 'response_wake'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'schema' = 'paperclip.run_presentation_decision.v1'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'chosenSource' = 'none'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'commentAction' = 'none'
-    and ${heartbeatRuns.resultJson}->'presentationDecision'->'reasonCodes' @> '["yielded_control_plane_wait"]'::jsonb,
-    false
-  )`,
-  contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-    'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
-    'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
-    'wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId',
-    'wakeCommentIds', ${heartbeatRuns.contextSnapshot}->'wakeCommentIds'
-  )`,
-};
 const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0;
+const stoppedAcknowledgement = Symbol("stopped GitHub acknowledgement");
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
 const responseMarker = (source: Source) => isMainPullResponse(source) ? pullResponseMarker(source) : requestResponseMarker(source);
 
@@ -91,18 +53,23 @@ async function findResponseComment(source: Source, api: Api, legacyMarkers: stri
  * Reconnect epochs fence publication attempts, not the durable comment identity.
  * Legacy receipts are also checked against the App-owned provider comment. */
 async function stageResponse(db: Db, source: Source) {
-  const [inserted] = await db.insert(chatActions).values({
-    companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
-    conversationId: source.conversation.id, deliveryId: source.delivery.id,
-    principalId: source.delivery.principalId, kind: "github_response_comment",
-    providerActionId: actionKey(source.delivery.id),
-    payload: { botExternalId: source.endpoint.botExternalId, agentId: source.endpoint.assignedAgentId },
-    status: "received",
-  }).onConflictDoNothing().returning();
-  const response = inserted ?? (await db.select().from(chatActions).where(and(
+  const lookup = () => db.select().from(chatActions).where(and(
     eq(chatActions.companyId, source.endpoint.companyId), eq(chatActions.endpointId, source.endpoint.id),
     eq(chatActions.providerActionId, actionKey(source.delivery.id)),
-  )))[0];
+  )).then(rows => rows[0]);
+  const existing = await lookup();
+  const response = existing ?? await db.transaction(async tx => {
+    await notifyChatResponseAvailability(tx, { companyId: source.endpoint.companyId, deliveryId: source.delivery.id });
+    const [inserted] = await tx.insert(chatActions).values({
+      companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+      conversationId: source.conversation.id, deliveryId: source.delivery.id,
+      principalId: source.delivery.principalId, kind: "github_response_comment",
+      providerActionId: actionKey(source.delivery.id),
+      payload: { botExternalId: source.endpoint.botExternalId, agentId: source.endpoint.assignedAgentId },
+      status: "received",
+    }).onConflictDoNothing().returning();
+    return inserted;
+  }) ?? await lookup();
   if (!response || response.conversationId !== source.conversation.id ||
       (response.payload.botExternalId !== undefined && response.payload.botExternalId !== source.endpoint.botExternalId) ||
       response.payload.agentId !== source.endpoint.assignedAgentId)
@@ -112,7 +79,7 @@ async function stageResponse(db: Db, source: Source) {
 
 export async function writeGitHubResponseComment(
   db: Db, source: Source, api: Api, lease: Lease,
-  input: { body: string; final: boolean; versionAt?: Date; acknowledgement?: boolean; preserveFinal?: boolean },
+  input: { body: string; final: boolean; versionAt?: Date; acknowledgement?: boolean; preserveFinal?: boolean; pausedVersion?: string },
   assertCurrent: () => Promise<void>,
 ) {
   await assertCurrent();
@@ -135,6 +102,12 @@ export async function writeGitHubResponseComment(
       (input.versionAt && Date.parse(String(response.result.versionAt)) > input.versionAt.getTime()))) {
     if (!input.acknowledgement && response.result.final === true && !input.final)
       throw conflict("This GitHub response is already final");
+    if (["received", "failed"].includes(response.status) || (response.status === "processed" &&
+        input.pausedVersion && response.result.pausedVersion !== input.pausedVersion)) await lease.commit(async tx => {
+      await tx.update(chatActions).set({ status: "processed",
+        result: { ...response.result, ...(input.pausedVersion ? { pausedVersion: input.pausedVersion } : {}) }, updatedAt: new Date() })
+        .where(and(eq(chatActions.id, response.id), eq(chatActions.status, response.status)));
+    });
     return { id: String(response.result.id), url: String(response.result.url) };
   }
   const marker = responseMarker(source);
@@ -177,6 +150,7 @@ export async function writeGitHubResponseComment(
     }, updatedAt: new Date() }).where(eq(chatActions.id, target.id));
     await tx.update(chatActions).set({ status: "processed", result: {
       ...receipt, final: input.final || alreadyFinal, versionAt: versionAt.toISOString(),
+      ...(input.pausedVersion ? { pausedVersion: input.pausedVersion } : {}),
     }, updatedAt: new Date() }).where(eq(chatActions.id, response.id));
     await logActivity(tx as unknown as Db, { companyId: source.endpoint.companyId,
       actorType: "system", actorId: "github-response", action: "chat_github.response_updated",
@@ -213,13 +187,18 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       throw forbidden("Invalid GitHub request repository");
     return { ...row, repositoryId, repository: match[1]!, number: Number(match[2]), replyId: match[3] ?? null };
   }
-  async function acknowledge(deliveryId: string, finalBody?: string, assertRun?: () => Promise<void>) {
+  async function acknowledge(deliveryId: string, finalBody?: string, assertRun?: () => Promise<void>, canContinue = () => true) {
+    if (!canContinue()) return;
     const source = await context(deliveryId);
     // Persist before competing for the publication lane. A busy lane leaves
     // durable acknowledgement work for maintenance instead of losing it.
     await stageResponse(db, source);
+    if (!canContinue()) return;
     return withGitHubPublicationLease(db, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
-      repositoryId: source.repositoryId, number: source.number }, fetchImpl, async lease => {
+      repositoryId: source.repositoryId, number: source.number }, (input, init) => {
+      if (!canContinue()) throw stoppedAcknowledgement;
+      return fetchImpl(input, init);
+    }, async lease => {
       const assertCurrent = async () => {
         await assertRun?.();
         const current = await context(deliveryId);
@@ -232,64 +211,45 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       let requestRunning = false;
       let requestPaused = false;
       let preserveFinal = false;
+      let pausedVersion: string | undefined;
       if (finalBody === undefined) {
         const existing = await stageResponse(db, source);
-        const [requestRun] = await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).innerJoin(chatMessageLinks, and(
-          eq(chatMessageLinks.companyId, source.endpoint.companyId), eq(chatMessageLinks.endpointId, source.endpoint.id),
-          eq(chatMessageLinks.deliveryId, deliveryId), eq(chatMessageLinks.direction, "inbound"),
-          or(sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
-            sql`coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`),
-        )).where(and(eq(heartbeatRuns.companyId, source.endpoint.companyId), eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
-          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${source.conversation.issueId}`))
-          .orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-        const [latestRun] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, source.endpoint.companyId), eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
-          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${source.conversation.issueId}`,
-        )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-        const originMessageId = latestRun?.activeIdentityContextId ? await chatRunSourceMessageId(db, latestRun,
-          { allowLegacyWakeComment: true, provider: "github" }) : null;
-        const ownsLatestRequest = !!latestRun && (requestRun?.runId === latestRun.id ||
-          (!!source.sourceMessageId && originMessageId === source.sourceMessageId));
-        requestRunning = ownsLatestRequest && latestRun?.status === "running";
-        const terminal = latestRun && ["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(latestRun.status);
-        const run = terminal && (ownsLatestRequest || source.issueStatus === "blocked") ? latestRun : null;
-        if (run) {
-          const reply = ownsLatestRequest ? await githubRunReplyState(db, {
-            companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
-            issueId: source.conversation.issueId!, runId: run.id }) : "none";
-          if (reply === "unsettled") throw conflict("GitHub reply is still being resolved");
-          // A confirmed reply for this exact run can retire its placeholder.
-          // Otherwise terminal execution is not yet a missing-response decision.
-          if (ownsLatestRequest && run.nativePresentationPending && reply === "none") return;
-          if (isMainPullResponse(source) && ownsLatestRequest && run.passiveResponseWait && reply === "none") {
-            // A committed passive turn intentionally has no new response.
-            // Settle this request's acknowledgement without editing the shared
-            // PR assessment or inventing a current-run publication receipt.
-            await lease.commit(async tx => { await tx.update(chatActions).set({
-              status: "cancelled", result: { ...existing.result, final: true, code: "passive_response_wait" },
-              updatedAt: new Date(),
+        const execution = await githubResponseExecution(db, {
+          companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+          agentId: source.endpoint.assignedAgentId!, issueId: source.conversation.issueId!, deliveryId,
+          sourceMessageId: source.sourceMessageId, issueStatus: source.issueStatus,
+          deliveryCreatedAt: source.delivery.createdAt,
+        });
+        if (execution.reply === "unsettled") throw conflict("GitHub reply is still being resolved");
+        if (execution.presentationPending) return;
+        if (isMainPullResponse(source) && execution.passiveResponseWait) {
+          // Preserve the shared assessment when this exact run intentionally waits
+          // without publishing. Retire only its request acknowledgement.
+          await lease.commit(async tx => {
+            await notifyChatResponseAvailability(tx, { companyId: source.endpoint.companyId, deliveryId });
+            await tx.update(chatActions).set({ status: "cancelled",
+              result: { ...existing.result, final: true, code: "passive_response_wait" }, updatedAt: new Date(),
             }).where(and(eq(chatActions.id, existing.id), eq(chatActions.companyId, source.endpoint.companyId),
-              sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`)); });
-            return;
-          }
-          if (existing.result?.final === true) return existing.result.id ? { id: String(existing.result.id), url: String(existing.result.url) } : undefined;
-          preserveFinal = reply === "confirmed";
-          onlyExisting = reply === "confirmed" && !existing.result?.id;
-          requestPaused = source.issueStatus === "blocked" && !ownsLatestRequest;
-          finalBody = reply === "confirmed" ? "This request has been handled. See the response in this conversation."
-            : requestPaused ? "Work is paused. Your request is saved. See the Paperclip task for details."
-            : run.status === "succeeded" ? "This turn ended without publishing a final response. See the Paperclip task for details."
-            : "This turn stopped before completing. See the Paperclip task for details.";
-          finalVersionAt = new Date(Math.max(run.updatedAt.getTime(), source.delivery.createdAt.getTime()));
-        } else if (source.issueStatus === "blocked" && latestRun?.status !== "running") {
-          requestPaused = true;
-          finalBody = "Work is paused. Your request is saved. See the Paperclip task for details.";
-          finalVersionAt = source.delivery.createdAt;
-        } else if (existing.result?.id && (!isMainPullResponse(source) ||
+              sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+          });
+          return;
+        }
+        if (existing.result?.final === true) return existing.result.id ? { id: String(existing.result.id), url: String(existing.result.url) } : undefined;
+        if (execution.paused && existing.status === "processed" && existing.result?.id && existing.result?.pausedVersion === execution.version)
+          return existing.result.id ? { id: String(existing.result.id), url: String(existing.result.url) } : undefined;
+        pausedVersion = execution.paused ? execution.version : undefined;
+        requestRunning = execution.running;
+        requestPaused = execution.paused;
+        preserveFinal = execution.reply === "confirmed";
+        onlyExisting = preserveFinal && !existing.result?.id;
+        finalBody = execution.body;
+        finalVersionAt = execution.versionAt;
+        if (finalBody === undefined && existing.result?.id && (!isMainPullResponse(source) ||
             (await stagePullResponse(db, source)).result?.id === existing.result.id)) {
-          // Rotate no-op maintenance checks so a page of newer queued asks
-          // cannot hide other conversations that need terminal reconciliation.
-          await lease.commit(async tx => { await tx.update(chatActions).set({ updatedAt: new Date() }).where(eq(chatActions.id, existing.id)); });
+          await lease.commit(async tx => { await tx.update(chatActions).set({
+            status: ["received", "failed"].includes(existing.status) ? "processed" : existing.status,
+            updatedAt: new Date(),
+          }).where(and(eq(chatActions.id, existing.id), eq(chatActions.status, existing.status))); });
           return { id: String(existing.result.id), url: String(existing.result.url) };
         }
         if (finalBody === undefined) {
@@ -326,7 +286,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       }
       return writeGitHubResponseComment(db, source, api, lease,
         { body: finalBody ?? (isMainPullResponse(source) && !requestRunning ? "Review queued…" : "Working on this…"), final: finalBody !== undefined && !requestPaused,
-          acknowledgement: finalBody === undefined, preserveFinal,
+          acknowledgement: finalBody === undefined, preserveFinal, pausedVersion,
           ...(finalBody !== undefined ? { versionAt: finalVersionAt ?? new Date() } : {}) }, assertCurrent);
     });
   }
@@ -439,6 +399,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       or(eq(chatActions.status, "received"), and(eq(chatActions.status, "failed"), sql`${chatActions.result}->>'retryable' = 'true'`,
         sql`(${chatActions.result}->>'retryAt')::timestamptz <= now()`)))).orderBy(asc(chatActions.createdAt)).limit(limit);
     for (const row of rows) if (row.deliveryId) await tryAcknowledge(row.deliveryId);
+    return rows.length + await processTerminalResponses(limit);
+  }
+  async function processTerminalResponses(limit = 10) {
     // Recovery can stop execution before a milestone publication is staged.
     // Revisit acknowledged requests with terminal execution, even after a
     // restart; successful acknowledgement is not successful task completion.
@@ -463,21 +426,30 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
                 or coalesce(r.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))))`,
       )).orderBy(asc(chatActions.updatedAt)).limit(limit);
     for (const row of stopped) if (row.deliveryId) await tryAcknowledge(row.deliveryId);
-    return rows.length + stopped.length;
+    return stopped.length;
   }
-  async function tryAcknowledge(deliveryId: string) {
-    try { return await acknowledge(deliveryId); }
+  async function tryAcknowledge(deliveryId: string, canContinue = () => true) {
+    try { return await acknowledge(deliveryId, undefined, undefined, canContinue); }
     catch (error) {
+      if (error === stoppedAcknowledgement || !canContinue()) return;
       const [row] = await db.select().from(chatActions).where(and(eq(chatActions.kind, "github_response_comment"), eq(chatActions.deliveryId, deliveryId)));
       if (!row || row.result?.final === true) return;
       const attempts = Number(row.result?.attempts ?? 0) + 1;
       const denied = error instanceof Error && "status" in error && error.status === 403;
-      await db.update(chatActions).set({ status: denied ? "cancelled" : "failed", result: {
-        ...row.result, attempts, retryable: !denied && attempts < 8,
-        retryAt: new Date(Date.now() + Math.min(300000, 1000 * 2 ** attempts)).toISOString(),
-        code: denied ? "authorization_changed" : "acknowledgement_unconfirmed",
-      }, updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+      await db.transaction(async tx => {
+        await notifyChatResponseAvailability(tx, { companyId: row.companyId, deliveryId });
+        await tx.update(chatActions).set({ status: denied ? "cancelled" : "failed", result: {
+          ...row.result, attempts, retryable: !denied && attempts < 8,
+          retryAt: new Date(Date.now() + Math.min(300000, 1000 * 2 ** attempts)).toISOString(),
+          code: denied ? "authorization_changed" : "acknowledgement_unconfirmed",
+        }, updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+      });
     }
   }
-  return { tryAcknowledge, processPending, failRun, finishRun, hasWorkingResponseForRun };
+  return { tryAcknowledge, processPending, processTerminalResponses, failRun, finishRun, hasWorkingResponseForRun,
+    registerTerminalResponseWork: (coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) =>
+      registerGitHubTerminalResponseWork(db, coordinator, tryAcknowledge, canRun),
+    registerAcknowledgementWork: (coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) =>
+      registerGitHubAcknowledgementWork(db, coordinator, tryAcknowledge, canRun),
+  };
 }

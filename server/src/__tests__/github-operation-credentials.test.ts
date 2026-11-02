@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 import { createNativeGitHubAccess } from "../services/native-runtime/native-github-access.js";
 import express from "express";
@@ -34,8 +35,6 @@ import {
 import {
   initializeRunIdentity,
   captureRunIdentity,
-  reserveSteeredIdentity,
-  acceptSteeredIdentity,
 } from "../services/run-identity.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import {
@@ -52,23 +51,25 @@ const vault = vi.hoisted(() => ({
   resolveSecretValue: vi.fn(async () => "test-dedicated-token"),
 }));
 vi.mock("../services/secrets.js", () => ({ secretService: () => vault }));
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_CREDENTIAL_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "operation-time GitHub credential resolution",
   () => {
-    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
+    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined,
       db: ReturnType<typeof createDb>;
     beforeAll(async () => {
       vi.stubEnv(
         "PAPERCLIP_AGENT_JWT_SECRET",
         "test-github-broker-signing-secret",
       );
-      database = await startEmbeddedPostgresTestDatabase(
+      if (!external) database = await startEmbeddedPostgresTestDatabase(
         "paperclip-github-operation-",
       );
-      db = createDb(database.connectionString);
+      db = createDb(external ?? database!.connectionString);
     }, 30_000);
     afterAll(async () => {
+      await db?.$client.end({ timeout: 1 });
       await database?.cleanup();
       vi.unstubAllEnvs();
     }, 60_000);
@@ -85,7 +86,7 @@ const support = await getEmbeddedPostgresTestSupport();
           transport: "mcp_remote" as const, config: { sourceTemplateKey, payload }, transportConfig: { sourceTemplateKey } };
       });
       await db.insert(toolConnections).values(irrelevant);
-      const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+      const observed = createDb(external ?? database!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
       const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(observed, { toolConnections }, capture);
       try {
@@ -117,7 +118,7 @@ const support = await getEmbeddedPostgresTestSupport();
         resultJson: { stdout: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
       }).where(eq(heartbeatRuns.id, input.runId));
       const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
-      const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+      const observed = createDb(external ?? database!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
       const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
       try {
@@ -161,6 +162,42 @@ const support = await getEmbeddedPostgresTestSupport();
         .from(runIdentityContexts)
         .where(eq(runIdentityContexts.runId, input.runId));
       expect(JSON.stringify(history)).not.toContain("test-token-");
+    });
+    it("writes the GitHub summary only when it changes", async () => {
+      const input = await seed();
+      const selected = await grant(input, "A");
+      const update = vi.spyOn(db, "update");
+      const summaryWrites = () => update.mock.calls.filter(([table]) => table === runIdentityContexts).length;
+      const stored = async () => (await db.select().from(runIdentityContexts)
+        .where(eq(runIdentityContexts.runId, input.runId)))[0].github;
+      try {
+        expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "available", grantId: selected.id });
+        expect(summaryWrites()).toBe(1);
+        expect(await stored()).toMatchObject({ status: "available", login: "A", grantId: selected.id });
+        for (let call = 0; call < 3; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "available", grantId: selected.id });
+        }
+        expect(summaryWrites()).toBe(1);
+        await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, selected.id));
+        for (let call = 0; call < 2; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "unavailable" });
+        }
+        expect(summaryWrites()).toBe(2);
+        expect(await stored()).toMatchObject({ status: "unavailable" });
+        await db.update(issues).set({ executionPolicy: { authorizationPolicy: { trustPreset: LOW_TRUST_REVIEW_PRESET,
+          trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, companyId: input.companyId, rootIssueId: input.issueId,
+            issueIds: [input.issueId], allowedAgentIds: [input.agentId], allowedToolClasses: ["git.read", "github.pr.read"] } } } })
+          .where(eq(issues.id, input.issueId));
+        for (let call = 0; call < 2; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+            status: "unavailable", reason: expect.stringContaining("low-trust"),
+          });
+        }
+        expect(summaryWrites()).toBe(3);
+        expect(await stored()).toMatchObject({ status: "unavailable", reason: expect.stringContaining("low-trust") });
+      } finally {
+        update.mockRestore();
+      }
     });
     it("returns no credential for unconnected users, removed membership, or ambiguous personal accounts", async () => {
       const input = await seed();

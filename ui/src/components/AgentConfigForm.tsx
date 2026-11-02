@@ -1,4 +1,4 @@
-import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/copilot-task-model-catalog";
+import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
 import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
@@ -145,7 +145,9 @@ type AgentConfigFormProps = {
   /** Keep variable bindings beside secret access in a unified edit surface. */
   environmentVariablesPlacement?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
-  sectionLayout?: "inline" | "cards";
+  sectionLayout?: "inline" | "cards" | "panels";
+  /** Sections to leave out entirely (by `data-config-section` key). */
+  hiddenSections?: readonly string[];
   /** Optional settings composition; sorting changes DOM order as well as visual order. */
   sectionOrder?: readonly string[];
   sectionTitles?: Record<string, string>;
@@ -323,12 +325,21 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
-function ConfigSections({ order, className, children }: {
+function ConfigSections({ order, hidden, className, children }: {
   order?: readonly string[];
+  hidden?: readonly string[];
   className: string;
   children: ReactNode;
 }) {
-  if (!order) return <div className={className}>{children}</div>;
+  const keyOf = (child: ReactNode) =>
+    isValidElement<{ "data-config-section"?: string }>(child) ? child.props["data-config-section"] : undefined;
+  const visible = hidden?.length
+    ? Children.toArray(children).filter((child) => {
+      const key = keyOf(child);
+      return !key || !hidden.includes(key);
+    })
+    : children;
+  if (!order) return <div className={className}>{visible}</div>;
   const rank = (child: ReactNode) => {
     const key = isValidElement<{ "data-config-section"?: string }>(child)
       ? child.props["data-config-section"]
@@ -336,7 +347,7 @@ function ConfigSections({ order, className, children }: {
     const index = key ? order.indexOf(key) : -1;
     return index < 0 ? order.length : index;
   };
-  const sections = Children.toArray(children).sort((a, b) => rank(a) - rank(b));
+  const sections = Children.toArray(visible).sort((a, b) => rank(a) - rank(b));
   return <div className={className}>{sections}</div>;
 }
 
@@ -345,7 +356,12 @@ function ConfigSections({ order, className, children }: {
 export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
-  const cards = props.sectionLayout === "cards";
+  const panels = props.sectionLayout === "panels";
+  const cards = props.sectionLayout === "cards" || panels;
+  const cardBody = panels
+    ? "space-y-3 rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)"
+    : "border border-border rounded-lg p-4 space-y-3";
+  const untitled = (key: string) => panels && props.sectionTitles?.[key] === "";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
@@ -1016,10 +1032,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
-  const modelCacheIdentity = runnerAcpxAgent === "copilot" ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : modelProvider;
+  const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
+  const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
-  const modelAdapterType = isRunnerHarness ? harnessType : adapterType;
+  const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
     ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelCacheIdentity)
     : ["agents", "none", "adapter-models", adapterType];
@@ -1037,13 +1054,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       aiConnection: modelAiBinding,
       agentId: isCreate ? undefined : props.agent.id,
     }),
-    ...(runnerAcpxAgent === "copilot" ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
   });
-  const copilotModelScope = runnerAcpxAgent === "copilot" ? JSON.stringify(modelQueryKey) : null;
+  const accountModelScope = accountBoundCatalog ? JSON.stringify(modelQueryKey) : null;
   useEffect(() => {
-    if (copilotModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
-  }, [copilotModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
+    if (accountModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
+  }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
@@ -1209,6 +1226,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
       ).data;
       if (!isCreate && props.agent.adapterType === "paperclip_runner" && adapterType === "paperclip_runner"
+        && runnerAvailability?.defaultRunner !== "paperclip"
         && !isExternalRunner && aiConnection?.mode !== "router" && !isDirty && environmentId && canQualifyRunnerEnvironment(environmentList.find(environment => environment.id === environmentId))) {
         const target = runnerSettingsTargetRef.current;
         // Qualify only the saved computer. The strict agent-scoped endpoint
@@ -1409,7 +1427,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent === "copilot" ? { acpxAgent: runnerAcpxAgent, aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1537,7 +1555,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   if (!isCreate && props.content === "secrets") {
     return (
-      <div className={cn("relative", cards && "space-y-6")}>
+      <div className={cn("relative", panels ? "flex flex-col gap-(--agent-detail-band-gap)" : cards && "space-y-6")}>
         {isDirty && !props.hideInlineSave && (
           <div className="sticky top-0 z-10 flex items-center justify-end border-b border-primary/20 bg-background/90 px-4 py-2 backdrop-blur-sm">
             <div className="flex items-center gap-3">
@@ -1555,7 +1573,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               ? <h3 className="mb-3 text-sm font-medium">Environment variables</h3>
               : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
             }
-            <div className={cn(cards ? "rounded-lg border border-border p-4" : "px-4 pb-3")}>
+            <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? (panels ? "rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)" : "rounded-lg border border-border p-4") : "px-4 pb-3")}>
               {environmentVariablesEditor}
             </div>
           </div>
@@ -1566,7 +1584,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="mb-3 text-sm font-medium">Secret access</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Secret access</div>
           }
-          <div className={cn(cards ? "space-y-3 rounded-lg border border-border p-4" : "space-y-3 px-4 pb-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "space-y-3 px-4 pb-3")}>
             <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
             <AgentSecretAccessEditor
               config={{ ...config, ...overlay.adapterConfig }}
@@ -1617,7 +1635,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {upgradeWarnings.map(warning => <p key={warning.field} className="text-sm text-muted-foreground">{warning.message}</p>)}
         </div>
       ) : null}
-    <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
+    <ConfigSections order={props.sectionOrder} hidden={props.hiddenSections} className={cn("relative", panels ? "agent-config-panels" : cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
@@ -1641,7 +1659,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["identity"] ?? "Identity"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field label="Name" hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
@@ -1704,10 +1722,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // Render the environment read-only instead of the selectable picker.
         <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? (untitled("environment") ? null : <h3 className="text-sm font-medium mb-3">Environment</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field
               label="Default environment"
               hint="This instance runs all agents in the Kubernetes sandbox. Local execution is disabled."
@@ -1729,10 +1747,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : showEnvironmentOverrideControl ? (
         <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? (untitled("environment") ? null : <h3 className="text-sm font-medium mb-3">Environment</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field label="Environment override">
               <div className="space-y-2">
                 <SelectPopover
@@ -1761,9 +1779,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Adapter ---- */}
       <div data-config-section="adapter" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-        <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
+        {untitled("adapter") && !showInlineAdapterTestEnvironmentButton ? null : <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>
+            ? (untitled("adapter") ? <span /> : <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>)
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1778,8 +1796,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {testActionPending ? `${testActionLabel}...` : testActionLabel}
             </Button>
           )}
-        </div>
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+        </div>}
+        <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <div className="inline-flex items-center gap-1.5">
@@ -1870,7 +1888,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
               mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
-              if (runnerAcpxAgent === "copilot" && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
+              if (accountBoundCatalog && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
             }} />}
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
@@ -1952,7 +1970,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
-                required={adapterType === "opencode_local" || adapterType === "pi_local"}
+                required={adapterType === "opencode_local" || adapterType === "pi_local" || runnerAcpxAgent === "antigravity"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
                 creatable
@@ -1965,7 +1983,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       return result.data?.model ?? null;
                     }}
                 onRefreshModels={
-                  connectionModels ? connectionModels.refreshModels : supportsAdapterModelRefresh(adapterType)
+                  connectionModels ? connectionModels.refreshModels : accountBoundCatalog || supportsAdapterModelRefresh(adapterType)
                     ? handleRefreshModels
                     : undefined
                 }
@@ -2026,10 +2044,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {(
         <div data-config-section="configuration" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Configuration</h3>
+            ? (untitled("configuration") ? null : <h3 className="text-sm font-medium mb-3">Configuration</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
@@ -2149,7 +2167,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">Environment variables</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             {isLocal ? environmentVariablesEditor : renderAdapterFields("environment")}
           </div>
         </div>
@@ -2162,7 +2180,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <ToggleWithNumber
               label="Heartbeat on interval"
               hint={help.heartbeatInterval}
@@ -2360,8 +2378,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
         <RuntimeTestCard
+          tone={panels ? "tile" : "card"}
           variant={isExternalRunner ? "prerequisites" : "connection"}
-          metadataOnly={adapterType === "paperclip_runner" && runnerAcpxAgent === "copilot"}
+          metadataOnly={accountBoundCatalog}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
           result={testResult ?? null}
           error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}

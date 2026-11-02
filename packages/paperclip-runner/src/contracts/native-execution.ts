@@ -2,7 +2,7 @@ import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js"
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
-import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
+import { QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "../drivers/acpx/generated-profiles.js";
 import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
@@ -93,7 +93,11 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot";
+export type NativeAcpxAgent = keyof typeof QUALIFIED_ACPX_PROFILE_DATA;
+
+function isNativeAcpxAgent(value: unknown): value is NativeAcpxAgent {
+  return typeof value === "string" && Object.hasOwn(QUALIFIED_ACPX_PROFILE_DATA, value);
+}
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
@@ -210,7 +214,7 @@ export interface NativeExecutionInputV2 extends Omit<NativeExecutionInputV1, "sc
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V2;
   executionMode: NativeExecutionMode;
   task: Omit<NativeExecutionInputV1["task"], "workMode"> & {
-    workMode: "standard" | "planning" | "ask";
+    workMode: "standard" | "planning" | "ask" | "skill_test";
   };
   planningContext: NativePlanningContext | null;
 }
@@ -486,8 +490,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   const contract = record(completionContract.contract, "input.completionContract.contract");
   exactKeys(contract, ["revision", "objective", "criteria"], "input.completionContract.contract");
 
-  if (task.workMode !== "standard" && (!isV2 || task.workMode !== "planning" && task.workMode !== "ask")) {
-    throw new NativeExecutionInputError("input.task.workMode must be standard, planning, or ask");
+  if (task.workMode !== "standard" && (!isV2 || task.workMode !== "planning" && task.workMode !== "ask" && task.workMode !== "skill_test")) {
+    throw new NativeExecutionInputError("input.task.workMode must be standard, planning, ask, or skill_test");
   }
   const executionMode: NativeExecutionMode = isV2 && input.executionMode === "plan" ? "plan" : "default";
   if (isV2 && input.executionMode !== "default" && input.executionMode !== "plan") {
@@ -709,8 +713,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, or copilot");
+    if (!isNativeAcpxAgent(provider.agent)) {
+      throw new NativeExecutionInputError("input.provider.agent must name a registered ACPX profile");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
@@ -871,7 +875,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       // Recovery must retain those runs, so derive the same bounded model
       // prompt from their task fields instead of making them unrecoverable.
       prompt: text(task.prompt ?? task.description ?? task.title, "input.task.prompt"),
-      workMode: task.workMode as "standard" | "planning" | "ask",
+      workMode: task.workMode as "standard" | "planning" | "ask" | "skill_test",
     },
     workspace: {
       cwd: text(workspace.cwd, "input.workspace.cwd"),

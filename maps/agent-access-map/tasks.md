@@ -72,19 +72,21 @@ Read task collections, navigation projections and blocked counts; distinguish do
 
 API: `present` — GET /api/companies/{companyId}/issues; optional view=compact.
 
-Agent access: `partial` — REST/call_api full query; CLI issue list exposes status/agent/project and local --match on one fetched page; native search_tasks query up to 500 characters, statuses, and a declared limit 1..200; production clamps the limit to 1..100 (default 50), without full paging/project/label/workspace knobs.
+Agent access: `partial` — REST/call_api full query; CLI issue list exposes status/agent/project and local --match on one fetched page; native search_tasks query up to 500 characters, statuses, limit 1..200 (default 50), and a nextCursor in ascending task-ID order. Responses expose effective limit, returnedCount and hasMore. Exhaust nextCursor with the same filters before treating an inventory as complete. Each page checks current access; concurrent task changes require a fresh scan. Project/label/workspace knobs remain REST-only.
 
 Policy: Company/read privacy filtering and inaccessible edge redaction; task-bridge company list denied. Default 500, maximum 1000, offset>=0, sortField updated|id, sortDir asc|desc, afterId. Supports status/assignee/participant/project/workspace/parent/descendant/label/origin/text/date and routine/plugin/blocker query groups. includeAgentCreatedTasks=false filters independent roots before search/pagination; omission retains agent/API behavior. includeParticipatedTasks and user me filters require board identity. Compact ETag is actor-private; 429 is not empty results.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [issues.ts](../../server/src/services/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue.ts](../../cli/src/commands/client/issue.ts), [issues-list-query-parsing.test.ts](../../server/src/__tests__/issues-list-query-parsing.test.ts), [issues-creation-visibility.test.ts](../../server/src/__tests__/issues-creation-visibility.test.ts), [issue-list-assignee-filter-routes.test.ts](../../server/src/__tests__/issue-list-assignee-filter-routes.test.ts), [private-json-etag.test.ts](../../server/src/__tests__/private-json-etag.test.ts). No live execution claimed.
 
-Verification: `not-run` — Compare human/agent/routine/channel tasks, list/compact/full filters and ID pagination without duplicates or inaccessible rows. Reject invalid boolean/date/sort/limit and agent human-only/task-bridge query. Preserve failed/429 result visibly. Request native limit 200 and confirm the production result contains at most 100 tasks.
+Verification: `not-run` — Compare human/agent/routine/channel tasks, list/compact/full filters and ID pagination without duplicates or inaccessible rows. Reject invalid boolean/date/sort/limit and agent human-only/task-bridge query. Preserve failed/429 result visibly. Request native limit 200 with more than 200 matches and follow nextCursor to exhaustion; require all accessible IDs without duplicates and accurate page metadata.
 
-Gaps: Bounded native search and one-page CLI local match are not complete company-search substitutes.
+Native verification: disposable PostgreSQL integration through the run-bound `PaperclipRunnerToolAuthority.execute` entry point covers 205 persisted tasks, 200+5 pages, terminal/empty results, status filters, cursor validation, foreign-company exclusion and Muse readability before pagination. This does not establish deployed recovery or REST verification.
+
+Gaps: One-page CLI local match is not a complete company-search substitute. Native pagination is not a snapshot across concurrent changes.
 
 ### `read-task-and-summaries`
 
-API: `present` — GET /api/issues/{id} (optional `view=core` omits related enrichment); GET /api/companies/{companyId}/issues/summaries?ids=... .
+API: `present` — GET /api/issues/{id} (optional `view=core` includes saved document/work-product cards and omits recovery and related-task enrichment); GET /api/companies/{companyId}/issues/summaries?ids=... .
 
 Agent access: `partial` — REST/CLI issue get; native get_task_context reads CURRENT task only; call_api for eligible arbitrary task/summaries. No dedicated summaries CLI/tool.
 
@@ -116,7 +118,9 @@ API: `not-applicable` — list/board, grouping/sort/columns/hierarchy/expanded r
 
 Agent access: `not-applicable` — no agent layout API; permitted underlying task data is separate.
 
-Policy: IssuesList loads/saves browser preferences by company/collection, with separate agent-created visibility. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
+Policy: IssuesList loads/saves browser preferences by company/collection, with separate agent-created visibility. The Tasks page also owns a routine-only
+checkbox and `originKind=routine_execution` URL state; it uses the existing
+company-scoped task-list origin filter before pagination. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [IssuesList.tsx](../../ui/src/components/IssuesList.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx). No live execution claimed.
 
@@ -222,7 +226,7 @@ API: `present` — PATCH /api/issues/{id} with executionPolicy.monitor; POST /ap
 
 Agent access: `partial` — native set_task_monitor standard-mode binding; permitted agent REST/call_api policy PATCH/check-now; no CLI monitor flags. No REST operation named set_task_monitor. Queue and HTTP/2 sandbox callbacks admit the wake-diagnostics read and monitor check-now request. Controller task-read, monitor-management and assignment checks still apply. Recovery resolution and scheduled-retry controls are outside this callback allowance. See the [callback bridge](../../packages/adapter-utils/src/sandbox-callback-bridge.ts) and [callback boundary tests](../../packages/adapter-utils/src/sandbox-callback-context-routes.test.ts).
 
-Policy: Native nested monitor|null, optional OWNED target taskId, key<=240, notes1..500, future check/timeouts/attempts<=100; reserved quota service denied, externalRef sanitized. Target assigned same agent/no human, in_progress|in_review; issue:read,runtime:manage,responsible-user authority. REST monitor changes require runtime:manage+current assignee for agent; board role gate differs. Receipt replay returns current schedule without rearming consumed monitor. Check-now cannot bypass recovery/finalization/eligibility.
+Policy: Native nested monitor|null, optional OWNED target taskId, key<=240, notes1..500, future check/timeouts/attempts<=100; reserved quota service denied, externalRef sanitized. Target assigned same agent/no human, in_progress|in_review; issue:read,runtime:manage,responsible-user authority. REST monitor changes require runtime:manage+current assignee for agent; board role gate differs. Receipt replay returns current schedule without rearming consumed monitor. Human check-now may request one check of a blocked task with a retained monitor; agents and automatic ticks still require in_progress|in_review. This does not change status or bypass dependency, recovery, finalization, pause, budget or ownership gates. Provider-quota recovery uses a direct retry path and stays paused on blocked tasks; check-now rejects it before consuming the schedule. A skipped check-now returns 409 instead of success.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue-monitors.ts](../../server/src/services/issue-monitors.ts), [issue-monitor-scheduler.test.ts](../../server/src/__tests__/issue-monitor-scheduler.test.ts), [task-monitor.integration.test.ts](../../server/src/services/native-runtime/task-monitor.integration.test.ts), [scheduling.test.ts](../../server/src/services/heartbeat/scheduling.test.ts). No live execution claimed.
 
@@ -274,7 +278,7 @@ API: `present` — POST /api/issues/{id}/comments; PATCH task with comment.
 
 Agent access: `partial` — REST/call_api, CLI issue comment/update--comment; native report_progress plain CURRENT-task body+stable key only. answer_status_question is declared but not production-admitted.
 
-Policy: issue:comment/responsible-user/influence ceilings may allow peer/direct-parent reporting without disposition authority. body nonempty, clientRequestId UUID, maximum 20 unique attachment IDs. Agent onBehalfOfUserId rejected; presentation/metadata board-only; authorType cannot gain board wake. Board paused task returns 409. Board Agent Chat additionally flag/owner/clientRequestId. Pending/running retries preserved by ordinary board comments; explicit control separate.
+Policy: issue:comment/responsible-user/influence ceilings may allow peer/direct-parent reporting without disposition authority. body nonempty, clientRequestId UUID, maximum 20 unique attachment IDs. Agent onBehalfOfUserId rejected; presentation/metadata board-only; authorType cannot gain board wake. A new board comment on a paused task returns 409. An ordinary board comment whose same-task, same-user request key was already accepted repairs its reference/activity records and returns that receipt before task mutations; different text conflicts without reopening work. Completion serializes on the same-company task/comment and does not duplicate the activity. Board Agent Chat additionally flag/owner/clientRequestId. Pending/running retries preserved by ordinary board comments; explicit control separate.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [issue.ts](../../packages/shared/src/validators/issue.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue.ts](../../cli/src/commands/client/issue.ts), [issue-comment-attribution-audit-routes.test.ts](../../server/src/__tests__/issue-comment-attribution-audit-routes.test.ts), [issue-comment-reopen-routes.test.ts](../../server/src/__tests__/issue-comment-reopen-routes.test.ts), [cross-issue-influence-limit-postgres.test.ts](../../server/src/__tests__/cross-issue-influence-limit-postgres.test.ts). No live execution claimed.
 

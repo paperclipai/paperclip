@@ -120,7 +120,7 @@ describe("eval-session request contract", () => {
     expect(parseEvalSessionCliArgs([...args, "--candidate-profile", "pi", "--expected-acpx-profile", JSON.stringify(expected)]))
       .toMatchObject({ candidateProfile: "pi", expectedAcpxProfile: expected });
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "pi"])).toThrow("require --expected-acpx-profile");
-    expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "codex"])).toThrow("must be pi, cursor, or copilot");
+    expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "codex"])).toThrow("must be pi, cursor, copilot, or kimi");
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile"])).toThrow("missing");
     expect(() => parseEvalSessionCliArgs([...args, "--request", "/tmp/other.json"])).toThrow("duplicate");
     expect(() => parseEvalSessionRequest(request(), { candidateProfile: "pi" })).toThrow("must match");

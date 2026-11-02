@@ -2,9 +2,13 @@
 
 The server materializes immutable skill versions under
 `<instance>/skills/<company>/__versions__/<skill>/<version>`. These are disposable
-disk copies: the company-scoped version and repository snapshot rows retain the
-contents, including binary files and executable flags. Normal skill resolution
-rebuilds a missing copy from the database without contacting its upstream source.
+disk copies: company-scoped versions reference durable packages in the configured
+storage backend, or retain legacy database inventories. Normal skill resolution
+rebuilds missing copies, preserving binary bytes and executable flags. New Git packages
+can also restore the exact original commit from their saved recipe using current
+repository access. Authored/legacy packages without that recipe require independent
+external durability before eviction; unavailable storage leaves those caches intact. Shared extracted packages have a
+separate cold-fill capacity policy. See [package storage](skill-package-storage.md).
 
 ## Skill version caches
 

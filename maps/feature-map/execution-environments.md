@@ -52,7 +52,17 @@ the live lease and cleanup is confirmed. Inspect `platformQualificationRecorded`
 and its diagnostic in the probe result: connection success alone does not mean
 the image has native runtime qualification.
 
-The measured record is server-owned, company-bound and tied to the effective
+Paperclip-managed Cloud images use the current platform-selected image without
+a saved qualification prerequisite. A missing, stale or revoked qualification
+does not block execution or pin an older snapshot. Runtime startup and the
+handshake detect real incompatibility. This exception excludes custom
+environments and active captured custom images.
+The active Cloud configuration must provision the sandbox provider. A stale
+managed marker alone keeps the normal qualification rules.
+An outdated captured image that execution ignores must not block discovery of
+the current managed image. A matching custom capture keeps qualification.
+
+For other images, the measured record is server-owned, company-bound and tied to the effective
 configuration and active custom-image identity. Mutable tags, provider defaults
 and snapshots without verified provider identities do not qualify. Daytona
 qualification creates by provider ID and binds native execution to that same ID;
@@ -71,6 +81,11 @@ qualification is not reused. A mutable-image connection can succeed while
 qualification remains absent. Assert ordinary agent and non-admin board probe
 requests are denied, and environment create/PATCH payloads cannot supply
 qualification metadata.
+For a managed Cloud image, replace the platform-selected snapshot while an old
+qualification remains. Discovery must still offer Paperclip Runner, and Test
+must check the runtime directly. Verify execution selects the replacement image
+and still reports a real provider startup failure. Keep a custom-image control
+that requires its existing qualification.
 This recipe and its [probe controls](../../server/src/__tests__/environment-probe.test.ts)
 are not claims that a live provider or agent-access journey ran for this map update.
 
@@ -127,6 +142,10 @@ uses the real Runner and a synthetic Codex provider through loopback PRP; TLS
 termination is replaced by the fixture. It does not qualify a live plugin provider.
 
 The plugin prepares execution-host resources and the provider descriptor. Core validates the result, then supplies task identity and PRP launch limits.
+For managed GitHub commands, verify the qualified executable remains canonical,
+controller-staged helper discovery survives task entry, and a task-supplied shell
+selector is rejected. A launch description or a healthy Runner alone is not proof
+of authenticated git/gh execution.
 
 ### Storybook verification
 
@@ -170,3 +189,11 @@ Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and
 project set. New preparation removes old validation. Core checks the saved
 validation again in the dispatch update.
+
+Plugin task providers can advertise `githubCredentialBrokerVersion: 1` and receive
+a live-run capability during preparation. This adds no agent management API.
+Core resolves accepted identity, grants, company scope and trust at command time.
+The plugin owns the command implementation; no particular script is required.
+[Broker handoff coverage](../../server/src/services/native-runtime/plugin-runner-task.test.ts)
+checks capability changes across warm turns. This is contract coverage, not live
+authenticated push acceptance.

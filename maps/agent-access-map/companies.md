@@ -215,6 +215,8 @@ Agent access: `operator-only` — configuration and tests require board context.
 
 Policy: Company access and Manage connections permission; non-managing board readers receive no settings.
 Credentials are write-only and stored through company secret bindings.
+Native OpenCode's parent exports a bounded projection of normalized run events under these settings.
+The destination headers stay out of the actual OpenCode child environment and configuration.
 
 Evidence: `source-only` — [routes](../../server/src/routes/agent-observability.ts).
 

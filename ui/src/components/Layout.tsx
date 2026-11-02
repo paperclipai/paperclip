@@ -1,3 +1,6 @@
+import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
+import { CoordinatorChatReferencesProvider } from "./coordinator/CoordinatorChatReferences";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { useDesignSandbox } from "@/context/DesignSandboxContext";
 import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
 import { BoardDialogs } from "./BoardDialogs";
@@ -94,7 +97,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     setForceCollapsed,
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
-  const { togglePanelVisible } = usePanel();
+  const { togglePanelVisible, setPanelVisible } = usePanel();
   // Optional: Layout also renders in harnesses without a ToastProvider.
   const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
@@ -119,11 +122,16 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enabled: classicStreamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
+  const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
   const shellRoute = classifyShellRoute(location.pathname, companyPrefix);
   const isCompanySettingsRoute = shellRoute.builtInContextualSurface === "settings";
   const companyPathSegments = shellRoute.companySegments;
   const isTaskDetailRoute = shellRoute.isTaskDetail;
+  useLayoutEffect(() => {
+    if (coordinatorWorkspaceEnabled) setPanelVisible(false);
+  }, [coordinatorWorkspaceEnabled, location.pathname, setPanelVisible]);
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
   // Chat keeps its header beside the agent sidebar, including before an agent is selected.
@@ -211,7 +219,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       />
     )
   ) : null;
-  const secondarySidebar = isAgentChatRoute ? <AgentConversationsSidebar /> : shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  const secondarySidebar = isAgentChatRoute ? (coordinatorWorkspaceEnabled ? null : <AgentConversationsSidebar />) : shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <SetupWizardSidebarOutlet><RoutineContextualSidebar routineId={routineId} /></SetupWizardSidebarOutlet>
@@ -574,12 +582,15 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
+    <CoordinatorPresentation.Provider value={coordinatorWorkspaceEnabled}>
+    <CoordinatorChatReferencesProvider enabled={coordinatorWorkspaceEnabled}>
     <ChatSetupSidebarProvider>
       <div
       ref={mobileViewportRef}
       data-mobile={isMobile ? "true" : undefined}
       className={cn(
         "paperclip-app-shell bg-background text-foreground pt-(--sz-safe-top)",
+        coordinatorWorkspaceEnabled && "coordinator-workspace",
         // overflow-x-clip on mobile keeps a stray wide descendant from making the
         // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
         // computed as visible, so native body scroll + the sticky breadcrumb keep
@@ -632,7 +643,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             collapsed={designSandbox || replacesPrimarySidebar ? false : collapsed}
             peeking={designSandbox || replacesPrimarySidebar ? false : peeking}
             resizable
-            storageKey={designSandbox ? "paperclip.design-proposals.sandbox.sidebar-width" : undefined}
+            storageKey={designSandbox ? "paperclip.design-proposals.sandbox.sidebar-width" : coordinatorWorkspaceEnabled ? "paperclip.coordinator.sidebar-width" : undefined}
             onPanelMouseEnter={replacesPrimarySidebar ? undefined : handlePanelPointerEnter}
             onPanelMouseLeave={replacesPrimarySidebar ? undefined : handlePanelPointerLeave}
             onPanelFocusCapture={!replacesPrimarySidebar && collapsed ? handlePanelFocus : undefined}
@@ -758,5 +769,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
     </ChatSetupSidebarProvider>
+    </CoordinatorChatReferencesProvider>
+    </CoordinatorPresentation.Provider>
   );
 }

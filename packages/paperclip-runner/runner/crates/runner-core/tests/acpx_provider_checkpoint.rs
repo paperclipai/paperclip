@@ -35,6 +35,7 @@ fn temporary_directory(label: &str) -> PathBuf {
 fn config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
     let operations = Vec::new();
     AcpxProviderSessionConfig {
+        candidate_admission: None,
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), "suspend".to_owned()],

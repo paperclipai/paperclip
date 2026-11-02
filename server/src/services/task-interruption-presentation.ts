@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
+import { unionAll } from "drizzle-orm/pg-core";
 import type { TaskInterruptionPresentation } from "@paperclipai/shared";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -83,20 +84,34 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const result = new Map<string, TaskInterruptionPresentation | null>();
   if (!selected.length) return result;
   const ids = selected.map(issue => issue.id);
-  const runIssue = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
+  const requested = sql`unnest(${sql.param([...new Set(ids)])}::text[]) as requested_interruption_issues(requested_issue_id)`;
+  const requestedIssueId = sql<string>`"requested_interruption_issues"."requested_issue_id"`;
+  const requestedUuid = sql<string>`case when ${requestedIssueId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    then ${requestedIssueId}::uuid else null end`;
+  const legacyIssue = sql<string>`${heartbeatRuns.contextSnapshot}->>'issueId'`;
+  const candidate = (condition: ReturnType<typeof and>) => db.select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition))
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+  const candidates = unionAll(
+    candidate(eq(heartbeatRuns.nativeIssueId, requestedUuid)),
+    candidate(and(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.issueId, requestedUuid))),
+    candidate(and(isNull(heartbeatRuns.nativeIssueId), isNull(heartbeatRuns.issueId), eq(legacyIssue, requestedIssueId))),
+  ).as("interruption_run_candidates");
+  const latestRuns = db.select({ id: candidates.id }).from(candidates)
+    .orderBy(desc(candidates.createdAt), desc(candidates.id)).limit(1).as("latest_interruption_runs");
   const wakeIssue = sql<string>`${agentWakeupRequests.payload}->>'issueId'`;
   const agentIds = selected.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []);
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
-    db.selectDistinctOn([runIssue], { issueId: runIssue, id: heartbeatRuns.id, status: heartbeatRuns.status,
+    db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
       agentId: heartbeatRuns.agentId,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
         'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied')`,
-    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(runIssue, ids)))
-      .orderBy(runIssue, desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)),
+    }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
+      .orderBy(requestedIssueId),
     db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))

@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { eq, sql } from "drizzle-orm";
@@ -12,6 +13,7 @@ import {
   companies,
   costEvents,
   createDb,
+  applyPendingMigrations,
   documentRevisions,
   documents,
   environmentLeases,
@@ -44,7 +46,8 @@ import { costService } from "../../../services/costs.js";
 // feeds the mapped facts back through the real gate to prove the wiring
 // produces the same suppression a caller would have seen before this module
 // existed.
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_DISPATCH_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -58,8 +61,9 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-dispatch-postgres-adapter-");
-    db = createDb(tempDb.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-dispatch-postgres-adapter-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -84,6 +88,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

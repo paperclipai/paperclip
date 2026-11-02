@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, applyPendingMigrations, createDb, closeRegisteredClients, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
+import { acceptSteeredIdentity, reconcileSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -143,8 +143,8 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     expect((await captureRunIdentity(db, input, options)).context?.responsibleUserId).toBe("B");
     expect(startedUnderA.context?.responsibleUserId).toBe("A");
     const a = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[2] });
-    await acceptSteeredIdentity(db, a!);
-    await acceptSteeredIdentity(db, b!);
+    await reconcileSteeredIdentity(db, a!);
+    await reconcileSteeredIdentity(db, b!);
     expect((await captureRunIdentity(db, input, options)).context?.responsibleUserId).toBe("A");
   });
   it("keeps rejected steering unchanged and preserves the originating identity on retry", async () => {
@@ -203,7 +203,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       sourceIdentityContextId: origin.id, payload: { prompt: "Continue?" } as never,
     });
     const b = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[1] });
-    await acceptSteeredIdentity(db, b!);
+    await reconcileSteeredIdentity(db, b!);
     for (const approval of [true, false]) {
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });

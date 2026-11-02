@@ -16,6 +16,50 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("discovers first proactive deliveries without invalidating another human's chat list", () => {
+    const client = new QueryClient();
+    const mine = queryKeys.agentChats.list("company-1", "user-1");
+    const theirs = queryKeys.agentChats.list("company-1", "user-2");
+    client.setQueryData(mine, []);
+    client.setQueryData(theirs, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "new-chat", action: "issue.comment_added",
+      details: { conversationUserId: "user-1", conversationAgentId: "kodi", commentId: "digest" },
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(mine)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(theirs)?.isInvalidated).toBe(false);
+    client.clear();
+  });
+  it.each(["issue.thread_interaction_accepted", "issue.thread_interaction_answered", "decision.decided", "decision.effect_succeeded", "decision.effect_failed", "issue.conversation_session_started", "inbox.dismissed", "inbox.snoozed", "inbox.restored"])("refreshes canonical attention, history and source-chat projections after %s", action => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: action.startsWith("decision.") ? "decision" : "issue", entityId: "task-1", action,
+    }, { userId: "user-1", agentId: null });
+    for (const queryKey of [queryKeys.attention("company-1"), ["decisions", "company-1"], ["issues", "decision-receipts"], ["issues", "chat-handoffs"], ["issues", "pending-questions"]]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
+    client.clear();
+  });
+  it("drops cached decision content when its access is revoked", () => {
+    const client = new QueryClient();
+    const receiptKey = ["issues", "decision-receipts", "chat-1", "user-1"];
+    const historyKey = [...queryKeys.attention("company-1"), "history"];
+    const questionKey = ["issues", "pending-questions", "chat-1", "user-1"];
+    const taskRecordKey = queryKeys.decisions.taskRecord("company-1", "task-1", "user-1", "decision-1");
+    client.setQueryData(taskRecordKey, { title: "Private decision" });
+    client.setQueryData(questionKey, [{ title: "Private question" }]);
+    client.setQueryData(receiptKey, { items: [{ title: "Private decision" }] });
+    client.setQueryData(historyKey, { items: [{ title: "Private decision" }] });
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue_access_grant", entityId: "grant-1", action: "issue_access_grant.revoked",
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryData(receiptKey)).toBeUndefined();
+    expect(client.getQueryData(historyKey)).toBeUndefined();
+    expect(client.getQueryData(questionKey)).toBeUndefined();
+    expect(client.getQueryData(taskRecordKey)).toBeUndefined();
+    client.clear();
+  });
   it("refreshes saved project access with permission saves and live agent activity", async () => {
     const client = new QueryClient();
     const target = queryKeys.agents.projectAccess("agent-1");
@@ -1416,6 +1460,28 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 });
 
 describe("LiveUpdatesProvider visible issue comment hydration", () => {
+  it("keeps a live chat reply separate from fetched pages and the observed cursor", async () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    client.setQueryData(queryKeys.issues.detail("PAP-759"), {
+      id: "issue-1", identifier: "PAP-759", conversationAgentId: "agent-1",
+    });
+    const recentKey = [...queryKeys.issues.comments("PAP-759"), "recent"];
+    client.setQueryData(recentKey, { comments: [], latestCommentId: "observed", hasMore: true });
+    const comment = { id: "new-reply", issueId: "issue-1", body: "A saved live reply" };
+    getCommentMock.mockResolvedValueOnce(comment);
+    await __liveUpdatesTestUtils.hydrateVisibleIssueComment(client, "/PAP/issues/PAP-759", {
+      entityType: "issue", entityId: "issue-1", action: "issue.comment_added", details: { commentId: comment.id },
+    }, { isForegrounded: true });
+    for (const ref of ["PAP-759", "issue-1"]) {
+      expect(client.getQueryData(queryKeys.issues.acknowledgedComments(ref))).toEqual([comment]);
+      expect(client.getQueryData(queryKeys.issues.comments(ref))).toBeUndefined();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [...queryKeys.issues.comments(ref), "recent"] });
+    }
+    expect(client.getQueryData(recentKey)).toMatchObject({ latestCommentId: "observed", hasMore: true });
+    client.clear();
+  });
+
   it("hydrates the visible issue comments cache with only the new comment", async () => {
     getCommentMock.mockResolvedValueOnce({
       id: "comment-2",

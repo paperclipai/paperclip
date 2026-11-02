@@ -11,6 +11,10 @@ import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type { CapabilityRunnerdCodexTransportOptions } from "./runnerd-codex-transport.js";
 
+// Environment plugins may advertise managed GitHub commands only with the
+// matching Runner source that preserves helper selectors through Claude ACPX.
+export const RUNNER_GITHUB_LAUNCHER_VERSION = 1;
+
 /** Core's provider inputs. Executable paths and filesystem layout are supplied separately. */
 export interface RunnerProviderLaunchRequirements {
   schema: "paperclip.runner.launch-requirements.v1";
@@ -23,7 +27,7 @@ export interface RunnerProviderLaunchRequirements {
   includeCollaborationModeInstructions: boolean;
   settings: Pick<CapabilityRunnerdCodexTransportOptions,
     "acpxAgent" | "acpxMode" | "acpxPermissionMode" | "acpxPermissionModePinned" |
-    "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch">;
+    "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch" | "disableCodexProjectInstructions">;
   instructions: string;
   runtimeContext: NativeRuntimeContextSnapshot | null;
 }
@@ -60,6 +64,7 @@ export function runnerProviderLaunchRequirements(
       managedProfile: options.managedProfile, agentCoreProfile: options.agentCoreProfile,
       opencodePermissionMode: options.opencodePermissionMode,
       ...(options.disableCodexWebSearch === true ? { disableCodexWebSearch: true } : {}),
+      ...(options.disableCodexProjectInstructions === true ? { disableCodexProjectInstructions: true } : {}),
     },
     approvalPolicy: params.approvalPolicy === "on-request" || params.approvalPolicy === "untrusted"
       ? params.approvalPolicy : "never",
@@ -110,13 +115,19 @@ export function validatePreparedRunnerLaunch(
   if (descriptor.kind !== requirements.provider || descriptor.model !== requirements.model) reject();
   if (requirements.provider === "codex" && (descriptor.approvalPolicy !== requirements.approvalPolicy
     || Boolean(descriptor.readOnly) !== requirements.readOnly)) reject();
-  if (requirements.provider === "codex" && requirements.settings.disableCodexWebSearch === true) {
+  if (requirements.provider === "codex" && (requirements.settings.disableCodexWebSearch === true
+    || requirements.settings.disableCodexProjectInstructions === true)) {
     if (!Array.isArray(descriptor.args) || descriptor.args.some(arg => typeof arg !== "string")) reject();
     const args = descriptor.args as string[];
     const commandIndex = args.indexOf("app-server");
     const boundary = commandIndex < 0 ? args.length : commandIndex;
-    if (args.some(arg => arg === "--" || arg === "--search" || arg.startsWith("--search=")) || (commandIndex >= 0 && commandIndex !== args.length - 1)
-      || args[boundary - 2] !== "-c" || args[boundary - 1] !== 'web_search="disabled"') reject();
+    const policy = [
+      ...(requirements.settings.disableCodexProjectInstructions ? ["-c", "project_doc_max_bytes=0"] : []),
+      ...(requirements.settings.disableCodexWebSearch ? ["-c", 'web_search="disabled"'] : []),
+    ];
+    if (args.some(arg => arg === "--" || (requirements.settings.disableCodexWebSearch
+      && (arg === "--search" || arg.startsWith("--search=")))) || (commandIndex >= 0 && commandIndex !== args.length - 1)
+      || JSON.stringify(args.slice(boundary - policy.length, boundary)) !== JSON.stringify(policy)) reject();
   }
   if (requirements.provider === "acpx") {
     const policy = descriptor.providerPolicy as Record<string, unknown> | undefined;
@@ -324,7 +335,7 @@ export function createRunnerProviderLaunch(
                           runtimeStateRoot: input.options.runnerFilesystemRoot ?? input.root,
                           codexCommand: effectiveCodexCommand,
                           instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
-                          disableProjectInstructions: input.options.disableCodexProjectInstructions,
+                          disableProjectInstructions: settings.disableCodexProjectInstructions ?? input.options.disableCodexProjectInstructions,
                           readOnlyRoots: [
                             ...trustedRuntimeReadOnlyRoots(
                               input.options.environment,
@@ -429,7 +440,6 @@ export function createRunnerdCodexAppServerArgs(input: {
   // isolated runner home; a stale controller environment must never cause the
   // execution workspace itself to become an explicit deny root.
   const args = input.args ? [...input.args] : [
-    ...(input.disableProjectInstructions ? ["-c", "project_doc_max_bytes=0"] : []),
     ...createIsolatedCodexAppServerArgs(
       {
         ...input.environment,
@@ -444,17 +454,19 @@ export function createRunnerdCodexAppServerArgs(input: {
   if (!input.args && usesPreconfiguredHome(input.environment) && input.workingDirectory) {
     args.unshift("-c", `projects={${JSON.stringify(input.workingDirectory)}={trust_level="trusted"}}`);
   }
-  if (input.disableWebSearch) {
+  if (input.disableWebSearch || input.disableProjectInstructions) {
     // Apply Core's restriction after host overrides. Keep the override before
     // the Codex subcommand and after any earlier provider-home configuration.
     const commandIndex = args.indexOf("app-server");
     // Restricted launches use the owned app-server argument shape. Refuse
     // trailing subcommand flags and option terminators rather than guessing
     // whether another CLI spelling could override or neutralize this policy.
-    if (args.some(arg => arg === "--" || arg === "--search" || arg.startsWith("--search=")) || (commandIndex >= 0 && commandIndex !== args.length - 1)) {
-      throw new Error("runner_codex_web_search_policy_override");
+    if (args.some(arg => arg === "--" || (input.disableWebSearch && (arg === "--search" || arg.startsWith("--search=")))) || (commandIndex >= 0 && commandIndex !== args.length - 1)) {
+      throw new Error(input.disableWebSearch ? "runner_codex_web_search_policy_override" : "runner_codex_project_instructions_policy_override");
     }
-    args.splice(commandIndex < 0 ? args.length : commandIndex, 0, "-c", 'web_search="disabled"');
+    args.splice(commandIndex < 0 ? args.length : commandIndex, 0,
+      ...(input.disableProjectInstructions ? ["-c", "project_doc_max_bytes=0"] : []),
+      ...(input.disableWebSearch ? ["-c", 'web_search="disabled"'] : []));
   }
   return args;
 }

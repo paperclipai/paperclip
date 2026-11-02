@@ -43,6 +43,8 @@ describe("resolveProtocol", () => {
     ["http/protobuf", "http/protobuf", "@opentelemetry/exporter-trace-otlp-proto"],
     ["http/json", "http/json", "@opentelemetry/exporter-trace-otlp-http"],
     ["HTTP/JSON", "http/json", "@opentelemetry/exporter-trace-otlp-http"],
+    // Surrounding space is trimmed before the switch, not only letter case.
+    ["  HTTP/PROTOBUF  ", "http/protobuf", "@opentelemetry/exporter-trace-otlp-proto"],
   ])("maps OTEL_EXPORTER_OTLP_PROTOCOL=%s to %s", async (raw, protocol, packageName) => {
     if (raw === undefined) delete process.env[PROTOCOL_ENV];
     else process.env[PROTOCOL_ENV] = raw;
@@ -60,8 +62,15 @@ describe("resolveProtocol", () => {
 
     const { resolveProtocol } = await importFreshInstrumentation();
 
-    expect(resolveProtocol().protocol).toBe("grpc");
+    // The fallback must also select the grpc exporter package, not just a
+    // grpc-labeled protocol.
+    expect(resolveProtocol()).toEqual({
+      protocol: "grpc",
+      packageName: "@opentelemetry/exporter-trace-otlp-grpc",
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("carrier-pigeon"));
+    // One unknown input logs exactly one warning, not one per lookup.
+    expect(warn).toHaveBeenCalledOnce();
   });
 });
 
@@ -249,8 +258,14 @@ describe("getStartupTracer", () => {
     // startup seam calls, so the caller needs no null check.
     expect(tracer).not.toBeNull();
     expect(typeof tracer.startSpan).toBe("function");
-    // A no-op tracer must open and end a span without throwing.
-    expect(() => tracer.startSpan("workspace.resolve").end()).not.toThrow();
+    // A no-op tracer must carry attribute, status, and end calls without
+    // throwing: the startup seam sets attributes and status before it ends.
+    expect(() => {
+      const span = tracer.startSpan("workspace.resolve");
+      span.setAttribute("k", "v");
+      span.setStatus({ code: 0 });
+      span.end();
+    }).not.toThrow();
   });
 
   it("loads no OTel SDK package when the endpoint is unset", async () => {
@@ -274,6 +289,25 @@ describe("getStartupTracer", () => {
     for (const call of warn.mock.calls) {
       expect(String(call[0])).not.toContain("@opentelemetry/* packages are not installed");
     }
+  });
+});
+
+describe("getStartupTraceContext", () => {
+  it("returns a tracer and a parent-context helper that never throw when the endpoint is unset", async () => {
+    const { getStartupTraceContext } = await importFreshInstrumentation();
+
+    const traceContext = getStartupTraceContext();
+
+    // The tracer handle carries the same span surface as getStartupTracer.
+    expect(() => {
+      const span = traceContext.tracer.startSpan("runtime.exec");
+      span.setAttribute("k", "v");
+      span.setStatus({ code: 0 });
+      span.end();
+    }).not.toThrow();
+    // The helper never throws. It returns a parent token when the api
+    // resolves, or `undefined` from the no-op fallback when it does not.
+    expect(() => traceContext.contextWithSpan({})).not.toThrow();
   });
 });
 
@@ -352,6 +386,24 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
     }
   });
 
+  it("exports an earlier lifecycle as a separate trace linked to its observer",async()=>{
+    const {api,sdk}=otelSdk!;
+    const exporter=new sdk.InMemorySpanExporter();
+    const provider=new sdk.BasicTracerProvider({spanProcessors:[new sdk.SimpleSpanProcessor(exporter)]});
+    api.trace.setGlobalTracerProvider(provider);
+    try {
+      const {recordProviderPluginSpan}=await import("../instrumentation.js");
+      const parent={traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"b7ad6b7169203331",traceFlags:1};
+      const end=Date.now()-100;
+      recordProviderPluginSpan({name:"plugin.remote.lifecycle",parent,linked:true,attributes:{},startTimeMs:end-500,endTimeMs:end});
+      const span=exporter.getFinishedSpans()[0]!;
+      expect(span.parentSpanContext).toBeUndefined();
+      expect(span.spanContext().traceId).not.toBe(parent.traceId);
+      expect(span.links[0].context).toMatchObject(parent);
+      expect(Math.round(hrTimeToMs(span.duration as [number,number]))).toBe(500);
+    } finally {api.trace.disable();}
+  });
+
   it("opens and ends the span now when the timestamp pair is absent", async () => {
     const { api, sdk } = otelSdk!;
     const exporter = new sdk.InMemorySpanExporter();
@@ -378,4 +430,21 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
       api.trace.disable();
     }
   });
+});
+
+it("gives a linked lifecycle an explicit root context and a host-owned observer link",async()=>{
+ const root={},active={};const end=vi.fn();
+ const startSpan=vi.fn(()=>({end,setStatus:vi.fn(),spanContext:()=>({traceId:"a".repeat(32),spanId:"b".repeat(16),traceFlags:1})}));
+ const setSpanContext=vi.fn(()=>active);
+ vi.doMock("node:module",()=>({createRequire:()=>()=>({ROOT_CONTEXT:root,context:{active:()=>active},trace:{getTracer:()=>({startSpan}),setSpanContext}})}));
+ try {
+  const {recordProviderPluginSpan}=await importFreshInstrumentation();
+  const parent={traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"b7ad6b7169203331",traceFlags:1};
+  recordProviderPluginSpan({name:"plugin.remote.lifecycle",parent,linked:true,attributes:{},startTimeMs:100,endTimeMs:500});
+  expect(startSpan).toHaveBeenCalledWith("plugin.remote.lifecycle",{attributes:{},startTime:100,links:[{context:{...parent,isRemote:true}}]},root);
+  expect(setSpanContext).not.toHaveBeenCalled();expect(end).toHaveBeenCalledWith(500);
+  startSpan.mockClear();
+  recordProviderPluginSpan({name:"plugin.remote.lifecycle",parent:{...parent,traceFlags:0},linked:true,attributes:{},startTimeMs:100,endTimeMs:500});
+  expect(startSpan).not.toHaveBeenCalled();
+ } finally {vi.doUnmock("node:module");vi.resetModules();}
 });

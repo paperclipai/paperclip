@@ -10,6 +10,7 @@ import { eq } from "drizzle-orm";
 import { agentIdentityKeys, agents, companies, createDb, closeRegisteredClients, ensurePostgresDatabase, runDatabaseBackup, runDatabaseRestore, type Db } from "@paperclipai/db";
 import { resolveWorktreeSeedPlan } from "../../../cli/src/commands/worktree-lib.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "../services/agent-identity.js";
 import { agentService } from "../services/agents.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -21,9 +22,10 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
+const externalIdentityDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_IDENTITY_TEST_DATABASE_URL");
 describe("agent cryptographic identity", () => {
   let db: Db;
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Pick<Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, "connectionString" | "cleanup">;
   let directory: string;
   let companyId: string;
 
@@ -32,7 +34,9 @@ describe("agent cryptographic identity", () => {
     vi.stubEnv("PAPERCLIP_HOME", directory);
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(directory, "master.key"));
-    database = await startEmbeddedPostgresTestDatabase("paperclip-identity-");
+    database = externalIdentityDatabase ? { connectionString: externalIdentityDatabase,
+      cleanup: () => closeRegisteredClients(externalIdentityDatabase) }
+      : await startEmbeddedPostgresTestDatabase("paperclip-identity-");
     db = createDb(database.connectionString);
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Identity test", issuePrefix: "KEY", defaultResponsibleUserId: "identity-test-owner" });
@@ -51,6 +55,7 @@ describe("agent cryptographic identity", () => {
   it("migration and public reads leave existing agents unprovisioned", async () => {
     const agent = await oldAgent();
     expect(await agentIdentityService(db).getPublicIdentity(companyId, agent.id)).toBeNull();
+    expect((await agentIdentityService(db).createExistingLogRedactor(companyId, agent.id)).values).toEqual([]);
     expect(await db.select().from(agentIdentityKeys).where(eq(agentIdentityKeys.agentId, agent.id))).toHaveLength(0);
     for (const type of ["http", "openclaw_gateway", "hermes_gateway"]) expect(supportsManagedAgentIdentity(type)).toBe(false);
     for (const provider of ["claude_managed", "aws_agentcore"]) expect(supportsManagedAgentIdentity("paperclip_runner", { provider })).toBe(false);

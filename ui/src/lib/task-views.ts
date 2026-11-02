@@ -135,6 +135,7 @@ export const ORGANIZATION_SCOPED_PARAMS = [
   "assignee",
   "workspace",
   "participantAgentId",
+  "originKind",
   "q",
 ] as const;
 

@@ -16,4 +16,4 @@ export type LiveDeliveryClientMessage = { type: "live.hello"; version: 1; capabi
 export type LiveDeliveryServerMessage =
   | { type: "live.capabilities"; version: 1; capabilities: string[] }
   | { type: "live.subscribed"; version: 1; revision: number }
-  | { type: "live.resync"; version: 1; revision: number; reason: "delivery_overflow" };
+  | { type: "live.resync"; version: 1; revision: number; reason: "delivery_overflow" | "controller_change" };

@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { and, eq } from "drizzle-orm";
@@ -141,6 +142,7 @@ export async function commitToolActionReview(
         throw conflict("This review has already been resolved");
     }
     const now = new Date();
+    if (interaction && issue) await notifyChatRunMilestones(tx, interaction);
     await notifyToolReviewChange(tx, current.companyId);
     const [updated] = await tx
       .update(toolActionRequests)

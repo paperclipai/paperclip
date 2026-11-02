@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod acpx_candidate_admission;
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;
 pub mod acpx_provider_backend;
@@ -12,6 +13,7 @@ pub mod aws_agentcore_provider;
 pub mod claude_managed_provider;
 pub mod codex_provider;
 mod codex_startup_trust;
+mod codex_usage;
 mod configured_environment;
 mod credential_observer;
 pub mod dot_provider_backend;
@@ -369,3 +371,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(unix)]
+pub mod runtime_notifications;

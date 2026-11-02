@@ -1198,11 +1198,15 @@ async function consumeTurn(
         );
       }
       if (sessionGoalObserved) {
+        if (isTurnTerminal(event) && providerFailure && !providerFailure.recoverable) {
+          throw providerFailure;
+        }
         if (sessionGoal && payload.requestId === sessionGoal.requestId) {
           goalControlObserved = true;
         }
         if (
           goalControlObserved &&
+          (providerFailure === null || providerFailure.recoverable) &&
           eventGoal !== undefined &&
           goalStatus(eventGoal) !== "active" &&
           payload.workingNow !== true

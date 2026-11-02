@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
 import { toolReviewProjectionService } from "./tool-review-projection.js";
@@ -2408,6 +2409,9 @@ export function createToolGatewayService(
         && projection.resultSummary === (input.resultSummary ?? null)) return false;
 
       const now = new Date();
+      if (linked.issueId && interaction.status === "pending" && ["expired", "cancelled"].includes(input.status)) {
+        await notifyChatRunMilestones(tx, { companyId: linked.companyId, issueId: linked.issueId });
+      }
       await tx
         .update(issueThreadInteractions)
         .set({
@@ -2685,7 +2689,7 @@ export function createToolGatewayService(
           approvalId: approval.id,
           linkedByAgentId: input.session.agentId,
         })
-        .onConflictDoNothing());
+        .onConflictDoNothing(), { issueIds: [approvalIssueId] });
     }
 
     const interaction = await interactions.create(

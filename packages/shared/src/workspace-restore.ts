@@ -3,6 +3,7 @@ export const WORKSPACE_RESTORE_FAILURE_CODES = [
   "restore_permission_denied",
   "restore_lock_timeout",
   "restore_unsafe_archive",
+  "restore_invalid_metadata",
   "restore_failed",
 ] as const;
 

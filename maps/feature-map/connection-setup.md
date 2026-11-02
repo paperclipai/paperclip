@@ -9,6 +9,11 @@ setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.
 Chat channels additionally require an endpoint and linked sender identity.
 
+Google runtime setup offers a Gemini API key or a separate local Antigravity
+browser sign-in. The browser redirect requires no pasted code; setup displays
+the verified Google email before Connect. Connection setup does not qualify the
+pending Antigravity execution profile. See [AI connections](../../doc/connections/AI-CONNECTIONS.md#local-subscription-sign-in).
+
 Feature ID: `connection-setup`.
 
 Agent access: [companion](../agent-access-map/connection-setup.md).

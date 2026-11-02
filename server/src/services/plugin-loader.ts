@@ -1,3 +1,4 @@
+import { resolveBundledPluginRuntimeLoader } from "./bundled-plugin-runtime.js";
 import { finishServiceShutdown } from "../shutdown.js";
 /**
  * PluginLoader — discovery, installation, and runtime activation of plugins.
@@ -31,7 +32,7 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
@@ -142,6 +143,7 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   string,
   { driverKey: string; envVars: readonly string[] }
 > = {
+  "@paperclipai/plugin-boxd": { driverKey: "boxd", envVars: ["BOXD_API_KEY"] },
   "@paperclipai/plugin-createos": { driverKey: "createos", envVars: ["CREATEOS_API_KEY"] },
   "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
   "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
@@ -270,6 +272,8 @@ function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[
  * Options for the plugin loader service.
  */
 export interface PluginLoaderOptions {
+  resolvePackageRoot?: (plugin: PluginRecord) => string;
+  prebuiltOnly?: boolean;
   /** Image-owned deployment policy, checked before importing code and starting workers. */
   assertPackageActivation?: (input: {
     pluginKey?: string;
@@ -1156,6 +1160,8 @@ export function pluginLoader(
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
     assertPackageActivation,
+    resolvePackageRoot,
+    prebuiltOnly = false,
   } = options;
 
   const registry = pluginRegistryService(db);
@@ -1210,6 +1216,7 @@ export function pluginLoader(
     installOptions: PluginInstallOptions,
   ): Promise<DiscoveredPlugin> {
     const { packageName, localPath, version, installDir } = installOptions;
+    if (prebuiltOnly && !localPath) throw new Error("Managed plugins must come from the current image catalog");
 
     if (!packageName && !localPath) {
       throw new Error("Either packageName or localPath must be provided");
@@ -1285,7 +1292,7 @@ export function pluginLoader(
     const pkgJson = await readPackageJson(resolvedPackagePath);
     if (!pkgJson) throw new Error(`Missing package.json at ${resolvedPackagePath}`);
 
-    if (localPath) {
+    if (localPath && !prebuiltOnly) {
       await ensureLocalPluginBuilt(resolvedPackagePath, pkgJson);
     }
 
@@ -1397,7 +1404,7 @@ export function pluginLoader(
     }
 
     assertPackageActivation?.({ packageRoot, installedPackagePath: plugin.packagePath, pluginKey: plugin.pluginKey, manifest, previousManifest: plugin.manifestJson });
-    if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
+    if (isDeepStrictEqual(manifest, plugin.manifestJson)) {
       return plugin;
     }
 
@@ -1748,6 +1755,7 @@ export function pluginLoader(
             packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
           },
           manifest,
+          { idempotent: prebuiltOnly },
         );
 
         if (!installed) {
@@ -1802,12 +1810,7 @@ export function pluginLoader(
       newManifest: PaperclipPluginManifestV1;
       discovered: DiscoveredPlugin;
     }> {
-      const plugin = (await registry.getById(pluginId)) as {
-        id: string;
-        packageName: string;
-        packagePath: string | null;
-        manifestJson: PaperclipPluginManifestV1;
-      } | null;
+      const plugin = await registry.getById(pluginId);
       if (!plugin) throw new Error(`Plugin not found: ${pluginId}`);
 
       const oldManifest = plugin.manifestJson;
@@ -1816,7 +1819,7 @@ export function pluginLoader(
         // For local-path installs, fall back to the stored packagePath so
         // `upgradePlugin` can re-read the manifest from disk without needing
         // the caller to re-supply the path every time.
-        localPath = plugin.packagePath ?? undefined,
+        localPath = resolvePackageRoot ? resolvePackageRoot(plugin) : plugin.packagePath ?? undefined,
         version,
       } = upgradeOptions;
 
@@ -1886,6 +1889,7 @@ export function pluginLoader(
     // -----------------------------------------------------------------------
 
     async cleanupInstallArtifacts(plugin: PluginRecord): Promise<void> {
+      if (prebuiltOnly) return;
       const managedTargets = new Set<string>();
       const managedNodeModulesDir = resolveManagedInstallPackageDir(localPluginDir, plugin.packageName);
       const directManagedDir = path.join(localPluginDir, plugin.packageName);
@@ -2261,12 +2265,14 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
-      const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
+      const packageRoot = resolvePackageRoot ? resolvePackageRoot(activePlugin) : resolvePluginPackageRoot(activePlugin, localPluginDir);
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
       manifest = activePlugin.manifestJson;
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
-      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
+      const workerEntrypoint = resolvePackageRoot
+        ? path.resolve(packageRoot, manifest.entrypoints.worker)
+        : resolveWorkerEntrypoint(activePlugin, localPluginDir);
 
       // ------------------------------------------------------------------
       // 2. Apply restricted database migrations before worker startup
@@ -2333,7 +2339,7 @@ export function pluginLoader(
         env: buildPluginWorkerEnv({
           manifest,
           packageName: activePlugin.packageName,
-          packagePath: activePlugin.packagePath,
+          packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
           instanceInfo,
         }),
         // Authorize the worker to act on each configured company from its
@@ -2344,10 +2350,9 @@ export function pluginLoader(
         proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (prebuiltOnly) {
+        workerOptions.execArgv = ["--import", resolveBundledPluginRuntimeLoader()];
+      } else if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 

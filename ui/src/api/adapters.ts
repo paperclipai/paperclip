@@ -34,6 +34,8 @@ export interface AcpTargetDescriptor {
 }
 
 export interface AdapterInfo {
+  /** Exact operator-authorized candidates for the requested company and target. */
+  candidateHarnesses?: Array<{ agent: "antigravity"; model: string }>;
   supportedRunners?: import("@paperclipai/shared").AgentRunner[];
   defaultRunner?: import("@paperclipai/shared").AgentRunner;
   type: string;

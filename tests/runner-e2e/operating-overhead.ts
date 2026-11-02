@@ -6,7 +6,7 @@ export interface EvalOperatingOverhead {
   version: 1;
   accountingReadiness?: "model_requests";
   reference: string;
-  runner: "github-hosted" | "aws-fleet";
+  runner: "github-hosted" | "aws-fleet" | "local";
   verifiedAt: string;
   expiresAt: string;
   components: Array<{ component: typeof EVAL_OVERHEAD_COMPONENTS[number]; maxUsd: string; reference: string; provisionalBound?: EvalCostBoundEvidence }>;
@@ -30,7 +30,7 @@ export function operatingReservationBound(allowance: EvalOperatingOverhead, comp
 export function validateOperatingOverhead(value: EvalOperatingOverhead, totalUsd: string): bigint {
   object(value, ["version", "accountingReadiness", "reference", "runner", "verifiedAt", "expiresAt", "components"]);
   if (value.accountingReadiness !== undefined && value.accountingReadiness !== "model_requests") throw new Error("Invalid accounting readiness policy");
-  if (value.version !== 1 || !reference(value.reference) || !["github-hosted", "aws-fleet"].includes(value.runner)
+  if (value.version !== 1 || !reference(value.reference) || !["github-hosted", "aws-fleet", "local"].includes(value.runner)
       || typeof value.verifiedAt !== "string" || typeof value.expiresAt !== "string"
       || !Number.isFinite(Date.parse(value.verifiedAt)) || !Number.isFinite(Date.parse(value.expiresAt))
       || Date.parse(value.expiresAt) <= Date.parse(value.verifiedAt)

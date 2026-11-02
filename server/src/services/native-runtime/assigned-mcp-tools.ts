@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 
-type WorkMode = "standard" | "planning" | "ask";
+type WorkMode = "standard" | "planning" | "ask" | "skill_test";
 type ToolDefinition = Record<string, unknown>;
 
 const SEARCH_TOOL = "paperclip_search_assigned_tools";
@@ -14,13 +14,13 @@ const SCHEMA_CHUNK_CHARACTERS = 64 * 1024;
 const ON_DEMAND_TOOLS: ToolDefinition[] = [
   {
     name: SEARCH_TOOL,
-    description: "Search your assigned app tools by name or description and read their input schemas. Pass {\"query\":\"search terms\"}, or an empty query to browse. Omit unused optional fields instead of sending null. To fetch the next page, pass the returned nextOffset as offset. A large definition returns inputSchemaRef: set schemaTool to that name with an empty query, then pass the returned nextSchemaOffset as schemaOffset until null. Concatenate schemaJson chunks and parse JSON. Use paperclip_call_assigned_tool with a returned name and arguments matching its inputSchema.",
+    description: "Search your assigned app tools by name or description and read their input schemas. Pass {\"query\":\"search terms\"}, or an empty query to browse. Use limit from 1 to 20 (default 5). Omit unused optional fields instead of sending null. To fetch the next page, pass the returned nextOffset as offset. A large definition returns inputSchemaRef: set schemaTool to that name with an empty query, then pass the returned nextSchemaOffset as schemaOffset until null. Concatenate schemaJson chunks and parse JSON. Use paperclip_call_assigned_tool with a returned name and arguments matching its inputSchema.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
         query: { type: "string", maxLength: 200 },
         offset: { type: "integer", minimum: 0 },
-        limit: { type: "integer", minimum: 1, maximum: 20 },
+        limit: { type: "integer", minimum: 1, maximum: 20, default: 5, description: "Maximum results per page (1 to 20; default 5)." },
         schemaTool: { type: "string", description: "Exact inputSchemaRef from a search result." },
         schemaOffset: { type: "integer", minimum: 0 },
       },
@@ -145,11 +145,20 @@ export async function createAssignedMcpTools(input: {
         nextSchemaOffset: end < schema.length ? end : null,
       };
     }
-    const matches = authorized.filter(([name, tool]) =>
+    // Keep offsets anchored to the pinned catalog while fresh grants only
+    // decide which entries are returned from that stable sequence.
+    const authorizedNames = new Set(authorized.map(([name]) => name));
+    const matches = [...tools].filter(([, tool]) => permits(tool)).filter(([name, tool]) =>
       terms.every(term => `${name} ${tool.displayName} ${tool.description}`.toLowerCase().includes(term)))
       .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const page: ToolDefinition[] = [];
-    for (const [name, tool] of matches.slice(offset, offset + limit)) {
+    let nextOffset = offset;
+    while (nextOffset < matches.length && page.length < limit) {
+      const [name, tool] = matches[nextOffset]!;
+      if (!authorizedNames.has(name)) {
+        nextOffset += 1;
+        continue;
+      }
       let next = definition(name, tool);
       if (Buffer.byteLength(JSON.stringify([next]), "utf8") > searchPageBytes) {
         // One large schema must not block browsing the tools after it. Expose
@@ -161,8 +170,9 @@ export async function createAssignedMcpTools(input: {
         break;
       }
       page.push(next);
+      nextOffset += 1;
     }
-    return { tools: page, nextOffset: offset + page.length < matches.length ? offset + page.length : null };
+    return { tools: page, nextOffset: nextOffset < matches.length ? nextOffset : null };
   }
 
   return {

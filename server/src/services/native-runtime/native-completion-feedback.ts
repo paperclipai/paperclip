@@ -1,3 +1,4 @@
+import { readRequiredQualityReview } from "../required-quality-review.js";
 import { pendingTaskRepository } from "../task-workspace-tools.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
 import { eligibleIssueMonitorWait } from "../issue-monitors.js";
@@ -151,6 +152,10 @@ export async function nativeCompletionFeedback(
     ? continuation.objective : [issue.title, issue.description].filter(Boolean).join("\n");
   await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id, runId,
     objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+  if (result.reportedWorkDisposition === "done") {
+    const quality = await readRequiredQualityReview(db, issue);
+    if (!quality.satisfied) throw new Error(`Required human quality review is incomplete: ${JSON.stringify(quality.missing)}. Read each existing review and preserve approved unchanged outputs. For missing or revised outputs call request_human_input with a concise confirmation payload.qualityReview:{key} (or item_verdicts items with qualityReview:{key}), payload.target with the exact current output, top-level resolverPolicy:human_only and continuationPolicy:wake_assignee, and payload.supersedeOnUserComment:false. Do not omit payload or its bindings after a validation error. Wait for its recorded response; do not report done, create a generic completion review, or treat plan acceptance/file presence as quality approval.`);
+  }
   const canSupersedeReview = result.reportedWorkDisposition === "done" ||
     (result.reportedWorkDisposition === "yielded" && (result.continuation?.kind === "monitor" ||
       (result.continuation?.kind === "response_wake" && await resolveExternalChatResponseWaitAuthorization({

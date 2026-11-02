@@ -1107,6 +1107,13 @@ export interface PluginSpan {
  * active host trace context.
  */
 export interface PluginTracer {
+  /** Invocation-wide monotonic clock anchored to epoch milliseconds. */
+  now?(): number;
+  isRecording?(): boolean;
+  /** Completed bounded timing receipt; the host validates times and parentage. */
+  recordSpan?(span: import("./protocol.js").PluginSpanRecord): void;
+  /** Invocation-scoped nesting; absent on older hosts. No additional IPC per child. */
+  withSpan?<T>(name: string, work: () => T | Promise<T>, attributes?: Record<string, string | number | boolean>): Promise<T>;
   /** Start one span. `options.attributes` seeds the span attributes. */
   startSpan(
     name: string,

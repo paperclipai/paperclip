@@ -143,7 +143,11 @@ export function isSemanticToolOutcomeUnknownError(error: unknown): error is Sema
 export class NativeSessionCloseUnrecoverableError extends Error {
   readonly code = "native_session_close_unrecoverable";
 
-  constructor(readonly settlement?: Record<string, unknown>) {
+  constructor(
+    readonly settlement?: Record<string, unknown>,
+    /** Exact durable results exist for every admitted Core tool callback. */
+    readonly semanticToolsSettled = false,
+  ) {
     super(
       "provider_transport_failed: runner did not durably suspend before checkpoint",
     );

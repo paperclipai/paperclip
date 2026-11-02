@@ -22,7 +22,7 @@ export interface NativeRunnerExecutionDriverInput {
   mapCaBundle?: (sourcePath: string) => string | Promise<string>;
   processStarted?: Promise<void>;
   processIdentityReady?: Promise<void>;
-  beforeConnect?: (identity?: RunnerIdentity) => Promise<void>;
+  beforeConnect?: (identity: RunnerIdentity, authority: Parameters<ConnectionRegistration>[0]) => Promise<void>;
   controllerPersistence?: { db: Db; bootId: string; authorityRunId?: string | (() => string); onFailure?: (runId: string, leaseOwner: string) => Promise<void> };
   checkpoint?: Awaited<ReturnType<ConnectionRegistration>>["checkpoint"];
   process?: Omit<RunnerExecutionDriver, "controlPlaneRegistration">;
@@ -92,8 +92,22 @@ export async function prepareNativeRemoteRunner(input: RemotePreparation) {
 export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDriverInput): RunnerExecutionDriver {
   return {
     ...input.process,
+    onStagedRunAttachment: input.controllerPersistence && input.binding.issueId
+      ? async (authority, proof) => {
+          // Both journals use the current business lease. Install persistence
+          // before staging; endpoint acquisition still belongs to attachment.
+          const register = nativeRunnerCheckpointRegistration({ ...input.controllerPersistence!,
+            binding: { companyId: input.binding.companyId, issueId: input.binding.issueId!, runId: input.binding.runId },
+          });
+          // A restored stage already publishes under the target. Its writer
+          // must exist before registration flushes that restored revision.
+          const identities = authority.store?.state.stagedRunAttachment
+            ? [proof.targetIdentity, proof.sourceIdentity] : [proof.sourceIdentity, proof.targetIdentity];
+          for (const identity of identities) await register(authority, identity);
+        }
+      : undefined,
     controlPlaneRegistration: async (authority, attachmentIdentity) => {
-      await input.beforeConnect?.(attachmentIdentity);
+      await input.beforeConnect?.(attachmentIdentity, authority);
       if (input.controllerPersistence && input.binding.issueId) {
         await nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
           binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },

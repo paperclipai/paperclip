@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
@@ -14,6 +15,15 @@ import {
   HeartbeatRunEventConflictError,
 } from "../services/heartbeat-run-events.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EVENT_SEQUENCING_TEST_DATABASE_URL");
+async function clearExternalFixture(db: ReturnType<typeof createDb>, companyId: string) {
+  if (!externalUrl) return;
+  await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, companyId));
+  await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+  await db.delete(agents).where(eq(agents.companyId, companyId));
+  await db.delete(companies).where(eq(companies.id, companyId));
+}
 
 describe("P6-11..13 / P6-17 canonical event allocator", () => {
   it("keeps native cursor responses bounded with long histories and a late gap fill", async () => {
@@ -73,9 +83,9 @@ describe("P6-11..13 / P6-17 canonical event allocator", () => {
   }, 60_000);
 
   it.each([false, true])("deduplicates concurrent retry exhaustion (historical receipt: %s)", async (historical) => {
-    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-exhaustion-events-");
-    const db = createDb(temporary.connectionString);
-    const otherDb = createDb(temporary.connectionString);
+    const temporary = externalUrl ? undefined : await startEmbeddedPostgresTestDatabase("paperclip-exhaustion-events-");
+    const db = createDb(externalUrl ?? temporary!.connectionString);
+    const otherDb = createDb(externalUrl ?? temporary!.connectionString);
     const companyId = "20000000-0000-4000-8000-000000000001";
     const agentId = "20000000-0000-4000-8000-000000000002";
     const runId = "20000000-0000-4000-8000-000000000003";
@@ -129,13 +139,16 @@ describe("P6-11..13 / P6-17 canonical event allocator", () => {
         ...event, companyId: "20000000-0000-4000-8000-000000000099", retryExhaustion: exhaustion,
       })).rejects.toThrow("heartbeat_run_event_binding_mismatch");
     } finally {
-      await temporary.cleanup();
+      await clearExternalFixture(db, companyId);
+      await otherDb.$client.end({ timeout: 1 });
+      await db.$client.end({ timeout: 1 });
+      await temporary?.cleanup();
     }
   }, 60_000);
 
   it("serializes concurrent writers and rejects conflicting replay without cursor drift", async () => {
-    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-events-");
-    const db = createDb(temporary.connectionString);
+    const temporary = externalUrl ? undefined : await startEmbeddedPostgresTestDatabase("paperclip-native-events-");
+    const db = createDb(externalUrl ?? temporary!.connectionString);
     const companyId = "20000000-0000-4000-8000-000000000001";
     const agentId = "20000000-0000-4000-8000-000000000002";
     const runId = "20000000-0000-4000-8000-000000000003";
@@ -219,7 +232,9 @@ describe("P6-11..13 / P6-17 canonical event allocator", () => {
       })).rejects.toBeInstanceOf(HeartbeatRunEventConflictError);
       expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).toHaveLength(48);
     } finally {
-      await temporary.cleanup();
+      await clearExternalFixture(db, companyId);
+      await db.$client.end({ timeout: 1 });
+      await temporary?.cleanup();
     }
   }, 60_000);
 
