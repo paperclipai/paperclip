@@ -33,6 +33,8 @@ import { legacyControllerClaim, renewLegacyControllerLease } from "./legacy-cont
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { issueService } from "./issues.js";
+import { instanceSettingsService } from "./instance-settings.js";
 
 const exec = promisify(execFile);
 const databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -397,7 +399,13 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(upload).not.toHaveBeenCalled();
   }, 60_000);
 
-  it("reuses one saved shared workspace across separate tasks while fencing a second writer", async () => {
+  it.each([
+    { mode: "shared_workspace", inherited: false },
+    { mode: "shared_workspace", inherited: true },
+    { mode: "isolated_workspace", inherited: true },
+    { mode: "operator_branch", inherited: true },
+  ])("continues saved $mode files while fencing a second writer (inherited=$inherited)", async ({ mode, inherited }) => {
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     const projectId = randomUUID(), sourceId = randomUUID();
     await db.insert(projects).values({ id: projectId, companyId: ids.company, name: "Synthetic shared project" });
     await db.insert(projectWorkspaces).values({ id: sourceId, companyId: ids.company, projectId,
@@ -405,17 +413,20 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await db.update(issues).set({ projectId, projectWorkspaceId: sourceId }).where(eq(issues.id, ids.issue));
     const input = { db, storage, companyId: ids.company, issueId: ids.issue, runId: ids.run,
       agentId: ids.agent, environmentId: ids.environment, projectId, projectWorkspaceId: sourceId,
-      existingWorkspaceId: null, source: { kind: "empty" as const }, mode: "shared_workspace" };
+      existingWorkspaceId: null, source: { kind: "empty" as const }, mode };
     const first = await target("shared-sandbox"), reserved = await reserveRemoteWorkspace(input);
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
       lease: await lease(), target: first });
     await fs.writeFile(path.join(prepared.remoteRoot, "shared-result.txt"), "from the first task\n");
-    const secondIssue = randomUUID(), secondRun = randomUUID(), secondLease = randomUUID();
-    await db.insert(issues).values({ id: secondIssue, companyId: ids.company, projectId, projectWorkspaceId: sourceId,
-      title: "Continue shared work", status: "in_progress", assigneeAgentId: ids.agent });
+    const childInput = { title: "Continue saved work", status: "in_progress" as const, assigneeAgentId: ids.agent };
+    const child = inherited ? await issueService(db).create(ids.company, { ...childInput, parentId: ids.issue })
+      : (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId }).returning())[0]!;
+    if (inherited) expect(child.executionWorkspaceId).toBe(reserved.id);
+    const secondIssue = child.id, secondRun = randomUUID(), secondLease = randomUUID();
     await db.insert(heartbeatRuns).values({ id: secondRun, companyId: ids.company, agentId: ids.agent,
       nativeIssueId: secondIssue, runtimeMode: "native", status: "running" });
-    const next = { ...input, issueId: secondIssue, runId: secondRun };
+    const next = { ...input, issueId: secondIssue, runId: secondRun,
+      existingWorkspaceId: mode === "shared_workspace" ? null : child.executionWorkspaceId };
     await expect(reserveRemoteWorkspace(next)).rejects.toThrow("unfinished writer");
     await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });

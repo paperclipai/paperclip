@@ -83,6 +83,14 @@ or original Git remote. Read-only cross-project referenced folders must fail
 admission. Separate workspaces may run concurrently; shared concurrent writers
 must be rejected.
 
+Create a child that inherits a saved isolated workspace or operator branch.
+Verify it continues the same files after the prior writer saves, including on a
+new allocation. Two bound children must not acquire concurrent writer authority.
+The [reservation regression](../../server/src/services/remote-workspace-reservation.test.ts)
+and [saved-file lifecycle suite](../../server/src/services/remote-workspaces.integration.test.ts)
+exercise inheritance, access checks, and file continuity with real PostgreSQL.
+Their filesystem transport is local test execution, not live sandbox/provider proof.
+
 The Files panel must label **Live workspace** or **Saved copy** with its save
 time. Confirm browse, preview, and download agree. A missing allocation with
 unsaved work must report unavailability rather than show an old save as current.
