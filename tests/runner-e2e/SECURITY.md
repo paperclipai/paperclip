@@ -634,4 +634,4 @@ home after graceful handoff. Its read-only observer does not create recovery
 authority. Provider credentials still enter through encrypted fixture secrets.
 Local rolling smoke receipts explicitly exclude active-agent and hosted proof.
 
-The personal inbox journey creates one campaign-owned, non-executing author agent to supply genuine external unread activity. Its scoped API key stays in process memory and is revoked immediately after the synthetic comment. Owned-agent termination remains the recovery path after a lost key response. No provider or native run is allowed for this browser-only journey.
+The personal inbox journey requires a separately authenticated, registered QA human author. Its target provider exposes one controlled comment operation on the exact campaign-owned task. The public oracle independently reads the saved comment and verifies its distinct human author, exact content, company, task, and absence of an agent run. The private provider closes the isolated author context during evidence-first cleanup. No provider or native run is allowed for this browser-only journey; agent cross-task execution guards remain intact.

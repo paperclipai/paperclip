@@ -9,7 +9,7 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   return (count as number) >= minimum && (count as number) <= maximum;
 }
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
-  "inbox-triage": ["inbox-read-persisted", "inbox-archive-persisted", "inbox-archive-preserved-task-status", "inbox-relevant-activity-resurfaced", "no-agent-work"],
+  "inbox-triage": ["inbox-external-human-activity", "inbox-read-persisted", "inbox-archive-persisted", "inbox-archive-preserved-task-status", "inbox-relevant-activity-resurfaced", "no-agent-work"],
   "file-input-answer": ["input-upload-bytes-preserved", "input-content-used-correctly", "input-result-attributed-to-run", "input-result-reopened", "original-input-retained", "configured-model-and-environment"],
   "task-properties": ["assignment-persisted", "no-agent-work"],
   "task-create": ["browser-created-task-persisted", "no-agent-work"],
