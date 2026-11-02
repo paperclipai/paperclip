@@ -503,16 +503,15 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     return row.state === "superseded" || !row.processStoppedAt ||
       completed.has(row.state) && row.receipt?.cleanupPending === false;
   }
-  async function clearCompletedCleanupRetry(row: Copy) {
+  async function settleCompletedCleanupRetry(row: Copy) {
     if (completed.has(row.state) && row.processStoppedAt && !row.receipt?.retainedByRunId && row.receipt?.cleanupPending === false && row.nextAttemptAt) {
-      await patch(row, { nextAttemptAt: null }, sql`${copies.receipt} = ${JSON.stringify(row.receipt)}::jsonb
+      return patch(row, { nextAttemptAt: null }, sql`${copies.receipt} = ${JSON.stringify(row.receipt)}::jsonb
         AND ${copies.processStoppedAt} IS NOT NULL`);
-      return true;
     }
-    return false;
+    return row;
   }
   async function release(row: Copy, target?: AdapterExecutionTarget | null) {
-    if (await clearCompletedCleanupRetry(row)) return;
+    row = await settleCompletedCleanupRetry(row);
     if (releaseIsNoop(row) || !await owns(row)) return;
     const destroyedOnly = row.receipt?.cleanupDestroyedOnly === true;
     if (row.receipt?.retainedByRunId || row.state === "superseded" || !await owns(row) || !row.processStoppedAt) return;
@@ -667,10 +666,12 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     checkpointWarm: (row: Copy, target?: AdapterExecutionTarget | null) => serial(row, current => current.receipt?.warm === true ? checkpoint(current, target) : Promise.resolve(current), "agent_directory_checkpoint"),
     collectStopped: (row: Copy, target?: AdapterExecutionTarget | null) => serial(row, current => collectStopped(current, target), "agent_directory_collect"),
     release: async (row: Copy) => {
-      const current = await get(row.companyId, row.runId);
+      let current = await get(row.companyId, row.runId);
+      if (!current) return;
+      current = await settleCompletedCleanupRetry(current);
       // This check changes no receipt or bytes. A concurrent stop merely leaves
       // cleanup to its owner or the recovery sweep; it grants no new authority.
-      if (!current || await clearCompletedCleanupRetry(current) || releaseIsNoop(current)) return;
+      if (releaseIsNoop(current)) return;
       await serial(current, release, "agent_directory_release");
     },
   };

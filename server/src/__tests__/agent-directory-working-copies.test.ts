@@ -144,7 +144,7 @@ describe("persistent agent directories", () => {
         expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
       } finally { await worker.stop(); }
     });
-    it("preserves a cleanup obligation published before stale-deadline settlement", async () => {
+    it("honors a cleanup obligation published before stale-deadline settlement", async () => {
       const copy = await run(), dueAt = new Date(Date.now() + 30_000);
       await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date(),
         nextAttemptAt: dueAt, receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } })
@@ -157,8 +157,9 @@ describe("persistent agent directories", () => {
       });
       try {
         await copies.release(companyId, copy.runId);
-        expect(await copies.get(companyId, copy.runId)).toMatchObject({ receipt: { cleanupPending: true }, nextAttemptAt: dueAt });
-        expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe(initial);
+        expect(await copies.get(companyId, copy.runId)).toMatchObject({ receipt: { cleanupPending: false }, nextAttemptAt: null });
+        await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
       } finally { race.mockRestore(); }
     });
     it("reactivates from real collection, preserves saved files, retries failed cleanup, and becomes quiet", async () => {
