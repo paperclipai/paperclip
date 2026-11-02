@@ -314,6 +314,15 @@ Capability ID: `app-permissions/account-maintenance`.
 
 Review: `operation-reviewed`.
 
+### `get-companies-ai-connections-identity`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connections/{connectionId}/identity`, optional `grantId` query; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api` through the registered connection-management operation.
+Policy: `connections:read` under current connection-management authority, active company membership, and the selected grant's human audience. Manager status alone cannot read a coworker's personal provider profile. Revoked or disabled accounts do not open credentials. No raw provider IDs or credentials are returned.
+Evidence: `verified` — local PostgreSQL and actual key/JWT REST requests in [connection-management integration](../../server/src/__tests__/connection-management.integration.test.ts), with provider fixtures. [AI connection tests](../../server/src/__tests__/ai-connections.test.ts) cover private-user and unauthenticated denial. Native API discovery is registered in [OpenAPI](../../server/src/routes/openapi.ts); native tool execution is source-only.
+Verification: `passed` — safe email/organization for an authorized selected grant; another company, another user, invalid grant, and missing authority denied before provider access. Profile permission denial remains an explicit unavailable observation rather than a failed connection. Fixtures do not qualify live provider profile access.
+Gaps: Provider profile access depends on the saved token's scopes; an inference-only setup token cannot identify its account email.
+
 ### `get-companies-tools-apps-attention`
 
 API: `present` — `GET /api/companies/{companyId}/tools/apps/attention`; JSON REST.

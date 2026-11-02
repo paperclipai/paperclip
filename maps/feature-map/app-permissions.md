@@ -103,6 +103,14 @@ then shows an error with Retry. A background failure keeps loaded controls visib
 [AI account loading tests](../../ui/src/components/ai-connections/ManagedAiConnectionDetails.test.tsx)
 exercise stalled account/grants reads, cancellation, retry recovery and cached grants.
 
+The account-details section shows the provider email and organization when
+available, beside the sign-in method and Paperclip ownership. Anthropic profile
+permission denial shows an explicit unavailable message without changing the
+connection's connected state. Account identity loads independently of maintenance
+controls, has a bounded wait and a separate retry for temporary failures, and
+is refreshed after a credential grant changes. [Account-details tests](../../ui/src/components/ai-connections/AiConnectionAccountDetails.test.tsx)
+cover these states and prevent one grant's email from appearing for another.
+
 Manual: Run a read-only action with explicit inputs and inspect returned data and activity. Refresh discovery and review new actions. Revoke or disconnect only the disposable credential, then verify subsequent use fails with an actionable reconnect state.
 
 For Daytona, opening an older saved catalog discovers the current native

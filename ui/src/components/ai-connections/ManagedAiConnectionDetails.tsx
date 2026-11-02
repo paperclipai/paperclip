@@ -6,6 +6,7 @@ import { toolsApi } from "@/api/tools";
 import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
 import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
+import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
 import type { ToolConnection, AiConnectionMetadata } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
 import { queryKeys } from "@/lib/queryKeys";
@@ -100,6 +101,7 @@ export function ManagedAiConnectionDetails({
     <div className="space-y-4">
       {loadFailure}
       {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
+      <AiConnectionAccountDetails account={account} grant={grant} />
       {account.routing && <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Provider settings</summary><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><dt className="text-muted-foreground">Destination</dt><dd className="break-all">{account.routing.baseUrl ?? (account.routing.kind === "bedrock" ? account.routing.region : "OpenRouter")}</dd><dt className="text-muted-foreground">API format</dt><dd>{account.routing.kind === "openrouter" ? "Selected by harness" : account.routing.protocol}</dd><dt className="text-muted-foreground">Authentication</dt><dd>{account.routing.auth}</dd><dt className="text-muted-foreground">Models</dt><dd>{account.routing.models.map(m => m.label ?? m.id).join(", ") || "Enter a model ID on the agent"}</dd></dl></details>}
       <AiConnectionAccountControls
         account={account}

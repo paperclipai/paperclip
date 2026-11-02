@@ -14,6 +14,7 @@ vi.mock("./AiConnectionAccountControls", () => ({
   ),
 }));
 vi.mock("./AiConnectionUsagePanel", () => ({ AiConnectionUsagePanel: () => null }));
+vi.mock("./AiConnectionAccountDetails", () => ({ AiConnectionAccountDetails: () => null }));
 
 const account: AiManagedConnectionSummary = {
   id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription",

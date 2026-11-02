@@ -9,6 +9,7 @@ import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { createDb, authUsers, activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, toolRateLimitCounters, connectionGrants, connectionGrantMembers, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolApplications, toolConnections, toolConnectionInstalls, aiConnectionPools, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfiles, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
 import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
+import { aiConnectionService } from "../services/ai-connections.js";
 import { redactRunnerApiPayloads } from "../services/native-runtime/runner-api-log-redaction.js";
 import * as remoteEndpointGuard from "../services/remote-http-endpoint-guard.js";
 import * as remoteHttpFetch from "../services/remote-http-fetch.js";
@@ -1701,6 +1702,36 @@ describe("connection management with production default agents", () => {
       await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_profiles")));
       expect(await f.request("POST", `/companies/${f.companyId}/ai-connections`, { provider: "openai", method: "api_key", name: "No sharing authority", ownership: "personal", apiKey: "fixture-secret", agentIds: [f.agentId] })).toMatchObject({ status: 403 });
     } finally { provider = null; unregisterServerAdapter("paperclip_runner"); }
+  });
+
+  it("reads only the authorized Anthropic account identity through actual agent authentication", async () => {
+    const f = await fixture();
+    const account = await aiConnectionService(server.db).save(f.companyId, f.userId, {
+      provider: "anthropic", method: "subscription", ownership: "personal", name: "Account identity fixture",
+      loginSessionId: "fixture", agentIds: [f.agentId], allAgents: false,
+    }, "selected-identity-credential");
+    let calls = 0;
+    provider = async (url, init) => {
+      calls++;
+      expect(url).toBe("https://api.anthropic.com/api/oauth/profile");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer selected-identity-credential");
+      return Response.json({ account: { uuid: "private-seat", email: "avery@example.test" }, organization: { uuid: "private-org", name: "Example team" } });
+    };
+    const path = `/companies/${f.companyId}/ai-connections/${account.connectionId}/identity?grantId=${account.grantId}`;
+    try {
+      for (const token of [f.key.token, f.jwt]) {
+        const response = await f.request("GET", path, undefined, token);
+        expect(response).toMatchObject({ status: 200, body: { ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" } });
+        for (const secret of ["selected-identity-credential", "private-seat", "private-org"]) expect(JSON.stringify(response)).not.toContain(secret);
+      }
+      expect(calls).toBe(2);
+      expect((await f.request("GET", path.replace(f.companyId, f.foreignCompanyId))).status).toBe(403);
+      expect((await f.request("GET", path.replace(account.grantId, randomUUID()))).status).toBe(404);
+      expect(calls).toBe(2);
+      await server.db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+      expect(await f.request("GET", path)).toMatchObject({ status: 200, body: { status: "unavailable", errorCode: "connection_unavailable", accountLabel: null } });
+      expect(calls).toBe(2);
+    } finally { provider = null; }
   });
 
   it("filters AI account and pool listings by the agent's resolved connection scope", async () => {
