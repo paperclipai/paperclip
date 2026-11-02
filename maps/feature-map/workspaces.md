@@ -43,6 +43,15 @@ Live staging acceptance remains separate from these regression tests.
 
 Use the task’s workspace card or Files panel and follow its workspace link.
 
+Native artifact-copy verification: in an admitted standard-mode task, save a
+synthetic API response and call `download_artifact` with its saved identity and a
+new workspace-relative filename. Independently inspect the file's complete byte
+count and SHA-256 through the admitted filesystem. Retry the identical request;
+reject a conflicting destination, symlink, revoked authority and foreign artifact.
+The transfer does not change the content's untrusted status. See
+[API tools](../../doc/runner-api-tools.md#verified-artifact-installation) for support
+and limits. Provider-free regression evidence is not live remote qualification.
+
 ### `workspace-management`
 
 Open `/workspaces`, a project workspace, or `/execution-workspaces/:workspaceId` and its Services/Configuration/Runtime logs views.

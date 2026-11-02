@@ -278,7 +278,10 @@ describe("runner E2E Daytona image contract", () => {
     expect(providerInstall).toBeGreaterThan(0);
     expect(runnerSourceCopy).toBeGreaterThan(0);
     expect(runnerSourceCopy).toBeLessThan(providerInstall);
-    expect(providerInstall).toBeLessThan(providerRevisionArg);
+    // The source-bound install and portable-pack build now share a layer so
+    // their disposable dependency tree can be removed before image export.
+    expect(providerRevisionArg).toBeGreaterThan(0);
+    expect(providerRevisionArg).toBeLessThan(providerInstall);
     expect(cliInstall).toBeGreaterThan(0);
     expect(cliInstall).toBeLessThan(finalMetadataArgs);
   });
