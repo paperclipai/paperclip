@@ -1,6 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -63,8 +63,10 @@ describe("native harness backup publication", () => {
       await fs.chmod(directory, 0o555);
     }
     let publishing = false;
-    const server = createServer((_request, response) => {
-      response.setHeader("x-publication-active", publishing ? "1" : "0");
+    let probeReceived: (response: ServerResponse) => void;
+    const probeReady = new Promise<ServerResponse>(resolve => { probeReceived = resolve; });
+    const server = createServer((request, response) => {
+      if (request.url === "/probe") { probeReceived(response); return; }
       response.end("ok");
     });
     await new Promise<void>((resolve, reject) => {
@@ -76,16 +78,16 @@ describe("native harness backup publication", () => {
     const client = spawn(process.execPath, ["--input-type=module", "-e", `
       import { Agent, get } from "node:http";
       const agent = new Agent({ keepAlive: true });
-      const request = () => new Promise((resolve, reject) => {
-        get({ hostname: "127.0.0.1", port: Number(process.argv[1]), agent }, response => {
+      const request = path => new Promise((resolve, reject) => {
+        get({ hostname: "127.0.0.1", port: Number(process.argv[1]), path, agent }, response => {
           response.resume();
           response.on("end", () => resolve(response.headers["x-publication-active"]));
         }).on("error", reject);
       });
-      await request();
+      await request("/");
       process.send({ kind: "ready" });
       process.once("message", async () => {
-        const active = await request();
+        const active = await request("/probe");
         process.send({ kind: "result", active }, () => { agent.destroy(); process.disconnect(); });
       });
     `, String(address.port)], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
@@ -107,7 +109,14 @@ describe("native harness backup publication", () => {
       publishing = true;
       publication = publishNativeHarnessBackup({
         ...input,
-        stamp: async () => { client.send({ kind: "probe" }); },
+        stamp: async () => {
+          client.send({ kind: "probe" });
+          const response = await probeReady;
+          setImmediate(() => {
+            response.setHeader("x-publication-active", publishing ? "1" : "0");
+            response.end("ok");
+          });
+        },
       }).finally(() => { publishing = false; });
       const result = await response;
       await publication;
