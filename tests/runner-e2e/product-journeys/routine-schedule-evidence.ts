@@ -23,13 +23,14 @@ export function scheduledInvocationMatches(rows: ScheduledInvocation[], task: Sc
     && task.originId === expected.routineId && task.originRunId === run.id;
 }
 
-/** Observe a complete minute boundary after completion, with the schedule disabled. */
+/** Monotonic elapsed time covers a full server minute regardless of clock offset. */
+export const schedulePauseObservationMs = 65_000;
 export function schedulePauseMatches(input: {
   enabled: unknown; pausedAt: number; completedAt: number; observedUntil: number;
   first: ScheduledInvocation[]; final: ScheduledInvocation[];
 }) {
-  const nextDue = Math.floor(Math.max(input.pausedAt, input.completedAt) / 60_000) * 60_000 + 60_000;
+  const elapsed = input.observedUntil - Math.max(input.pausedAt, input.completedAt);
   return input.enabled === false && Number.isFinite(input.pausedAt) && Number.isFinite(input.completedAt)
-    && Number.isFinite(input.observedUntil) && input.observedUntil >= nextDue + 5_000 && input.first.length === 1 && input.final.length === 1
+    && Number.isFinite(input.observedUntil) && elapsed >= schedulePauseObservationMs && input.first.length === 1 && input.final.length === 1
     && input.first[0]!.id === input.final[0]!.id && input.final[0]!.status === "completed";
 }

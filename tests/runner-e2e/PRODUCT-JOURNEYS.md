@@ -486,3 +486,12 @@ A candidate's presence in this source catalog is not qualification. It enters th
 saved daily TestOps plan only after an inspected real QA Cloud pass including
 usage, artifact/decision evidence and cleanup. The daily driver runs that saved
 plan against the registered QA tenant; it does not substitute a local instance.
+
+The scheduled-routine pause oracle uses a full 65 seconds of monotonic elapsed
+time after both pause acknowledgement and work completion. Its enable receipt
+uses the server's timestamp; client and server wall clocks are never compared.
+The three native journeys retry only transient read transport failures within
+the existing phase and journey deadlines. Their private read-failure receipts
+retain those observations. Mutations, user messages and agent work are never
+replayed. Repository Git inspection consumes the exact digest-verified download
+buffer; browser downloads remain an independent result-access check.
