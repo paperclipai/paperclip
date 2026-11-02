@@ -47,6 +47,34 @@ describe("OpenCode local skill injection", () => {
     await fs.rm(configHome, { recursive: true, force: true });
   });
 
+  it.each([[], ["--dir", "/operator-workspace"], ["--dir=/operator-workspace"], ["--", "--dir"]].map((extraArgs) => ({ extraArgs })))(
+    "uses the selected workspace without adding directory flags (extraArgs=$extraArgs)", async ({ extraArgs }) => {
+      const commandPath = path.join(configHome, "fake-opencode-directory");
+      await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      vi.stubEnv("PWD", "/stale-parent-workspace");
+      runProcessMock.mockReset();
+      runProcessMock.mockResolvedValue(probeResult({ stdout: JSON.stringify({
+        type: "text", sessionID: "workspace-session", part: { text: "done" },
+      }) }));
+      await execute({
+        runId: "workspace-run",
+        agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath, cwd: configHome, model: "openai/gpt-5", extraArgs,
+          env: { OPENCODE_ALLOW_ALL_MODELS: "1", PWD: "/stale-config-workspace" },
+        },
+        context: {},
+        onLog: async () => {},
+      });
+      expect(runProcessMock).toHaveBeenCalledOnce();
+      const call = runProcessMock.mock.calls[0]!;
+      expect(call[3]).toEqual(["run", "--format", "json", "--model", "openai/gpt-5", ...extraArgs]);
+      expect(call[4]).toMatchObject({ cwd: configHome, env: { PWD: configHome } });
+      expect(process.env.PWD).toBe("/stale-parent-workspace");
+    },
+  );
+
   it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {
     const commandPath = path.join(configHome, "fake-opencode");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });

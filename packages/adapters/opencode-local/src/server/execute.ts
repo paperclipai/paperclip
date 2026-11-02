@@ -322,6 +322,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
+  env.PWD = effectiveExecutionCwd;
   // Prevent OpenCode from writing an opencode.json config file into the
   // project working directory (which would pollute the git repo).  Model
   // selection is already handled via the --model CLI flag.  Set after the
@@ -434,6 +435,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionTargetIsRemote,
         executionCwd: effectiveExecutionCwd,
       });
+      preparedRuntimeConfig.env.PWD = effectiveExecutionCwd;
       remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
       if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
@@ -625,13 +627,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
       if (variant) args.push("--variant", variant);
-      // OpenCode prefers the inherited PWD over process.cwd(). Use the realized
-      // workspace unless the operator already selected a directory explicitly.
-      const optionTerminator = extraArgs.indexOf("--");
-      const extraOptionArgs = optionTerminator === -1 ? extraArgs : extraArgs.slice(0, optionTerminator);
-      if (!extraOptionArgs.some((arg) => arg === "--dir" || arg.startsWith("--dir="))) {
-        args.push("--dir", effectiveExecutionCwd);
-      }
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
     };
