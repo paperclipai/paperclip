@@ -80,7 +80,7 @@ export async function readIdleDeadlineProof(tx: Pick<Db, "select">, hold: { owne
     const traces = await readIdleProviderTraceSchedule(guarded, options.now);
     budget.check();
     if (traces.blocked) return { blocked: true };
-    const github = await readIdleGitHubGrantContinuity(guarded, options.now);
+    const github = await readIdleGitHubGrantContinuity(guarded, options.now, budget.check);
     budget.check();
     const proof = composeIdleDeadlineProof(hold, options, { timers, jobs, traces, github });
     budget.check();
