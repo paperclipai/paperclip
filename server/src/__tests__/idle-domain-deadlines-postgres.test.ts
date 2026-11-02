@@ -159,6 +159,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(runs[0].finishedAt).not.toBeNull();
       const [after] = await db.select().from(pluginJobs).where(eq(pluginJobs.id, job.id));
       expect(after.nextRunAt!.getTime()).toBeGreaterThan(now + 900_001);
+      vi.useRealTimers();
       expect((await prepare()).scheduledWake?.nextWakeAt).toBe(after.nextRunAt!.toISOString());
       resume(); vi.useRealTimers();
       await store.updateJobStatus(job.id, "paused");
