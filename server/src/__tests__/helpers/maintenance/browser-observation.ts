@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 /** Actual Chromium visibility; never substitutes a fake document or frozen lifecycle. */
-export async function observeMaintenanceBrowser(origin: string) {
+export async function observeMaintenanceBrowser(origin: string, announcementDescription?: string) {
   const { chromium } = await import('@playwright/test');
   const browser = await chromium.launch({ headless: false });
   try {
@@ -10,6 +10,7 @@ export async function observeMaintenanceBrowser(origin: string) {
     const requests: Array<{ at: number; path: string }> = [];
     page.on('request', request => { const url = new URL(request.url()); if (url.origin === origin) requests.push({ at: performance.now(), path: url.pathname }); });
     await page.goto(origin, { waitUntil: 'networkidle' });
+    if (announcementDescription) await page.getByText(announcementDescription, { exact: true }).waitFor({ state: 'visible' });
     await page.bringToFront();
     if (await page.evaluate(() => document.visibilityState) !== 'visible') throw new Error('Browser active-use observation requires a visible page');
     const beforeActive = requests.length;
@@ -29,7 +30,7 @@ export async function observeMaintenanceBrowser(origin: string) {
     const hidden = requests.slice(hiddenRequests);
     if (hidden.some(request => request.path.startsWith('/api/'))) throw new Error(`Background tab produced tenant traffic: ${JSON.stringify(hidden)}`);
     const result = { activeRequests: requests.slice(beforeActive, hiddenRequests).length, hiddenRealElapsedMs: performance.now() - started,
-      hiddenRequests: hidden, visibility: 'actual Chromium foreground/background tabs', closed: true };
+      hiddenRequests: hidden, visibility: 'actual Chromium foreground/background tabs', announcementRendered: Boolean(announcementDescription), closed: true };
     await context.close();
     return result;
   } finally { await browser.close(); }

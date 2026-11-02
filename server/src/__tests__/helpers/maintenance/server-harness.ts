@@ -42,7 +42,8 @@ export async function withMaintenanceProvider<T>(provider: HttpServer, run: (ori
   }
 }
 
-type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number };
+type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number;
+  announcement?: { intercepted: boolean; requests: string[]; unmatched: string[]; boundary: string } };
 
 export interface MaintenanceConfiguration {
   automaticBackups?: { intervalMinutes: number; idleCheckpoint: boolean };
@@ -109,7 +110,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     await new Promise<void>(resolve => reservation.close(() => resolve()));
     const child = fork(fileURLToPath(new URL("./server-child.ts", import.meta.url)), [], {
       cwd: fileURLToPath(new URL("../../../../..", import.meta.url)),
-      execArgv: ["--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
+      execArgv: [...(configuration?.announcements ? ['--experimental-test-module-mocks'] : []), "--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
       env: {
         PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
         PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
@@ -118,6 +119,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
         PAPERCLIP_AGENT_JWT_SECRET: randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: randomUUID(),
         PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomUUID(), BETTER_AUTH_SECRET: randomUUID(),
         CODEX_HOME: path.join(directory, "codex"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: String(configuration?.announcements ?? false),
+        ...(configuration?.announcements ? { PAPERCLIP_MAINTENANCE_ANNOUNCEMENT_FIXTURE: '1' } : {}),
         PAPERCLIP_DB_BACKUP_ENABLED: String(Boolean(configuration?.automaticBackups)), PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
         ...(configuration?.automaticBackups ? { PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED: configuration.automaticBackups.idleCheckpoint ? "1" : "0" } : {}),
         ...(configuration?.telemetryOrigin ? { PAPERCLIP_TELEMETRY_ENDPOINT: configuration.telemetryOrigin } : {}),

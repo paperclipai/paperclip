@@ -41,10 +41,13 @@ channel("undici:request:create").subscribe(observeRequest);
 channel("http.client.request.start").subscribe(observeRequest);
 
 try {
+  const announcement = process.env.PAPERCLIP_MAINTENANCE_ANNOUNCEMENT_FIXTURE === '1'
+    ? await (await import('./announcement-boundary.js')).installMaintenanceAnnouncementBoundary() : undefined;
   const { startServer } = await import("../../../index.js");
   const { idleWorkSnapshot, startTaskDrain, stopTaskDrain } = await import("../../../services/task-admission.js");
   const { getStartupRecoveryState } = await import("../../../startup-recovery-state.js");
   const server = await startServer();
+  try { announcement?.assertIntercepted(); } catch (error) { await server.shutdown(); throw error; }
   const app = server.server.listeners("request")[0] as unknown as { locals: { paperclipDb: Db } };
   process.send?.({ kind: "ready", port: server.listenPort });
   process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }; github?: { companyId?: string; connectionId?: string; grantId?: string } }) => {
@@ -59,7 +62,7 @@ try {
         if (message.command === "drain") startTaskDrain({ purpose: "idle" });
         if (message.command === "resume") stopTaskDrain();
         if (fakeClock) mock.timers.tick(0);
-        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now() });
+        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now(), announcement: announcement?.snapshot() });
       } else if (message.command === "prepareGitHub" || message.command === "settleGitHub") {
         const { prepareGitHubConfiguration, settleGitHubConfiguration } = await import("./github-configuration-producer.js");
         const input = message.github;

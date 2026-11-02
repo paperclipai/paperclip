@@ -54,6 +54,11 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
       };
       try {
         const company = await server.api<{ id: string }>('POST', '/companies', { name: 'Configured sleep acceptance' });
+        expect(await server.api('GET', '/announcements/current')).toMatchObject({ id: 'new-projects' });
+        const announcement = (await server.snapshot()).announcement;
+        expect(announcement?.intercepted).toBe(true);
+        expect(announcement?.requests).toEqual(['https://pages.paperclip.ing/announcements/v1/current.json']);
+        expect(announcement?.unmatched).toEqual([]);
         const agent = await server.api<{ id: string }>('POST', `/companies/${company.id}/agents`, { name: 'Owned process worker', role: 'general', adapterType: 'process',
           adapterConfig: { command: process.execPath, args: ['-e', "console.log('sleep-acceptance-useful-work')"], cwd: server.directory }, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true } } });
         const chatHistory = await server.produceChatHistory();
@@ -82,7 +87,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const routine = await server.api<{ id: string }>('POST', `/companies/${company.id}/routines`, { title: 'Harmless future obligation', assigneeAgentId: agent.id });
         await server.api('POST', `/routines/${routine.id}/triggers`, { kind: 'schedule', cronExpression: (() => { const next = new Date(Date.now() + 24 * 60 * 60_000); return `0 ${next.getUTCHours()} ${next.getUTCDate()} ${next.getUTCMonth() + 1} *`; })(), timezone: 'UTC' });
         await server.api('GET', '/agents/me', undefined, { Authorization: `Bearer ${key.token}` });
-        const browser = process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' ? await observeMaintenanceBrowser(`http://127.0.0.1:${server.port}`) : undefined;
+        const browser = process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' ? await observeMaintenanceBrowser(`http://127.0.0.1:${server.port}`, 'Organize your work.') : undefined;
         await fixture.$client.end({ timeout: 1 });
         const lastApiActivity = performance.now();
         await server.trace();
@@ -104,6 +109,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(finalTransport.connectionsOpened - finalTransport.connectionsClosed).toBe(0);
         expect(after.outgoingHttpRequests - before.outgoingHttpRequests).toBe(0);
         expect(after.network.nonDatabaseBytesWritten - before.network.nonDatabaseBytesWritten).toBe(0);
+        expect(after.announcement).toEqual(before.announcement);
         const quietFinishedAt = new Date().toISOString();
         const drain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));
         const capabilities = { incomingWake: await broker.capability(drain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };
@@ -122,7 +128,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(final.idleSleepSafety.apiWakeAdmission).toEqual(initial.idleSleepSafety.apiWakeAdmission);
         const proof = final.idleSleepSafety;
         const receipt = { version: 1, target: 'owned-local-assembled', appSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), cloudSha, startedAt, finishedAt: new Date().toISOString(),
-          configuration, browser, chatHistory, toolHistory, githubContinuity, brokerBinding, brokerBoundary: broker.boundary, configDigest: createHash('sha256').update(JSON.stringify(configuration)).digest('hex'),
+          configuration, browser, announcement: after.announcement, chatHistory, toolHistory, githubContinuity, brokerBinding, brokerBoundary: broker.boundary, configDigest: createHash('sha256').update(JSON.stringify(configuration)).digest('hex'),
           features: { automaticBackups: true, announcements: true, telemetry: true, otel: true, exportedSpans: exported.length },
           quiet: { startedAt: quietStartedAt, finishedAt: quietFinishedAt, elapsedMs, clock: 'real', sqlQueries,
             connectionsOpened: finalTransport.connectionsOpened - transport.connectionsOpened, connectionsRemaining: finalTransport.connectionsOpened - finalTransport.connectionsClosed,
@@ -130,7 +136,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
           eligibility: { observedAt: new Date().toISOString(), backgroundWork: proof.backgroundWork, ownedHold: final.ownerId === drain.ownerId, apiCooldownElapsedMs: performance.now() - lastApiActivity,
             unchangedGeneration: /^[a-f0-9]{64}$/.test(proof.deadlineProof?.generation ?? '') && initial.idleSleepSafety.deadlineProof?.generation === proof.deadlineProof?.generation }, initial, final,
           live: { databaseSuspension: 'INCONCLUSIVE', hostSuspension: 'INCONCLUSIVE', backupPersistence: 'INCONCLUSIVE', reason: 'Local actual server with simulated Cloud signer; no deployed provider target authorized' },
-          coverage: { announcements: 'Enabled actual server; closed-browser no request observation. Feed network/cache behavior covered separately by announcement-feed tests.', browser: browser ? 'Actual Chromium foreground/background measured, then closed before server quiet window' : 'Closed; set PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE=1 with built UI and headed Chromium for background/active evidence', broker: 'Retained enabled connection, actual encrypted OAuth vault, actual continuity/binding owners and signed/sealed production broker delivery; host capability from actual ConnectorStore', history: 'Normal task/credential/routine, actual tool review rejection/outbox retirement, actual signed chat ingress completion and endpoint archival' } };
+          coverage: { announcements: 'Actual route, validated feed/cache and UI with one named injected provider transport fetch; DNS/HTTPS guard covered separately, not exercised here.', browser: browser ? 'Actual Chromium foreground/background measured, then closed before server quiet window' : 'Closed; set PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE=1 with built UI and headed Chromium for background/active evidence', broker: 'Retained enabled connection, actual encrypted OAuth vault, actual continuity/binding owners and signed/sealed production broker delivery; host capability from actual ConnectorStore', history: 'Normal task/credential/routine, actual tool review rejection/outbox retirement, actual signed chat ingress completion and endpoint archival' } };
         await writeFile(path.join(server.directory, 'sleep-configuration-receipt.json'), JSON.stringify(receipt, null, 2));
         expect(proof.version).toBe(3); expect(proof.backgroundWork).toBe('none');
         expect(proof.deadlineProof).toMatchObject({ catalog: 'domain_deadlines_v1', generation: expect.stringMatching(/^[a-f0-9]{64}$/) });
@@ -168,6 +174,8 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(resumedQuiet.connectionsRemaining).toBe(0);
         expect(resumedQuiet.nonDatabaseRequests).toBe(0);
         expect(resumedQuiet.nonDatabaseBytes).toBe(0);
+        expect(resumedEnd.announcement).toEqual(resumed.announcement);
+        expect(resumedEnd.announcement?.unmatched).toEqual([]);
         const resumedDrain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));
         const resumedCapabilities = { incomingWake: await broker.capability(resumedDrain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };
         const readResumed = () => server.api<any>('GET', `/instance/task-drain?idleSleepSafety=1&scheduledWake=domain-deadlines-v1&ownerId=${resumedDrain.ownerId}`, undefined, control('task-drain:read', resumedCapabilities));

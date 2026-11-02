@@ -57,13 +57,14 @@ After ordinary API reactivation it waits another full real ten-minute cooldown,
 measures another 90 seconds of quiet and requests fresh owned eligibility proof.
 The helper keeps its legacy defaults for existing maintenance tests.
 
-Announcements are enabled in the assembled closed-browser case. That observation
-establishes absence of background server fetches. It does not claim that a remote
-feed request succeeded. Feed request/cache behavior is covered by the owning
-`announcement-feed.test.ts`; it injects the named remote HTTP boundary without
-weakening the production address guard. Loaded background tabs and foreground
-active use need their own browser evidence. Active user activity can legitimately
-keep an instance awake.
+Announcements are enabled and the actual route/feed service validates and caches
+the known fixture. An owned test-child module wrapper injects the existing feed
+transport seam for the exact default HTTPS URL; unmatched requests fail. Startup
+fails if the wrapper did not intercept the actual app constructor. The receipt
+requires one named fetch and no subsequent calls during quiet. Browser mode also
+requires the fixture copy to render. The production DNS/HTTPS address guard stays
+unchanged and is not exercised in this combined case; its owning tests cover that
+boundary separately. Active user activity can legitimately keep an instance awake.
 
 The assembled scenario includes real tool approval rejection/delivery retirement
 and signed chat-webhook completion followed by ordinary endpoint removal. That
