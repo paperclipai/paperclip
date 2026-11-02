@@ -1,9 +1,12 @@
 import { expect } from "@playwright/test";
 import { inboxArchivePersisted, inboxTaskMatches, inboxTaskResurfaced, type InboxTaskEvidence } from "./inbox-triage-evidence.js";
+import { inboxAuthorCommentMatches, type InboxAuthorComment } from "./inbox-author-contract.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 export async function inboxTriage(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence) {
   const { api, page, company, user } = context;
+  const author = context.fixtures?.inboxAuthor;
+  if (!author?.userId || author.userId === user.id) throw new JourneyError("unsupported", "inbox_human_author_required");
   const title = `Journey QA inbox triage ${campaignId}`;
   await session.own({ kind: "issue", name: title, journeyId: "inbox-triage" });
   const issue = await api.post<InboxTaskEvidence & { title: string; identifier: string }>(`/api/companies/${company.id}/issues`, {
@@ -37,29 +40,14 @@ export async function inboxTriage(context: JourneyContext, session: TargetSessio
     }
   };
   const row = page.locator(`[data-issue-row-details="${issue.id}"]`).first();
-  // A real external author supplies unread activity without any model run.
-  const authorName = `Journey QA inbox author ${campaignId}`;
-  await session.own({ kind: "agent", name: authorName, journeyId: "inbox-triage" });
-  const author = await api.post<{ id: string }>(`/api/companies/${company.id}/agents`, {
-    name: authorName, adapterType: "process", runner: "legacy", adapterConfig: { command: "true" },
-    runtimeConfig: { heartbeat: { enabled: false } }, permissions: { canCreateAgents: false },
-  });
-  await session.own({ kind: "agent", name: authorName, id: author.id, journeyId: "inbox-triage" });
-  const key = await api.postSensitive<{ id: string; token: string }>(`/api/agents/${author.id}/keys`, { name: `inbox-${campaignId}` });
-  try {
-    const comment = await fetch(`${api.origin}${route}/comments`, { method: "POST", redirect: "error",
-      headers: { Authorization: `Bearer ${key.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ body: `Inbox fixture update ${campaignId}` }), signal: AbortSignal.timeout(30_000) });
-    if (!comment.ok) { await comment.body?.cancel(); throw new JourneyError("failed", "inbox_external_activity_failed"); }
-    const saved = await comment.json() as { authorAgentId?: string; issueId?: string };
-    if (saved.authorAgentId !== author.id || saved.issueId !== issue.id) throw new JourneyError("failed", "inbox_external_activity_binding_mismatch");
-  } catch (error) {
-    if (error instanceof JourneyError) throw error;
-    throw new JourneyError("failed", "inbox_external_activity_failed");
-  } finally {
-    await api.delete(`/api/agents/${author.id}/keys/${key.id}`);
-    await api.patch(`/api/agents/${author.id}`, { status: "paused" });
-  }
+  // Agent writes correctly require a real heartbeat run. The model-free inbox
+  // fixture uses a second normal human session rather than inventing a run.
+  const body = `Inbox fixture update ${campaignId}`;
+  const posted = await author.postComment({ issueId: issue.id, body });
+  const saved = await api.get<InboxAuthorComment>(`${route}/comments/${posted.id}`);
+  const expectedAuthor = { companyId: company.id, issueId: issue.id, ownerUserId: user.id, authorUserId: author.userId, body };
+  check("inbox-external-human-activity", posted.id === saved.id
+    && inboxAuthorCommentMatches(posted, expectedAuthor) && inboxAuthorCommentMatches(saved, expectedAuthor));
   await api.delete(`${route}/read`);
   await expect.poll(async () => (await read()).isUnreadForMe).toBe(true);
   await open("unread");
