@@ -146,3 +146,30 @@ export const MCP_REMOTE_HEADER_LIMITS = {
   maxNameLength: MAX_HEADER_NAME_LENGTH,
   maxValueLength: MAX_HEADER_VALUE_LENGTH,
 } as const;
+
+/**
+ * Merges multiple header records case-insensitively.
+ * Later records take precedence over earlier records. If two records provide
+ * the same header name with different casing (e.g. `x-custom` and `X-Custom`),
+ * the casing and value from the later record replace the earlier one.
+ */
+export function mergeHeaderRecords(
+  ...sources: Array<Record<string, string> | undefined | null>
+): Record<string, string> {
+  const merged: Record<string, string> = {};
+  const lowerToKey = new Map<string, string>();
+  for (const source of sources) {
+    if (!source) continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value !== "string") continue;
+      const lower = key.toLowerCase();
+      const existing = lowerToKey.get(lower);
+      if (existing !== undefined && existing !== key) {
+        delete merged[existing];
+      }
+      merged[key] = value;
+      lowerToKey.set(lower, key);
+    }
+  }
+  return merged;
+}

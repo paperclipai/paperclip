@@ -2,6 +2,7 @@ import { connectionActorUserId } from "../actor.js";
 import { actorForSecret } from "../oauth/credential-store.js";
 import type { ActorInfo } from "../types.js";
 import { remoteEndpoint, projectedConnectionHeaders } from "../connection-methods.js";
+import { mergeHeaderRecords } from "@paperclipai/shared";
 import { AGGREGATOR_NAMES, isAppAggregator, type AggregatorAppsResponse, type ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
 import { resolveAggregatorApp, type AppCatalogAggregator } from "@paperclipai/shared/aggregator-app-catalog";
 import { AggregatorDiscoveryUnavailableError, discoverArcadeApps, discoverExecutorApps, type DiscoveredApp } from "../../aggregator-app-discovery.js";
@@ -106,7 +107,7 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
       throw unprocessable("Refresh your Composio gateway's actions before configuring this app");
     }
     const endpoint = await resolvedRemoteEndpoint(connection, actor);
-    const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
+    const headers = mergeHeaderRecords(projectedConnectionHeaders(connection), await resolveCredentialHeaders(connection, actor));
     const credentialKey = await composioCredentialKey(await getConnectionRow(connectionId), actor);
     const send = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), { ...init, signal: AbortSignal.timeout(30_000) });
     let sessionHeaders = connection.config.mcpSessionRequired === true
@@ -287,7 +288,7 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
     const provider = aggregatorProvider(connection);
     const tools = await remoteTools(connection, undefined, actor);
     connection = await getConnectionRow(connection.id);
-    const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
+    const headers = mergeHeaderRecords(projectedConnectionHeaders(connection), await resolveCredentialHeaders(connection, actor));
     const endpoint = new URL(await resolvedRemoteEndpoint(connection, actor));
     if (provider === "arcade") {
       // The extra project credential never joins invocation headers or tool grants.
