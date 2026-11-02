@@ -233,3 +233,8 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
   });
 });
+
+
+it("keeps Monitoring derived rather than allowing a drag to manufacture it", () => {
+  expect(resolveKanbanTargetStatus("monitoring", [])).toBeNull();
+});

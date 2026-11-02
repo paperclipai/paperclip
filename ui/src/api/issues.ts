@@ -194,6 +194,7 @@ export type IssueListFilters = {
   projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
+  displayStatus?: string;
   projectId?: string;
   parentId?: string;
   assigneeAgentId?: string;
@@ -229,6 +230,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
   const params = new URLSearchParams();
   if (filters?.attention) params.set("attention", filters.attention);
   if (filters?.status) params.set("status", filters.status);
+  if (filters?.displayStatus) params.set("displayStatus", filters.displayStatus);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
   if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));

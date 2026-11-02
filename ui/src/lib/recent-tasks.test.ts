@@ -83,6 +83,14 @@ describe("recent task persistence", () => {
     expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_review", externalConversationState: "waiting" });
   });
 
+  it("refreshes Monitoring when a run starts without a new task version", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, displayStatus: "monitoring" as const, externalConversationState: null };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, displayStatus: "in_progress" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]?.displayStatus).toBe("in_progress");
+  });
+
   it("publishes same-tab updates", () => {
     const listener = vi.fn();
     window.addEventListener(RECENT_TASKS_UPDATED_EVENT, listener);

@@ -423,6 +423,7 @@ retain their titles and default to no generation request.
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- Task reads additionally expose read-only `displayStatus`: the lifecycle status, or `monitoring` for an agent-owned scheduled ordinary monitor wait with no active execution, locks, review participant or active recovery action. Board collection/search `displayStatus` filters and counts use the same projection before pagination. This field is not persisted and cannot authorize a status transition; existing `status` filters retain their lifecycle semantics.
 - `priority` enum: `critical | high | medium | low`
 - `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
