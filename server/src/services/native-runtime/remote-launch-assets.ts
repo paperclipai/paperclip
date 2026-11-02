@@ -12,6 +12,7 @@ type StageAsset = {
 };
 
 type LaunchAssetsInput = {
+  scope?: "launch" | "credentials";
   root: string;
   transport: "ssh" | "sandbox";
   runner: CommandManagedRuntimeRunner;
@@ -109,13 +110,17 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
       }
       if (directory.name !== "codex-home") continue;
       const localDirectory = resolve(input.root, directory.name);
-      for (const name of ["auth.json", "config.toml"] as const) {
+      for (const name of input.scope === "credentials" ? ["auth.json"] : ["auth.json", "config.toml"]) {
         const sourcePath = resolve(localDirectory, name);
         if (!existsSync(sourcePath)) continue;
         await input.stageFile({ sourcePath, targetPath: posix.join(targetPath, name), mode: 0o600 });
       }
     }
   });
+  if (input.scope === "credentials") {
+    await materializeLaunchState();
+    return;
+  }
   const stageRuntimeContext = async () => {
     const context = input.runtimeContext;
     if (!context) return;

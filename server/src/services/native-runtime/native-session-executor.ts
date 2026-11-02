@@ -13344,7 +13344,7 @@ async function createRunnerdBackendWithinSessionClaim(
     return backup;
   };
 
-  const ensureRemoteRunner = async (stageLaunchAssets = true) => {
+  const ensureRemoteRunner = async (launchScope: "launch" | "credentials" | "none" = "launch") => {
     await measureNativeRunnerSpan(
       input.trace,
       "stage.sync",
@@ -13567,13 +13567,14 @@ async function createRunnerdBackendWithinSessionClaim(
         // Authority rotation needs durable history, before the transport writes
         // this turn's launch files. Stage assets only at the actual launch so we
         // neither upload stale context nor transfer every bundle twice on resume.
-        if (!stageLaunchAssets) return;
+        if (launchScope === "none") return;
         // Resume can prepare/rotate durable state before the transport creates
         // this invocation's isolated Codex auth/config. The later launch must
         // still stage those fresh files even when history was already restored.
         // Launch material is never recovered from a failover backup.
         if (remoteTarget && remoteCommandRunner) {
           await stageRemoteLaunchAssets({
+            scope: launchScope,
             root,
             transport: remoteTarget.transport,
             runner: remoteCommandRunner,
@@ -13758,7 +13759,7 @@ async function createRunnerdBackendWithinSessionClaim(
             target: remoteTarget,
             runnerIngressAuthorized: input.runnerIngressAuthorized === true,
           });
-          await ensureRemoteRunner(false);
+          await ensureRemoteRunner("none");
         }
       : undefined;
   const archiveExternalRunnerState =
@@ -13824,11 +13825,12 @@ async function createRunnerdBackendWithinSessionClaim(
           stateDirectory: remoteStateDirectory,
           diagnosticsDirectory: posix.join(remoteSessionRoot!, "diagnostics"),
           runnerInstanceId: input.runnerInstanceId,
-          // Source recovery relaunches the previous authority against its
-          // retained provider home. The transport intentionally has not created
-          // this turn's launch assets until that source is reconciled.
-          ensureArtifact: spec => ensureRemoteRunner(
-            !spec.nativeRunner || spec.nativeRunner.identity.runId === input.execution.binding.runId),
+          ensureArtifact: spec => {
+            const sourceRun = spec.nativeRunner && spec.nativeRunner.identity.runId !== input.execution.binding.runId;
+            const isolatedCodex = input.execution.provider.kind === "codex"
+              && !("homeMode" in input.execution && input.execution.homeMode === "preconfigured");
+            return ensureRemoteRunner(sourceRun ? isolatedCodex ? "credentials" : "none" : "launch");
+          },
           onSpawn: input.onSpawn,
           onLog: input.onLog,
           trace: input.trace,

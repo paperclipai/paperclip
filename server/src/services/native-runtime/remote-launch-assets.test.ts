@@ -64,6 +64,17 @@ function fixture(options: { transport?: "sandbox" | "ssh"; concurrent?: boolean 
   return { input, root, calls, stageFile, stageDirectory, execute };
 }
 
+it("restores source authentication without replacing its retained launch context", async () => {
+  const f = fixture();
+  f.input.isolatedCodexSkills = { workspaceRoot: "/session" };
+  await stageRemoteLaunchAssets({ ...f.input, scope: "credentials" });
+  expect(f.stageFile.mock.calls.map(([asset]) => asset.targetPath)).toEqual([
+    "/session/filesystem/codex-home/auth.json",
+  ]);
+  expect(f.stageDirectory).not.toHaveBeenCalled();
+  expect(readFileSync(join(f.root, "codex-home", "config.toml"), "utf8")).toBe("fresh test config");
+});
+
 async function filesystemFixture() {
   const f = fixture();
   const source = f.input.runtimeContext!.source;

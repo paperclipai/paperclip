@@ -377,6 +377,21 @@ export async function prepareIsolatedCodexHome(input: {
     await chmod(configPath, 0o600);
   } finally { await rm(temporaryConfig, { force: true }); }
 
+  await writeIsolatedCodexAuth(input, providerConfig);
+}
+
+type CodexAuthInput = {
+  codexHome: string;
+  sourceCodexHome?: string | null;
+  apiKey?: string | null;
+};
+
+export async function prepareIsolatedCodexAuth(input: CodexAuthInput): Promise<void> {
+  await writeIsolatedCodexAuth(input, await managedCodexProviderConfig(input.sourceCodexHome));
+}
+
+async function writeIsolatedCodexAuth(input: CodexAuthInput, providerConfig: string): Promise<void> {
+  await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
   if (providerConfig) return;

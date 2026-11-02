@@ -26,6 +26,7 @@ import {
 import { nativeMcpLaunchBinding } from "./native-mcp.js";
 import {
   materializeNativeRuntimeSkills,
+  prepareIsolatedCodexAuth,
   prepareIsolatedCodexHome,
 } from "./runtime-context-materializer.js";
 
@@ -503,5 +504,34 @@ command = "untrusted-command"
       sourceCodexHome: sourceHome,
     });
     await expect(stat(join(symlinkCodexHome, "auth.json"))).rejects.toThrow();
+  });
+
+  it.each(["selected", "missing", "symlink", "routing"] as const)("refreshes source auth without changing retained context (%s)", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-source-auth-"));
+    roots.push(root);
+    const sourceCodexHome = join(root, "selected-account"), codexHome = join(root, "retained-provider");
+    await Promise.all([mkdir(sourceCodexHome), mkdir(codexHome)]);
+    const config = 'cli_auth_credentials_store = "file"\n# Retained source tool configuration\n';
+    await writeFile(join(codexHome, "config.toml"), config);
+    await writeFile(join(codexHome, "auth.json"), "obsolete-auth");
+    const selectedAuth = JSON.stringify({ OPENAI_API_KEY: "selected-account-fixture" });
+    if (mode !== "missing") {
+      const filename = join(root, "selected-auth.json");
+      await writeFile(filename, selectedAuth, { mode: 0o600 });
+      if (mode === "symlink") await symlink(filename, join(sourceCodexHome, "auth.json"));
+      else await writeFile(join(sourceCodexHome, "auth.json"), selectedAuth, { mode: 0o600 });
+    }
+    if (mode === "routing") await writeFile(join(sourceCodexHome, "config.toml"), `model_provider = "paperclip"
+[model_providers.paperclip]
+base_url = "https://example.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+`);
+    await prepareIsolatedCodexAuth({ codexHome, sourceCodexHome });
+    expect(await readFile(join(codexHome, "config.toml"), "utf8")).toBe(config);
+    if (mode === "selected") {
+      expect(await readFile(join(codexHome, "auth.json"), "utf8")).toBe(selectedAuth);
+      expect((await stat(join(codexHome, "auth.json"))).mode & 0o777).toBe(0o600);
+    } else await expect(stat(join(codexHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
