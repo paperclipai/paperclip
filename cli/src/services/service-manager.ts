@@ -124,8 +124,6 @@ export function launchdServiceName(instanceId: string): string {
   return instanceId === "default" ? "ing.paperclip.paperclipai" : `ing.paperclip.paperclipai.${instanceId}`;
 }
 
-// Uses KillMode=mixed so SIGTERM targets only the main process on restart/stop,
-// allowing embedded databases (PostgreSQL) to cleanly fast-shutdown in order.
 export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
   return `[Unit]
 Description=Paperclip AI (${escapeSystemd(input.instanceId)})
