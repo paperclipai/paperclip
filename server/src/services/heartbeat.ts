@@ -1155,15 +1155,12 @@ export function heartbeatService(
   }
 
   const wakeQueue = createWakeQueue(db, {
-    // All three callbacks run inside the wake-queue release transaction, which
-    // already holds a pooled connection. Every read goes through `tx`; a read
-    // on the global pool would wait for a second connection, and enough
-    // concurrent releases would exhaust the pool and deadlock the server.
     resolveResponsibleUserId: async (tx, input) => {
       // `input.issue` is the wake-queue module's own transaction-scoped
       // snapshot; using it here, instead of re-reading the issue through
-      // `getIssueExecutionContext`, keeps it seeing the in-transaction issue
-      // status rather than a stale one.
+      // `getIssueExecutionContext`, keeps this read off a second connection
+      // while the module's transaction is open, and keeps it seeing the
+      // in-transaction issue status rather than a stale one.
       return resolveResponsibleUserIdForRunSeed({
         executor: tx,
         companyId: input.companyId,

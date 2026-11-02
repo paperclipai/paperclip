@@ -3173,7 +3173,6 @@ export function createHeartbeatRunPreparation(db: Db) {
     source?: WakeupOptions["source"] | null;
     triggerDetail?: WakeupOptions["triggerDetail"] | null;
     existingRunResponsibleUserId?: string | null;
-    /** Pass the open transaction when called inside one, so these reads never wait on a second pooled connection. */
     executor?: Db;
   }) {
     const executor = input.executor ?? db;

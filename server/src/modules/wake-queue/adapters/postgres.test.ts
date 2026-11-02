@@ -1128,10 +1128,6 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(issueRow?.checkoutRunId).toBeNull();
   });
 
-  // paperclipai/paperclip#14197: the host callbacks run while the release
-  // transaction holds a pooled connection. They must receive and read through
-  // that transaction; a read on the global pool needs a second connection, and
-  // concurrent releases that each hold one connection exhaust the pool.
   it("binds host callbacks to the release transaction so concurrent releases complete on a bounded pool", async () => {
     const poolSize = 3;
     const boundedDb = createDb(tempDb!.connectionString, { maxConnections: poolSize });
@@ -1139,8 +1135,6 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const agentId = await seedAgent({ companyId });
     const releasesToRun: Array<{ issueId: string; runId: string }> = [];
     for (let index = 0; index < poolSize * 3; index += 1) {
-      // Distinct issue locks let several release transactions hold pooled
-      // connections at once. One shared issue would serialize all callbacks.
       const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
       const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
       releasesToRun.push({ issueId, runId });
@@ -1153,12 +1147,9 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       releaseFirstWave = resolve;
       rejectFirstWave = reject;
     });
-    // The timeout can fire before a callback awaits this gate on a slow host.
     void firstWave.catch(() => undefined);
     const gateTimeout = setTimeout(() => rejectFirstWave(new Error("release callbacks did not overlap")), 5_000);
 
-    // The adapter has already row-locked the issue, so its transaction owns
-    // an xid. An autocommit read on the global pool would see none.
     const assertOnReleaseTransaction = async (executor: Db) => {
       const rows = await executor.execute(sql`select txid_current_if_assigned() as xid`);
       expect((rows as unknown as Array<{ xid: string | null }>)[0]?.xid).not.toBeNull();
@@ -1221,13 +1212,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     try {
       const results = await Promise.race([Promise.all(releases), deadline]);
       expect(results).toHaveLength(releasesToRun.length);
-      // An independent read through the same bounded pool still succeeds.
       await expect(Promise.race([boundedDb.execute(sql`select 1`), deadline])).resolves.toBeDefined();
     } finally {
       clearTimeout(timer);
       clearTimeout(gateTimeout);
-      // Also break any pending pool reads if the deadline failed. Otherwise
-      // the suite's database cleanup can wait on those release transactions.
       await boundedDb.$client.end({ timeout: 0 });
     }
     expect(concurrentCallbacks).toBeGreaterThanOrEqual(poolSize);

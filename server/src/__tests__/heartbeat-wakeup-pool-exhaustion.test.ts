@@ -20,13 +20,6 @@ import {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
-// Regression coverage for paperclipai/paperclip#14196: a wakeup holds one
-// pooled connection inside its transaction. Any helper that then reads
-// through the global pool needs a second connection. When every connection is
-// held by such a transaction, none can finish and the whole API freezes
-// (production: 25 assigned child tasks, all 10 connections idle in
-// transaction, /api/health timing out). The pool here is deliberately small
-// so the same exhaustion shows up with a handful of wakeups.
 const POOL_SIZE = 3;
 const WAKEUP_DEADLINE_MS = 30_000;
 const HEALTH_DEADLINE_MS = 5_000;
@@ -42,8 +35,6 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () => {
   let db!: ReturnType<typeof createDb>;
-  // A separate single-connection client, outside the bounded pool, so the
-  // test can still inspect and recover the database after a deadlock.
   let adminDb!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -59,9 +50,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
 
   afterEach(async () => {
     if (deadlineExceeded) {
-      // A failed deadline may leave transactions waiting on each other. End
-      // the bounded pool immediately instead of waiting forever for wakeups
-      // that cannot settle. A fresh pool keeps later scenarios independent.
       await db.$client.end({ timeout: 0 });
       db = createDb(tempDb!.connectionString, { maxConnections: POOL_SIZE });
       heartbeat = heartbeatService(db);
@@ -69,8 +57,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
       deadlineExceeded = false;
       return;
     }
-    // Only a failed run leaves transactions stuck. Terminate them so their
-    // wakeups reject and the next test starts with a usable pool.
     await adminDb.execute(sql`
       select pg_terminate_backend(pid)
       from pg_stat_activity
@@ -123,7 +109,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
   }
 
   async function expectPoolStillServesQueries() {
-    // Stands in for /api/health, which reads through the same pool.
     const rows = await withinDeadline(
       "independent query after the wakeups",
       db.execute(sql`select 1 as ok`),
@@ -154,8 +139,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
     });
-    // Occupy the agent's single run slot so queued runs stay queued and the
-    // test measures only wakeup admission, not adapter execution.
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId,
@@ -175,8 +158,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
     count: number;
     parentId?: string | null;
     firstNumber?: number;
-    // Routine-origin issues make the wake path read the routine env; manual
-    // issues return before that read, so they leave its binding unpinned.
     routineOrigin?: boolean;
   }) {
     const ids = Array.from({ length: input.count }, () => randomUUID());
@@ -222,7 +203,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
     const queuedRunIds = [...new Set(results.flatMap((run) => (run ? [run.id] : [])))];
     expect(queuedRunIds.length).toBeGreaterThan(0);
     const queued = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, queuedRunIds));
-    // Resolved through the company default, read on the wakeup's own transaction.
     expect(queued.every((run) => run.agentId === agentId && run.responsibleUserId === "company-default-user")).toBe(true);
 
     await expectPoolStillServesQueries();
@@ -264,7 +244,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
     const childIdSet = new Set<string>(childIds);
     const childRuns = runs.filter((run) => childIdSet.has(String(run.contextSnapshot?.issueId)));
     expect(childRuns).toHaveLength(childIds.length);
-    // Resolved through the parent issue, read on the wakeup's own transaction.
     expect(childRuns.every((run) => run.responsibleUserId === "parent-owner")).toBe(true);
 
     await expectPoolStillServesQueries();
@@ -288,17 +267,12 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
     const results = await withinDeadline("concurrent agent-scoped wakeups", Promise.all(wakeups), WAKEUP_DEADLINE_MS);
 
     expect(results.every((run) => run?.status === "queued")).toBe(true);
-    // Resolved through the company default, read on the wakeup's own transaction.
     expect(results.every((run) => run?.responsibleUserId === "company-default-user")).toBe(true);
 
     await expectPoolStillServesQueries();
   }, 60_000);
 
   it("completes concurrent continuation wakeups on distinct issues with isolated workspaces and a prior session", async () => {
-    // With isolated workspaces on, each issue wakeup probes the task session of
-    // the issue's prior run while it holds its issue-transaction connection.
-    // Continuation wakes (not issue_assigned) keep that session, so the probe
-    // reads the session row and must do it on the wakeup's own transaction.
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
     const sessionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pool-session-"));
@@ -339,8 +313,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
       await expectPoolStillServesQueries();
     } finally {
       await fs.rm(sessionCwd, { recursive: true, force: true });
-      // Reset through the admin connection: after a deadlock the bounded pool
-      // may be unusable.
       await instanceSettingsService(adminDb)
         .updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces })
         .catch(() => undefined);
@@ -348,11 +320,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
   }, 60_000);
 
   it("completes concurrent run releases that promote a deferred wake, resolving the owner through the release transaction", async () => {
-    // Drives the production wake-queue callbacks in heartbeat.ts. Each release
-    // runs in a transaction that holds one pooled connection and promotes a
-    // deferred wake, which reads the routine env (the issues are routine-origin
-    // so that read happens), the responsible user and the prior session. A callback that reads through the global pool needs a
-    // second connection per release and deadlocks the bounded pool.
     const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
     const finishingAgentIds = Array.from({ length: POOL_SIZE * 2 }, () => randomUUID());
     await db.insert(agents).values(
@@ -389,8 +356,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
         contextSnapshot: { issueId: issueIds[index] },
       })),
     );
-    // Each issue is locked by its finishing run and has a wake deferred behind
-    // it, without a responsible user so the company default is resolved.
     for (const [index, issueId] of issueIds.entries()) {
       await db.update(issues).set({ executionRunId: runIds[index]! }).where(eq(issues.id, issueId));
     }
@@ -410,7 +375,6 @@ describeEmbeddedPostgres("heartbeat wakeup under a bounded connection pool", () 
       })),
     );
 
-    // A workspace wait releases the lock and goes on to promote the deferred wake.
     const cancels = runIds.map((runId) =>
       heartbeat.cancelRun(runId, undefined, {
         errorCode: "workspace_busy",

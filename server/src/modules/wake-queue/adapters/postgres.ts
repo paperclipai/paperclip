@@ -185,12 +185,6 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
   };
 }
 
-/**
- * A `WakeQueueHost` member that also receives the release transaction. The
- * adapter calls it while that transaction holds a pooled connection, so the
- * callback must read through `tx`: a read on the global pool would wait for
- * a second connection, and enough concurrent releases exhaust the pool.
- */
 export type TransactionBoundHostCallback<K extends keyof WakeQueueHost> = (
   tx: Db,
   input: Parameters<WakeQueueHost[K]>[0],

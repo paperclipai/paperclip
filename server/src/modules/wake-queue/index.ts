@@ -58,20 +58,11 @@ export type {
 export type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 
 export type WakeQueueDeps = {
-  /**
-   * Stays in `heartbeat.ts`; resolves the responsible user for a promoted or
-   * recovery run seed. Receives the release transaction and must read through it.
-   */
+  /** Stays in `heartbeat.ts`; resolves the responsible user for a promoted or recovery run seed. */
   resolveResponsibleUserId: WakeQueuePostgresAdapterDeps["resolveResponsibleUserId"];
-  /**
-   * Stays in `heartbeat.ts`; reads the routine environment context for an
-   * execution issue. Receives the release transaction and must read through it.
-   */
+  /** Stays in `heartbeat.ts`; reads the routine environment context for an execution issue. */
   getRoutineEnv: WakeQueuePostgresAdapterDeps["getRoutineEnv"];
-  /**
-   * Stays in `heartbeat.ts`; resolves the session-before display id for a
-   * wakeup. Receives the release transaction and must read through it.
-   */
+  /** Stays in `heartbeat.ts`; resolves the session-before display id for a wakeup. */
   resolveSessionBeforeForWakeup: WakeQueuePostgresAdapterDeps["resolveSessionBeforeForWakeup"];
   /**
    * The four wake-admission decision helpers stay in `heartbeat.ts` today;
