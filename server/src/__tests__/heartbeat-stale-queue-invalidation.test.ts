@@ -970,14 +970,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(ordering).toEqual(["validated", "parked"]);
     };
     await heartbeat.resumeQueuedRuns();
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "cancelled";
-    });
+    // Keep the ownership hook installed until its admitted execution settles.
+    // A short row poll can end before setup reaches the guarded handoff.
+    await heartbeat.drainActiveRunExecutions();
     await parkPromise;
 
     const issue = await db
@@ -1108,7 +1103,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     expect(run).not.toBeNull();
-    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+    await heartbeat.drainActiveRunExecutions();
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
