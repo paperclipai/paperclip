@@ -158,7 +158,15 @@ afterEach(async () => { await i18n.changeLanguage("en"); });
 describe("first-party chat activity guidance", () => {
   it("keeps the exact guidance fixtures aligned with the current listActivity source", () => {
     const service = readFileSync(new URL("../../../../../server/src/services/chat-channels/activity.ts", import.meta.url), "utf8");
-    const listActivity = service.slice(service.indexOf("async function listActivity("), service.indexOf("async function listActivityPage("))
+    // Upstream extracted the bounded/authorized projection to readActivity;
+    // both list methods still consume its visible rows.
+    const start = service.indexOf("async function readActivity(");
+    const end = service.indexOf("async function listActivity(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(service.slice(end, service.indexOf("async function listActivityPage(")))
+      .toContain("return (await readActivity(endpointId, page, managementContext)).visible;");
+    const listActivity = service.slice(start, end)
       + readFileSync(new URL("../../../../../server/src/services/chat-channels/github/activity.ts", import.meta.url), "utf8");
     for (const fixture of authoredGuidance) expect(listActivity).toContain(JSON.stringify(fixture.detail));
   });

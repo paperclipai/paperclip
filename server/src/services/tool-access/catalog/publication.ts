@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectorToolPolicy } from "../../connectors/tool-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { createToolRuntimeSlots } from "../runtime/slots.js";
@@ -58,6 +59,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       credentialHeaders?: Record<string, string>;
     } = {},
   ): Promise<ToolCatalogRefreshResult> {
+    await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections do not have a tool catalog");
     await assertConnectorConnectionSetupEnabled(connection);
@@ -268,7 +270,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       : refreshOptions.enableAllByDefault
       ? { ...connection.transportConfig, quarantineNewEntries: false }
       : connection.transportConfig;
-    const [updatedConnection] = await db
+    const [updatedConnection] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         config: normalizedConfig,
@@ -286,7 +288,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         updatedAt: refreshedAt,
       })
       .where(eq(toolConnections.id, connection.id))
-      .returning();
+      .returning());
 
     if (connection.transport === "local_stdio") {
       await ensureRuntimeSlot(updatedConnection);

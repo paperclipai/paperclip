@@ -949,6 +949,9 @@ describe("TaskChatProtocolCard", () => {
       container.querySelectorAll<HTMLButtonElement>("button"),
     ).find((button) => button.getAttribute("aria-label") === "Next question");
     expect(next?.disabled).toBe(false);
+    expect(container.textContent).not.toContain("Enter a custom answer.");
+    const submitNext = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Next");
+    await act(async () => submitNext?.click());
     expect(container.textContent).toContain("Enter a custom answer.");
 
     const textarea = container.querySelector("textarea")!;

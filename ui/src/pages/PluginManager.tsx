@@ -1,4 +1,5 @@
 import { t, useTranslation } from "@/i18n";
+import { sandboxProviderTextDisplay } from "@/lib/sandbox-provider-display";
 import { Trans } from "react-i18next";
 import { pluginStatusLabel } from "@/lib/plugin-display";
 /**
@@ -16,6 +17,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -108,15 +110,18 @@ export function PluginManager() {
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, t]);
 
-  const { data: plugins, isLoading, error } = useQuery({
+  const pluginsQuery = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
+  const { data: plugins, isLoading, error } = pluginsQuery;
+  const pluginsView = useQueryView(pluginsQuery);
 
   const bundledQuery = useQuery({
     queryKey: queryKeys.plugins.examples,
     queryFn: () => pluginsApi.listBundled(),
   });
+  const bundledView = useQueryView(bundledQuery);
 
   const invalidatePluginQueries = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
@@ -188,8 +193,20 @@ export function PluginManager() {
     [installedPlugins]
   );
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{t("localizationPlugins.ui_Loading_plugins_")}</div>;
-  if (error) return <div className="p-4 text-sm text-destructive">{t("localizationPlugins.ui_Failed_to_load_plugins_")}</div>;
+  if (isLoading || pluginsView.kind === "reconnecting") {
+    return <div className="p-4 text-sm text-muted-foreground">{t("localizationPlugins.ui_Loading_plugins_")}</div>;
+  }
+  if (pluginsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={error}
+        action={t("nov2Pages.action.load_plugins", { defaultValue: "load plugins" })}
+        onRetry={pluginsView.retry}
+        retrying={pluginsView.isFetching}
+      />
+    );
+  }
 
   return (
     <div className="max-w-6xl space-y-6">
@@ -256,10 +273,15 @@ export function PluginManager() {
           </div>
         )}
 
-        {bundledQuery.isLoading ? (
+        {bundledQuery.isLoading || bundledView.kind === "reconnecting" ? (
           <div className="text-sm text-muted-foreground">{t("localizationPlugins.ui_Loading_bundled_plugins_")}</div>
-        ) : bundledQuery.error ? (
-          <div className="text-sm text-destructive">{t("localizationPlugins.ui_Failed_to_load_bundled_plugins_")}</div>
+        ) : bundledView.kind === "error" ? (
+          <QueryErrorState
+            error={bundledQuery.error}
+            action={t("nov2Pages.action.load_bundled_plugins", { defaultValue: "load bundled plugins" })}
+            onRetry={bundledView.retry}
+            retrying={bundledView.isFetching}
+          />
         ) : bundledPlugins.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">{t("localizationPlugins.ui_No_bundled_plugins_were_found_in_this_checkout_")}</div>
         ) : (
@@ -277,7 +299,7 @@ export function PluginManager() {
                   <div className="flex items-center gap-4 px-4 py-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{bundledPlugin.displayName}</span>
+                        <span className="font-medium">{sandboxProviderTextDisplay(bundledPlugin.pluginKey, bundledPlugin.displayName)}</span>
                         <Badge variant="outline">
                           {bundledPlugin.tag === "first-party" ? t("localizationPlugins.ui_First_party") : t("localizationRoutines.example")}
                         </Badge>
@@ -297,7 +319,7 @@ export function PluginManager() {
                           <Badge variant="secondary">{t("localizationTools.notInstalled566")}</Badge>
                         )}
                       </div>
-                      <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{sandboxProviderTextDisplay(bundledPlugin.pluginKey, bundledPlugin.description)}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
                       {installPending && !bundledPlugin.hasBuiltEntrypoints && (
                         <p className="mt-2 text-xs text-muted-foreground">{t("localizationPlugins.ui_Building_plugin_")}</p>
@@ -369,9 +391,9 @@ export function PluginManager() {
                       <Link
                         to={`/company/settings/instance/plugins/${plugin.id}`}
                         className="font-medium hover:underline truncate block"
-                        title={plugin.manifestJson.displayName ?? plugin.packageName}
+                        title={sandboxProviderTextDisplay(plugin.manifestJson.id, plugin.manifestJson.displayName ?? plugin.packageName)}
                       >
-                        {plugin.manifestJson.displayName ?? plugin.packageName}
+                        {sandboxProviderTextDisplay(plugin.manifestJson.id, plugin.manifestJson.displayName ?? plugin.packageName)}
                       </Link>
                       {bundledByPackageName.has(plugin.packageName) && (
                         <Badge variant="outline">
@@ -392,8 +414,8 @@ export function PluginManager() {
                         {plugin.packageName} · v{plugin.manifestJson.version ?? plugin.version}
                       </p>
                     </div>
-                    <p className="text-sm text-muted-foreground truncate mt-0.5" title={plugin.manifestJson.description}>
-                      {plugin.manifestJson.description || t("localizationPlugins.noDescription")}
+                    <p className="text-sm text-muted-foreground truncate mt-0.5" title={sandboxProviderTextDisplay(plugin.manifestJson.id, plugin.manifestJson.description)}>
+                      {sandboxProviderTextDisplay(plugin.manifestJson.id, plugin.manifestJson.description) || t("localizationPlugins.noDescription")}
                     </p>
                     {plugin.status === "error" && (
                       <div className="mt-3 rounded-md border border-red-500/25 bg-red-500/[0.06] px-3 py-2">
@@ -461,7 +483,7 @@ export function PluginManager() {
                           title={t("localizationPlugins.ui_Uninstall")}
                           onClick={() => {
                             setUninstallPluginId(plugin.id);
-                            setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);
+                            setUninstallPluginName(sandboxProviderTextDisplay(plugin.manifestJson.id, plugin.manifestJson.displayName ?? plugin.packageName));
                           }}
                           disabled={uninstallMutation.isPending}
                         >
@@ -520,7 +542,7 @@ export function PluginManager() {
           <DialogHeader>
             <DialogTitle>{t("localizationPlugins.ui_Error_Details")}</DialogTitle>
             <DialogDescription>
-              {t("localizationPlugins.pluginErrorState", { plugin: errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? t("localizationPlugins.plugin") })}
+              {t("localizationPlugins.pluginErrorState", { plugin: sandboxProviderTextDisplay(errorDetailsPlugin?.manifestJson.id, errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? t("localizationPlugins.plugin")) })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

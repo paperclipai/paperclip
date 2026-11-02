@@ -76,6 +76,30 @@ describe("SidebarNavItem", () => {
     expect(link().getAttribute("aria-label")).toBe(`Inbox, ${count} unread`);
   });
 
+  it.each([1, 2, 5, 21, 22, 25])("announces unread chats as a complete phrase (%i)", async (count) => {
+    sidebarState.collapsed = true;
+    function LocalizedItem() {
+      const { t } = useTranslation();
+      return <SidebarNavItem to="/chats" label={t("oct5Core.chat")} badge={count} badgeDescription={t("nov02Late.unreadChats", { count })} />;
+    }
+    render(<LocalizedItem />);
+    const english = `Chat, ${count} unread ${count === 1 ? "chat" : "chats"}`;
+    expect(link().getAttribute("aria-label")).toBe(english);
+    await act(async () => setLocale("ru"));
+    expect(link().getAttribute("aria-label")).toBe(`Чат, Непрочитанных чатов: ${count}`);
+    expect(link().getAttribute("href")).toBe("/chats");
+    await act(async () => setLocale("en"));
+    expect(link().getAttribute("aria-label")).toBe(english);
+    sidebarState.collapsed = false;
+    render(<LocalizedItem />);
+    expect(container.textContent).toContain(String(count));
+    expect(link().querySelector('[data-slot="badge"]')?.getAttribute("aria-label"))
+      .toBe(`${count} unread ${count === 1 ? "chat" : "chats"}`);
+    await act(async () => setLocale("ru"));
+    expect(link().querySelector('[data-slot="badge"]')?.getAttribute("aria-label"))
+      .toBe(`Непрочитанных чатов: ${count}`);
+  });
+
   it("retranslates live execution counts while preserving user-authored names", async () => {
     render(<SidebarNavItem to="/issues/raw-id" label="Raw task title" liveCount={2} />);
     expect(container.textContent).toContain("2 live");

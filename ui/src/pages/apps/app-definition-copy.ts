@@ -997,6 +997,10 @@ export const APP_DEFINITION_COPY: Record<string, Record<string, string>> = {
     "Connect MCP server": "oct6Metadata.copy015"
   },
   "google": {
+    "Connect Google Antigravity accounts or Gemini API keys for your agents.": "nov02Metadata.googleDescription",
+    "Google Antigravity sign-in": "nov02Metadata.googleSignIn",
+    "Sign in to Google Antigravity on this local execution host.": "nov02Metadata.googleHost",
+    "Uses a separate Google runtime sign-in for this connection. Google Drive and other tool permissions are separate.": "nov02Metadata.googleGuidance",
     "Connect Google Gemini accounts for your agents.": "oct6Metadata.copy229",
     "Google Gemini API key": "oct6Metadata.copy230",
     "Authenticate an agent with this account.": "sep13AiMetadata.whenToUse",

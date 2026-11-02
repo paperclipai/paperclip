@@ -15,8 +15,32 @@ new generation; a repeated HTTP request cannot.
 
 The existing exact-run retry endpoint retains its source-bound contract.
 Connected conversations use their existing inbound authorization owner. A board
-Retry changes the workspace strategy, not the external principal, source batch,
-conversation access or publication authority.
+Retry preserves external principal, conversation access and publication checks.
+A GitHub Retry selects already-saved, undelivered input before replaying the
+failed run's older request. The selected receipts transfer to the retry owner
+under the dispatch transaction. They link to its one successor, including after
+a restart or a lost dispatch response. Rejected, unadmitted retries release the
+saved input for another deliberate Retry.
+
+A deliberate GitHub Retry can admit saved input after the same App reconnects.
+It verifies the App binding in the accepted delivery or its historical working
+comment receipt, then checks current sender, repository, conversation and task
+access. The retry records the current runtime generation and credential-reference
+fingerprint. Another reconnect invalidates that admission. Historical deliveries,
+stale webhook callbacks and the exact-run retry contract retain their fences.
+Legacy input that predates saved App IDs can also use an earlier processed
+response ledger from the same company, endpoint, conversation and agent. Its
+server-owned App binding must predate that input and retain a processed delivery
+and inbound source link. The endpoint's non-null App claim cannot be replaced;
+this proves historical identity without replaying the earlier response. Missing
+proof or an explicit conflicting App binding still rejects Retry.
+
+Task Retry keeps the complete saved-input batch, including batches larger than
+the exact-run endpoint's limit. Source rows, receipts and invalidations are read
+in batches. Within one transaction, messages with the same principal and automatic
+policy context share a current-access check; every message still proves its App,
+destination, comment link and immutable source. Different automatic policy contexts
+receive separate access checks. Input in another conversation remains queued.
 
 A connected-conversation Retry can save its exact request while the matching
 system recovery generation verifies the old executor. Saving that wait grants
@@ -25,6 +49,14 @@ principal and source batch when it resumes the deferred receipt. Containment,
 current access, task eligibility, pause and budget gates must still pass before
 one successor starts. Restarts reuse the receipt; they do not create another
 Retry generation or another external publication.
+
+Resuming a chat Retry preserves its exact authorized input batch. Independent
+board messages keep their own queue receipts and enter a separate turn. If an
+older queue merged those messages and dispatch refused the batch before any
+provider work, a new deliberate Retry can restore the undelivered receipts.
+Restoration requires the exact bootstrap failure, no execution or allocation,
+current chat authority, unchanged board input and no prior delivery. It records
+an audit event and retains the failed run and original skipped receipts.
 
 Several retained recovery holds can describe the same failed execution. A
 historical hold without a system recovery record uses the current exact Retry's

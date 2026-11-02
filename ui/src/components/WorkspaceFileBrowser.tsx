@@ -1,3 +1,4 @@
+import { Trans } from "react-i18next";
 import { t, useTranslation } from "@/i18n";
 import {
   useEffect,
@@ -12,10 +13,12 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronRight, Cloud, Download, FileCode2, FolderOpen, Loader2, RefreshCcw, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
 import { projectsApi } from "@/api/projects";
 import { ApiError } from "@/api/client";
+import { describeError } from "@/api/errors";
+import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePageVisibility } from "@/lib/page-visibility";
 import { parseWorkspaceFileRef } from "@/lib/workspace-file-parser";
@@ -546,7 +549,6 @@ export function WorkspaceFileBrowser({
     queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__none__"],
     queryFn: () => projectsApi.list(companyId!),
     enabled: source === "other" && !!companyId,
-    retry: false,
     staleTime: 30_000,
   });
 
@@ -623,14 +625,22 @@ export function WorkspaceFileBrowser({
     ? { projectId: targetProjectId, workspaceId: targetWorkspaceId }
     : {};
 
+  const browseStateChangeRef = useRef(onBrowseStateChange);
   useEffect(() => {
-    onBrowseStateChange?.({
-      q: searchInput.trim() || null,
+    browseStateChangeRef.current = onBrowseStateChange;
+  }, [onBrowseStateChange]);
+
+  // Persisting browse state can give the parent a new inline callback. Notify
+  // for changed browse values, using the latest committed callback each time.
+  const liveBrowseQuery = searchInput.trim() || null;
+  useEffect(() => {
+    browseStateChangeRef.current?.({
+      q: liveBrowseQuery,
       folderPath,
       projectId: targetProjectId,
       workspaceId: targetWorkspaceId,
     });
-  }, [folderPath, onBrowseStateChange, searchInput, targetProjectId, targetWorkspaceId]);
+  }, [folderPath, liveBrowseQuery, targetProjectId, targetWorkspaceId]);
 
   const listQueryKey = useMemo(() => queryKeys.issues.fileResources(issueId, {
       workspace: effectiveWorkspace,
@@ -655,7 +665,6 @@ export function WorkspaceFileBrowser({
       path: folderPath,
     }, { signal }),
     enabled: queriesEnabled,
-    retry: false,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -722,7 +731,6 @@ export function WorkspaceFileBrowser({
         path: spec.path || null,
       }, { signal }),
       enabled: queriesEnabled && isLazyBrowse,
-      retry: false,
       staleTime: 15_000,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
@@ -988,6 +996,21 @@ export function WorkspaceFileBrowser({
     return children.map((node) => ({ ...node, depth }));
   }
 
+  // Loaded files stay on screen while a refetch fails; an outage before the
+  // first load is the skeleton. A saturated git scan is a per-route condition
+  // with its own copy and Retry, not an outage, even though its status is transient.
+  const listKind = queryViewKind(listQuery);
+  const listErrorStatus = listQuery.error instanceof ApiError ? listQuery.error.status : 0;
+  const listErrorCode = listQuery.error instanceof ApiError && listQuery.error.body && typeof listQuery.error.body === "object"
+    ? (listQuery.error.body as { code?: unknown }).code
+    : null;
+  const changedFilesTemporarilyUnavailable = listQuery.error != null && mode === "changed" && (
+    listErrorStatus === 503 ||
+    listErrorStatus === 504 ||
+    listErrorCode === "workspace_git_scan_saturated" ||
+    listErrorCode === "workspace_git_scan_timeout"
+  );
+
   let body: ReactNode;
   if (source === "other" && !companyId) {
     body = (
@@ -1013,7 +1036,7 @@ export function WorkspaceFileBrowser({
         body={t("localizationWorkspaces.files_No_same_organization_project_has_a_registered_workspace_to_browse_")}
       />
     );
-  } else if (listQuery.isFetching && !data) {
+  } else if (!data && (listQuery.isFetching || (listKind === "reconnecting" && !changedFilesTemporarilyUnavailable))) {
     body = (
       <div className="space-y-1.5 py-2" aria-busy="true">
         {Array.from({ length: 6 }).map((_, index) => (
@@ -1024,17 +1047,7 @@ export function WorkspaceFileBrowser({
         ))}
       </div>
     );
-  } else if (listQuery.isError) {
-    const status = listQuery.error instanceof ApiError ? listQuery.error.status : 0;
-    const errorCode = listQuery.error instanceof ApiError && listQuery.error.body && typeof listQuery.error.body === "object"
-      ? (listQuery.error.body as { code?: unknown }).code
-      : null;
-    const changedFilesTemporarilyUnavailable = mode === "changed" && (
-      status === 503 ||
-      status === 504 ||
-      errorCode === "workspace_git_scan_saturated" ||
-      errorCode === "workspace_git_scan_timeout"
-    );
+  } else if (listKind === "error" || (changedFilesTemporarilyUnavailable && !data)) {
     body = (
       <StateMessage
         icon={<AlertTriangle aria-hidden="true" className="h-5 w-5 text-amber-500" />}
@@ -1042,9 +1055,9 @@ export function WorkspaceFileBrowser({
         body={
           changedFilesTemporarilyUnavailable
             ? t("localizationWorkspaces.files_Paperclip_is_limiting_workspace_scans_to_keep_the_server_responsive_Try_again_in_a_moment_")
-            : status === 404
+            : listErrorStatus === 404
             ? t("localizationWorkspaces.files_Workspace_browsing_isn_t_available_for_this_issue_")
-            : t("localizationWorkspaces.files_Something_went_wrong_loading_workspace_files_")
+            : describeError(listQuery.error, { action: t("nov02Components.actionLoadWorkspaceFiles", { defaultValue: "load workspace files" }) }).body
         }
         actions={changedFilesTemporarilyUnavailable ? (
           <Button
@@ -1136,6 +1149,14 @@ export function WorkspaceFileBrowser({
         folderPath={folderPath}
         onOpenFolder={openFolder}
       />
+
+      {data?.state === "available" && data.workspace?.source ? (
+        <p aria-label={t("nov02Components.workspaceFileSource", { defaultValue: "Workspace file source" })} className="text-(length:--text-micro) text-muted-foreground">
+          {data.workspace.source.kind === "live" ? t("nov02Components.liveWorkspace", { defaultValue: "Live workspace" }) : (
+            data.workspace.source.savedAt ? <Trans i18nKey="nov02Components.savedCopyFrom" values={{ time: formatDateTime(data.workspace.source.savedAt) }} components={{ savedTime: <time dateTime={data.workspace.source.savedAt} /> }} /> : t("nov02Components.savedCopy", { defaultValue: "Saved copy" })
+          )}
+        </p>
+      ) : null}
 
       <div aria-live="polite" className="sr-only">
         {announcement}

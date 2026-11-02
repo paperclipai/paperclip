@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { EvalSpendState, openEvalCostLedger, readEvalCostLedger, type EvalSpendLimits } from "./cost-ledger.js";
-import { EVAL_OVERHEAD_COMPONENTS, scheduledOperatingOverhead, validateOperatingOverhead, type EvalOperatingOverhead } from "./operating-overhead.js";
-import { readEvalOperationsReport, renderEvalOperationsReport } from "./operations-report.js";
+import { EVAL_OVERHEAD_COMPONENTS, operatingReservationBound, scheduledOperatingOverhead, validateOperatingOverhead, type EvalOperatingOverhead } from "./operating-overhead.js";
+import { evalAccountingStatus, evalReadinessStatus, readEvalOperationsReport, renderEvalOperationsReport } from "./operations-report.js";
+
+import { costBoundConfigurationSha256 } from "./cost-bound-evidence.js";
 
 const now = Date.parse("2026-10-21T00:00:00Z");
 const allowance = (): EvalOperatingOverhead => ({ version: 1, reference: "fixture-only", runner: "aws-fleet",
@@ -15,11 +17,11 @@ const currentAllowance = (time = Date.now()): EvalOperatingOverhead => ({ ...all
 const runner = "ubuntu-latest";
 const modelIdentity = { executionId: "claude.local.fixture", attemptId: "attempt-1", phase: "agent" as const };
 
-it("keeps operating overhead inside the same cap through model completion and a journal restart", async () => {
+it.each(["aws-fleet", "local"] as const)("keeps %s overhead inside the same cap through model completion and a journal restart", async runnerKind => {
   const directory = await mkdtemp(path.join(tmpdir(), "eval-overhead-"));
   const file = path.join(directory, "ledger.jsonl");
   const limits: EvalSpendLimits = { campaignId: "fixture", maxUsd: "20", deadlineAt: "2099-01-01T00:00:00Z",
-    maxRequests: 10, maxConcurrent: 1, maxAttemptsPerExecution: 1, overhead: currentAllowance() };
+    maxRequests: 10, maxConcurrent: 1, maxAttemptsPerExecution: 1, overhead: { ...currentAllowance(), runner: runnerKind } };
   try {
     const ledger = await openEvalCostLedger(file, limits);
     try {
@@ -87,6 +89,7 @@ it("requires fresh reviewed allowances tied to the actual CI runner before sched
   expect(() => scheduledOperatingOverhead(undefined, runner, "20", now)).toThrow("Missing reviewed");
   expect(() => scheduledOperatingOverhead("not json", runner, "20", now)).toThrow("JSON");
   expect(() => scheduledOperatingOverhead(JSON.stringify(allowance()), runner, "20", now)).toThrow("runner");
+  expect(() => scheduledOperatingOverhead(JSON.stringify({ ...hosted, runner: "local" }), runner, "20", now)).toThrow("runner");
   expect(() => scheduledOperatingOverhead(raw, "runs-on/fleet=paperclip-public-pr-x64/env=public-ci", "20", now)).toThrow("runner");
   expect(() => scheduledOperatingOverhead(raw, "unrecognized", "20", now)).toThrow("runner");
   expect(() => scheduledOperatingOverhead(raw, runner, "20", Date.parse("2026-10-19T23:59:59Z"))).toThrow("needs review");
@@ -116,4 +119,52 @@ it("stops new admission after allowance expiry while preserving late invoice rec
   expect(() => state.validate({ type: "reserve", requestId: "model", identity: modelIdentity, maxUsd: "1" }, expiredAt)).toThrow("needs review");
   expect(() => state.validate({ type: "observe", observation: { observationId: "late-invoice", requestId: "overhead:ci_compute",
     source: "invoice", provider: "aws", currency: "USD", route: "infrastructure", classification: "reconciled", costUsd: "0.5", final: true } }, expiredAt)).not.toThrow();
+});
+
+
+it("separates model readiness from unresolved overhead without releasing holds or masking model gaps", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "eval-model-readiness-"));
+  const file = path.join(directory, "ledger.jsonl");
+  const overhead = { ...currentAllowance(), accountingReadiness: "model_requests" as const };
+  const ledger = await openEvalCostLedger(file, { campaignId: "model-readiness", maxUsd: "20",
+    deadlineAt: "2099-01-01T00:00:00Z", maxRequests: 10, maxConcurrent: 1, maxAttemptsPerExecution: 1, overhead });
+  try {
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+    await ledger.admitAttempt(modelIdentity.executionId, modelIdentity.attemptId);
+    await ledger.reserve("model", modelIdentity, "2");
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+    await ledger.finish("model", "cancelled");
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+    await ledger.observe({ observationId: "model-final", requestId: "model", source: "provider", provider: "anthropic",
+      currency: "USD", route: "direct", classification: "reported", costUsd: "0.5", final: true });
+    const report = await readEvalOperationsReport(file);
+    expect(evalAccountingStatus(report)).toBe("blocked");
+    expect(evalReadinessStatus(report)).toBe("receipts_complete");
+    expect(evalReadinessStatus({ ...report, accountingReadiness: undefined } as never)).toBe("blocked");
+    expect(report).toMatchObject({ accountingReadiness: "model_requests", heldUsd: "4.000000000",
+      committedUsd: "4.500000000", modelAccounting: { requests: 1, knownUsd: "0.500000000", unresolvedRequests: 0 } });
+    expect(renderEvalOperationsReport(report)).toContain("Operating costs remain separately unreconciled");
+    await ledger.observe({ observationId: "overrun", requestId: "overhead:ci_compute", source: "invoice", provider: "aws",
+      currency: "USD", route: "infrastructure", classification: "reconciled", costUsd: "21", final: true });
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+  } finally { await ledger.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+it("rejects unknown readiness policies instead of silently loosening accounting", () => {
+  expect(() => validateOperatingOverhead({ ...allowance(), accountingReadiness: "ignore_costs" } as never, "20"))
+    .toThrow("Invalid accounting readiness policy");
+});
+
+it("binds optional readiness policy to reviewed operating evidence without changing legacy hash recipes", () => {
+  for (const accountingReadiness of [undefined, "model_requests"] as const) {
+    const value = { ...allowance(), ...(accountingReadiness ? { accountingReadiness } : {}) };
+    const component = value.components[0]!;
+    const calculation = { reference: value.reference, runner: value.runner, verifiedAt: value.verifiedAt,
+      expiresAt: value.expiresAt, component: { ...component }, ...(accountingReadiness ? { accountingReadiness } : {}) };
+    component.provisionalBound = { version: 1, scope: "full_lifecycle", evidenceSha256: "a".repeat(64),
+      configurationSha256: costBoundConfigurationSha256(calculation) };
+    expect(operatingReservationBound(value, component)?.calculationSha256).toBe(component.provisionalBound.configurationSha256);
+    const changed = { ...value, accountingReadiness: accountingReadiness ? undefined : "model_requests" as const };
+    expect(() => operatingReservationBound(changed, component)).toThrow("Reviewed cost bound configuration changed");
+  }
 });

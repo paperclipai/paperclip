@@ -52,6 +52,7 @@ export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
   grok_local: "Grok",
+  antigravity_runtime: "Google",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */
@@ -428,7 +429,7 @@ export function ProviderSubscriptionCard({
 }: {
   providerName: string;
   authorizationUrl?: string;
-  mode: "submitted_code" | "displayed_code";
+  mode: "submitted_code" | "displayed_code" | "browser_redirect";
   loading?: boolean;
   children: ReactNode;
 }) {
@@ -439,7 +440,7 @@ export function ProviderSubscriptionCard({
       instruction={
         <Trans
           t={t}
-          i18nKey={mode === "submitted_code" ? "sep13ProviderIntegration.submittedCodeInstruction" : "sep13ProviderIntegration.displayedCodeInstruction"}
+          i18nKey={mode === "browser_redirect" ? "nov02Components.browserRedirectInstruction" : mode === "submitted_code" ? "sep13ProviderIntegration.submittedCodeInstruction" : "sep13ProviderIntegration.displayedCodeInstruction"}
           values={{ provider: providerName }}
           components={{ providerLink: <a
             href={authorizationUrl}
@@ -474,16 +475,16 @@ export function ProviderApiKeyCard({
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
-  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
+  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const { t } = useTranslation();
   const [showCommand, setShowCommand] = useState(false);
   const [browserCode, setBrowserCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
+  const provider = adapterType === "antigravity_runtime" ? "Google Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = login?.command;
-  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local";
+  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
   async function submitBrowserCode() {
     if (!browserCode.trim() || !login?.submitCode || submitting) return;
     setSubmitting(true);
@@ -500,14 +501,14 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
   const ready = login?.status === "ready";
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
     {ready ? <>
-      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{t("sep13ProviderIntegration.localLoginReady", { provider })}</p>
+      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{t("sep13ProviderIntegration.localLoginReady", { provider: login?.accountLabel ?? provider })}</p>
       {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => browserLogin ? login?.retry() : setShowCommand(true)}>{t("sep13ProviderIntegration.useDifferentAccount")}</button>}
     </> : !browserLogin && <p>{isolated ? t("oct6Beta.dynamic001", { v0: provider }) : t("oct6Beta.dynamic002", { v0: provider })}</p>}
     {browserLogin && !ready && !login?.authorizationUrl && !login?.error && <p role="status">{t("oct6Beta.copy003")}</p>}
     {browserLogin && !ready && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
       providerName={connectSourceName(adapterType)}
       authorizationUrl={login.authorizationUrl}
-      mode={adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
+      mode={adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
     >
       {adapterType === "claude_local" ? <div className="flex flex-col gap-2">
         <OnboardingCardField
@@ -517,7 +518,7 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
           disabled={submitting}
         />
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>{t("sep13Connections.submitCode")}</Button>
-      </div> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
+      </div> : adapterType === "antigravity_runtime" ? <p>{t("nov02Components.finishGoogleSignIn", { defaultValue: "Finish signing in in the Google browser window, then return here." })}</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
     </ProviderSubscriptionCard>}
     {!browserLogin && (!ready || showCommand) && !login?.error && <>
       <p>{t("sep13ProviderIntegration.runLocalLoginCommand")}</p>

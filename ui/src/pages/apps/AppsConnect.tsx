@@ -1,6 +1,7 @@
 import { useTranslation, t } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { AiProviderSetup } from "@/components/ai-connections/AiProviderSetup";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
 import { useEffect } from "react";
@@ -29,6 +30,9 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
   const { appKey } = useParams<{ appKey?: string }>();
   const source = searchParams.get("source") ?? appKey ?? searchParams.get("appKey");
   const reconnectId = searchParams.get("reconnect");
+  const aiLoginId = searchParams.get("aiLogin");
+  const login = useQuery({ queryKey: ["ai-login-setup", selectedCompanyId, aiLoginId],
+    queryFn: () => aiConnectionsApi.loginSetup(selectedCompanyId!, aiLoginId!), enabled: Boolean(selectedCompanyId && aiLoginId), retry: false });
   const preset = aiProviderSetupPreset(source);
   const aiReconnectRequested = Boolean(reconnectId && (preset || ["openai", "anthropic", "xai"].includes(source ?? "")));
   const aiAccounts = useQuery({ queryKey: ["ai-connections", selectedCompanyId], queryFn: () => aiConnectionsApi.list(selectedCompanyId!), enabled: Boolean(selectedCompanyId && aiReconnectRequested) });
@@ -57,9 +61,19 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
     const path = selectedCompanyId && consumeSkillSourceReturn(selectedCompanyId);
     if (path) navigate(path);
   }
-  if (aiReconnectRequested && aiAccounts.isPending) return <p role="status">{t("chatUi.chatEndpointDetail.loadingConnection")}</p>;
-  if (aiReconnectRequested && aiAccounts.isError) return <p role="alert">{t("oct6Beta.copy209")}</p>;
-  if (aiReconnectRequested && !aiReconnect) return <p role="alert">{t("oct6Beta.copy210")}</p>;
+  if (aiLoginId && selectedCompanyId) {
+    if (login.isPending) return <p role="status">{t("nov2Pages.login.savedSignIn", { defaultValue: "Loading saved sign-in…" })}</p>;
+    if (!login.data) return <p role="alert">{login.error?.message ?? t("nov2Pages.login.unavailableSignIn", { defaultValue: "This sign-in is unavailable." })}</p>;
+    const { intent, environmentId, connectionId, grantId } = login.data;
+    if (connectionId && grantId) return <div className="space-y-4"><p role="status">{t("nov2Pages.login.connected", { defaultValue: "This account is connected." })}</p><Button onClick={() => navigate(`/apps/${connectionId}/permissions`)}>{t("localizationConnections.viewConnection209", { defaultValue: "View connection" })}</Button></div>;
+    return <AiConnectionCredentialStep key={aiLoginId} companyId={selectedCompanyId} {...intent}
+      agentIds={intent.agentIds ?? []} allAgents={intent.allAgents ?? false} initialMethod={intent.method} fixedMethod
+      environmentId={environmentId} hideName onCancel={() => navigate("/apps")}
+      onComplete={binding => navigate(`/apps/${binding.connectionId}/permissions`)} />;
+  }
+  if (aiReconnectRequested && aiAccounts.isPending) return <p role="status">{t("oct19Voice.loadingConnection_1x4y665", { defaultValue: "Loading connection…" })}</p>;
+  if (aiReconnectRequested && aiAccounts.isError) return <p role="alert">{t("oct6Beta.copy209", { defaultValue: "Could not load this connection. Refresh to try again." })}</p>;
+  if (aiReconnectRequested && !aiReconnect) return <p role="alert">{t("oct6Beta.copy210", { defaultValue: "This connection is unavailable. Return to Connectors to choose an account." })}</p>;
   if (selectedCompanyId && (preset || aiReconnect?.routing)) return (
     <AiProviderSetup
       key={reconnectId ?? source}

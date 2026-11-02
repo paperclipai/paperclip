@@ -103,7 +103,7 @@ function setupActor(setup: Setup): AuthorizationActor {
     onBehalfOfUserId: setup.refreshUserId === 'local-board' ? null : setup.refreshUserId, source: 'agent_key' }
     : { type: 'board', userId: setup.refreshUserId, source: setup.refreshLocalTrusted ? 'local_implicit' : 'session', companyIds: [setup.companyId] };
 }
-async function setupContext(db: Db, setup: Setup): Promise<SkillSourceContext> {
+export async function skillSourceSetupContext(db: Db, setup: Setup): Promise<SkillSourceContext> {
   if (!setup.refreshUserId && !setup.refreshLocalTrusted) throw forbidden('Choose a GitHub connection to enable automatic updates.');
   if (!setup.refreshLocalTrusted) {
     const [member] = await db.select({ id: companyMemberships.id }).from(companyMemberships)
@@ -152,7 +152,7 @@ async function setupContext(db: Db, setup: Setup): Promise<SkillSourceContext> {
 }
 
 export function skillSourceSyncService(db: Db, options: { context?: (setup: Setup) => Promise<SkillSourceContext> } = {}) {
-  const contextFor = options.context ?? (setup => setupContext(db, setup));
+  const contextFor = options.context ?? (setup => skillSourceSetupContext(db, setup));
   const sources = skillSourceService(db);
   let running: Promise<{ imported: number; checked: number }> | null = null;
   const shutdown = new AbortController();
@@ -211,7 +211,7 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
         try {
           const result = await sources.create(binding.companyId, { repositoryUrl: scan.repositoryUrl, trackingRef: binding.trackingRef,
             commitSha: scan.commitSha, packageMode: scan.packageMode, selectedPaths: scan.candidates.map(candidate => candidate.path),
-            connectionId: scan.connectionId ?? binding.connectionId }, { ...context, projectBindingId: binding.id, projectBindingLeaseToken: token }, scan);
+            connectionId: scan.connectionId ?? binding.connectionId }, { ...context, signal: shutdown.signal, projectBindingId: binding.id, projectBindingLeaseToken: token }, scan);
           sourceId = result.source.id;
         } catch (error) {
           if (!(error instanceof Error && 'status' in error && error.status === 409)) throw error;

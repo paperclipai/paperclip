@@ -1,81 +1,105 @@
 // @vitest-environment jsdom
-import { act } from "react";
-import { createRoot } from "react-dom/client";
+
+import { flushSync } from "react-dom";
+import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { i18n } from "@/i18n";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Agent } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 import { AgentChat } from "./AgentChat";
 
-const api = vi.hoisted(() => ({ list: vi.fn(), session: vi.fn(), get: vi.fn(), ensure: vi.fn(), visit: vi.fn(), enabled: true }));
-vi.mock("@/api/agents", () => ({ agentsApi: { list: api.list } }));
+const api = vi.hoisted(() => ({ enabled: true, list: vi.fn(), get: vi.fn(), getChat: vi.fn(), ensure: vi.fn(), session: vi.fn() }));
+const agentId = "18c5ad50-9d70-4e24-bd82-337e1d45a414";
+vi.mock("@/api/agents", () => ({ agentsApi: { list: api.list, get: api.get } }));
+vi.mock("@/api/agentChats", () => ({ agentChatsApi: { get: api.getChat, ensure: api.ensure } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: api.session } }));
-vi.mock("@/api/agentChats", () => ({ agentChatsApi: { get: api.get, ensure: api.ensure } }));
-vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-raw" }) }));
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-a" }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: api.enabled, loaded: true }) }));
-vi.mock("@/lib/recent-agent-chats", () => ({ recordAgentChatVisit: api.visit }));
-vi.mock("@/lib/router", () => ({ useParams: () => ({ agentRef: "agent-raw" }) }));
-vi.mock("./IssueDetail", () => ({
-  TaskDetailSurface: ({ conversation }: { conversation: { agent: { name: string }; ensureIssue: () => Promise<Issue> } }) =>
-    <div><span>{conversation.agent.name}</span><textarea defaultValue="raw unsent draft" /><button onClick={() => { void conversation.ensureIssue(); }}>Ensure conversation</button></div>,
-}));
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+vi.mock("@/lib/router", () => ({ useParams: () => ({ agentRef: "18c5ad50-9d70-4e24-bd82-337e1d45a414" }), Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a> }));
+vi.mock("./IssueDetail", () => ({ TaskDetailSurface: ({ conversation }: { conversation: { agent: Agent } }) => <div>History for {conversation.agent.name}</div> }));
+
+let root: Root;
 let container: HTMLDivElement;
-let root: ReturnType<typeof createRoot>;
 let client: QueryClient;
-afterEach(async () => {
-  await act(async () => { root?.unmount(); await i18n.changeLanguage("en"); });
-  container?.remove(); client?.clear(); vi.clearAllMocks(); api.enabled = true;
+async function settle() {
+  await new Promise(resolve => setTimeout(resolve, 0));
+  flushSync(() => {});
+}
+async function waitFor(assertion: () => void) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try { assertion(); return; } catch (error) { if (attempt === 49) throw error; await settle(); }
+  }
+}
+function render() {
+  flushSync(() => root.render(<QueryClientProvider client={client}><AgentChat /></QueryClientProvider>));
+}
+async function failRoster(status: number, cached = true) {
+  if (cached) client.setQueryData(queryKeys.agents.list("company-a"), []);
+  api.list.mockRejectedValue(new ApiError(status === 429 ? "Rate limited" : "Denied", status, {}));
+  await client.fetchQuery({ queryKey: queryKeys.agents.list("company-a"), queryFn: api.list, staleTime: 0 }).catch(() => {});
+  expect(client.getQueryState(queryKeys.agents.list("company-a"))?.status).toBe("error");
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.enabled = true;
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false, staleTime: Infinity, gcTime: Infinity } } });
+  client.setQueryData(queryKeys.auth.session, { user: { id: "viewer-a" } });
+  api.session.mockResolvedValue({ user: { id: "viewer-a" } });
+  api.get.mockResolvedValue({ id: agentId, companyId: "company-a", name: "Retired helper", status: "terminated" });
+  api.getChat.mockResolvedValue({ id: "existing-chat" });
+  container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
-async function flush() {
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-}
-async function renderPage() {
-  api.list.mockResolvedValue([{ id: "agent-raw", companyId: "company-raw", name: "Board" }]);
-  api.session.mockResolvedValue({ user: { id: "user-raw" } });
-  api.get.mockResolvedValue(null);
-  client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-  container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-  await act(async () => {
-    await i18n.changeLanguage("en");
-    root.render(<QueryClientProvider client={client}><AgentChat /></QueryClientProvider>);
-  });
-  await flush(); await flush();
-}
+afterEach(() => { flushSync(() => root.unmount()); client.clear(); container.remove(); });
 
-describe("AgentChat localization", () => {
-  it("reuses an in-flight conversation creation and preserves the unsent draft across language changes", async () => {
-    let resolveCreation!: (issue: Issue) => void;
-    api.ensure.mockReturnValue(new Promise<Issue>(resolve => { resolveCreation = resolve; }));
-    await renderPage();
-    const input = container.querySelector("textarea")!;
-    expect(input).not.toBeNull();
-    input.value = "unsaved пользовательский текст";
-    await act(async () => { container.querySelector("button")!.click(); });
-    const initialVisits = api.visit.mock.calls.length;
-    const initialReads = api.get.mock.calls.length;
-    await act(async () => { await i18n.changeLanguage("ru"); });
-    expect(container.querySelector("textarea")).toBe(input);
-    expect(input.value).toBe("unsaved пользовательский текст");
-    expect(container.textContent).toContain("Board");
-    await act(async () => { container.querySelector("button")!.click(); });
-    expect(api.ensure).toHaveBeenCalledExactlyOnceWith("company-raw", "agent-raw");
-    expect(api.visit).toHaveBeenCalledTimes(initialVisits);
-    expect(api.get).toHaveBeenCalledTimes(initialReads);
-    await act(async () => { await i18n.changeLanguage("en"); });
-    expect(input.value).toBe("unsaved пользовательский текст");
-    await act(async () => { resolveCreation({ id: "conversation-raw", companyId: "company-raw" } as Issue); });
-  });
+it("explains when Agent Chat is disabled without creating a conversation", async () => {
+  api.enabled = false;
+  api.list.mockResolvedValue([{ id: agentId, companyId: "company-a", name: "Helper" }]);
+  render();
+  await waitFor(() => expect(container.textContent).toContain("Agent Chat is disabled"));
+  expect(api.ensure).not.toHaveBeenCalled();
+  expect(api.getChat).not.toHaveBeenCalled();
+});
 
-  it("retranslates disabled-conversation guidance without creating a conversation", async () => {
-    api.enabled = false;
-    await renderPage();
-    expect(container.textContent).toContain("Agent Chat is disabled.");
-    await act(async () => { await i18n.changeLanguage("ru"); });
-    expect(container.textContent).toContain("Чат с агентом отключён.");
-    await act(async () => { await i18n.changeLanguage("en"); });
-    expect(container.textContent).toContain("Existing history remains available through task links.");
-    expect(api.ensure).not.toHaveBeenCalled();
-    expect(api.visit).not.toHaveBeenCalled();
-  });
+it.each(["cached_refetch_failed", "fresh"])("opens historical chat from an available roster (%s)", async state => {
+  if (state === "cached_refetch_failed") await failRoster(429);
+  else client.setQueryData(queryKeys.agents.list("company-a"), []);
+  render();
+  await waitFor(() => expect(container.textContent).toContain("History for Retired helper"));
+  expect(api.get).toHaveBeenCalledWith(agentId, "company-a");
+  expect(api.getChat).toHaveBeenCalledWith("company-a", agentId);
+  expect(container.textContent).not.toContain("Agent not found");
+  expect(api.ensure).not.toHaveBeenCalled();
+});
+
+it("offers a working retry when the historical lookup also fails", async () => {
+  await failRoster(429);
+  api.get.mockRejectedValue(new ApiError("Rate limited", 429, {}));
+  render();
+  await waitFor(() => expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Retry")).toBe(true));
+  expect(container.textContent).not.toContain("Agent not found");
+  api.get.mockResolvedValue({ id: agentId, companyId: "company-a", name: "Retired helper" });
+  flushSync(() => [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Retry")!.click());
+  await waitFor(() => expect(container.textContent).toContain("History for Retired helper"));
+  expect(api.ensure).not.toHaveBeenCalled();
+});
+
+it.each([[403, true], [429, false]] as const)("retains roster error controls without starting a historical lookup (%s, cached %s)", async (status, cached) => {
+  await failRoster(status, cached);
+  render();
+  await waitFor(() => expect(container.querySelector('[role="alert"]')).not.toBeNull());
+  expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Retry")).toBe(status === 429);
+  expect(api.get).not.toHaveBeenCalled();
+  expect(api.getChat).not.toHaveBeenCalled();
+  expect(container.textContent).not.toContain("Agent not found");
+});
+
+it("does not display a historical agent from another company", async () => {
+  await failRoster(429);
+  api.get.mockResolvedValue({ id: agentId, companyId: "company-b", name: "Private helper" });
+  render();
+  await waitFor(() => expect(api.get).toHaveBeenCalled());
+  await waitFor(() => expect(container.textContent).toContain("Agent not found"));
+  expect(container.textContent).not.toContain("Private helper");
+  expect(api.getChat).not.toHaveBeenCalled();
 });

@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, FileText, Loader2, Wrench } from "lucide-react";
 import { companySkillsApi } from "@/api/companySkills";
-import { ApiError } from "@/api/client";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { useNavigate } from "@/lib/router";
@@ -15,11 +15,11 @@ export function TaskSkillPanel({ companyId, skillId }: { companyId: string; skil
   const query = useQuery({
     queryKey: queryKeys.companySkills.detail(companyId, skillId),
     queryFn: () => companySkillsApi.detail(companyId, skillId),
-    retry: false,
     refetchOnWindowFocus: true,
     refetchOnMount: "always",
   });
-  if (query.isLoading) {
+  const view = useQueryView(query);
+  if (query.isLoading || view.kind === "reconnecting") {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
         <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -27,20 +27,16 @@ export function TaskSkillPanel({ companyId, skillId }: { companyId: string; skil
       </div>
     );
   }
-  if (query.isError) {
-    const status = query.error instanceof ApiError ? query.error.status : null;
-    if (status === 404) {
+  if (view.kind === "error") {
+    if (view.errorKind === "not_found") {
       return <div className="py-8 text-sm text-muted-foreground" role="status">{t("sep28Recovery.skillUnavailable")}</div>;
     }
-    if (status === 403) {
+    if (view.errorKind === "forbidden") {
       return <div className="py-8 text-sm text-muted-foreground" role="alert">{t("sep28Recovery.skillAccessDenied")}</div>;
     }
     return (
-      <div className="space-y-3 py-8 text-sm text-muted-foreground" role="alert">
-        <p>{t("sep28Recovery.skillLoadFailed")}</p>
-        <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
-          {query.isFetching ? t("sep28Recovery.skillRetrying") : t("sep28Recovery.skillRetry")}
-        </Button>
+      <div className="py-6">
+        <QueryErrorState error={query.error} action={t("nov02Components.actionLoadSkill", { defaultValue: "load the skill" })} onRetry={view.retry} retrying={view.isFetching} />
       </div>
     );
   }

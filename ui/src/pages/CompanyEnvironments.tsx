@@ -1,4 +1,5 @@
 import { i18n, t, useTranslation } from "@/i18n";
+import { sandboxProviderSchemaDisplay, sandboxProviderTextDisplay } from "@/lib/sandbox-provider-display";
 import {
   useCallback,
   useEffect,
@@ -1772,8 +1773,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     .filter(([provider, capability]) => provider !== "fake" && capability.supportsRunExecution)
     .map(([provider, capability]) => ({
       provider,
-      displayName: capability.displayName || provider,
-      description: capability.description,
+      pluginKey: capability.pluginKey,
+      displayName: sandboxProviderTextDisplay(capability.pluginKey, capability.displayName || provider),
+      description: capability.description ? sandboxProviderTextDisplay(capability.pluginKey, capability.description) : capability.description,
       configSchema: normalizeJsonSchema(capability.configSchema),
     }))
     .sort((left, right) => left.displayName.localeCompare(right.displayName));
@@ -1784,7 +1786,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     !discoveredPluginSandboxProviders.some((provider) => provider.provider === environmentForm.sandboxProvider)
       ? [
           ...discoveredPluginSandboxProviders,
-          { provider: environmentForm.sandboxProvider, displayName: environmentForm.sandboxProvider, description: undefined, configSchema: null },
+          { provider: environmentForm.sandboxProvider, pluginKey: undefined, displayName: environmentForm.sandboxProvider, description: undefined, configSchema: null },
         ]
       : discoveredPluginSandboxProviders;
 
@@ -2350,7 +2352,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   ) : null}
                   {selectedSandboxSchema ? (
                     <JsonSchemaForm
-                      schema={selectedSandboxSchema as any}
+                      schema={sandboxProviderSchemaDisplay(selectedSandboxProvider?.pluginKey, selectedSandboxSchema) as any}
                       values={environmentForm.sandboxConfig}
                       onChange={(values) =>
                         setEnvironmentForm((current) => ({ ...current, sandboxConfig: values }))}

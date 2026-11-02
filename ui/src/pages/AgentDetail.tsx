@@ -2,16 +2,14 @@ import { i18n, t, useTranslation } from "@/i18n";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
-import { PrimaryAgentIndicator, SetPrimaryAgentButton } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { PrimaryAgentCrownButton } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
 import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
 import { AgentCharacter } from "../components/AgentCharacter";
-import { characterStateForAgent } from "@paperclipai/shared";
-import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
-import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { characterStateForAgent, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
@@ -42,11 +40,8 @@ import { agentDisplayAdapterType, getAdapterDisplay } from "../adapters/adapter-
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
-import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
-import { toolsApi } from "../api/tools";
-import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { AgentLifecycleStatus, useAgentLifecycleStatus } from "../components/AgentLifecycleStatus";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -59,6 +54,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, queryViewKind, useQueryView } from "../components/QueryView";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
@@ -70,9 +66,7 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallout";
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
-import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { tryCreateWebSocket } from "../lib/websocket";
-import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace, formatDurationMs } from "../lib/utils";
+import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace, formatDurationMs } from "../lib/utils";
 import { cn, formatNumber } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
@@ -100,30 +94,28 @@ import {
   HelpCircle,
   FolderOpen,
   AlertTriangle,
+  History as HistoryIcon,
+  Activity as ActivityIcon,
+  PlayCircle,
+  ReceiptText,
+  Gauge,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
-import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { RunIdentityHistory } from "../components/RunIdentityHistory";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
-import {
-  appendCapped,
-  LIVE_TRANSCRIPT_RENDER_LIMIT,
-  MAX_LIVE_EVENTS,
-  MAX_LIVE_LOG_LINES,
-} from "../lib/live-log-buffer";
 import {
   isUuidLike,
   type Agent,
   type AgentDetail as AgentDetailRecord,
   type HeartbeatRun,
-  type HeartbeatRunEvent,
   type AgentRuntimeState,
   type Issue,
   type LiveEvent,
-  type WorkspaceOperation,
   isResponsibleUserDenialCode,
   responsibleUserLabel,
 } from "@paperclipai/shared";
@@ -136,8 +128,27 @@ import {
   runRequestedProviderTrace,
 } from "../components/ProviderTraceStatusBadge";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
-import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import { syncAgentRouteAfterRename } from "./agent-detail/agent-route";
+import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSettings";
+import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
+import { AgentAuditTab } from "./AgentAuditTab";
+import { AgentDirectReports } from "./agent-detail/AgentDirectReports";
+import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
+import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
+import { countSince, formatWindowCount } from "./agent-detail/overview-counts";
+import { InlineEditor } from "../components/InlineEditor";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+export { syncAgentRouteAfterRename };
 import { humanAgentCreatorUserId, resolveAgentCreatorLabel } from "../lib/agent-creator";
 import {
   isStarred,
@@ -149,11 +160,27 @@ import { Badge } from "@/components/ui/badge";
 import {
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
+  agentDetailSegment,
+  agentDetailViewLabel,
   agentLegacyAuditSection,
   agentScopedAuditHref,
+  isAgentAuditView,
   parseAgentDetailView,
   type AgentDetailView,
 } from "./agent-detail-navigation";
+import { LogViewer } from "../components/run-log/LogViewer";
+import { asRecord, asNonEmptyString } from "../components/run-log/RunDetails";
+
+export { LogViewer } from "../components/run-log/LogViewer";
+export {
+  type RunLogChunk,
+  shouldPollRunShellLog,
+  buildHeartbeatProgressLogLine,
+  heartbeatProgressLogLineKey,
+  RunInvocationCard,
+} from "../components/run-log/RunDetails";
+
+const AgentAdvancedTab = lazy(() => import("./AgentAdvancedTab").then(module => ({ default: module.AgentAdvancedTab })));
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -165,56 +192,10 @@ const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string 
   cancelled: { icon: Slash, color: "text-neutral-500 dark:text-neutral-400" },
 };
 
-const RUN_LOG_PAGE_BYTES = 256_000;
-
-const REDACTED_ENV_VALUE = "***REDACTED***";
-const SECRET_ENV_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
-const COMMAND_ENV_KEY_RE = /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
-const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
-
 function formatOrgChainHealthPath(agent: AgentDetailRecord) {
   return agent.orgChainHealth?.fullChain
     .map((entry) => `${entry.name}${entry.status !== "active" && entry.status !== "idle" ? ` (${t(`status.${entry.status}`, { defaultValue: entry.status })})` : ""}`)
     .join(" -> ") ?? agent.name;
-}
-
-function redactPathText(value: string, censorUsernameInLogs: boolean) {
-  return redactHomePathUserSegments(value, { enabled: censorUsernameInLogs });
-}
-
-function redactPathValue<T>(value: T, censorUsernameInLogs: boolean): T {
-  return redactHomePathUserSegmentsInValue(value, { enabled: censorUsernameInLogs });
-}
-
-function redactCommandText(value: string, censorUsernameInLogs: boolean): string {
-  return redactPathText(redactCommandSecretText(value, REDACTED_ENV_VALUE), censorUsernameInLogs);
-}
-
-function shouldRedactSecretValue(key: string, value: unknown): boolean {
-  if (SECRET_ENV_KEY_RE.test(key)) return true;
-  if (typeof value !== "string") return false;
-  return JWT_VALUE_RE.test(value);
-}
-
-function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boolean): string {
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    (value as { type?: unknown }).type === "secret_ref"
-  ) {
-    return "***SECRET_REF***";
-  }
-  if (shouldRedactSecretValue(key, value)) return REDACTED_ENV_VALUE;
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string" && COMMAND_ENV_KEY_RE.test(key)) return redactCommandText(value, censorUsernameInLogs);
-  if (typeof value === "string") return redactPathText(value, censorUsernameInLogs);
-  try {
-    return JSON.stringify(redactPathValue(value, censorUsernameInLogs));
-  } catch {
-    return redactPathText(String(value), censorUsernameInLogs);
-  }
 }
 
 function isMarkdown(pathValue: string) {
@@ -232,79 +213,12 @@ function shouldUseMarkdownInstructionsEditor(input: {
   return isMarkdown(input.selectedPath);
 }
 
-function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): string {
-  const env = asRecord(envValue);
-  if (!env) return "<unable-to-parse>";
-
-  const keys = Object.keys(env);
-  if (keys.length === 0) return "<empty>";
-
-  return keys
-    .sort()
-    .map((key) => `${key}=${redactEnvValue(key, env[key], censorUsernameInLogs)}`)
-    .join("\n");
-}
-
 const sourceLabels: Record<string, string> = {
   get timer() { return t("localizationAgents.source_timer"); },
   get assignment() { return t("localizationAgents.source_assignment"); },
   get on_demand() { return t("localizationAgents.source_on_demand"); },
   get automation() { return t("localizationAgents.source_automation"); },
 };
-
-const LIVE_SCROLL_BOTTOM_TOLERANCE_PX = 32;
-type ScrollContainer = Window | HTMLElement;
-
-function isWindowContainer(container: ScrollContainer): container is Window {
-  return container === window;
-}
-
-function isElementScrollContainer(element: HTMLElement): boolean {
-  const overflowY = window.getComputedStyle(element).overflowY;
-  return overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
-}
-
-function findScrollContainer(anchor: HTMLElement | null): ScrollContainer {
-  let parent = anchor?.parentElement ?? null;
-  while (parent) {
-    if (isElementScrollContainer(parent)) return parent;
-    parent = parent.parentElement;
-  }
-  return window;
-}
-
-function readScrollMetrics(container: ScrollContainer): { scrollHeight: number; distanceFromBottom: number } {
-  if (isWindowContainer(container)) {
-    const pageHeight = Math.max(
-      document.documentElement.scrollHeight,
-      document.body.scrollHeight,
-    );
-    const viewportBottom = window.scrollY + window.innerHeight;
-    return {
-      scrollHeight: pageHeight,
-      distanceFromBottom: Math.max(0, pageHeight - viewportBottom),
-    };
-  }
-
-  const viewportBottom = container.scrollTop + container.clientHeight;
-  return {
-    scrollHeight: container.scrollHeight,
-    distanceFromBottom: Math.max(0, container.scrollHeight - viewportBottom),
-  };
-}
-
-function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBehavior = "auto") {
-  if (isWindowContainer(container)) {
-    const pageHeight = Math.max(
-      document.documentElement.scrollHeight,
-      document.body.scrollHeight,
-    );
-    window.scrollTo({ top: pageHeight, behavior });
-    return;
-  }
-
-  container.scrollTo({ top: container.scrollHeight, behavior });
-}
 
 /** @deprecated Use AGENT_DETAIL_NAVIGATION for contextual navigation. */
 export const AGENT_DETAIL_TABS = AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items);
@@ -402,375 +316,32 @@ function runMetrics(run: HeartbeatRun) {
   };
 }
 
-export type RunLogChunk = {
-  seq?: number;
-  ts: string;
-  stream: "stdout" | "stderr" | "system";
-  chunk: string;
-};
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-export function buildHeartbeatProgressLogLine(
-  payload: Record<string, unknown>,
-  fallbackTimestamp: string,
-): RunLogChunk | null {
-  const message = asNonEmptyString(payload.message);
-  if (!message) return null;
-  const phase = asNonEmptyString(payload.phase);
-  const ts = asNonEmptyString(payload.updatedAt) ?? fallbackTimestamp;
-  const chunk = phase ? `[${phase}] ${message}` : message;
-  return { ts, stream: "system", chunk };
-}
-
-export function heartbeatProgressLogLineKey(line: RunLogChunk): string {
-  return `${line.ts}\u0000${line.stream}\u0000${line.chunk}`;
-}
-
-export function shouldPollRunShellLog(status: HeartbeatRun["status"]): boolean {
-  return status === "running";
-}
-
 export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000 | 15000 | false {
   if (status === "queued") return 5000;
   if (status === "running") return 15000;
   return false;
 }
 
-export function RunInvocationCard({
-  payload,
-  censorUsernameInLogs,
-}: {
-  payload: Record<string, unknown>;
-  censorUsernameInLogs: boolean;
-}) {
-  const { t } = useTranslation();
-  const rawCommandLine = [
-    typeof payload.command === "string" ? payload.command : null,
-    ...(Array.isArray(payload.commandArgs)
-      ? payload.commandArgs.filter((value): value is string => typeof value === "string")
-      : []),
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join(" ");
-  const commandLine = rawCommandLine ? redactCommandText(rawCommandLine, censorUsernameInLogs) : "";
+const UNTITLED_AGENT_VIEWS: ReadonlySet<AgentDetailView> = new Set(["overview", "instructions", "budgets"]);
+const OVERVIEW_ACTIVITY_LIMIT = 200;
 
-  const hasAdvancedDetails =
-    commandLine.length > 0
-    || (Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0)
-    || payload.prompt !== undefined
-    || payload.context !== undefined
-    || payload.env !== undefined;
-
-  return (
-    <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-      <div className="text-xs font-medium text-muted-foreground">{t("pages.agentDetail.invocation")}</div>
-      {typeof payload.adapterType === "string" && (
-        <div className="text-xs"><span className="text-muted-foreground">{t("pages.agentDetail.adapterLabel")}</span>{payload.adapterType}</div>
-      )}
-      {typeof payload.cwd === "string" && (
-        <div className="text-xs break-all"><span className="text-muted-foreground">{t("pages.agentDetail.workingDir")}</span><span className="font-mono">{payload.cwd}</span></div>
-      )}
-      {hasAdvancedDetails && (
-        <Collapsible>
-          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
-            <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />{t("pages.agentDetail.details")}</CollapsibleTrigger>
-          <CollapsibleContent className="pt-2 space-y-2">
-            {commandLine && (
-              <div className="text-xs break-all">
-                <span className="text-muted-foreground">{t("pages.agentDetail.command")}</span>
-                <span className="font-mono">{commandLine}</span>
-              </div>
-            )}
-            {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">{t("pages.agentDetail.commandNotes")}</div>
-                <ul className="list-disc pl-5 space-y-1">
-                  {payload.commandNotes
-                    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                    .map((note, idx) => (
-                      <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                        {note}
-                      </li>
-                    ))}
-                </ul>
-              </div>
-            )}
-            {payload.prompt !== undefined && (
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">{t("pages.agentDetail.prompt")}</div>
-                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                  {typeof payload.prompt === "string"
-                    ? redactPathText(payload.prompt, censorUsernameInLogs)
-                    : JSON.stringify(redactPathValue(payload.prompt, censorUsernameInLogs), null, 2)}
-                </pre>
-              </div>
-            )}
-            {payload.context !== undefined && (
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">{t("pages.agentDetail.context")}</div>
-                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                  {JSON.stringify(redactPathValue(payload.context, censorUsernameInLogs), null, 2)}
-                </pre>
-              </div>
-            )}
-            {payload.env !== undefined && (
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">{t("pages.agentDetail.environment")}</div>
-                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                  {formatEnvForDisplay(payload.env, censorUsernameInLogs)}
-                </pre>
-              </div>
-            )}
-          </CollapsibleContent>
-        </Collapsible>
-      )}
-    </div>
-  );
-}
-
-function parseStoredLogContent(content: string): RunLogChunk[] {
-  const parsed: RunLogChunk[] = [];
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
-      const stream =
-        raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
-      const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
-      const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
-      if (!chunk) continue;
-      parsed.push({ ts, stream, chunk });
-    } catch {
-      // Ignore malformed log lines.
-    }
-  }
-  return parsed;
-}
-
-function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
-  switch (phase) {
-    case "worktree_prepare":
-      return t("localizationAgents.detail_Worktree_setup");
-    case "workspace_config_freshness":
-      return t("localizationAgents.detail_Config_freshness");
-    case "workspace_provision":
-      return t("localizationAgents.detail_Provision");
-    case "workspace_teardown":
-      return t("localizationAgents.detail_Teardown");
-    case "worktree_cleanup":
-      return t("localizationAgents.detail_Worktree_cleanup");
+function agentViewDescription(view: AgentDetailView, name: string): string | null {
+  switch (view) {
+    case "runtime":
+      return t("nov2Pages.agent.runtimeDescription", { defaultValue: "How {{name}} runs: harness, model and environment.", name });
+    case "secrets":
+      return t("nov2Pages.agent.secretsDescription", { defaultValue: "Secrets this agent can reach. Values are never shown here." });
+    case "permissions":
+      return t("nov2Pages.agent.permissionsDescription", { defaultValue: "What {{name}} may do without asking, and where.", name });
+    case "activity":
+      return t("nov2Pages.agent.activityDescription", { defaultValue: "Everything {{name}} did and everything done to {{name}}.", name });
+    case "runs":
+      return t("nov2Pages.agent.runsDescription", { defaultValue: "Every execution of {{name}}, newest first.", name });
+    case "costs":
+      return t("nov2Pages.agent.costsDescription", { defaultValue: "What {{name}} spent, by model.", name });
     default:
-      return phase;
+      return null;
   }
-}
-
-function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
-  switch (status) {
-    case "succeeded":
-      return "border-green-500/20 bg-green-500/10 text-green-700 dark:text-green-300";
-    case "failed":
-      return "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300";
-    case "running":
-      return "border-blue-500/20 bg-blue-500/10 text-blue-700 dark:text-blue-300";
-    case "skipped":
-      return "border-yellow-500/20 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
-    default:
-      return "border-border bg-muted/40 text-muted-foreground";
-  }
-}
-
-function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation["status"] }) {
-  const { t } = useTranslation();
-  return (
-    <Badge variant="outline"
-      className={cn(
-        "text-(length:--text-micro) capitalize",
-        workspaceOperationStatusTone(status),
-      )}
-    >
-      {t(`status.${status}`, { defaultValue: status.replace("_", " ") })}
-    </Badge>
-  );
-}
-
-function WorkspaceOperationLogViewer({
-  operation,
-  censorUsernameInLogs,
-}: {
-  operation: WorkspaceOperation;
-  censorUsernameInLogs: boolean;
-}) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const { data: logData, isLoading, error } = useQuery({
-    queryKey: ["workspace-operation-log", operation.id],
-    queryFn: () => heartbeatsApi.workspaceOperationLog(operation.id),
-    enabled: open && Boolean(operation.logRef),
-    refetchInterval: open && operation.status === "running" ? 2000 : false,
-  });
-
-  const chunks = useMemo(
-    () => (logData?.content ? parseStoredLogContent(logData.content) : []),
-    [logData?.content],
-  );
-
-  return (
-    <div className="space-y-2">
-      <button
-        type="button"
-        className="text-(length:--text-micro) text-muted-foreground underline underline-offset-2 hover:text-foreground"
-        onClick={() => setOpen((value) => !value)}
-      >
-        {open ? t("pages.agentDetail.hideFullLog") : t("pages.agentDetail.showFullLog")}
-      </button>
-      {open && (
-        <div className="rounded-md border border-border bg-background/70 p-2">
-          {isLoading && <div className="text-xs text-muted-foreground">{t("pages.agentDetail.loadingLog")}</div>}
-          {error && (
-            <div className="text-xs text-destructive">
-              {error instanceof Error ? error.message : t("pages.agentDetail.failedToLoadOperationLog")}
-            </div>
-          )}
-          {!isLoading && !error && chunks.length === 0 && (
-            <div className="text-xs text-muted-foreground">{t("pages.agentDetail.noPersistedLogLines")}</div>
-          )}
-          {chunks.length > 0 && (
-            <div className="max-h-64 overflow-y-auto rounded bg-neutral-100 p-2 font-mono text-xs dark:bg-neutral-950">
-              {chunks.map((chunk, index) => (
-                <div key={`${chunk.ts}-${index}`} className="flex gap-2">
-                  <span className="shrink-0 text-neutral-500">
-                    {new Date(chunk.ts).toLocaleTimeString(i18n.resolvedLanguage ?? i18n.language, { hour12: false })}
-                  </span>
-                  <span
-                    className={cn(
-                      "shrink-0 w-14",
-                      chunk.stream === "stderr"
-                        ? "text-red-600 dark:text-red-300"
-                        : chunk.stream === "system"
-                          ? "text-blue-600 dark:text-blue-300"
-                          : "text-muted-foreground",
-                    )}
-                  >
-                    [{chunk.stream}]
-                  </span>
-                  <span className="whitespace-pre-wrap break-all">{redactPathText(chunk.chunk, censorUsernameInLogs)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function WorkspaceOperationsSection({
-  operations,
-  censorUsernameInLogs,
-}: {
-  operations: WorkspaceOperation[];
-  censorUsernameInLogs: boolean;
-}) {
-  const { t } = useTranslation();
-  if (operations.length === 0) return null;
-
-  return (
-    <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
-      <div className="text-xs font-medium text-muted-foreground">
-        {t("localizationAgents.workspaceOperationsCount", { count: operations.length })}
-      </div>
-      <div className="space-y-3">
-        {operations.map((operation) => {
-          const metadata = asRecord(operation.metadata);
-          return (
-            <div key={operation.id} className="rounded-md border border-border/70 bg-background/70 p-3 space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-medium">{workspaceOperationPhaseLabel(operation.phase)}</div>
-                <WorkspaceOperationStatusBadge status={operation.status} />
-                <div className="text-(length:--text-micro) text-muted-foreground">
-                  {relativeTime(operation.startedAt)}
-                  {operation.finishedAt && t("localizationAgents.operationTo", { time: relativeTime(operation.finishedAt) })}
-                </div>
-              </div>
-              {operation.command && (
-                <div className="text-xs break-all">
-                  <span className="text-muted-foreground">{t("pages.agentDetail.command")}</span>
-                  <span className="font-mono">{operation.command}</span>
-                </div>
-              )}
-              {operation.cwd && (
-                <div className="text-xs break-all">
-                  <span className="text-muted-foreground">{t("pages.agentDetail.workingDir")}</span>
-                  <span className="font-mono">{operation.cwd}</span>
-                </div>
-              )}
-              {(asNonEmptyString(metadata?.branchName)
-                || asNonEmptyString(metadata?.baseRef)
-                || asNonEmptyString(metadata?.worktreePath)
-                || asNonEmptyString(metadata?.repoRoot)
-                || asNonEmptyString(metadata?.cleanupAction)) && (
-                <div className="grid gap-1 text-xs sm:grid-cols-2">
-                  {asNonEmptyString(metadata?.branchName) && (
-                    <div><span className="text-muted-foreground">{t("pages.agentDetail.branch")}</span><span className="font-mono">{metadata?.branchName as string}</span></div>
-                  )}
-                  {asNonEmptyString(metadata?.baseRef) && (
-                    <div><span className="text-muted-foreground">{t("pages.agentDetail.baseRef")}</span><span className="font-mono">{metadata?.baseRef as string}</span></div>
-                  )}
-                  {asNonEmptyString(metadata?.worktreePath) && (
-                    <div className="break-all"><span className="text-muted-foreground">{t("pages.agentDetail.worktree")}</span><span className="font-mono">{metadata?.worktreePath as string}</span></div>
-                  )}
-                  {asNonEmptyString(metadata?.repoRoot) && (
-                    <div className="break-all"><span className="text-muted-foreground">{t("pages.agentDetail.repoRoot")}</span><span className="font-mono">{metadata?.repoRoot as string}</span></div>
-                  )}
-                  {asNonEmptyString(metadata?.cleanupAction) && (
-                    <div><span className="text-muted-foreground">{t("pages.agentDetail.cleanup")}</span><span className="font-mono">{metadata?.cleanupAction as string}</span></div>
-                  )}
-                </div>
-              )}
-              {typeof metadata?.created === "boolean" && (
-                <div className="text-xs text-muted-foreground">
-                  {metadata.created ? t("pages.agentDetail.createdByRun") : t("pages.agentDetail.reusedWorkspace")}
-                </div>
-              )}
-              {operation.stderrExcerpt && operation.stderrExcerpt.trim() && (
-                <div>
-                  <div className="mb-1 text-xs text-red-700 dark:text-red-300">{t("pages.agentDetail.stderrExcerpt")}</div>
-                  <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100">
-                    {redactPathText(operation.stderrExcerpt, censorUsernameInLogs)}
-                  </pre>
-                </div>
-              )}
-              {operation.stdoutExcerpt && operation.stdoutExcerpt.trim() && (
-                <div>
-                  <div className="mb-1 text-xs text-muted-foreground">{t("pages.agentDetail.stdoutExcerpt")}</div>
-                  <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950">
-                    {redactPathText(operation.stdoutExcerpt, censorUsernameInLogs)}
-                  </pre>
-                </div>
-              )}
-              {operation.logRef && (
-                <WorkspaceOperationLogViewer
-                  operation={operation}
-                  censorUsernameInLogs={censorUsernameInLogs}
-                />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 export function AgentDetail() {
@@ -787,7 +358,7 @@ export function AgentDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | { key: string } | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const activeView: AgentDetailView = urlRunId ? "run-detail"
     : parseAgentDetailView(urlTab ?? null);
@@ -810,6 +381,20 @@ export function AgentDetail() {
   const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
+  const [configJustSaved, setConfigJustSaved] = useState(false);
+  const [pendingLeave, setPendingLeave] = useState<HTMLAnchorElement | null>(null);
+  const leaveBypassRef = useRef(false);
+  const configWasSavingRef = useRef(false);
+  useEffect(() => {
+    if (configWasSavingRef.current && !configSaving && !configDirty) setConfigJustSaved(true);
+    configWasSavingRef.current = configSaving;
+  }, [configSaving, configDirty]);
+  useEffect(() => {
+    if (configDirty) setConfigJustSaved(false);
+  }, [configDirty]);
+  useEffect(() => {
+    setConfigJustSaved(false);
+  }, [activeView]);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
   const { isMobile } = useSidebar();
@@ -824,13 +409,16 @@ export function AgentDetail() {
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
   const prepareAgentNavigation = useCallback(() => {
+    if (activeView === "advanced" && configSaving) return false;
     return confirmAgentConfigNavigation(configDirty);
-  }, [configDirty]);
-  const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
+  }, [activeView, configDirty, configSaving]);
+  const agentQuery = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
+  const { data: agent, isLoading, error } = agentQuery;
+  const agentView = useQueryView(agentQuery);
   const lifecycle = useAgentLifecycleStatus(agent);
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
@@ -843,7 +431,6 @@ export function AgentDetail() {
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const canUseProviderTrace =
     boardAccess?.source === "local_implicit" ||
@@ -949,7 +536,7 @@ export function AgentDetail() {
   const { data: allAgents } = useQuery({
     queryKey: queryKeys.agents.list(resolvedCompanyId!),
     queryFn: () => agentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsOverviewData,
+    enabled: !!resolvedCompanyId,
   });
 
   const { data: skillSnapshot } = useQuery({
@@ -969,6 +556,32 @@ export function AgentDetail() {
     [allIssues],
   );
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const headerUpdate = useMutation({
+    mutationFn: ({ target, patch }: { target: AgentDetailRecord; patch: Record<string, unknown> }) =>
+      agentsApi.update(target.id, patch, resolvedCompanyId ?? undefined),
+    onSuccess: (updated, { target }) => {
+      if (resolvedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(target.id) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, target, updated, urlTab ?? "overview")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(target)) });
+      }
+    },
+  });
+  const saveHeaderField = async (patch: { name?: string; title?: string | null }) => {
+    if (!agent) return;
+    if (configDirty || configSaving) {
+      setActionError({ key: patch.name === undefined ? "nov2Pages.agent.saveBeforeTitle" : "nov2Pages.agent.saveBeforeName" });
+      return;
+    }
+    setActionError(null);
+    try {
+      await headerUpdate.mutateAsync({ target: agent, patch });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : { key: "nov2Pages.agent.headerSaveError" });
+    }
+  };
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
   const overviewSkillNames = useMemo(() => {
     const namesByKey = new Map((overviewCompanySkills ?? []).map((skill) => [skill.key, skill.name]));
@@ -981,19 +594,19 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
+    if (activeView === "advanced" && (configSaving || configDirty)) return;
     if (urlRunId) {
       if (routeAgentRef !== canonicalAgentRef) {
         navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
       }
       return;
     }
-    if (legacyAuditSection) return;
     const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
-    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
+    if (routeAgentRef !== canonicalAgentRef || urlTab !== agentDetailSegment(canonicalTab)) {
       navigate(`${agentDetailHref(canonicalAgentRef, canonicalTab)}${location.search}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, location.search]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, configSaving, configDirty, navigate, location.search]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1069,13 +682,10 @@ export function AgentDetail() {
     } else {
       crumbs.push({ label: agentName, href: agentDetailHref(canonicalAgentRef) });
       if (urlRunId) {
-        crumbs.push({ get ["label"]() { return t("localizationAgents.ui6_Runs"); }, href: agent?.id ? agentScopedAuditHref(agent.id, "runs") : undefined });
+        crumbs.push({ label: t("localizationActivity.runsLabel"), href: agentDetailHref(canonicalAgentRef, "runs") });
         crumbs.push({ label: t("localizationAgents.runWithId", { id: urlRunId.slice(0, 8) }) });
       } else {
-        const item = AGENT_DETAIL_NAVIGATION
-          .flatMap((section) => section.items)
-          .find((candidate) => candidate.value === activeView);
-        crumbs.push({ label: item?.label ?? t("localizationAgents.detail_Overview") });
+        crumbs.push({ label: agentDetailViewLabel(activeView === "run-detail" ? "overview" : activeView) });
       }
     }
     setBreadcrumbs(crumbs);
@@ -1134,14 +744,16 @@ export function AgentDetail() {
       ) {
         return;
       }
-      if (prepareAgentNavigation()) return;
+      if (leaveBypassRef.current) return;
       event.preventDefault();
       event.stopPropagation();
+      if (activeView === "advanced" && configSaving) return;
+      setPendingLeave(anchor);
     }
 
     document.addEventListener("click", handleDocumentClick, true);
     return () => document.removeEventListener("click", handleDocumentClick, true);
-  }, [configDirty, prepareAgentNavigation]);
+  }, [activeView, configDirty, configSaving]);
 
   useEffect(() => {
     if (!configDirty) return;
@@ -1172,12 +784,11 @@ export function AgentDetail() {
     return () => window.removeEventListener("popstate", handlePopState, true);
   }, [configDirty, prepareAgentNavigation]);
 
-  if (isLoading) return <PageSkeleton variant="detail" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
-  if (!agent) return null;
-  if (!urlRunId && legacyAuditSection) {
-    return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
+  if (isLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  if (agentView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action={t("nov2Pages.action.load_this_agent", { defaultValue: "load this agent" })} onRetry={agentView.retry} retrying={agentView.isFetching} />;
   }
+  if (!agent) return null;
   if (!urlRunId && !urlTab) {
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
@@ -1261,79 +872,122 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
-        <div className="flex min-w-0 items-center gap-4">
-          <div role="img" aria-label={t("oct6Beta.dynamic092", { v0: agent.name })} className="shrink-0">
-            <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
-          </div>
-          <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2"><h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1><PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} /></div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
-                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="size-4" alt="" />
-                : null}
-              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span><span>·</span>
-              <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
-            </div>
-            <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
-            <SetPrimaryAgentButton agent={agent} />
-          </div>
+      <header className="flex items-center gap-4">
+        <div role="img" aria-label={t("oct6Beta.dynamic092", { v0: agent.name })} className="shrink-0" style={{ zoom: "var(--agent-detail-portrait-zoom)" }}>
+          <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <StarToggle
-            size="button"
-            starred={agentStarred}
-            pending={agentStarPending}
-            resourceName={agent.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: agent.id,
-              resourceName: agent.name,
-              starred: next,
-            })}
-          />
-          <AgentActionButtons
-            className="flex min-w-0 flex-wrap items-center gap-1 sm:gap-2"
-            agent={currentAgent}
-            companyId={resolvedCompanyId}
-            assignLabel={t("pages.agentDetail.assignTask")}
-            showStatus={false}
-            actionsDisabled={agentAction.isPending}
-            workActionsDisabled={hasInvalidOrgChain}
-            workActionsDisabledReason={t("localizationAgents.repairReportingChain")}
-            hasPendingNavigationChanges={configDirty}
-            onBeforeNavigate={prepareAgentNavigation}
-            onActionError={setActionError}
-            onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
-            hideTerminate={Boolean(builtInState)}
-            pauseConfirm={
-              builtInState
-                ? {
-                    title: t("localizationAgents.pauseBuiltIn", { name: builtInState.definition.displayName }),
-                    description: (
-                      <>
-                        {t("localizationAgents.builtInPauseWarning", { feature: builtInFeatureLabel, featureLower: builtInFeatureLabel.toLowerCase() })}
-                      </>
-                    ),
-                  }
-                : undefined
-            }
-          >
-            {mobileLiveRun && (
-              <Link
-                to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
-                className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
-              >
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                </span>
-                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{t("pages.agentDetail.live")}</span>
-              </Link>
-            )}
-          </AgentActionButtons>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <InlineEditor
+              as="h1"
+              value={agent.name}
+              placeholder={t("oct19Voice.agentName_xw70bd", { defaultValue: "Agent name" })}
+              className="min-w-0 truncate text-3xl font-semibold leading-9 text-foreground"
+              onSave={(name) => saveHeaderField({ name })}
+            />
+            <PrimaryAgentCrownButton agent={agent} />
+          </div>
+          <div className="mt-1 flex items-center gap-1.5 text-xs leading-4 text-muted-foreground">
+            {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+              ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-3.5" alt="" />
+              : null}
+            <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-4 text-muted-foreground">
+            <InlineEditor
+              value={agent.title ?? ""}
+              nullable
+              placeholder={roleLabels[agent.role] ?? agent.role}
+              className="text-xs leading-4 text-muted-foreground"
+              onSave={(title) => saveHeaderField({ title: title || null })}
+            />
+            <span aria-hidden>·</span>
+            <span>
+              {t("nov2Pages.agent.reportsTo", { defaultValue: "Reports to" })}{" "}
+              {reportsToAgent ? (
+                <Link className="text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
+                  {reportsToAgent.name}
+                </Link>
+              ) : (
+                t("localizationAgents.ui34_Board")
+              )}
+            </span>
+          </div>
+          <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
         </div>
+        <AgentActionButtons
+          agent={currentAgent}
+          companyId={resolvedCompanyId}
+          assignLabel={t("nov2Pages.agent.assignTask", { defaultValue: "Assign task" })}
+          showStatus={false}
+          workActionsInMenu
+          menuItems={[{ label: t("nov2Pages.agent.history", { defaultValue: "Agent history" }), icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
+          actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
+          workActionsDisabled={hasInvalidOrgChain}
+          workActionsDisabledReason={t("localizationAgents.repairReportingChain", { defaultValue: "Repair this agent's reporting chain before assigning tasks or starting runs" })}
+          hasPendingNavigationChanges={configDirty}
+          onBeforeNavigate={prepareAgentNavigation}
+          onActionError={setActionError}
+          onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
+          hideTerminate={Boolean(builtInState)}
+          pauseConfirm={
+            builtInState
+              ? {
+                  title: t("localizationAgents.pauseBuiltIn", { name: builtInState.definition.displayName }),
+                  description: (
+                    <>
+                      {t("localizationAgents.builtInPauseWarning", { feature: builtInFeatureLabel, featureLower: builtInFeatureLabel.toLowerCase() })}
+                    </>
+                  ),
+                }
+              : undefined
+          }
+        >
+          {mobileLiveRun && (
+            <Link
+              to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
+              className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{t("localizationIssuePanels.ui_Live_11rknnz", { defaultValue: "Live" })}</span>
+            </Link>
+          )}
+        </AgentActionButtons>
       </header>
+      <AgentHistoryDialog agent={agent} companyId={resolvedCompanyId ?? undefined} open={historyOpen} onOpenChange={setHistoryOpen} />
+      <AlertDialog open={pendingLeave !== null} onOpenChange={(open) => (open ? undefined : setPendingLeave(null))}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("nov2Pages.agent.discardTitle", { defaultValue: "Discard unsaved changes?" })}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {activeView === "runtime" ? t("nov2Pages.agent.unsaved_runtime", { defaultValue: "You have unsaved changes to {{name}}’s harness settings. If you continue, they’ll be lost.", name: agent.name }) : activeView === "secrets" ? t("nov2Pages.agent.unsaved_secrets", { defaultValue: "You have unsaved changes to {{name}}’s secrets and variables. If you continue, they’ll be lost.", name: agent.name }) : activeView === "advanced" ? t("nov2Pages.agent.unsaved_advanced", { defaultValue: "You have unsaved changes to {{name}}’s configuration. If you continue, they’ll be lost.", name: agent.name }) : t("nov2Pages.agent.unsaved_instructions", { defaultValue: "You have unsaved changes to {{name}}’s instructions. If you continue, they’ll be lost.", name: agent.name })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-between">
+            <AlertDialogCancel>{t("localizationRoutines.keepEditing", { defaultValue: "Keep editing" })}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => {
+                const anchor = pendingLeave;
+                setPendingLeave(null);
+                cancelConfigActionRef.current?.();
+                if (!anchor) return;
+                leaveBypassRef.current = true;
+                try {
+                  anchor.click();
+                } finally {
+                  leaveBypassRef.current = false;
+                }
+              }}
+            >
+              {t("localizationRoutines.discardChanges", { defaultValue: "Discard changes" })}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {builtInState && (
         <InlineBanner
@@ -1381,8 +1035,7 @@ export function AgentDetail() {
         />
       )}
 
-
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {actionError && <p className="text-sm text-destructive">{typeof actionError === "string" ? actionError : t(actionError.key)}</p>}
       {isPendingApproval && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-200">
           <span>{t("pages.agentDetail.pendingApprovalNotice")}</span>
@@ -1398,9 +1051,20 @@ export function AgentDetail() {
         </div>
       )}
 
-      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? t("localizationAgentChrome.secretsAndVariables") : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
+      {activeView !== "run-detail" && activeView !== "channels" && !UNTITLED_AGENT_VIEWS.has(activeView) ? (
+        <div className="mb-4 space-y-1">
+          <h2 className="text-lg font-semibold text-foreground">{agentDetailViewLabel(activeView)}</h2>
+          {agentViewDescription(activeView, agent.name) ? (
+            <p className="text-sm text-muted-foreground">{agentViewDescription(activeView, agent.name)}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* View content */}
+      {isAgentAuditView(activeView) && resolvedCompanyId ? (
+        <AgentAuditTab agent={agent} companyId={resolvedCompanyId} section={activeView} />
+      ) : null}
+
       {activeView === "overview" && (
         <AgentOverview
           agent={agent}
@@ -1409,6 +1073,7 @@ export function AgentDetail() {
           runtimeState={runtimeState}
           reportsToAgent={reportsToAgent}
           directReportCount={directReports.length}
+          directReports={directReports}
           skillNames={overviewSkillNames}
           agentRouteId={canonicalAgentRef}
         />
@@ -1501,6 +1166,20 @@ export function AgentDetail() {
         <AgentRevisionsTab agent={agent} companyId={resolvedCompanyId ?? undefined} />
       )}
 
+      {activeView === "advanced" && (
+        <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">{t("sep28Apps.copy84", { defaultValue: "Loading configuration…" })}</p>}>
+          <AgentAdvancedTab key={agent.id} agent={agent} onDirtyChange={setConfigDirty} onSavingChange={setConfigSaving}
+            onSaved={updated => {
+              const nextRef = agentRouteRef(updated);
+              const currentKey = [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null];
+              void queryClient.cancelQueries({ queryKey: currentKey, exact: true });
+              queryClient.setQueryData(currentKey, { ...agent, ...updated });
+              queryClient.setQueryData([...queryKeys.agents.detail(nextRef), lookupCompanyId ?? null], { ...agent, ...updated });
+              if (nextRef !== routeAgentRef) navigate(`/agents/${nextRef}/advanced`, { replace: true });
+            }} />
+        </Suspense>
+      )}
+
       {activeView === "run-detail" && (
         <RunsTab
           runs={heartbeats ?? []}
@@ -1514,7 +1193,14 @@ export function AgentDetail() {
       )}
 
       {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
-        <p role="status" className="text-xs text-muted-foreground">{configSaving ? t("localizationOperations.ui_Saving_changes_") : configDirty ? t("localizationOperations.ui_You_have_unsaved_changes_") : ""}</p>
+        <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+          {configSaving ? null : configDirty ? (
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" />
+          ) : configJustSaved ? (
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" />
+          ) : null}
+          {configSaving ? t("localizationOperations.ui_Saving_changes_", { defaultValue: "Saving changes…" }) : configDirty ? t("localizationSecrets.unsavedChanges87", { defaultValue: "Unsaved changes" }) : configJustSaved ? t("localizationProjectRepositories.changesSaved", { defaultValue: "Changes saved" }) : t("nov2Pages.agent.noUnsaved", { defaultValue: "No unsaved changes" })}
+        </p>
         <div className="flex gap-2">
           <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>{t("localizationRoutines.discard")}</Button>
           <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? t("localizationProjectRepositories.saving") : t("pages.companySettings.saveChanges")}</Button>
@@ -1723,11 +1409,8 @@ export function AgentOverview({
   agent,
   runs,
   assignedIssues,
-  runtimeState,
-  reportsToAgent,
-  directReportCount,
+  directReports = [],
   skillNames,
-  agentRouteId,
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
@@ -1735,196 +1418,126 @@ export function AgentOverview({
   runtimeState?: AgentRuntimeState;
   reportsToAgent?: Agent;
   directReportCount: number;
+  directReports?: Agent[];
   skillNames: string[];
   agentRouteId: string;
 }) {
   const { t } = useTranslation();
-  const designSandbox = useDesignSandbox();
-  const issuesById = useMemo(() => {
-    const map = new Map<string, (typeof assignedIssues)[number]>();
-    for (const issue of assignedIssues) map.set(issue.id, issue);
-    return map;
-  }, [assignedIssues]);
-  const configuredModel = agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse"
-    ? t("oct19Core.managedByMuse")
-    : asNonEmptyString(agent.adapterConfig?.model)
-    ?? asNonEmptyString(agent.adapterConfig?.modelName)
-    ?? asNonEmptyString(agent.runtimeConfig?.model)
-    ?? t("localizationAgents.detail_Adapter_default");
-  const lastRun = runs[0] ?? null;
-  const identity = useQuery({
-    queryKey: [...queryKeys.agents.identity(agent.id), lastRun?.id, lastRun?.status],
-    queryFn: () => agentsApi.getIdentity(agent.id, agent.companyId),
-  });
+  const agentRef = agentRouteRef(agent);
   const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
     queryFn: () => accessApi.listUserDirectory(agent.companyId),
     enabled: hasHumanCreator,
-    retry: false,
   });
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
+  const creatorFailed = hasHumanCreator && queryViewKind(userDirectory) === "error";
+  const activity = useQuery({
+    queryKey: [...queryKeys.activity(agent.companyId), "agent-overview", agent.id],
+    queryFn: () => activityApi.list(agent.companyId, { agentId: agent.id, limit: OVERVIEW_ACTIVITY_LIMIT }),
+  });
+  const now = Date.now();
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const twoDaysAgo = now - 2 * 24 * 60 * 60 * 1000;
+  const activityThisWeek = countSince(activity.data ?? [], weekAgo, OVERVIEW_ACTIVITY_LIMIT);
+  const runsThisWeek = countSince(runs, weekAgo, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT);
+  const recentFailures = countSince(runs, twoDaysAgo, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, (run) => run.status === "failed");
+  const budget = agent.budgetMonthlyCents ?? 0;
+  const spent = agent.spentMonthlyCents ?? 0;
+  const budgetPercent = budget > 0 ? Math.round((spent / budget) * 100) : null;
   return (
-    <div className="space-y-6">
-      <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h3 id="agent-identity-heading" className="text-sm font-medium">{t("localizationAgents.ui30_Identity")}</h3>
-            <StatusBadge status={agent.status} />
+    <div className="flex flex-col gap-(--agent-detail-band-gap)">
+      <div className="grid grid-cols-1 gap-(--agent-detail-module-gap) sm:grid-cols-2 lg:grid-cols-4">
+        <AgentMetricTile
+          icon={ActivityIcon}
+          value={activity.isLoading ? "–" : formatWindowCount(activityThisWeek)}
+          label={t("oct5Core.activity", { defaultValue: "Activity" })}
+          description={t("nov2Pages.agent.Eventsthisweek", { defaultValue: "Events this week" })}
+          to={agentDetailHref(agentRef, "activity")}
+        />
+        <AgentMetricTile
+          icon={PlayCircle}
+          value={formatWindowCount(runsThisWeek)}
+          label={t("oct19Core.coverage034", { defaultValue: "Runs" })}
+          description={t("nov2Pages.agent.recentFailures", { defaultValue: "Failed in the last 2 days: {{countLabel}}", countLabel: formatWindowCount(recentFailures) })}
+          to={agentDetailHref(agentRef, "runs")}
+        />
+        <AgentMetricTile
+          icon={ReceiptText}
+          value={formatCents(spent)}
+          label={t("nav.costs", { defaultValue: "Costs" })}
+          description={t("nov2Pages.agent.Monthtodate", { defaultValue: "Month to date" })}
+          to={agentDetailHref(agentRef, "costs")}
+        />
+        <AgentMetricTile
+          icon={Gauge}
+          value={budgetPercent === null ? "–" : `${formatNumber(budgetPercent)}%`}
+          label={t("nov2Pages.agent.Budgetused", { defaultValue: "Budget used" })}
+          description={budgetPercent === null ? t("nov2Pages.agent.noBudget", { defaultValue: "No monthly budget set" }) : t("nov2Pages.agent.budgetTotal", { defaultValue: "of {{budget}} this month", budget: formatCents(budget) })}
+          to={agentDetailHref(agentRef, "budgets")}
+        />
+        <AgentPanel title={t("localizationSettings.navProfile", { defaultValue: "Profile" })} className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label={t("localizationSettings.navProfile", { defaultValue: "Profile" })}>
+          <div className="flex flex-col pb-3">
+            <div className="flex items-center gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
+              <span className="text-muted-foreground">{creatorLabel || creatorFailed ? t("oct26Ui.columns.createdBy", { defaultValue: "Created by" }) : t("oct26Cases.field.created", { defaultValue: "Created" })}</span>
+              {creatorFailed ? (
+                <span className="text-destructive">{t("oct19Core.creatorLoadFailed", { defaultValue: "Could not load creator" })}</span>
+              ) : (
+                <span className="min-w-0 truncate text-foreground">
+                  {creatorLabel ? `${creatorLabel} · ${formatDate(agent.createdAt)}` : formatDate(agent.createdAt)}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
+              <span className="text-muted-foreground">{t("localizationAgents.ui35_Direct_reports", { defaultValue: "Direct reports" })}</span>
+              {directReports.length === 0 ? (
+                <span className="text-foreground">{t("nov2Pages.agent.noReports", { defaultValue: "None" })}</span>
+              ) : (
+                <AgentDirectReports reports={directReports} />
+              )}
+            </div>
           </div>
-          <div className="space-y-3">
-            <SummaryRow label={t("localizationSettings.role")}><span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span></SummaryRow>
-            <SummaryRow label={t("localizationAgents.ui31_Title")}><span className="text-sm">{agent.title ?? t("localizationAgents.detail_Not_set")}</span></SummaryRow>
-            <SummaryRow label={t("localizationAgents.ui33_Reports_to")}>
-              {reportsToAgent ? (
-                <Link className="text-sm hover:underline" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
-                  {reportsToAgent.name}
-                </Link>
-              ) : <span className="text-sm">{t("localizationAgents.ui34_Board")}</span>}
-            </SummaryRow>
-            <SummaryRow label={t("localizationAgents.ui35_Direct_reports")}><span className="text-sm tabular-nums">{directReportCount}</span></SummaryRow>
-            {hasHumanCreator && userDirectory.isError ? (
-              <SummaryRow label={t("oct19Core.createdBy")}><span className="text-sm text-destructive">{t("oct19Core.creatorLoadFailed")}</span></SummaryRow>
-            ) : creatorLabel ? (
-              <SummaryRow label={t("oct19Core.createdBy")}><span className="text-sm">{creatorLabel}</span></SummaryRow>
-            ) : null}
-            <SummaryRow label={t("sep28Apps.copy302")}>
-              {identity.isPending ? <span className="text-sm text-muted-foreground">{t("localizationCommonChrome.loading")}</span>
-                : identity.isError ? <span className="text-sm text-destructive">{t("oct6Beta.copy166")}</span>
-                : identity.data ? (
-                  <CopyText text={identity.data.publicKeyPem} ariaLabel={t("oct6Beta.copy167")} title={t("oct6Beta.copy167")}>
-                    <span className="font-mono text-sm">{identity.data.keyId.slice(0, 19)}…</span>
-                  </CopyText>
-                ) : (
-                  <div className="text-sm">
-                    <div>{t("oct6Beta.copy168")}</div>
-                    <div className="text-xs text-muted-foreground">{t("oct6Beta.copy169")}</div>
-                  </div>
-                )}
-            </SummaryRow>
-          </div>
-        </section>
-
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-runtime-heading">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h3 id="agent-runtime-heading" className="text-sm font-medium">{t("localizationAgents.ui36_Harness_Runtime")}</h3>
-            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "runtime")}>{t("localizationAgents.ui37_Configure")}</Link>
-          </div>
-          <div className="space-y-3">
-            <SummaryRow label={t("localizationAgents.ui38_Adapter")}><span className="text-sm">{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span></SummaryRow>
-            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" ? <><SummaryRow label={t("oct19Core.execution")}><span className="text-sm">{t("oct19Core.runsInGrokBot")}</span></SummaryRow><SummaryRow label={t("oct19Core.usage")}><span className="text-sm">{t("oct19Core.notReported")}</span></SummaryRow></> : <SummaryRow label={t("localizationAgents.ui39_Model")} wrap><span className="min-w-0 max-w-full break-words text-sm font-mono">{configuredModel}</span></SummaryRow>}
-            <SummaryRow label={t("pages.agentDetail.session")}><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? t("localizationAgents.detail_No_session")}</span></SummaryRow>
-            <SummaryRow label={t("localizationAgents.ui41_Last_run")}>
-              <span className="text-sm">{lastRun ? `${t(`status.${lastRun.status}`, { defaultValue: lastRun.status })} · ${relativeTime(lastRun.createdAt)}` : t("localizationAgents.ui42_No_runs")}</span>
-            </SummaryRow>
-            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" && <GrokBotWorkSummary companyId={agent.companyId} agentId={agent.id} />}
-          </div>
-        </section>
-
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-capabilities-heading">
-          <h3 id="agent-capabilities-heading" className="mb-3 text-sm font-medium">{t("pages.inviteLanding.agentForm.capabilities")}</h3>
-          {agent.capabilities?.trim() ? (
-            <MarkdownBody className="text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{agent.capabilities}</MarkdownBody>
-          ) : (
-            <p className="text-sm text-muted-foreground">{t("localizationAgents.ui43_No_capability_summary_has_been_added_")}</p>
-          )}
-        </section>
-
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-skills-heading">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h3 id="agent-skills-heading" className="text-sm font-medium">{t("pages.agentDetail.tabSkills")}</h3>
-            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "skills")}>{t("localizationAgents.ui44_Manage")}</Link>
-          </div>
+        </AgentPanel>
+        <AgentPanel
+          title={t("oct5Core.s0307", { defaultValue: "Skills" })}
+          meta={<span>{t("nov2Pages.agent.enabledSkills", { defaultValue: "{{count}} enabled", count: skillNames.length })}</span>}
+          className="min-h-(--agent-detail-tile-min-h) sm:col-span-2"
+          aria-label={t("oct5Core.s0307", { defaultValue: "Skills" })}
+        >
           {skillNames.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {skillNames.slice(0, 8).map((skill) => <Badge key={skill} variant="secondary">{skill}</Badge>)}
-              {skillNames.length > 8 ? <Badge variant="outline">{t("localizationAgents.moreSkills", { count: skillNames.length - 8 })}</Badge> : null}
+            <div className="flex flex-wrap gap-1.5 px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset)">
+              {skillNames.map((name) => (
+                <AgentChip key={name}>{name}</AgentChip>
+              ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">{t("localizationAgents.ui46_No_skills_enabled_")}</p>
+            <p className="px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset) text-sm text-muted-foreground">{t("localizationAgents.ui46_No_skills_enabled_", { defaultValue: "No skills enabled." })}</p>
           )}
-        </section>
+        </AgentPanel>
       </div>
 
-      <section className="space-y-3" aria-labelledby="agent-recent-tasks-heading">
-        <div className="flex items-center justify-between">
-          <h3 id="agent-recent-tasks-heading" className="text-sm font-medium">{t("pages.agentDetail.recentTasks")}</h3>
-          <Link
-            to={`/issues?participantAgentId=${agent.id}`}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >{t("localizationAgents.ui48_See_All_")}</Link>
-        </div>
+      <section className="flex flex-col gap-3" aria-label={t("oct26Finish.recentTasks", { defaultValue: "Recent tasks" })}>
+        <AgentSectionHeading
+          title={t("oct26Finish.recentTasks", { defaultValue: "Recent tasks" })}
+          action={
+            <Link to={`/issues?participantAgentId=${agent.id}`} className="text-xs text-muted-foreground no-underline transition-colors hover:text-foreground">
+              {t("nov2Pages.agent.allTasks", { defaultValue: "See all tasks" })}
+            </Link>
+          }
+        />
         {assignedIssues.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("pages.agentDetail.noRecentTasks")}</p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
-            {designSandbox ? <TaskSummaryList issues={assignedIssues.slice(0, 6)} /> : assignedIssues.slice(0, 6).map((issue) => (
-              <IssueRow
-                key={issue.id}
-                issue={issue}
-                presentation="task"
-                metadata={<span className="text-xs text-muted-foreground">{relativeTime(issue.updatedAt)}</span>}
-                showDivider
-              />
-            ))}
-            {assignedIssues.length > 6 && (
-              <div className="border-t border-border px-3 py-2 text-center text-xs text-muted-foreground">
-                {t("localizationAgents.moreTasks", { count: assignedIssues.length - 6 })}
-              </div>
-            )}
+            <TaskSummaryList issues={assignedIssues.slice(0, 5)} />
           </div>
         )}
-      </section>
-
-      <section className="space-y-3" aria-labelledby="agent-audit-links-heading">
-        <h3 id="agent-audit-links-heading" className="text-sm font-medium">{t("pages.agentDetail.tabAudit")}</h3>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {([
-            { section: "activity", label: t("nav.activity") },
-            { section: "runs", label: t("localizationAgents.ui6_Runs") },
-            { section: "costs", label: t("nav.costs") },
-            { section: "budgets", label: t("pages.costs.tabBudgets") },
-          ] as const).map(({ section, label }) => (
-            <Link
-              key={section}
-              to={agentScopedAuditHref(agent.id, section)}
-              className="rounded-lg border border-border px-3 py-2 text-sm font-medium capitalize hover:bg-accent"
-            >
-              {label}
-            </Link>
-          ))}
-        </div>
       </section>
     </div>
   );
 }
 
 /* ---- Agent Configure Page ---- */
-
-/**
- * Agent detail URLs use a name-derived key, so updates that change the agent's
- * name (a rename or a config-revision rollback) can invalidate the reference
- * currently in the URL. When that happens, refetching the old reference would
- * 404 with "Agent not found". Instead, drop the stale cached queries and
- * replace the URL with the new canonical reference. Returns true when a
- * redirect happened.
- */
-export function syncAgentRouteAfterRename(
-  queryClient: QueryClient,
-  navigate: NavigateFunction,
-  previous: { id: string; urlKey?: string | null; name?: string | null },
-  updated: { id: string; urlKey?: string | null; name?: string | null },
-  tab: string,
-): boolean {
-  const previousRef = agentRouteRef(previous);
-  const nextRef = agentRouteRef(updated);
-  if (nextRef === previousRef) return false;
-  queryClient.removeQueries({ queryKey: queryKeys.agents.detail(previousRef) });
-  navigate(`/agents/${nextRef}/${tab}`, { replace: true });
-  return true;
-}
 
 export function AgentRevisionsTab({
   agent,
@@ -2116,7 +1729,7 @@ export function ConfigurationTab({
             : t("localizationAgents.detail_Disabled_unless_explicitly_granted_");
 
   return (
-    <div className="agent-settings-form space-y-6">
+    <div className={cn("agent-settings-form", content === "permissions" ? "flex flex-col gap-(--agent-detail-module-gap)" : "space-y-6")}>
       {content !== "permissions" ? <AgentConfigForm
         mode="edit"
         agent={agent}
@@ -2130,16 +1743,18 @@ export function ConfigurationTab({
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
         content={content === "runtime" ? "configuration" : "secrets"}
-        sectionLayout="cards"
-        environmentVariablesPlacement="configuration"
+        sectionLayout="panels"
+        environmentVariablesPlacement={content === "secrets" ? "secrets" : "configuration"}
         compactTestFeedback
-        sectionOrder={["identity", "adapter", "configuration", "environment", "environment-variables", "run-policy"]}
-        sectionTitles={{ adapter: t("localizationAgents.ui38_Adapter"), configuration: t("localizationAgents.ui3_Configuration"), identity: t("agentSetup.agentIdentity") }}
+        sectionOrder={["adapter", "configuration", "environment", "environment-variables"]}
+        hiddenSections={["identity", "run-policy"]}
+        sectionTitles={{ adapter: "", configuration: "", environment: "" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
 
-
       {content === "permissions" ? <TrustPresetSection
+        layout="cards"
+        aside={companyId ? <AgentAllowedConnectors agentId={agent.id} companyId={companyId} /> : null}
         projectAccessEditor={<AgentProjectAccessSettings agent={agent} />}
         permissions={agent.permissions}
         disabled={updatePermissions.isPending}
@@ -2163,10 +1778,9 @@ export function ConfigurationTab({
         }
       /> : null}
 
-      {content === "permissions" ? <div>
-        <h3 className="text-sm font-medium mb-3">{t("pages.agentDetail.permissions")}</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
-          <div className="flex items-center justify-between gap-4 text-sm">
+      {content === "permissions" ? <AgentPanel title={t("pages.inviteLanding.agentForm.capabilities", { defaultValue: "Capabilities" })} aria-label={t("pages.inviteLanding.agentForm.capabilities", { defaultValue: "Capabilities" })}>
+        <div className="flex flex-col pb-3">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>{t("pages.agentDetail.canCreateAgents")}</div>
               <p className="text-xs text-muted-foreground">{t("pages.agentDetail.canCreateAgentsHint")}</p>
@@ -2183,7 +1797,7 @@ export function ConfigurationTab({
               disabled={updatePermissions.isPending}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>{t("pages.agentDetail.canCreateSkills")}</div>
               <p className="text-xs text-muted-foreground">{t("pages.agentDetail.canCreateSkillsHint")}</p>
@@ -2200,7 +1814,7 @@ export function ConfigurationTab({
               disabled={updatePermissions.isPending}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>{t("pages.agentDetail.canAssignTasks")}</div>
               <p className="text-xs text-muted-foreground">
@@ -2220,7 +1834,7 @@ export function ConfigurationTab({
             />
           </div>
         </div>
-      </div> : null}
+      </AgentPanel> : null}
     </div>
   );
 }
@@ -2249,7 +1863,7 @@ export function PromptsTab({
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const [selectedFile, setSelectedFileState] = useState<string>("AGENTS.md");
-  const [instructionMode, setInstructionMode] = useState<"read" | "edit" | "raw">("read");
+  const [instructionMode, setInstructionMode] = useState<"edit" | "raw">("raw");
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const draftBaseRevisionRef = useRef<string | null | undefined>(undefined);
@@ -2295,7 +1909,7 @@ export function PromptsTab({
   useEffect(() => {
     editorInteractedRef.current = false;
     setSelectedFile("AGENTS.md");
-    setInstructionMode("read");
+    setInstructionMode("raw");
     setShowFilePanel(false);
     setDraft(null);
     setReadOnlyCandidateRunId(null);
@@ -2714,140 +2328,16 @@ export function PromptsTab({
         {t("pages.agentDetail.instructionsSaveNote")}
       </p>}
 
-      <Collapsible defaultOpen={currentMode === "external"}>
-        <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
-          <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />{t("pages.agentDetail.advanced")}</CollapsibleTrigger>
-        <CollapsibleContent className="pt-4 pb-6">
-          <TooltipProvider>
-            <div className="grid gap-x-6 gap-y-4 md:grid-cols-(--gtc-18)">
-              <label className="space-y-1.5 min-w-0">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">{t("pages.agentDetail.mode")}<Tooltip>
-                    <TooltipTrigger asChild>
-                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>{t("pages.agentDetail.modeTooltip")}</TooltipContent>
-                  </Tooltip>
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={currentMode === "managed" ? "default" : "outline"}
-                    onClick={() => {
-                      if (currentMode === "external") {
-                        externalBundleRef.current = {
-                          rootPath: currentRootPath,
-                          entryFile: currentEntryFile,
-                          selectedFile: selectedOrEntryFile,
-                        };
-                      }
-                      const nextEntryFile = currentEntryFile || "AGENTS.md";
-                      setBundleDraft({
-                        mode: "managed",
-                        rootPath: bundle?.managedRootPath ?? currentRootPath,
-                        entryFile: nextEntryFile,
-                      });
-                      setSelectedFile(nextEntryFile);
-                    }}
-                  >{t("pages.agentDetail.managed")}</Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={currentMode === "external" ? "default" : "outline"}
-                    onClick={() => {
-                      const externalBundle = externalBundleRef.current;
-                      const nextEntryFile = externalBundle?.entryFile ?? currentEntryFile ?? "AGENTS.md";
-                      setBundleDraft({
-                        mode: "external",
-                        rootPath: externalBundle?.rootPath ?? (bundle?.mode === "external" ? (bundle.rootPath ?? "") : ""),
-                        entryFile: nextEntryFile,
-                      });
-                      setSelectedFile(externalBundle?.selectedFile ?? nextEntryFile);
-                    }}
-                  >{t("pages.agentDetail.external")}</Button>
-                </div>
-              </label>
-              <label className="space-y-1.5 min-w-0">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">{t("pages.agentDetail.rootPath")}<Tooltip>
-                    <TooltipTrigger asChild>
-                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>{t("pages.agentDetail.rootPathTooltip")}</TooltipContent>
-                  </Tooltip>
-                </span>
-                {currentMode === "managed" ? (
-                  <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground pt-1.5">
-                    <span className="min-w-0 truncate" title={currentRootPath || undefined}>{currentRootPath || t("localizationAgents.detail__managed_")}</span>
-                    {currentRootPath && (
-                      <CopyText text={currentRootPath} className="shrink-0">
-                        <Copy className="h-3.5 w-3.5" />
-                      </CopyText>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      value={currentRootPath}
-                      onChange={(event) => {
-                        const nextRootPath = event.target.value;
-                        externalBundleRef.current = {
-                          rootPath: nextRootPath,
-                          entryFile: currentEntryFile,
-                          selectedFile: selectedOrEntryFile,
-                        };
-                        setBundleDraft({
-                          mode: "external",
-                          rootPath: nextRootPath,
-                          entryFile: currentEntryFile,
-                        });
-                      }}
-                      className="font-mono text-sm"
-                      placeholder="/absolute/path/to/agent/prompts"
-                    />
-                    {currentRootPath && (
-                      <CopyText text={currentRootPath} className="shrink-0">
-                        <Copy className="h-3.5 w-3.5" />
-                      </CopyText>
-                    )}
-                  </div>
-                )}
-              </label>
-              <label className="space-y-1.5">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">{t("pages.agentDetail.entryFile")}<Tooltip>
-                    <TooltipTrigger asChild>
-                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>{t("pages.agentDetail.entryFileTooltip")}</TooltipContent>
-                  </Tooltip>
-                </span>
-                <Input
-                  value={currentEntryFile}
-                  onChange={(event) => {
-                    const nextEntryFile = event.target.value || "AGENTS.md";
-                    const nextSelectedFile = selectedOrEntryFile === currentEntryFile
-                      ? nextEntryFile
-                      : selectedOrEntryFile;
-                    if (currentMode === "external") {
-                      externalBundleRef.current = {
-                        rootPath: currentRootPath,
-                        entryFile: nextEntryFile,
-                        selectedFile: nextSelectedFile,
-                      };
-                    }
-                    if (selectedOrEntryFile === currentEntryFile) setSelectedFile(nextEntryFile);
-                    setBundleDraft({
-                      mode: currentMode,
-                      rootPath: currentRootPath,
-                      entryFile: nextEntryFile,
-                    });
-                  }}
-                  className="font-mono text-sm"
-                />
-              </label>
-            </div>
-          </TooltipProvider>
-        </CollapsibleContent>
-      </Collapsible>
+      <InstructionsBundleSettings
+        agentId={agent.id}
+        agentUrlKey={agent.urlKey}
+        companyId={companyId}
+        mode={persistedMode}
+        rootPath={persistedRootPath}
+        entryFile={bundle?.entryFile ?? "AGENTS.md"}
+        blocked={isDirty}
+        onSwitched={() => setBundleDraft(null)}
+      />
 
       <div
         ref={containerRef}
@@ -2858,24 +2348,23 @@ export function PromptsTab({
             : undefined
         }
       >
-        <div className={cn(
-          "min-w-0 w-full border border-border rounded-lg p-3 space-y-3",
+        <div data-agent-tile="" className={cn(
+          "min-w-0 w-full space-y-3 self-start rounded-lg bg-(--agent-detail-tile) px-3 pt-(--agent-detail-module-inset) pb-3",
           isMobile && showFilePanel && "block",
           isMobile && !showFilePanel && "hidden",
         )}>
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium">{t("pages.agentDetail.files")}</h4>
+          <div className="flex items-center justify-between px-2">
+            <h4 className="text-sm font-semibold text-foreground">{t("oct26Artifacts.kind.file", { defaultValue: "Files" })}</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
                 <Button
                   type="button"
-                  size="icon"
-                  variant="outline"
-                  className="h-7 w-7"
-                  aria-label={t("oct5Core.s0444")}
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label={t("oct5Core.s0444", { defaultValue: "Add agent file" })}
                   onClick={() => setShowNewFileInput(true)}
                 >
-                  +
+                  <Plus className="size-4" />
                 </Button>
               )}
               {isMobile && (
@@ -2949,7 +2438,7 @@ export function PromptsTab({
             })}
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
-              setInstructionMode("read");
+              setInstructionMode("raw");
               if (!fileOptions.includes(filePath)) setDraft("");
               if (isMobile) setShowFilePanel(false);
             }}
@@ -2986,8 +2475,8 @@ export function PromptsTab({
           />
         )}
 
-        <div className={cn("min-w-0 w-full overflow-hidden border border-border rounded-lg p-4 space-y-3", isMobile && showFilePanel && "hidden")}>
-          <div className="flex items-center justify-between gap-3">
+        <div data-agent-tile="" className={cn("min-w-0 w-full overflow-hidden rounded-lg bg-(--agent-detail-tile)", isMobile && showFilePanel && "hidden")}>
+          <div className="flex items-center justify-between gap-3 px-(--agent-detail-module-inset) pt-(--agent-detail-module-inset) pb-5">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && (
                 <Button
@@ -3000,8 +2489,11 @@ export function PromptsTab({
                   <FolderOpen className="h-3.5 w-3.5" />
                 </Button>
               )}
-              <div className="min-w-0">
-                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h4 className="truncate font-mono text-sm font-normal text-foreground">{selectedOrEntryFile}</h4>
+                  <AgentChip>{currentMode === "external" ? t("oct26Settings.roster.external", { defaultValue: "Managed externally" }) : t("nov2Pages.agent.managedByYou", { defaultValue: "Managed by you" })}</AgentChip>
+                </div>
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
@@ -3012,37 +2504,38 @@ export function PromptsTab({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex items-center rounded-md border border-border p-0.5" role="group" aria-label={t("localizationAgents.ui62_Instruction_file_view")}>
-                {(["read", "edit", "raw"] as const).map((mode) => (
-                  <Button
-                    key={mode}
-                    type="button"
-                    size="sm"
-                    variant={instructionMode === mode ? "secondary" : "ghost"}
-                    className="capitalize"
-                    aria-pressed={instructionMode === mode}
-                    onClick={() => setInstructionMode(mode)}
-                  >
-                    {t(`localizationAgents.transcriptMode_${mode}`, { defaultValue: mode })}
-                  </Button>
-                ))}
-              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className={cn("size-8", instructionMode === "edit" && "bg-(--agent-detail-tile-chip) text-foreground")}
+                aria-pressed={instructionMode === "edit"}
+                aria-label={instructionMode === "edit" ? t("nov2Pages.agent.stopEditingFile", { defaultValue: "Stop editing {{file}}", file: selectedOrEntryFile }) : t("nov2Pages.agent.editFile", { defaultValue: "Edit {{file}}", file: selectedOrEntryFile })}
+                title={instructionMode === "edit" ? t("localizationSkills.stopEditing280", { defaultValue: "Stop editing" }) : t("localizationIssueAux.ui_Edit_1i1lcq9", { defaultValue: "Edit" })}
+                disabled={Boolean(selectedFileDetail?.binary)}
+                onClick={() => setInstructionMode(instructionMode === "edit" ? "raw" : "edit")}
+              >
+                <Pencil className="size-4" />
+              </Button>
               {!fileLoading && (
                 <CopyText
                   text={displayValue}
-                  ariaLabel={t("localizationAgents.copyMarkdown")}
-                  title={t("pages.agentDetail.copyAsMarkdown")}
-                  copiedLabel={t("sep28Routines.copied")}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                  ariaLabel={t("localizationAgents.copyMarkdown", { defaultValue: "Copy instructions file as markdown" })}
+                  title={t("pages.caseDetail.copyAsMarkdown", { defaultValue: "Copy as markdown" })}
+                  copiedLabel={t("sep28Routines.copied", { defaultValue: "Copied" })}
+                  className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
-                  <Copy className="h-3.5 w-3.5" />
+                  <Copy className="size-4" />
                 </CopyText>
               )}
               {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
                 <Button
                   type="button"
-                  size="sm"
-                  variant="outline"
+                  size="icon-xs"
+                  variant="ghost"
+                  className="size-8"
+                  aria-label={t("nov2Pages.agent.deleteFile", { defaultValue: "Delete {{file}}", file: selectedOrEntryFile })}
+                  title={t("localizationSkills.deleteFile481", { defaultValue: "Delete file" })}
                   onClick={() => {
                     if (confirm(t("localizationAgents.deleteFile", { file: selectedOrEntryFile }))) {
                       deleteFile.mutate(selectedOrEntryFile, {
@@ -3054,11 +2547,15 @@ export function PromptsTab({
                     }
                   }}
                   disabled={deleteFile.isPending}
-                >{t("pages.agentDetail.delete")}</Button>
+                >
+                  <Trash2 className="size-4" />
+                </Button>
               )}
             </div>
           </div>
 
+          <div aria-hidden className="mx-(--agent-detail-module-inset) h-px bg-border" />
+          <div className="space-y-3 px-(--agent-detail-module-inset) pt-4 empty:hidden">
           {currentMode === "managed" && preservedCandidates.length > 0 && (
             <div className="space-y-3">
               <p className="text-sm font-medium">{t("oct5Core.s0445")}</p>
@@ -3115,74 +2612,38 @@ export function PromptsTab({
               queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
             }}
           />}
+          </div>
           {selectedFileDetail?.binary ? (
-            <div className="space-y-3 rounded-md border border-border p-4">
-              <p className="text-sm text-muted-foreground">{t("oct5Core.s0457")}</p>
-              <a className="text-sm text-primary underline" href={agentsApi.downloadInstructionsFile(agent.id, selectedOrEntryFile, companyId)} download>{t("oct5Core.s0096")} {selectedOrEntryFile}</a>
+            <div className="space-y-3 px-(--agent-detail-module-inset) py-5">
+              <p className="text-sm text-muted-foreground">{t("oct5Core.s0457", { defaultValue: "This file is preserved with the agent directory. Download it to view its contents." })}</p>
+              <a className="text-sm text-primary underline" href={agentsApi.downloadInstructionsFile(agent.id, selectedOrEntryFile, companyId)} download>{t("nov2Pages.agent.downloadFile", { defaultValue: "Download {{file}}", file: selectedOrEntryFile })}</a>
             </div>
           ) : selectedFileExists && fileLoading && !selectedFileDetail ? (
-            <PromptEditorSkeleton />
-          ) : instructionMode === "read" ? (
-            <div className="min-h-(--sz-420px) rounded-md border border-border bg-background p-4">
-              {displayValue.trim() ? (
-                useMarkdownEditor ? (
-                  <MarkdownBody className="max-w-none text-sm leading-7 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                    {displayValue}
-                  </MarkdownBody>
-                ) : (
-                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7">{displayValue}</pre>
-                )
-              ) : (
-                <p className="text-sm text-muted-foreground">{t("localizationAgents.ui64_This_instruction_file_is_empty_")}</p>
-              )}
+            <div className="px-(--agent-detail-module-inset) py-5">
+              <PromptEditorSkeleton />
             </div>
-          ) : instructionMode === "raw" ? (
-            <pre
-              data-testid="instructions-raw-source"
-              className="min-h-(--sz-420px) overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-4 font-mono text-sm leading-7"
-            >
-              {displayValue}
-            </pre>
-          ) : useMarkdownEditor ? (
-            <div
-              onBeforeInputCapture={markEditorInteracted}
-              onDropCapture={markEditorInteracted}
-              onInput={markEditorInteracted}
-              onKeyDownCapture={markEditorInteracted}
-              onPasteCapture={markEditorInteracted}
-              onPointerDownCapture={markEditorInteracted}
-            >
-              <MarkdownEditor
-                key={selectedOrEntryFile}
-                value={displayValue}
-                onChange={(value) => {
-                  if (!editorInteractedRef.current) return;
-                  if (draftBaseRevisionRef.current === undefined) draftBaseRevisionRef.current = selectedFileDetail?.revision?.id ?? null;
-                  if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
-                  setDraft(value ?? "");
-                }}
-                placeholder={t("localizationAgents.ui65__Agent_instructions")}
-                className="min-w-0 overflow-hidden"
-                contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
-                imageUploadHandler={async (file) => {
-                  const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
-                  const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                  return asset.contentPath;
-                }}
-              />
-            </div>
-          ) : (
+          ) : instructionMode === "edit" ? (
             <textarea
               aria-label={t("localizationAgents.ui67_Instruction_file_editor")}
               value={displayValue}
+              spellCheck={false}
               onChange={(event) => {
                 if (draftBaseRevisionRef.current === undefined) draftBaseRevisionRef.current = selectedFileDetail?.revision?.id ?? null;
-                  if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
+                if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
                 setDraft(event.target.value);
               }}
-              className="min-h-(--sz-420px) w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
-              placeholder={t("pages.agentDetail.fileContents")}
+              className="block min-h-(--sz-420px) w-full field-sizing-content resize-none bg-transparent px-6 py-5 font-mono text-xs leading-5 whitespace-pre-wrap text-foreground outline-none"
+              placeholder={t("pages.agentDetail.fileContents", { defaultValue: "File contents" })}
             />
+          ) : displayValue.trim() ? (
+            <pre
+              data-testid="instructions-raw-source"
+              className="block min-h-(--sz-420px) w-full overflow-x-auto px-6 py-5 font-mono text-xs leading-5 whitespace-pre-wrap break-words text-muted-foreground"
+            >
+              {displayValue}
+            </pre>
+          ) : (
+            <p className="min-h-(--sz-420px) px-6 py-5 text-sm text-muted-foreground">{t("localizationAgents.ui64_This_instruction_file_is_empty_", { defaultValue: "This instruction file is empty." })}</p>
           )}
         </div>
       </div>
@@ -3443,7 +2904,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const canUseProviderTrace =
     boardAccess?.source === "local_implicit" ||
@@ -3459,7 +2919,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
     queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
     enabled: canUseProviderTrace,
-    retry: false,
     refetchInterval:
       run.status === "running" || run.status === "queued" ? 3000 : false,
   });
@@ -3469,7 +2928,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryKey: queryKeys.access.companyUserDirectory(run.companyId),
     queryFn: () => accessApi.listUserDirectory(run.companyId),
     enabled: Boolean(run.companyId && run.responsibleUserId),
-    retry: false,
   });
   const responsibleUserName = useMemo(() => {
     if (!run.responsibleUserId) return null;
@@ -3745,12 +3203,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               </div>
             )}
             <RunIdentityHistory history={run.identityHistory} users={userDirectory?.users} />
-            {resumeRun.isError && (
+            {resumeRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : t("pages.agentDetail.failedToResume")}
               </div>
             )}
-            {retryRun.isError && (
+            {retryRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {retryRun.error instanceof Error ? retryRun.error.message : t("pages.agentDetail.failedToRetry")}
               </div>
@@ -3790,7 +3248,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 >
                   {runClaudeLogin.isPending ? t("pages.agentDetail.runningClaudeLogin") : t("pages.agentDetail.loginToClaude")}
                 </Button>
-                {runClaudeLogin.isError && (
+                {runClaudeLogin.isError && ( // query-error-ok: mutation result, not a query
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
@@ -3883,7 +3341,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                         ? t("pages.agentDetail.clearingSession")
                         : t("pages.agentDetail.clearSession")}
                     </button>
-                    {clearSessionsForTouchedIssues.isError && (
+                    {clearSessionsForTouchedIssues.isError && ( // query-error-ok: mutation result, not a query
                       <p className="text-(length:--text-micro) text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
@@ -3957,655 +3415,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             : undefined
         }
       />
-    </div>
-  );
-}
-
-/* ---- Log Viewer ---- */
-
-export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
-  const { t } = useTranslation();
-  const { visible } = usePageVisibility();
-  const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [logLoading, setLogLoading] = useState(!!run.logRef);
-  const [logError, setLogError] = useState<string | null>(null);
-  const [logOffset, setLogOffsetState] = useState(0);
-  const logOffsetRef = useRef(0);
-  const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
-    logOffsetRef.current = typeof next === "function" ? next(logOffsetRef.current) : next;
-    setLogOffsetState(logOffsetRef.current);
-  }, []);
-  const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() });
-  const [hasMoreLog, setHasMoreLog] = useState(false);
-  const [loadingMoreLog, setLoadingMoreLog] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [isStreamingConnected, setIsStreamingConnected] = useState(false);
-  const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
-  const logEndRef = useRef<HTMLDivElement>(null);
-  const pendingLogLineRef = useRef("");
-  const seenProgressLogLineKeysRef = useRef<Set<string>>(new Set());
-  const scrollContainerRef = useRef<ScrollContainer | null>(null);
-  const isFollowingRef = useRef(false);
-  const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number }>({
-    scrollHeight: 0,
-    distanceFromBottom: Number.POSITIVE_INFINITY,
-  });
-  const isLive = run.status === "running" || run.status === "queued";
-  const shouldPollShellLog = shouldPollRunShellLog(run.status);
-  const { data: workspaceOperations = [] } = useQuery({
-    queryKey: queryKeys.runWorkspaceOperations(run.id),
-    queryFn: () => heartbeatsApi.workspaceOperations(run.id),
-    refetchInterval: isLive ? 2000 : false,
-  });
-
-  function isRunLogUnavailable(err: unknown): boolean {
-    return err instanceof ApiError && err.status === 404;
-  }
-
-  function appendLogLines(incoming: RunLogChunk[]) {
-    setLogLines((previous) => mergeRunLogChunks(run.id, previous, incoming.map((line) => ({
-      ...line, dedupeKey: `log:${run.id}:${line.ts}:${line.stream}:${line.chunk}`,
-    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY).chunks);
-  }
-
-  function appendLogContent(content: string, finalize = false) {
-    if (!content && !finalize) return;
-    const combined = `${pendingLogLineRef.current}${content}`;
-    const split = combined.split("\n");
-    pendingLogLineRef.current = split.pop() ?? "";
-    if (finalize && pendingLogLineRef.current) {
-      split.push(pendingLogLineRef.current);
-      pendingLogLineRef.current = "";
-    }
-
-    const parsed: RunLogChunk[] = [];
-    for (const line of split) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
-        const stream =
-          raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
-        const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
-        const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
-        if (!chunk) continue;
-        parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq) });
-      } catch {
-        // ignore malformed lines
-      }
-    }
-
-    if (parsed.length > 0) {
-      // Live runs stream forever, so cap the retained tail. Terminated runs are
-      // paginated by the user via "Load more log" and keep their full history.
-      appendLogLines(parsed);
-    }
-  }
-
-  // Fetch events
-  const { data: initialEvents } = useQuery({
-    queryKey: ["run-events", run.id],
-    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
-  });
-
-  useEffect(() => {
-    if (initialEvents) {
-      setEvents(initialEvents);
-      setLoading(false);
-    }
-  }, [initialEvents]);
-
-  const getScrollContainer = useCallback((): ScrollContainer => {
-    if (scrollContainerRef.current) return scrollContainerRef.current;
-    const container = findScrollContainer(logEndRef.current);
-    scrollContainerRef.current = container;
-    return container;
-  }, []);
-
-  const updateFollowingState = useCallback(() => {
-    const container = getScrollContainer();
-    const metrics = readScrollMetrics(container);
-    lastMetricsRef.current = metrics;
-    const nearBottom = metrics.distanceFromBottom <= LIVE_SCROLL_BOTTOM_TOLERANCE_PX;
-    isFollowingRef.current = nearBottom;
-    setIsFollowing((prev) => (prev === nearBottom ? prev : nearBottom));
-  }, [getScrollContainer]);
-
-  useEffect(() => {
-    scrollContainerRef.current = null;
-    lastMetricsRef.current = {
-      scrollHeight: 0,
-      distanceFromBottom: Number.POSITIVE_INFINITY,
-    };
-
-    if (!isLive) {
-      isFollowingRef.current = false;
-      setIsFollowing(false);
-      return;
-    }
-
-    updateFollowingState();
-  }, [isLive, run.id, updateFollowingState]);
-
-  useEffect(() => {
-    if (!isLive) return;
-    const container = getScrollContainer();
-    updateFollowingState();
-
-    if (container === window) {
-      window.addEventListener("scroll", updateFollowingState, { passive: true });
-    } else {
-      container.addEventListener("scroll", updateFollowingState, { passive: true });
-    }
-    window.addEventListener("resize", updateFollowingState);
-    return () => {
-      if (container === window) {
-        window.removeEventListener("scroll", updateFollowingState);
-      } else {
-        container.removeEventListener("scroll", updateFollowingState);
-      }
-      window.removeEventListener("resize", updateFollowingState);
-    };
-  }, [isLive, run.id, getScrollContainer, updateFollowingState]);
-
-  // Auto-scroll only for live runs when following
-  useEffect(() => {
-    if (!isLive || !isFollowingRef.current) return;
-
-    const container = getScrollContainer();
-    const previous = lastMetricsRef.current;
-    const current = readScrollMetrics(container);
-    const growth = Math.max(0, current.scrollHeight - previous.scrollHeight);
-    const expectedDistance = previous.distanceFromBottom + growth;
-    const movedAwayBy = current.distanceFromBottom - expectedDistance;
-
-    // If user moved away from bottom between updates, release auto-follow immediately.
-    if (movedAwayBy > LIVE_SCROLL_BOTTOM_TOLERANCE_PX) {
-      isFollowingRef.current = false;
-      setIsFollowing(false);
-      lastMetricsRef.current = current;
-      return;
-    }
-
-    scrollToContainerBottom(container, "auto");
-    const after = readScrollMetrics(container);
-    lastMetricsRef.current = after;
-    if (!isFollowingRef.current) {
-      isFollowingRef.current = true;
-    }
-    setIsFollowing((prev) => (prev ? prev : true));
-  }, [events.length, logLines.length, isLive, getScrollContainer]);
-
-  // Reset only when the log source changes, never when visibility changes.
-  useEffect(() => {
-    pendingLogLineRef.current = "";
-    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
-    seenProgressLogLineKeysRef.current = new Set();
-    setLogLines([]);
-    setLogOffset(0);
-    setHasMoreLog(false);
-    setLoadingMoreLog(false);
-    setLogError(null);
-  }, [run.id, run.logRef, setLogOffset]);
-
-  // Fetch persisted shell log, retaining partial rows and offsets across hides.
-  useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    const offset = logOffsetRef.current;
-    if (!run.logRef && !shouldPollShellLog) {
-      setLogLoading(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    setLogLoading(true);
-    const load = async () => {
-      try {
-        const result = await heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES);
-        if (cancelled) return;
-        appendLogContent(result.content, result.nextOffset === undefined);
-        const next = result.nextOffset ?? offset + result.content.length;
-        setLogOffset(next);
-        setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
-      } catch (err) {
-        if (!cancelled) {
-          if (shouldPollShellLog && isRunLogUnavailable(err)) {
-            setLogLoading(false);
-            return;
-          }
-          setLogError(err instanceof Error ? err.message : t("localizationAgents.detail_Failed_to_load_run_log"));
-        }
-      } finally {
-        if (!cancelled) setLogLoading(false);
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [visible, run.id, run.logRef, run.logBytes, shouldPollShellLog]);
-
-  async function loadMorePersistedLog() {
-    if (loadingMoreLog || !hasMoreLog) return;
-    setLoadingMoreLog(true);
-    setLogError(null);
-    try {
-      const result = await heartbeatsApi.log(run.id, logOffset, RUN_LOG_PAGE_BYTES);
-      appendLogContent(result.content, result.nextOffset === undefined);
-      const next = result.nextOffset ?? logOffset + result.content.length;
-      setLogOffset(next);
-      setHasMoreLog(result.nextOffset !== undefined);
-    } catch (err) {
-      setLogError(err instanceof Error ? err.message : t("localizationAgents.detail_Failed_to_load_more_run_log"));
-    } finally {
-      setLoadingMoreLog(false);
-    }
-  }
-
-  // Poll for live updates
-  useEffect(() => {
-    if (!visible || !isLive || isStreamingConnected) return;
-    let pending = false;
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      if (pending || cancelled || !getPageVisibility().visible) return;
-      pending = true;
-      const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
-      try {
-        const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
-        if (cancelled) return;
-        if (newEvents.length > 0) {
-          setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
-        }
-      } catch {
-        // ignore polling errors
-      } finally {
-        pending = false;
-      }
-    }, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [visible, run.id, isLive, isStreamingConnected, events]);
-
-  // Poll shell log for running runs
-  useEffect(() => {
-    if (!visible || !shouldPollShellLog || isStreamingConnected) return;
-    let pending = false;
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      if (pending || cancelled || !getPageVisibility().visible) return;
-      pending = true;
-      try {
-        const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
-        if (cancelled) return;
-        if (result.content) {
-          appendLogContent(result.content, result.nextOffset === undefined);
-        }
-        if (result.nextOffset !== undefined) {
-          setLogOffset(result.nextOffset);
-        } else if (result.content.length > 0) {
-          setLogOffset((prev) => prev + result.content.length);
-        }
-      } catch (err) {
-        if (isRunLogUnavailable(err)) return;
-        // ignore polling errors
-      } finally {
-        pending = false;
-      }
-    }, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [visible, run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
-
-  // Stream live updates from websocket (primary path for running runs).
-  useEffect(() => {
-    if (!visible || !isLive) return;
-
-    let closed = false;
-    let reconnectTimer: number | null = null;
-    let socket: WebSocket | null = null;
-
-    const scheduleReconnect = () => {
-      if (closed) return;
-      reconnectTimer = window.setTimeout(connect, 1500);
-    };
-
-    const connect = () => {
-      if (closed) return;
-      const url = buildSameOriginWebSocketUrl(
-        `/api/companies/${encodeURIComponent(run.companyId)}/events/ws`,
-      );
-      socket = tryCreateWebSocket(url);
-      if (!socket) {
-        scheduleReconnect();
-        return;
-      }
-
-      socket.onopen = () => {
-        setIsStreamingConnected(true);
-      };
-
-      socket.onmessage = (message) => {
-        const rawMessage = typeof message.data === "string" ? message.data : "";
-        if (!rawMessage) return;
-
-        let event: LiveEvent;
-        try {
-          event = JSON.parse(rawMessage) as LiveEvent;
-        } catch {
-          return;
-        }
-
-        if (event.companyId !== run.companyId) return;
-        const payload = asRecord(event.payload);
-        const eventRunId = asNonEmptyString(payload?.runId);
-        if (!payload || eventRunId !== run.id) return;
-
-        if (event.type === "heartbeat.run.log") {
-          const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
-          if (!chunk) return;
-          const streamRaw = asNonEmptyString(payload.stream);
-          const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
-          const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          appendLogLines([{ ts, stream, chunk, seq: readChunkSeq(payload.seq) }]);
-          return;
-        }
-
-        if (event.type === "heartbeat.run.progress") {
-          const line = buildHeartbeatProgressLogLine(payload, event.createdAt);
-          if (!line) return;
-          const key = heartbeatProgressLogLineKey(line);
-          if (seenProgressLogLineKeysRef.current.has(key)) return;
-          seenProgressLogLineKeysRef.current.add(key);
-          appendLogLines([line]);
-          return;
-        }
-
-        if (event.type !== "heartbeat.run.event") return;
-
-        const seq = typeof payload.seq === "number" ? payload.seq : null;
-        if (seq === null || !Number.isFinite(seq)) return;
-
-        const streamRaw = asNonEmptyString(payload.stream);
-        const stream =
-          streamRaw === "stdout" || streamRaw === "stderr" || streamRaw === "system"
-            ? streamRaw
-            : null;
-        const levelRaw = asNonEmptyString(payload.level);
-        const level =
-          levelRaw === "info" || levelRaw === "warn" || levelRaw === "error"
-            ? levelRaw
-            : null;
-
-        const liveEvent: HeartbeatRunEvent = {
-          id: seq,
-          companyId: run.companyId,
-          runId: run.id,
-          agentId: run.agentId,
-          seq,
-          eventType: asNonEmptyString(payload.eventType) ?? "event",
-          stream,
-          level,
-          color: asNonEmptyString(payload.color),
-          message: asNonEmptyString(payload.message),
-          payload: asRecord(payload.payload),
-          createdAt: new Date(event.createdAt),
-        };
-
-        setEvents((prev) => {
-          if (prev.some((existing) => existing.seq === seq)) return prev;
-          return appendCapped(prev, [liveEvent], MAX_LIVE_EVENTS);
-        });
-      };
-
-      socket.onerror = () => {
-        socket?.close();
-      };
-
-      socket.onclose = () => {
-        setIsStreamingConnected(false);
-        scheduleReconnect();
-      };
-    };
-
-    connect();
-
-    return () => {
-      closed = true;
-      setIsStreamingConnected(false);
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.close(1000, "run_detail_unmount");
-      }
-    };
-  }, [visible, isLive, run.companyId, run.id, run.agentId]);
-
-  const censorUsernameInLogs = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-  }).data?.censorUsernameInLogs === true;
-
-  const adapterInvokePayload = useMemo(() => {
-    const evt = events.find((e) => e.eventType === "adapter.invoke");
-    return redactPathValue(asRecord(evt?.payload ?? null), censorUsernameInLogs);
-  }, [censorUsernameInLogs, events]);
-
-  // NOTE: adapter is NOT memoized because external adapters replace their
-  // parseStdoutLine asynchronously after dynamic parser loading. Memoizing
-  // on adapterType alone would stale the transcript with the fallback parser.
-  // We subscribe to adapter registry changes to force transcript recomputation.
-  const [parserTick, setParserTick] = useState(0);
-  const adapter = getUIAdapter(adapterType);
-
-  useEffect(() => {
-    return onAdapterChange(() => setParserTick((t) => t + 1));
-  }, []);
-
-  const transcript = useMemo(
-    () => buildTranscript(logLines, adapter, { censorUsernameInLogs }),
-    [adapter, censorUsernameInLogs, logLines, parserTick],
-  );
-  const toolDecisionLookup = useQuery({
-    queryKey: queryKeys.tools.runDecisions(run.companyId, run.id),
-    queryFn: () => toolsApi.getRunDecisionLookup(run.companyId, run.id),
-    enabled: Boolean(run.companyId && run.id),
-    refetchInterval: isLive ? 3000 : false,
-    staleTime: isLive ? 1000 : 30_000,
-  });
-
-  useEffect(() => {
-    setTranscriptMode("nice");
-  }, [run.id]);
-
-  if (loading && logLoading) {
-    return <p className="text-xs text-muted-foreground">{t("pages.agentDetail.loadingRunLogs")}</p>;
-  }
-
-  if (events.length === 0 && logLines.length === 0 && !logError) {
-    return <p className="text-xs text-muted-foreground">{t("pages.agentDetail.noLogEvents")}</p>;
-  }
-
-  const levelColors: Record<string, string> = {
-    info: "text-foreground",
-    warn: "text-yellow-600 dark:text-yellow-400",
-    error: "text-red-600 dark:text-red-400",
-  };
-
-  const streamColors: Record<string, string> = {
-    stdout: "text-foreground",
-    stderr: "text-red-600 dark:text-red-300",
-    system: "text-blue-600 dark:text-blue-300",
-  };
-
-  return (
-    <div className="space-y-3">
-      <WorkspaceOperationsSection
-        operations={workspaceOperations}
-        censorUsernameInLogs={censorUsernameInLogs}
-      />
-      {adapterInvokePayload && (
-        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
-      )}
-
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">
-          {t("localizationAgents.transcriptCount", { count: transcript.length })}
-        </span>
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border border-border/70 bg-background/70 p-0.5">
-            {(["nice", "raw"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-(length:--text-micro) font-medium capitalize transition-colors",
-                  transcriptMode === mode
-                    ? "bg-accent text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-                onClick={() => setTranscriptMode(mode)}
-              >
-                {t(`localizationAgents.transcriptMode_${mode}`, { defaultValue: mode })}
-              </button>
-            ))}
-          </div>
-          {isLive && !isFollowing && (
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => {
-                const container = getScrollContainer();
-                isFollowingRef.current = true;
-                setIsFollowing(true);
-                scrollToContainerBottom(container, "auto");
-                lastMetricsRef.current = readScrollMetrics(container);
-              }}
-            >{t("pages.agentDetail.jumpToLive")}</Button>
-          )}
-          {isLive && (
-            <span className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-              </span>{t("pages.agentDetail.live")}</span>
-          )}
-        </div>
-      </div>
-      <div className="max-h-(--sz-38rem) overflow-y-auto rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
-        <RunTranscriptView
-          entries={transcript}
-          toolDecisions={toolDecisionLookup.data?.decisions ?? []}
-          mode={transcriptMode}
-          streaming={isLive}
-          limit={isLive ? LIVE_TRANSCRIPT_RENDER_LIMIT : undefined}
-          emptyMessage={run.logRef ? t("pages.agentDetail.waitingForTranscript") : t("pages.agentDetail.noPersistedTranscript")}
-        />
-        {hasMoreLog && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={loadMorePersistedLog}
-              disabled={loadingMoreLog}
-            >
-              {loadingMoreLog ? t("pages.agentDetail.loading") : t("pages.agentDetail.loadMoreLog")}
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              {typeof run.logBytes === "number" && run.logBytes > 0
-                ? t("localizationAgents.logBytesOf", { shown: Math.round(logOffset / 1024).toLocaleString(i18n.resolvedLanguage ?? i18n.language), total: Math.round(run.logBytes / 1024).toLocaleString(i18n.resolvedLanguage ?? i18n.language) })
-                : t("localizationAgents.logBytes", { shown: Math.round(logOffset / 1024).toLocaleString(i18n.resolvedLanguage ?? i18n.language) })}
-            </span>
-          </div>
-        )}
-        {logError && (
-          <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
-            {logError}
-          </div>
-        )}
-        <div ref={logEndRef} />
-      </div>
-
-      {(run.status === "failed" || run.status === "timed_out") && (
-        <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">{t("pages.agentDetail.failureDetails")}</div>
-          {run.error && (
-            <div className="text-xs text-red-600 dark:text-red-200">
-              <span className="text-red-700 dark:text-red-300">{t("pages.agentDetail.error")}</span>
-              {redactPathText(run.error, censorUsernameInLogs)}
-            </div>
-          )}
-          {run.stderrExcerpt && run.stderrExcerpt.trim() && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("pages.agentDetail.stderrExcerpt")}</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
-              </pre>
-            </div>
-          )}
-          {run.resultJson && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("pages.agentDetail.adapterResultJson")}</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {JSON.stringify(redactPathValue(run.resultJson, censorUsernameInLogs), null, 2)}
-              </pre>
-            </div>
-          )}
-          {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
-            <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("pages.agentDetail.stdoutExcerpt")}</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
-                {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-
-      {events.length > 0 && (
-        <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.eventsCount", { count: events.length })}</div>
-          <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
-            {events.map((evt) => {
-              const color = evt.color
-                ?? (evt.level ? levelColors[evt.level] : null)
-                ?? (evt.stream ? streamColors[evt.stream] : null)
-                ?? "text-foreground";
-
-              return (
-                <div key={evt.id} className="flex gap-2">
-                  <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
-                    {new Date(evt.createdAt).toLocaleTimeString(i18n.resolvedLanguage ?? i18n.language, { hour12: false })}
-                  </span>
-                  <span className={cn("shrink-0 w-14", evt.stream ? (streamColors[evt.stream] ?? "text-neutral-500") : "text-neutral-500")}>
-                    {evt.stream ? `[${evt.stream}]` : ""}
-                  </span>
-                  <span className={cn("break-all", color)}>
-                    {evt.message
-                      ? redactPathText(evt.message, censorUsernameInLogs)
-                      : evt.payload
-                        ? JSON.stringify(redactPathValue(evt.payload, censorUsernameInLogs))
-                        : ""}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

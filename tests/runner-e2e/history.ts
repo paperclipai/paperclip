@@ -1,4 +1,5 @@
 import { isIncompleteFirstTaskResult } from "./case-outcome.js";
+import { reportTargetUrl } from "./report-target.js";
 import { buildCampaignAccounting } from "./attempt-accounting.js";
 import { validateEvalOperationsReport } from "./operations-report.js";
 import { validateCampaignFeedbackReview } from "./feedback-dispositions.js";
@@ -269,6 +270,8 @@ export function campaignHistoryRecord(
       caseId: result.caseId,
       provider: result.provider,
       model: result.model,
+      ...(reportTargetUrl(result) ? { targetUrl: reportTargetUrl(result)! } : {}),
+      runtimeMode: result.runtimeMode,
       status: isIncompleteFirstTaskResult(result) ? "incomplete" : result.status,
       durationMs: result.durationMs,
       attempt: result.attempt,

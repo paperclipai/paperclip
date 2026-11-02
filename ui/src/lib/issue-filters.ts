@@ -38,6 +38,7 @@ export type IssueFilterState = {
    */
   externalObjectStatuses: string[];
   showAgentCreatedTasks: boolean;
+  routineTasksOnly?: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -51,6 +52,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   liveOnly: false,
   externalObjectStatuses: [],
   showAgentCreatedTasks: false,
+  routineTasksOnly: false,
 };
 
 export const externalObjectFilterOrder = [
@@ -58,6 +60,7 @@ export const externalObjectFilterOrder = [
   "waiting",
   "running",
   "auth_required",
+  "rate_limited",
   "unreachable",
   "stale",
   "none",
@@ -71,6 +74,7 @@ const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
   get unreachable() { return t("filter.externalUnreachable", { defaultValue: "Unreachable" }); },
   get stale() { return t("filter.externalStale", { defaultValue: "Stale" }); },
   get none() { return t("filter.externalNone", { defaultValue: "No external objects" }); },
+  get rate_limited() { return t("nov02Core.rateLimited"); },
 };
 
 export function externalObjectFilterLabel(value: string): string {
@@ -125,6 +129,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     liveOnly: candidate.liveOnly === true,
     externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
     showAgentCreatedTasks: candidate.showAgentCreatedTasks === true,
+    routineTasksOnly: candidate.routineTasksOnly === true,
   };
 }
 
@@ -202,6 +207,8 @@ function issueMatchesExternalObjectStatusFilter(
     case "auth_required":
       return (summary?.authRequiredCount ?? 0) > 0
         || summaryRecordCount(summary?.byLiveness, "auth_required") > 0;
+    case "rate_limited":
+      return summaryRecordCount(summary?.byLiveness, "rate_limited") > 0;
     case "unreachable":
       return (summary?.unreachableCount ?? 0) > 0
         || summaryRecordCount(summary?.byLiveness, "unreachable") > 0;
@@ -213,6 +220,19 @@ function issueMatchesExternalObjectStatusFilter(
     default:
       return false;
   }
+}
+
+/** Keep creation visibility and routine origin consistent across collection reads. */
+export function issueCreationRequestFilters(
+  state: Pick<IssueFilterState, "routineTasksOnly" | "showAgentCreatedTasks">,
+  enableAgentCreatedVisibilityFilter = false,
+) {
+  if (state.routineTasksOnly) {
+    return { originKind: "routine_execution", includeRoutineExecutions: true, includeAgentCreatedTasks: true };
+  }
+  return enableAgentCreatedVisibilityFilter
+    ? { includeRoutineExecutions: true, includeAgentCreatedTasks: state.showAgentCreatedTasks }
+    : {};
 }
 
 export function applyIssueFilters(
@@ -227,7 +247,10 @@ export function applyIssueFilters(
   if (state.liveOnly) {
     result = result.filter((issue) => liveIssueIds?.has(issue.id) === true);
   }
-  if (enableAgentCreatedVisibilityFilter && !state.showAgentCreatedTasks) {
+  if (state.routineTasksOnly) {
+    result = result.filter((issue) => issue.originKind === "routine_execution");
+  }
+  if (enableAgentCreatedVisibilityFilter && !state.showAgentCreatedTasks && !state.routineTasksOnly) {
     result = result.filter((issue) => !isAgentCreatedIssue(issue));
   }
   if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.status));
@@ -289,6 +312,7 @@ export function countActiveIssueFilters(
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
+  if (state.routineTasksOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
   if (enableAgentCreatedVisibilityFilter && state.showAgentCreatedTasks) count += 1;
   return count;

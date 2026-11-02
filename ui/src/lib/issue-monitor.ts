@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { i18n, t } from "@/i18n";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -55,6 +56,15 @@ export interface DerivedMonitorState {
 export interface MonitorDateTimeFormatOptions {
   locale?: Intl.LocalesArgument;
   timeZone?: string;
+}
+
+export function areAutomaticMonitorChecksPaused(issue: Pick<MonitorIssueLike, "status">): boolean {
+  return issue.status !== undefined && issue.status !== "in_progress" && issue.status !== "in_review";
+}
+
+export function canCheckIssueMonitorNow(issue: Pick<MonitorIssueLike, "status">, serviceName?: string | null): boolean {
+  return !areAutomaticMonitorChecksPaused(issue) ||
+    (issue.status === "blocked" && serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME);
 }
 
 function toTimestamp(value: MonitorDate): number {

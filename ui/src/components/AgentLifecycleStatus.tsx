@@ -37,7 +37,7 @@ export function useAgentLifecycleStatus(agent?: Agent) {
     queryKey: [...queryKeys.agents.detail(agent?.id ?? ""), "lifecycle", agent?.companyId],
     queryFn: () => agentsApi.get(agent!.id, agent!.companyId),
     enabled: Boolean(agent),
-    select: current => ({ status: current.status, lifecycleState: current.lifecycleState,
+    select: current => ({ status: current.status, pauseReason: current.pauseReason, pausedAt: current.pausedAt, lifecycleState: current.lifecycleState,
       lifecycleVersion: current.lifecycleVersion, lifecycleError: current.lifecycleError }),
     refetchInterval: query => agentLifecycleRefetchInterval(query.state.data?.lifecycleState ?? agent?.lifecycleState),
   });
@@ -67,6 +67,8 @@ export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshErro
         {retryPending ? t("oct19Core.coverage023") : t("oct19Core.coverage024")}
       </Button>
     </div>}
-    {phase && agent.lifecycleError && <p className="text-muted-foreground">{t("oct19Core.coverage025")}</p>}
+    {phase && agent.lifecycleError && <p className="text-muted-foreground">{agent.lifecycleState === "verifying"
+      ? t("nov02Components.retrySavedConfiguration", { defaultValue: "Retry now checks the saved configuration again immediately." })
+      : t("oct19Core.coverage025")}</p>}
   </div>;
 }

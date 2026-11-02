@@ -1,3 +1,4 @@
+import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -45,6 +46,7 @@ export async function resumePreservedResultFinalization(db: Db, companyId: strin
     const generationId = intent?.id ?? recovery.generationId;
     if (coordinator.recoveryHistory.some(entry => entry.kind === "preserved_result_finalization" &&
         entry.generationId === generationId)) return false;
+    await notifyNativeFinalizationWork(tx, { companyId, runId });
     await tx.update(nativeRunFinalizations).set({
       phase: coordinator.assessmentId ? "arbitrating" : "workspace_finalizing",
       nextAttemptAt: new Date(), failureCode: null, failureDetail: null, updatedAt: new Date(),

@@ -12,6 +12,7 @@ import {
   externalObjectCategoryLabel,
   externalObjectIconForCategory,
   externalObjectIconForKey,
+  externalObjectIconForLiveness,
   externalObjectLivenessLabel,
 } from "../lib/external-objects";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
@@ -54,10 +55,15 @@ export function ExternalObjectStatusIcon({
 }: ExternalObjectStatusIconProps) {
   const { t } = useTranslation();
   const reducedMotion = usePrefersReducedMotion();
-  const Icon = externalObjectIconForKey(statusIconKey) ?? externalObjectIconForCategory(category);
-  const tone = statusIconKey === "git-merge"
-    ? "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400"
-    : externalObjectStatusIcon[category] ?? externalObjectStatusIconDefault;
+  // A liveness problem (auth required, rate limited, unreachable) takes the icon and
+  // the tone, so a warning is visible even when the last known status was healthy.
+  const livenessIcon = externalObjectIconForLiveness(liveness);
+  const Icon = livenessIcon ?? externalObjectIconForKey(statusIconKey) ?? externalObjectIconForCategory(category);
+  const livenessTone = externalObjectStatusIcon[liveness];
+  const tone = livenessTone
+    ?? (statusIconKey === "git-merge"
+      ? "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400"
+      : externalObjectStatusIcon[category] ?? externalObjectStatusIconDefault);
   const statusLabel = label ?? externalObjectCategoryLabel(category);
   const ariaLabel = liveness === "fresh" || liveness === "unknown" || statusLabel.includes(externalObjectLivenessLabel(liveness))
     ? statusLabel

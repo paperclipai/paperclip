@@ -1,7 +1,11 @@
+import { Trans } from "react-i18next";
 import { t, useTranslation } from "@/i18n";
 import type { IssueDocument } from "@paperclipai/shared";
-import { Lightbulb, Maximize2 } from "lucide-react";
+import { FileText, Lightbulb, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SidebarDocumentLink } from "@/components/SidebarDocumentLink";
+import { buildDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import type { TaskChatProviderActivityItem } from "./task-chat-model";
 
@@ -85,6 +89,7 @@ export function TaskChatPlanPreviewCard({
   className,
 }: TaskChatPlanPreviewCardProps) {
   useTranslation();
+  const coordinator = useCoordinatorPresentation();
   const shimmer = useTaskChatShimmer(source.kind === "live" ? source.activity.id : "saved-plan");
   const revision = planRevision(source);
   const content = source.kind === "saved" && source.document
@@ -93,6 +98,22 @@ export function TaskChatPlanPreviewCard({
       ? { title: source.fallbackTitle?.trim() || t("localizationTaskRuntime.ui_Plan_8icj76"), preview: [] as string[] }
       : livePlanContent(source.activity);
   const live = source.kind === "live";
+  if (coordinator) {
+    const document = source.kind === "saved" ? source.document : null;
+    const targetHref = href === "#document-plan" && document
+      ? `/issues/${document.issueId}${buildDocumentAnnotationHash({ documentKey: document.key,
+        revisionId: document.latestRevisionId ?? undefined, threadId: null, commentId: null })}`
+      : href;
+    const compactClassName = cn("inline-flex max-w-full items-center gap-2 rounded-lg border border-border bg-muted/25 px-3 py-2.5 text-sm text-muted-foreground",
+      targetHref && "transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className);
+    const compactBody = <><FileText className="size-4 shrink-0" aria-hidden />
+      <Trans i18nKey={live ? "nov02Components.writingDocumentLabel" : "nov02Components.openDocumentLabel"} values={{ title: content.title }} components={{ action: <span className="shrink-0" />, docTitle: <span className={cn("min-w-0 truncate text-foreground", live && shimmer && "shimmer-text shimmer-text-muted")} /> }} /></>;
+    return targetHref ? <SidebarDocumentLink href={targetHref} testId={testId}
+      ariaLabel={ariaLabel ?? (revision == null ? t("nov02Components.openDocumentInSidebar", { defaultValue: "Open {{title}} in task sidebar", title: content.title }) : t("nov02Components.openDocumentRevisionInSidebar", { defaultValue: "Open {{title}} revision {{revision}} in task sidebar", title: content.title, revision }))} className={className}>
+      <Trans i18nKey="nov02Components.openDocumentSidebarLabel" values={{ title: content.title }} components={{ action: <span className="shrink-0" />, docTitle: <span className="min-w-0 truncate text-foreground underline underline-offset-4" />, location: <span className="hidden shrink-0 sm:inline" /> }} />
+    </SidebarDocumentLink>
+      : <section data-testid={testId} aria-label={ariaLabel ?? t("localizationTaskRuntime.ui_Writing_plan_z12vmy")} className={compactClassName}>{compactBody}</section>;
+  }
   const headerDetail = revision == null
     ? null
     : t("localizationTaskRuntime.revisionShort", { number: revision });

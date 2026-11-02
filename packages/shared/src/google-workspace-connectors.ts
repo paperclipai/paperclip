@@ -48,6 +48,31 @@ export function googleWorkspaceSelectionForScopes(scopes: readonly string[]): Go
   return selection;
 }
 
+export interface GoogleWorkspaceDraftBinding {
+  companyId: string;
+  connectionId: string;
+  actorType: string | null;
+  actorId: string | null;
+  grantKind: "user" | "agent" | "organization";
+  subjectId: string | null;
+}
+
+export function googleWorkspaceDraftRequestedScopes(
+  value: unknown,
+  binding: GoogleWorkspaceDraftBinding,
+): string[] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const draft = value as Record<string, unknown>;
+  if (!binding.actorType || !binding.actorId || draft.version !== 1
+    || Object.entries(binding).some(([key, expected]) => draft[key] !== expected)) return null;
+  const scopes = draft.requestedScopes;
+  const allowed = new Set(GOOGLE_WORKSPACE_SERVICE_GROUPS.flatMap(group =>
+    [...group.read, ...group.write].flatMap(profile => GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes)));
+  if (!Array.isArray(scopes) || scopes.length === 0 || scopes.length > allowed.size
+    || scopes.some(scope => typeof scope !== "string" || !allowed.has(scope))) return null;
+  return [...new Set(scopes)].sort();
+}
+
 const auth = (scope: string) => `https://www.googleapis.com/auth/${scope}`;
 
 const SERVICE_PROFILES: Readonly<Record<Exclude<GoogleWorkspaceConnectorProfileId, "workspace.all">, {

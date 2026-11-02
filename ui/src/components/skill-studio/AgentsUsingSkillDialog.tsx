@@ -7,7 +7,7 @@ import type {
   AgentDesiredSkillEntry,
   CompanySkillDetail,
   CompanySkillUsageAgent,
-  CompanySkillVersion,
+  CompanySkillVersionSummary,
 } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
@@ -133,7 +133,7 @@ export function AgentsUsingSkillDialog({
     if (!open) setConfirmRemoveId(null);
   }, [open]);
 
-  const versions = useMemo<CompanySkillVersion[]>(
+  const versions = useMemo<CompanySkillVersionSummary[]>(
     () => [...(versionsQuery.data ?? [])].sort((a, b) => b.revisionNumber - a.revisionNumber),
     [versionsQuery.data],
   );
@@ -311,7 +311,7 @@ function AgentRow({
   icon: string | null;
   canManage: boolean;
   hasVersions: boolean;
-  versions: CompanySkillVersion[];
+  versions: CompanySkillVersionSummary[];
   latestRevision: number | null;
   pinnedRevision: number | null;
   busy: boolean;

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ControllerOutageReceipt } from "./controller-outage.js";
 import { storyLifecycleChecks, type StoryRun } from "./everyday-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary } from "./everyday-remote-restart.js";
 
@@ -31,10 +32,20 @@ function fixture() {
   } };
   const finalRows = [...afterRows, event(6, "run.result.proposed"), event(7, "turn.completed"),
     event(8, "run.result.accepted", {}, "control_plane", 1), event(9, "run.terminal", {}, "control_plane", 2)];
-  const final = { run: finished, events: projectRemoteRestartEvents(finished, finalRows),
+  const final = { observedAt: "2026-10-22T00:02:00.000Z", run: finished, events: projectRemoteRestartEvents(finished, finalRows),
     operations: [{ companyId: "company", heartbeatRunId: "run", issueId: "task", executionWorkspaceId: "workspace",
       phase: "workspace_finalize", status: "succeeded" }], scheduledRetry: null as unknown, recoveryActions: [] as Record<string, unknown>[] };
-  return { active, scope, leases, event, rows, afterRows, finalRows, evidence: { before, after, final } };
+  const outage: ControllerOutageReceipt = { schema: "paperclip.e2e.controller-outage/v1", requestId: "story-test",
+    signal: "SIGKILL", holdMs: 1000, previousPid: 100, replacementPid: 200,
+    startedAt: "2026-10-22T00:00:00.000Z", stoppedAfterMs: 100, cacheDiscarded: true,
+    replacementStartedAfterMs: 1100, readyAfterMs: 4000,
+    recovery: { binding: { companyId: "company", issueId: "task", runId: "run" }, runnerInstanceId: "runner", nativeSessionId: "session",
+      previousGeneration: 1, generation: 2, previousBootId: "old", bootId: "new", previousLeaseExpiresAt: "2026-10-22T00:01:00.000Z",
+      ownershipAcquiredAt: "2026-10-22T00:01:00.001Z", ownershipObservedAfterMs: 60_010,
+      authenticatedAttachmentObservedAfterMs: 61_000, resumedProcessingObservedAfterMs: 61_000,
+      runnerSourceSeqBefore: 4, runnerSourceSeqAfter: 5, previousAuthenticatedConnectionCount: 1,
+      authenticatedConnectionCount: 2, attachmentEvidence: "runner_checkpoint_authenticated_connection" } };
+  return { active, scope, leases, event, rows, afterRows, finalRows, evidence: { before, after, final, outage } };
 }
 
 describe("remote restart boundary polling", () => {
@@ -66,6 +77,64 @@ describe("remote restart boundary polling", () => {
 });
 
 describe("remote restart lifecycle evidence", () => {
+  it("accepts a plugin task with no controller PID and permits completion during the outage", () => {
+    const f = fixture();
+    const task = { runnerId: "runner", leaseId: "lease", runId: "run", sessionId: "session", turnId: "turn", itemId: "item" };
+    const lease = { ...f.leases[0]!, provider: "plugin", metadata: { runnerTaskDispatched: true, runnerTaskIdentity: task } };
+    const run = { ...f.active, processPid: null, processStartedAt: null };
+    const before = observeRemoteRestartBoundary(run, f.rows, [lease], f.scope);
+    const completedLease = { ...lease, status: "released", metadata: {
+      ...lease.metadata, runnerTaskDispatched: false, runnerTaskExecutionStopped: true,
+    } };
+    const after = observeRemoteRestartBoundary({ ...run, status: "succeeded" }, f.finalRows, [completedLease], f.scope, true);
+    expect(before.identity).toEqual(after.identity);
+    expect(before.identity.processPid).toBeNull();
+    expect(before.identity.taskIdentitySha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => observeRemoteRestartBoundary({ ...run, processPid: 123 }, f.rows, [lease], f.scope)).toThrow("not the controller PID");
+    for (const runnerTaskExecutionStopped of [undefined, false]) {
+      const unconfirmed = { ...completedLease, metadata: { ...completedLease.metadata, runnerTaskExecutionStopped } };
+      expect(() => observeRemoteRestartBoundary({ ...run, status: "succeeded" }, f.finalRows, [unconfirmed], f.scope, true))
+        .toThrow("admitted plugin task identity");
+    }
+    const stoppedActiveLease = { ...lease, metadata: completedLease.metadata };
+    expect(() => observeRemoteRestartBoundary(run, f.rows, [stoppedActiveLease], f.scope, true))
+      .toThrow("admitted plugin task identity");
+    const foreignTask = { ...completedLease, metadata: { ...completedLease.metadata, runnerTaskIdentity: { ...task, runId: "replacement" } } };
+    expect(() => observeRemoteRestartBoundary({ ...run, status: "succeeded" }, f.finalRows, [foreignTask], f.scope, true))
+      .toThrow("admitted plugin task identity");
+  });
+  it("does not confuse unchanged metadata or HTTP readiness with authenticated recovery", () => {
+    const { evidence } = fixture();
+    delete evidence.outage.recovery;
+    expect(gradeRemoteRestart(evidence).find(check => check.id === "remote-restart-authenticated-recovery")?.passed).toBe(false);
+  });
+  it("requires every requested immutable replacement instead of counting one restart as rollback", () => {
+    const { evidence } = fixture();
+    const A = { revision: "a".repeat(40), treeSha256: "a".repeat(64), version: "1.0.0", evidence: "development-build" as const };
+    const B = { ...A, revision: "b".repeat(40), treeSha256: "b".repeat(64) };
+    const first = { before: evidence.before, after: evidence.after, outage: { ...evidence.outage, previousArtifact: A, replacementArtifact: B } };
+    const second = { before: evidence.after, after: evidence.after, outage: { ...evidence.outage, previousArtifact: B, replacementArtifact: A } };
+    const grade = (replacements: typeof first[]) => gradeRemoteRestart({ ...evidence, expectedReplacements: 2, replacements })
+      .find(check => check.id === "remote-restart-all-replacements")!.passed;
+    expect(grade([first])).toBe(false);
+    expect(grade([first, second])).toBe(true);
+    for (const field of ["runnerInstanceId", "nativeSessionId"] as const) {
+      expect(grade([{ ...first, outage: { ...first.outage, recovery: { ...first.outage.recovery!, [field]: "another" } } }, second])).toBe(false);
+    }
+    for (const field of ["companyId", "issueId"] as const) {
+      expect(grade([{ ...first, outage: { ...first.outage, recovery: { ...first.outage.recovery!,
+        binding: { ...first.outage.recovery!.binding, [field]: "another" } } } }, second])).toBe(false);
+    }
+    expect(grade([first, { ...second, outage: { ...second.outage, recovery: undefined } }])).toBe(false);
+    expect(grade([first, { ...second, outage: { ...second.outage, previousArtifact: A } }])).toBe(false);
+  });
+  it("rejects otherwise successful recovery without a complete actual-server fault receipt", () => {
+    const { evidence } = fixture();
+    for (const outage of [undefined, { ...evidence.outage, replacementPid: 100 },
+      { ...evidence.outage, replacementStartedAfterMs: 1099 }, { ...evidence.outage, cacheDiscarded: false }]) {
+      expect(gradeRemoteRestart({ ...evidence, outage }).every(check => check.passed)).toBe(false);
+    }
+  });
   it("does not accept a successful replacement as proof that the original remote runner recovered", () => {
     const { evidence } = fixture();
     const replacement = { ...evidence.final.run, id: "replacement", runnerInstanceId: "replacement-runner" };

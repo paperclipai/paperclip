@@ -287,7 +287,7 @@ export function AgentSecretAccessEditor({
           ))}
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">{t("localizationSecrets.noSecretsAreBoundToThisAgentYet33")}</p>
+        <p className="text-sm text-muted-foreground">{t("nov02Components.noCompanySecretReferences", { defaultValue: "No company secret references are bound to this agent yet." })}</p>
       )}
 
       {/* Pending binding proposals targeting this agent (PAP-14731). */}

@@ -1,3 +1,7 @@
+import { notifyAttentionRetentionWork, notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { workspaceOperations } from "@paperclipai/db";
@@ -250,6 +254,8 @@ export interface WorkspaceOperationRecorder {
      * timeout error is rethrown, so a hung provider can never leave an active operation.
      */
     timeoutMs?: number | null;
+    /** Publish the running row under a caller-owned admission fence before run starts. */
+    admit?: (publish: () => Promise<void>) => Promise<void>;
     run: (reportProgress: (input: {
       metadata?: Record<string, unknown> | null;
       system?: string | null;
@@ -309,6 +315,12 @@ export function workspaceOperationService(db: Db) {
     const live: WorkspaceOperation[] = [];
 
     for (const candidate of candidates) {
+      // Migration owns the workspace until its explicit publication/repair. It
+      // has no runtime-control action stamp and must never be swept as abandoned.
+      if (candidate.phase === "remote_workspace_migration") {
+        live.push(toWorkspaceOperation(candidate));
+        continue;
+      }
       const action = readRuntimeControlAction(candidate.metadata);
       if (!action) continue;
 
@@ -476,6 +488,24 @@ export function workspaceOperationService(db: Db) {
         },
 
         async recordOperation(recordInput) {
+          async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
+            if (recordInput.phase !== "workspace_finalize" || (!input.heartbeatRunId && !executionWorkspaceId && !input.issueId)) return write(db);
+            return db.transaction(async tx => {
+              if (!input.heartbeatRunId) {
+                // An export clears barriers for every issue sharing this workspace.
+                if (executionWorkspaceId) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "blocker_attention" });
+                else await notifyIssueAttentionRetentionWork(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
+                return write(tx as unknown as Db);
+              }
+              await notifyNativeResultCommit(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              await notifyNativeStatusReassessment(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              return write(tx as unknown as Db);
+            });
+          }
           const currentUserRedactionOptions = {
             enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
           };
@@ -521,7 +551,8 @@ export function workspaceOperationService(db: Db) {
           if (runtimeControlAction) liveRuntimeControlOperationIds.add(id);
 
           try {
-            await db.insert(workspaceOperations).values({
+            let published = false;
+            const publish = async () => { await writeState(database => database.insert(workspaceOperations).values({
               id,
               companyId: input.companyId,
               executionWorkspaceId,
@@ -539,7 +570,10 @@ export function workspaceOperationService(db: Db) {
               ) as Record<string, unknown> | null,
               startedAt,
               updatedAt: startedAt,
-            });
+            })); published = true; };
+            if (recordInput.admit) await recordInput.admit(publish);
+            else await publish();
+            if (!published) throw new Error("Workspace operation admission did not publish its running row");
           } catch (insertError) {
             liveRuntimeControlOperationIds.delete(id);
             throw insertError;
@@ -630,7 +664,7 @@ export function workspaceOperationService(db: Db) {
             await append("stderr", result.stderr ?? null);
             const finalized = await logStore.finalize(handle);
             const finishedAt = new Date();
-            const row = await db
+            const row = await writeState(database => database
               .update(workspaceOperations)
               .set({
                 executionWorkspaceId,
@@ -650,7 +684,7 @@ export function workspaceOperationService(db: Db) {
               })
               .where(eq(workspaceOperations.id, id))
               .returning()
-              .then((rows) => rows[0] ?? null);
+              .then((rows) => rows[0] ?? null));
             if (!row) throw notFound("Workspace operation not found");
             return toWorkspaceOperation(row);
           } catch (error) {
@@ -660,7 +694,7 @@ export function workspaceOperationService(db: Db) {
             await append("stderr", error instanceof Error ? error.message : String(error)).catch(() => undefined);
             const finalized = await logStore.finalize(handle).catch(() => null);
             const finishedAt = new Date();
-            await db
+            await writeState(database => database
               .update(workspaceOperations)
               .set({
                 executionWorkspaceId,
@@ -687,7 +721,7 @@ export function workspaceOperationService(db: Db) {
                 finishedAt,
                 updatedAt: finishedAt,
               })
-              .where(eq(workspaceOperations.id, id));
+              .where(eq(workspaceOperations.id, id)));
             throw error;
           } finally {
             // Releasing the in-process claim before the request unwinds is what lets the very

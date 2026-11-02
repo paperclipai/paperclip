@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
 import { savedGitWorkspaceRestoration, ensureSavedGitCommit, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
@@ -20,6 +21,7 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   DEFAULT_TAILSCALE_HTTPS_EXPOSURE,
+  readRemoteWorkspaceAuthority,
   deriveViteHmrPort,
   forceLoopbackBindInCommand,
   isRuntimeExposureAppPort,
@@ -44,6 +46,7 @@ import {
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict, unprocessable } from "../errors.js";
+import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
@@ -1636,10 +1639,11 @@ async function writeDirtyQuarantineAuditComments(input: {
   let sourceAuditCommentId: string | null = null;
   let claimantAuditCommentId: string | null = null;
   const now = new Date();
-  if (input.evidence.sourceIssueId) {
+  const sourceIssueId = input.evidence.sourceIssueId;
+  if (sourceIssueId) {
     const [sourceComment] = await insertIssueComment(input.db, {
       companyId: input.companyId,
-      issueId: input.evidence.sourceIssueId,
+      issueId: sourceIssueId,
       authorAgentId: null,
       authorUserId: null,
       authorType: "system",
@@ -1647,10 +1651,10 @@ async function writeDirtyQuarantineAuditComments(input: {
       body,
     });
     sourceAuditCommentId = sourceComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, input.evidence.sourceIssueId));
+    await input.db.transaction(async tx => {
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, sourceIssueId));
+    });
   }
 
   const claimantIssueId = input.evidence.contention?.claimedByIssueId ?? null;
@@ -1665,10 +1669,10 @@ async function writeDirtyQuarantineAuditComments(input: {
       body,
     });
     claimantAuditCommentId = claimantComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, claimantIssueId));
+    await input.db.transaction(async tx => {
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, claimantIssueId));
+    });
   }
 
   return { sourceAuditCommentId, claimantAuditCommentId };
@@ -4277,6 +4281,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   forceWorktreeRemoval?: boolean;
 }) {
   if (input.workspace.providerType === "plugin") throw new Error("Managed workspace cleanup requires its storage plugin");
+  if (readRemoteWorkspaceAuthority(input.workspace.metadata)) throw new Error("Remote workspace cleanup requires its sandbox lifecycle");
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const isolatedSource = await verifiedRecordedIsolatedRemoteSource(input.workspace);
@@ -7536,14 +7541,14 @@ function selectRuntimeServiceEntries(input: {
   });
 }
 
-async function isPersistedIsolatedExecutionWorkspace(input: {
+async function inspectPersistedRuntimeWorkspace(input: {
   db?: Db;
   companyId: string;
   executionWorkspaceId?: string | null;
 }) {
-  if (!input.db || !input.executionWorkspaceId) return false;
+  if (!input.db || !input.executionWorkspaceId) return { isolated: false, remote: false };
   const row = await input.db
-    .select({ mode: executionWorkspaces.mode })
+    .select({ mode: executionWorkspaces.mode, metadata: executionWorkspaces.metadata })
     .from(executionWorkspaces)
     .where(
       and(
@@ -7553,7 +7558,7 @@ async function isPersistedIsolatedExecutionWorkspace(input: {
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
-  return row?.mode === "isolated_workspace";
+  return { isolated: row?.mode === "isolated_workspace", remote: Boolean(readRemoteWorkspaceAuthority(row?.metadata)) };
 }
 
 type EnsureRuntimeServicesForRunInput = {
@@ -7581,16 +7586,24 @@ async function ensureRuntimeServicesForRunInvocation(
   });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
+  const persistedWorkspace = await inspectPersistedRuntimeWorkspace({
+    db: input.db,
+    companyId: input.agent.companyId,
+    executionWorkspaceId: input.executionWorkspaceId,
+  });
+  if (persistedWorkspace.remote) {
+    if (rawServices.length > 0) {
+      throw new WorkspaceRuntimeValidationFailure("Remote workspace storage does not support Core workspace services.",
+        { reason: "remote_workspace_runtime_services_unsupported" });
+    }
+    return [];
+  }
+  const allowFixedPortFallback = persistedWorkspace.isolated;
   const runtimeProvision = input.skipHostProvision
     ? { command: "", kind: null }
     : resolveRuntimeProvision(input);
   const runtimeProvisionCommand = runtimeProvision.command;
   const provisionCoordinator = createRuntimeProvisionCoordinator();
-  const allowFixedPortFallback = await isPersistedIsolatedExecutionWorkspace({
-    db: input.db,
-    companyId: input.agent.companyId,
-    executionWorkspaceId: input.executionWorkspaceId,
-  });
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
 
   try {
@@ -8210,6 +8223,7 @@ export async function startRuntimeServicesForWorkspaceControl(
     defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
     serviceStates: readConfiguredServiceStates(input.config),
   });
+  if (services.length === 0) return [];
   const invocationId = input.invocationId ?? "workspace_control";
   const mutexPlan = resolveRuntimeStartMutexPlan({
     services,
@@ -8223,7 +8237,32 @@ export async function startRuntimeServicesForWorkspaceControl(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      () => startRuntimeServicesForWorkspaceControlInvocation(input),
+      async () => {
+        if (!input.db || !input.executionWorkspaceId) {
+          return startRuntimeServicesForWorkspaceControlInvocation(input);
+        }
+        // Startup and direct callers can bypass the HTTP operation recorder.
+        // Keep migration fenced through provision/bind/persistence, including the
+        // HTTPS path which intentionally commits its reservation before binding.
+        return withExecutionWorkspaceLifecycleLock(input.db, input.executionWorkspaceId, async (tx) => {
+          const [fresh] = await tx.select({ cwd: executionWorkspaces.cwd, metadata: executionWorkspaces.metadata })
+            .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.executionWorkspaceId!),
+              eq(executionWorkspaces.companyId, input.actor.companyId)));
+          if (!fresh) throw new Error("Execution workspace not found before starting runtime services");
+          if (readRemoteWorkspaceAuthority(fresh.metadata)) {
+            throw unprocessable("Workspace commands are not supported for remote workspaces yet. Run the command through an agent task.",
+              { code: "remote_workspace_runtime_commands_unsupported" });
+          }
+          if (fresh.metadata?.remoteWorkspaceMigration) {
+            throw conflict("The workspace is being moved to remote storage. Retry after migration completes.",
+              { code: "workspace_runtime_migration_in_progress" });
+          }
+          if (fresh.cwd !== input.workspace.cwd) {
+            throw conflict("Execution workspace changed before command admission.", { code: "workspace_runtime_authority_changed" });
+          }
+          return startRuntimeServicesForWorkspaceControlInvocation(input);
+        });
+      },
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);

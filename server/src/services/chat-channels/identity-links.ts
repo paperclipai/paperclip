@@ -1,3 +1,4 @@
+import { notifyChatCompanyAuthorityChange } from "../chat-run-milestone-notifications.js";
 import { githubIdentityFields } from "./github/identity-links.js";
 import { createSlackIdentityLinks, type SlackIdentityEffectStager } from "./slack/identity-links.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -319,6 +320,7 @@ export function createChatIdentityLinks(db: Db, options: ChatIdentityLinkOptions
           },
         );
       }
+      await notifyChatCompanyAuthorityChange(tx, { companyId: currentLink.companyId });
       const confirmedLink = await tx
         .update(chatIdentityLinks)
         .set({

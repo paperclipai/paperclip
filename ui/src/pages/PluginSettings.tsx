@@ -1,4 +1,5 @@
 import { i18n, t, useTranslation } from "@/i18n";
+import { sandboxProviderTextDisplay } from "@/lib/sandbox-provider-display";
 import { pluginJobTriggerLabel, pluginStatusLabel } from "@/lib/plugin-display";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -128,7 +129,7 @@ export function PluginSettings() {
       { label: selectedCompany?.name ?? t("localizationPlugins.organization"), href: "/dashboard" },
       { get ["label"]() { return t("localizationPlugins.ui_Settings"); }, href: "/company/settings" },
       { get ["label"]() { return t("localizationPlugins.ui_Plugins"); }, href: "/company/settings/instance/plugins" },
-      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? t("localizationPlugins.pluginDetails") },
+      { label: sandboxProviderTextDisplay(plugin?.manifestJson.id, plugin?.manifestJson?.displayName ?? plugin?.packageName ?? t("localizationPlugins.pluginDetails")) },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin, t]);
 
@@ -151,7 +152,7 @@ export function PluginSettings() {
       : plugin.status === "error"
         ? "destructive"
         : "secondary";
-  const pluginDescription = plugin.manifestJson.description || t("localizationPlugins.noDescription");
+  const pluginDescription = sandboxProviderTextDisplay(plugin.manifestJson.id, plugin.manifestJson.description) || t("localizationPlugins.noDescription");
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
   const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
   const localFolderDeclarations = plugin.manifestJson.localFolders ?? [];
@@ -162,7 +163,7 @@ export function PluginSettings() {
   // the policy is known.
   const hasLocalFolders = localFolderDeclarations.length > 0 && !hideHostPaths;
   const environmentDriverNames = environmentDrivers
-    .map((driver) => driver.displayName?.trim() || driver.driverKey)
+    .map((driver) => sandboxProviderTextDisplay(plugin.manifestJson.id, driver.displayName?.trim() || driver.driverKey))
     .filter((name, index, values) => values.indexOf(name) === index);
   const driverLabel = environmentDriverNames.join(", ");
 
@@ -176,7 +177,7 @@ export function PluginSettings() {
         </Link>
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
+          <h1 className="text-xl font-semibold">{sandboxProviderTextDisplay(plugin.manifestJson.id, plugin.manifestJson.displayName ?? plugin.packageName)}</h1>
           <Badge variant={statusVariant} className="ml-2">
             {displayStatus}
           </Badge>

@@ -37,7 +37,7 @@ const providers = [
     name: "Anthropic",
     get description() { return t("oct6Beta.copy082"); },
   },
-  { id: "google", name: "Google", get description() { return t("oct6Beta.copy083"); } },
+  { id: "google", name: "Google", get description() { return t("nov02Components.googleConnectionDescription", { defaultValue: "Antigravity sign-in or Gemini API key" }); } },
   { id: "xai", name: "xAI", get description() { return t("oct6Beta.copy084"); } },
   {
     id: "openrouter",

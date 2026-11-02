@@ -12,7 +12,7 @@ export const sameBinding = (a: AiRuntimeConnectionBinding | undefined, b: AiRunt
 export function bulkAgentDisabledReason(agent: Agent): string | undefined {
   if (["terminated", "pending_approval"].includes(agent.status)) return t("oct26Settings.bulk.unavailableAgent");
   if (agentConnection(agent)?.mode === "router") return t("oct26Settings.bulk.poolMembers");
-  if (!["codex_local", "claude_local", "gemini_local", "grok_local", "opencode_local", "hermes_local", "pi_local", "copilot_runtime", "cursor_local"].includes(bulkAgentHarness(agent))) return t("oct26Settings.bulk.managedExternally");
+  if (!["codex_local", "claude_local", "gemini_local", "grok_local", "opencode_local", "hermes_local", "pi_local", "copilot_runtime", "antigravity_runtime", "cursor_local"].includes(bulkAgentHarness(agent))) return t("oct26Settings.bulk.managedExternally");
 }
 
 export function resolveBulkConnection(binding: AiConnectionBinding | undefined, accounts: AiConnectionList) {

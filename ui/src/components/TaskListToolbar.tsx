@@ -11,9 +11,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { taskListViews as views, type TaskListView } from "@/lib/task-list-views";
 
 /** Canonical proposed task toolbar; review under Components / Toolbars / Tasks. */
-export function TaskListToolbar({ view, onViewChange, query, onQueryChange, searchRef, layout, onLayoutChange, allExpanded, onToggleExpanded, onNewTask, filters }: {
+export function TaskListToolbar({ view, onViewChange, viewOptions = views, query, onQueryChange, searchRef, layout, onLayoutChange, allExpanded, onToggleExpanded, onNewTask, filters }: {
   view: TaskListView;
   onViewChange: (view: TaskListView) => void;
+  viewOptions?: readonly { value: TaskListView; label: string }[];
   query: string;
   onQueryChange: (query: string) => void;
   searchRef?: Ref<HTMLInputElement>;
@@ -28,11 +29,11 @@ export function TaskListToolbar({ view, onViewChange, query, onQueryChange, sear
   return (
     <div data-canonical-toolbar="tasks" className="design-page-toolbar" role="toolbar" aria-label={t("oct26Toolbar.taskControls")}>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="outline" className="design-toolbar-button design-view-trigger" aria-label={t("oct26Toolbar.taskView", { view: toolbarLabel(views.find(option => option.value === view)!.label) })}>{toolbarLabel(views.find(option => option.value === view)!.label)}<ChevronDown aria-hidden /></Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild><Button variant="outline" className="design-toolbar-button design-view-trigger" aria-label={t("oct26Toolbar.taskView", { view: toolbarLabel(viewOptions.find(option => option.value === view)!.label) })}>{toolbarLabel(viewOptions.find(option => option.value === view)!.label)}<ChevronDown aria-hidden /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="task-list-options" aria-label={t("oct26Toolbar.taskViews")}>
           <DropdownMenuLabel asChild><FlyoutHeader className="task-list-options-heading">{t("oct26Toolbar.views")}</FlyoutHeader></DropdownMenuLabel>
           <DropdownMenuRadioGroup asChild value={view} onValueChange={value => onViewChange(value as TaskListView)}><FlyoutOptions className="task-list-options-items">
-            {views.map(option => <DropdownMenuRadioItem className="task-list-options-item" key={option.value} value={option.value}>{toolbarLabel(option.label)}</DropdownMenuRadioItem>)}
+            {viewOptions.map(option => <DropdownMenuRadioItem className="task-list-options-item" key={option.value} value={option.value}>{toolbarLabel(option.label)}</DropdownMenuRadioItem>)}
           </FlyoutOptions></DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>

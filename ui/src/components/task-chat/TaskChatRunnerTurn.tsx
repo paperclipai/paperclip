@@ -1,6 +1,6 @@
 import { t, useTranslation } from "@/i18n";
 import { taskChatDurationLabel, taskChatDisplayLabel } from "./task-chat-display";
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
@@ -124,6 +124,36 @@ function RunnerCurrentActivityTail({ status, waitingLabel }: { status: string; w
   </div>;
 }
 
+interface RunnerHeaderProps {
+  runId?: string | null;
+  agentName?: string | null;
+  agentIcon?: string | null;
+  agent?: import("../AgentAvatar").AvatarAgent;
+  status: string;
+  execution?: ExecutionProjection | null;
+  preparationLabel?: string;
+  startedAtMs: number | null;
+  finishedAtMs?: number | null;
+  continuedAfterSteering?: boolean;
+}
+
+function runnerWaitingLabel({ runId, status, execution, preparationLabel }: RunnerHeaderProps) {
+  if (isTerminalRunStatus(status)) return null;
+  if (execution?.phase === "waiting_for_provider") return taskChatDisplayLabel(execution.label);
+  if (!runId && preparationLabel) return preparationLabel;
+  return status === "queued" ? taskChatDisplayLabel(execution?.label ?? "Queued") : null;
+}
+
+/** One identity stays mounted while admission discovers the run's renderer. */
+export function TaskChatRunnerHeader({ statusContent, ...props }: RunnerHeaderProps & { statusContent?: ReactNode }) {
+  useTranslation();
+  return <div className="flex min-h-8 min-w-0 items-center gap-2 pb-1 pt-2" data-testid="task-chat-runner-identity-row">
+    {props.agentName ? <TaskChatAgentIdentity agentName={props.agentName} agentIcon={props.agentIcon} agent={props.agent} /> : null}
+    {statusContent ?? <RunnerTurnStatus status={props.status} startedAtMs={props.startedAtMs} finishedAtMs={props.finishedAtMs}
+      continuedAfterSteering={props.continuedAfterSteering} waitingLabel={runnerWaitingLabel(props)} />}
+  </div>;
+}
+
 export function TaskChatRunnerTurn({
   runId,
   agentName,
@@ -139,6 +169,7 @@ export function TaskChatRunnerTurn({
   allowSummaryFallback = true,
   suppressFinal = false,
   continuedAfterSteering = false,
+  showHeader = true,
   onRuntimeRequestDecision,
 }: {
   /** Stable identity used to clear replay-latched final text for the next turn. */
@@ -159,6 +190,8 @@ export function TaskChatRunnerTurn({
   suppressFinal?: boolean;
   /** The visible tail resumes the same native run after an accepted steer. */
   continuedAfterSteering?: boolean;
+  /** The task thread keeps a shared header across native and legacy discovery. */
+  showHeader?: boolean;
   onRuntimeRequestDecision?: (
     item: TaskChatRuntimeRequestItem,
     decision: TaskChatRuntimeRequestDecision,
@@ -166,8 +199,7 @@ export function TaskChatRunnerTurn({
 }) {
   useTranslation();
   const terminal = isTerminalRunStatus(status);
-  const waitingLabel = !terminal && execution?.phase === "waiting_for_provider" ? taskChatDisplayLabel(execution.label)
-    : !runId && !terminal ? preparationLabel ?? null : null;
+  const waitingLabel = runnerWaitingLabel({ runId, status, execution, preparationLabel, startedAtMs });
   const yielded = items.some(
     (item) =>
       item.kind === "protocol" &&
@@ -226,21 +258,9 @@ export function TaskChatRunnerTurn({
       data-testid="task-chat-runner-turn"
       data-phase={status === "queued" ? "startup" : undefined}
     >
-      <div
-        className="flex min-h-8 min-w-0 items-center gap-2 pb-1 pt-2"
-        data-testid="task-chat-runner-identity-row"
-      >
-        {agentName ? (
-          <TaskChatAgentIdentity agentName={agentName} agentIcon={agentIcon} agent={agent} />
-        ) : null}
-        <RunnerTurnStatus
-          status={status}
-          startedAtMs={startedAtMs}
-          finishedAtMs={finishedAtMs}
-          continuedAfterSteering={continuedAfterSteering}
-          waitingLabel={waitingLabel}
-        />
-      </div>
+      {showHeader ? <TaskChatRunnerHeader runId={runId} agentName={agentName} agentIcon={agentIcon} agent={agent}
+        status={status} execution={execution} preparationLabel={preparationLabel} startedAtMs={startedAtMs}
+        finishedAtMs={finishedAtMs} continuedAfterSteering={continuedAfterSteering} /> : null}
       {activityUnavailable ? (
         <div
           className="px-1 py-1 text-xs text-muted-foreground"

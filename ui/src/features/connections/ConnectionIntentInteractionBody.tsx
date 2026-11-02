@@ -34,7 +34,10 @@ import {
   type ConnectionSetupFlowProps,
 } from "./ConnectionSetupFlow";
 
+import { DecisionCardFooter } from "@/components/DecisionCardFooter";
+
 export interface ConnectionIntentInteractionBodyProps {
+  footerSlot?: ReactNode;
   interaction: ConnectionIntentInteraction;
   currentUserId?: string | null;
   addresseeLabel: string;
@@ -43,6 +46,7 @@ export interface ConnectionIntentInteractionBodyProps {
 }
 
 export function ConnectionIntentInteractionBody({
+  footerSlot,
   interaction,
   currentUserId,
   addresseeLabel,
@@ -66,6 +70,7 @@ export function ConnectionIntentInteractionBody({
   );
   const isPending = interaction.status === "pending";
   const isAi = interaction.payload.purpose === "ai";
+  const isChatHandoff = Boolean(interaction.payload.savedSetup);
   const provider = isAi ? aiProviderSchema.safeParse(interaction.payload.serviceSlug).data : undefined;
   const serviceName = provider ? AI_CONNECTION_CAPABILITIES[provider].name : interaction.payload.serviceName;
   const isEmail = interaction.payload.purpose === "channel" && interaction.payload.serviceSlug === "agentmail";
@@ -296,6 +301,7 @@ export function ConnectionIntentInteractionBody({
             {status.body ? <p className="mt-1 text-sm text-muted-foreground">{status.body}</p> : null}
           </div>
         </div>
+        <DecisionCardFooter leading={footerSlot} className="mt-4" />
       </div>
     );
   }
@@ -322,6 +328,7 @@ export function ConnectionIntentInteractionBody({
             </p> : null}
           </div>
         </div>
+        <DecisionCardFooter leading={footerSlot} className="mt-4" />
       </div>
     );
   }
@@ -348,12 +355,14 @@ export function ConnectionIntentInteractionBody({
         </ul>
         {setupQuery.isError || completeMutation.isError || declineMutation.isError ? <p role="alert" className="text-sm text-destructive">{(completeMutation.error ?? declineMutation.error ?? setupQuery.error)?.message ?? t("oct6Beta.copy149")}</p> : null}
         {setupQuery.data?.canGrantAccess === false ? <p role="status" className="text-sm text-muted-foreground">{t("oct6Beta.copy150")}</p> : null}
-        <div className="flex items-center justify-between gap-2">
+        <DecisionCardFooter leading={footerSlot}>
+          <div className={footerSlot ? "flex flex-wrap items-center justify-end gap-2" : "flex items-center justify-between gap-2"}>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => declineMutation.mutate()}>{t("localizationIssueDetail.ui_Not_now")}</Button>
           <Button size="sm" disabled={busy || !setupQuery.data?.canGrantAccess} onClick={() => completeMutation.mutate(accessRequest.connectionId)}>
             {completeMutation.isPending ? t("oct6Beta.copy151") : t("oct6Beta.copy152")}
           </Button>
-        </div>
+          </div>
+        </DecisionCardFooter>
       </div>
     </div>;
   }
@@ -470,6 +479,7 @@ export function ConnectionIntentInteractionBody({
                 ? t("oct6Beta.dynamic082", { v0: interaction.payload.requestingAgentName })
                 : interaction.payload.purpose === "ai"
                 ? t("oct5Apps.copy040")
+                : isChatHandoff ? t("nov02Core.chatHandoffAuthentication")
                 : isEmail ? t("oct5Apps.copy041")
                 : t("localizationConnections.connectYourIdentityOrReuseAnEligibleConnectio221")}
             </p>
@@ -481,7 +491,10 @@ export function ConnectionIntentInteractionBody({
             <RotateCcw className="h-4 w-4" />{t("localizationConnections.authorizationDidnTFinishYourPreviousChoicesAr222")}</p>
         ) : null}
 
-        {isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
+        {isChatHandoff ? <div className="mt-4 flex items-center justify-between gap-2">
+          <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>{t("localizationIssueDetail.ui_Not_now")}</Button>
+          {setupQuery.data?.chatSetup ? <Button asChild><a href={setupQuery.data.chatSetup.path} target="_blank" rel="noopener noreferrer">{t("nov02Core.continueAuthentication")}</a></Button> : setupContent}
+        </div> : isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
           {setupContent}
           <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>{t("localizationIssueDetail.ui_Not_now")}</Button>
         </> : <AgentMailIntentSetup
@@ -493,49 +506,55 @@ export function ConnectionIntentInteractionBody({
           onComplete={async connectionId => { await completeMutation.mutateAsync(connectionId); }}
           onDecline={() => declineMutation.mutate()}
           declining={declineMutation.isPending}
-        /> : <div className="mt-4 flex flex-wrap justify-end gap-2">
-          {!isAi && <Button
-            type="button"
-            variant="ghost"
-            disabled={declineMutation.isPending || completeMutation.isPending || authorizing}
-            onClick={() => declineMutation.mutate()}
-          >
-            {t("localizationIssueDetail.ui_Not_now")}
-          </Button>}
-          {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
-            <Plug className="h-4 w-4" />{open ? t("sep13Connections.closeSetup") : readyForAdoption ? t("chatUi.connectionIntentInteractionBody.continueSetup") : needsOwnAiConnection ? t("oct6Beta.dynamic083", { v0: aiProviderName }) : t("sep13Connections.fixConnection")}
-          </Button> : <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button type="button">
-                {authorizing ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plug className="h-4 w-4" />
-                )}
-                {authorizing
-                  ? t("chatUi.connectionIntentInteractionBody.continueSetup")
-                  : needsRetry
-                    ? t("localizationIssuePanels.ui_Try_again_982hh6")
-                    : setupQuery.data?.existingConnections.length ? t("localizationConnections.connectUseExisting224") : t("localizationConnections.connect138")}
-              </Button>
-            </DialogTrigger>
-            <DialogContent
-              className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl"
-              showCloseButton={false}
-              onCloseAutoFocus={(event) => {
-                event.preventDefault();
-                focusTargetRef.current?.focus();
-              }}
+        /> : <DecisionCardFooter leading={footerSlot} className="mt-4">
+          <div className={footerSlot ? "flex flex-wrap items-center justify-end gap-2" : "mt-4 flex flex-wrap justify-end gap-2"}>
+            {!isAi && <Button
+              type="button"
+              variant="ghost"
+              disabled={declineMutation.isPending || completeMutation.isPending || authorizing}
+              onClick={() => declineMutation.mutate()}
             >
-              <DialogHeader className="sr-only">
-                <DialogTitle>{t("localizationConnections.connectApp", { app: interaction.payload.serviceName })}
-                </DialogTitle>
-                <DialogDescription>{t("localizationConnections.completeConnectionSetupWithoutLeavingThisTask225")}</DialogDescription>
-              </DialogHeader>
-              {setupContent}
-            </DialogContent>
-          </Dialog>}
-        </div>}
+              {t("localizationIssueDetail.ui_Not_now")}
+            </Button>}
+            {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
+              <Plug className="h-4 w-4" />{open ? t("sep13Connections.closeSetup") : readyForAdoption ? t("chatUi.connectionIntentInteractionBody.continueSetup") : needsOwnAiConnection ? t("oct6Beta.dynamic083", { v0: aiProviderName }) : t("sep13Connections.fixConnection")}
+            </Button> : <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger asChild>
+                <Button type="button">
+                  {authorizing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plug className="h-4 w-4" />
+                  )}
+                  {authorizing
+                    ? t("chatUi.connectionIntentInteractionBody.continueSetup")
+                    : needsRetry
+                      ? t("localizationIssuePanels.ui_Try_again_982hh6")
+                      : setupQuery.data?.existingConnections.length ? t("localizationConnections.connectUseExisting224") : t("localizationConnections.connect138")}
+                </Button>
+              </DialogTrigger>
+              <DialogContent
+                className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl"
+                showCloseButton={false}
+                onCloseAutoFocus={(event) => {
+                  event.preventDefault();
+                  focusTargetRef.current?.focus();
+                }}
+              >
+                <DialogHeader className="sr-only">
+                  <DialogTitle>
+                    {t("localizationConnections.connectApp", { app: interaction.payload.serviceName })}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {t("localizationConnections.completeConnectionSetupWithoutLeavingThisTask225")}
+                  </DialogDescription>
+                </DialogHeader>
+                {setupContent}
+              </DialogContent>
+            </Dialog>}
+          </div>
+        </DecisionCardFooter>}
+        {isEmail ? <DecisionCardFooter leading={footerSlot} className="mt-4" /> : null}
         {isAi && open ? <div className="mt-4 border-t border-border pt-4" data-testid="ai-connection-inline-repair">{inlineContent}</div> : null}
 
         {(!isEmail && completeMutation.isError) ||

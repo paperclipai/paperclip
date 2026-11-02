@@ -35,7 +35,8 @@ import { AgentStatusBadge } from "./StatusBadge";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import { agentRouteRef } from "../lib/utils";
+import { agentRouteRef, cn } from "../lib/utils";
+import { pendingAgentSetupChoice } from "../lib/agent-setup-choice";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
@@ -178,6 +179,8 @@ export function AgentActionButtons({
   onTerminateSuccess,
   pauseConfirm,
   hideTerminate = false,
+  workActionsInMenu = false,
+  menuItems = [],
   children,
   className,
 }: {
@@ -203,6 +206,10 @@ export function AgentActionButtons({
   pauseConfirm?: { title: string; description: ReactNode };
   /** Hide the Terminate action (e.g. built-in agents are undeletable). */
   hideTerminate?: boolean;
+  /** Put Run now, Pause/Resume and Clear error in the overflow menu, leaving Assign task (or Finish setup, while setup is pending) as the one button. */
+  workActionsInMenu?: boolean;
+  /** Extra overflow items shown after the work actions when `workActionsInMenu` is on. */
+  menuItems?: ReadonlyArray<{ label: string; icon: typeof Plus; onSelect: () => void; disabled?: boolean }>;
   /**
    * Optional inline error reporter. When provided it is used instead of a toast
    * for action failures (preserves the detail page's inline error banner). When
@@ -247,6 +254,8 @@ export function AgentActionButtons({
   const canonicalAgentRef = agentRouteRef(agent);
   const isPaused = agent.lifecycleState ? agent.lifecycleState === "paused" : agent.status === "paused";
   const isError = agent.status === "error";
+  const needsSetup = agent.pauseReason === "setup" && agent.status !== "terminated"
+    && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState ?? "");
 
   const reportError = useCallback(
     (message: string) => {
@@ -368,6 +377,179 @@ export function AgentActionButtons({
       : null;
   const persistentProviderTrace = runtimeDebug?.providerTrace === "raw";
 
+  const finishSetup = () => {
+    if (!confirmNavigationStart(agentActionStartedDirtyRef)) return;
+    navigate(`/agents/new?${new URLSearchParams({
+      name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
+      runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
+      ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
+      ...pendingAgentSetupChoice(agent),
+    })}`);
+  };
+  const pauseDialog = pauseConfirm ? (
+    <AlertDialog open={pauseConfirmOpen} onOpenChange={setPauseConfirmOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{pauseConfirm.title}</AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div>{pauseConfirm.description}</div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("pages.cliAuth.cancel")}</AlertDialogCancel>
+          <AlertDialogAction onClick={() => agentAction.mutate("pause")}>
+            {t("localizationAgentManagement.pauseAnyway137")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  ) : null;
+
+  if (workActionsInMenu) {
+    const item = "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50";
+    const icon = "size-4 shrink-0 text-muted-foreground";
+    const select = (action: () => void) => () => {
+      setMoreOpen(false);
+      action();
+    };
+    return (
+      <div className={className ?? "flex shrink-0 items-center gap-2"}>
+        {persistentProviderTrace ? (
+          <span
+            className="hidden items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary lg:inline-flex"
+            title={t("localizationAgentManagement.exactProviderTrafficWillBeCapturedForFutureRunsAndRetai132")}
+          >
+            <Bug className="h-3.5 w-3.5" />
+            {t("localizationAgentManagement.rawTracingOn133")}
+          </span>
+        ) : null}
+        {children}
+        <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="icon" aria-label={t("nov02Components.openAgentActions", { defaultValue: "Open actions for {{name}}", name: agent.name })}>
+              <MoreHorizontal className="size-4" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-52 p-1" align="end">
+            {needsSetup ? (
+              <button
+                type="button"
+                className={item}
+                disabled={assignAndRunDisabled}
+                title={workActionsDisabled ? workActionsDisabledReason : undefined}
+                onClick={select(() => openNewIssue({ assigneeAgentId: agent.id }))}
+              >
+                <Plus className={icon} />
+                {assignLabel}
+              </button>
+            ) : showRun ? (
+              <button
+                type="button"
+                className={item}
+                disabled={assignAndRunDisabled}
+                title={workActionsDisabled ? workActionsDisabledReason : undefined}
+                onClick={select(() => {
+                  if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+                  agentAction.mutate("invoke");
+                })}
+              >
+                <Play className={icon} />
+                {runLabel}
+              </button>
+            ) : null}
+            {needsSetup ? null : isError ? (
+              <button
+                type="button"
+                className={cn(item, "text-destructive")}
+                disabled={clearErrorDisabled}
+                aria-label={t("localizationAgentManagement.clearErrorAndReturnAgentToIdle117")}
+                onClick={select(() => agentAction.mutate("clear_error"))}
+              >
+                <CheckCircle2 className={cn(icon, "text-destructive")} />
+                {t("localizationAgentManagement.clearError118")}
+              </button>
+            ) : isPaused ? (
+              <button type="button" className={item} disabled={pauseResumeDisabled} onClick={select(() => agentAction.mutate("resume"))}>
+                <Play className={icon} />
+                {t("pages.agentDetail.resume")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={item}
+                disabled={pauseResumeDisabled}
+                onClick={select(() => (pauseConfirm ? setPauseConfirmOpen(true) : agentAction.mutate("pause")))}
+              >
+                <Pause className={icon} />
+                {t("localizationRoutines.pause")}
+              </button>
+            )}
+            <div role="separator" className="-mx-1 my-1 h-px bg-border" />
+            {menuItems.map(({ label, icon: Icon, onSelect, disabled: itemDisabled }) => (
+              <button key={label} type="button" className={item} disabled={itemDisabled} onClick={select(onSelect)}>
+                <Icon className={icon} />
+                {label}
+              </button>
+            ))}
+            <button type="button" className={item} disabled={duplicateAgent.isPending} onClick={handleDuplicateAgent}>
+              {duplicateAgent.isPending ? <Loader2 className={cn(icon, "animate-spin")} /> : <Copy className={icon} />}
+              {t("nov02Components.duplicateAgent", { defaultValue: "Duplicate agent" })}
+            </button>
+            <button
+              type="button"
+              className={item}
+              onClick={select(() => {
+                void copyTextToClipboard(agent.id).catch(() => {
+                  pushToast({ title: t("pages.agentDetail.copyFailed"), body: t("pages.agentDetail.clipboardUnavailable"), tone: "error" });
+                });
+              })}
+            >
+              <Copy className={icon} />
+              {t("nov02Components.copyAgentId", { defaultValue: "Copy agent ID" })}
+            </button>
+            <button type="button" className={item} onClick={select(() => resetTaskSession.mutate())}>
+              <RotateCcw className={icon} />
+              {t("nov02Components.resetSessions", { defaultValue: "Reset sessions" })}
+            </button>
+            {hideTerminate ? null : (
+              <>
+                <div role="separator" className="-mx-1 my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  className={cn(item, "text-destructive")}
+                  onClick={select(() => {
+                    if (onTerminateSuccess && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+                    agentAction.mutate("terminate");
+                  })}
+                >
+                  <Trash2 className={cn(icon, "text-destructive")} />
+                  {t("localizationAgentManagement.terminate144")}
+                </button>
+              </>
+            )}
+          </PopoverContent>
+        </Popover>
+        {needsSetup ? (
+          <Button size={size} disabled={disabled} onClick={finishSetup}>
+            <Play className="size-4" />
+            {t("pages.apps.connect.install.finish")}
+          </Button>
+        ) : (
+          <Button
+            size={size}
+            onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
+            disabled={assignAndRunDisabled}
+            title={workActionsDisabled ? workActionsDisabledReason : undefined}
+          >
+            <Plus className="size-4" />
+            {assignLabel}
+          </Button>
+        )}
+        {pauseDialog}
+      </div>
+    );
+  }
+
   return (
     <div className={className ?? "flex items-center gap-1 sm:gap-2 shrink-0"}>
       {persistentProviderTrace ? (
@@ -387,7 +569,17 @@ export function AgentActionButtons({
         <Plus className="h-3.5 w-3.5 sm:mr-1" />
         <span className="hidden sm:inline">{assignLabel}</span>
       </Button>
-      {showRun && <RunButton
+      {needsSetup ? (
+        <Button variant="outline" size={size} disabled={disabled} onClick={() => {
+          if (!confirmNavigationStart(agentActionStartedDirtyRef)) return;
+          navigate(`/agents/new?${new URLSearchParams({
+            name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
+            runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
+            ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
+            ...pendingAgentSetupChoice(agent),
+          })}`);
+        }}>{t("pages.apps.connect.install.finish")}</Button>
+      ) : showRun && <RunButton
         onClick={() => {
           if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
           agentAction.mutate("invoke");
@@ -396,18 +588,12 @@ export function AgentActionButtons({
         label={runLabel}
         size={size}
       />}
-      {isError ? (
+      {!needsSetup && (isError ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
           disabled={clearErrorDisabled}
           size={size}
         />
-      ) : agent.pauseReason === "setup" && agent.lifecycleState === "paused" ? (
-        <Button variant="outline" size={size} disabled={disabled} onClick={() => navigate(`/agents/new?${new URLSearchParams({
-          name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
-          runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
-          ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
-        })}`)}>{translateOct26("sep28Routines.finishSetup")}</Button>
       ) : (
         <PauseResumeButton
           isPaused={isPaused}
@@ -416,7 +602,7 @@ export function AgentActionButtons({
           disabled={pauseResumeDisabled}
           size={size}
         />
-      )}
+      ))}
       {pauseConfirm && (
         <AlertDialog open={pauseConfirmOpen} onOpenChange={setPauseConfirmOpen}>
           <AlertDialogContent>

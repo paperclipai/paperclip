@@ -9,7 +9,7 @@ export const AI_PROVIDERS: Record<
   { name: string; subscriptionName?: string; logo?: string }
 > = {
   github: { name: "GitHub Copilot", logo: "/brands/apps/github.svg" },
-  google: { name: "Google", logo: "/brands/apps/google.svg" },
+  google: { name: "Google", subscriptionName: "Google Antigravity account", logo: "/brands/apps/google.svg" },
   anthropic: {
     name: "Claude",
     get subscriptionName() { return t("sep13Connections.claudeSubscription"); },
@@ -63,6 +63,16 @@ export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
   return method === "subscription"
     ? (AI_PROVIDERS[provider].subscriptionName ?? t("sep13Connections.subscriptionUnavailable"))
     : provider === "github" ? t("oct26Finish.personalToken") : t("sep13Connections.apiKey");
+}
+
+export function aiConnectionDisplayLabel(connection: AiConnectionSummary) {
+  const personal = connection.ownership === "personal";
+  return [
+    connection.name,
+    aiMethodLabel(connection.provider, connection.method),
+    personal ? "Personal" : "Company shared",
+    connection.accountLabel || connection.ownerName,
+  ].filter(Boolean).join(" · ");
 }
 
 export function matchesAiRequirement(

@@ -1,0 +1,218 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: agents
+status: planned
+scenarios:
+  - id: agents.hire-claude-code
+    capabilities:
+      - agents/hire
+      - agents/organization
+      - runs-adapters/validation
+    context: >-
+      No agent named Morgan exists. The CEO has hiring and configuration grants, an eligible
+      Claude Code account and computer are ready, and company policy does not require approval
+      for this hire.
+    query: >-
+      Hire Morgan as a frontend engineer using Claude Code, reporting to you.
+    expected_outcome: >-
+      The agent creates one permanent Morgan with the requested role, reporting line, harness
+      and usable account binding. Chat links to the saved profile and distinguishes creation
+      from runtime readiness. It verifies the saved configuration and reports any failed
+      validation rather than calling an unusable hire ready.
+  - id: agents.hire-needs-account
+    capabilities:
+      - agents/hire
+      - connection-setup/task-request
+    context: >-
+      Claude Code is available but no eligible Anthropic account is connected. Morgan does not
+      exist; hiring is otherwise allowed.
+    query: >-
+      Hire Morgan as a frontend engineer using Claude Code.
+    expected_outcome: >-
+      The agent identifies the missing account and presents the supported setup request to the
+      responsible person. It preserves the requested hire details, does not silently substitute
+      a different harness, and resumes after usable access is established without creating
+      duplicate agents. Until then it describes the hire as waiting for setup.
+  - id: agents.hire-needs-approval
+    capabilities:
+      - agents/hire
+      - questions-and-approvals/governance
+    context: >-
+      The CEO may propose hires, but company policy requires board approval. The account and
+      runtime are ready.
+    query: >-
+      Hire a QA engineer named Morgan.
+    expected_outcome: >-
+      One inspectable hiring proposal contains the intended role and configuration. The agent
+      reports the pending approval and does not run the proposed employee before approval.
+      Acceptance activates the same intended hire; rejection leaves no working employee or
+      repeated proposal unless the person changes their request.
+  - id: agents.hire-denied
+    capabilities:
+      - agents/hire
+      - access/resources
+    context: >-
+      The speaking agent has the title CEO but its effective agents:create permission is denied.
+    query: >-
+      Hire a QA engineer named Morgan.
+    expected_outcome: >-
+      The agent explains the permission limitation and offers the appropriate authorized human
+      path. No employee or disguised delegated hire is created. The response distinguishes a
+      denied permission from a missing provider account and does not claim that the CEO title
+      overrides access policy.
+  - id: agents.ambiguous-cloud-code
+    capabilities:
+      - agents/hire
+      - runs-adapters/availability
+    context: >-
+      Both Claude Code and cloud execution are available, and no earlier conversation resolves
+      which the person means.
+    query: >-
+      Hire me an engineer configured for cloud code.
+    expected_outcome: >-
+      The agent asks whether the person means Claude Code or an agent running on a cloud
+      computer, using a short concrete choice. It retains the role request and waits for that
+      consequential selection before committing a harness or execution target; it does not ask
+      the person to supply internal adapter identifiers.
+  - id: agents.edit-instructions
+    capabilities:
+      - agents/instructions
+    context: >-
+      Morgan has a writable instruction bundle with a saved revision. The CEO may update it;
+      unrelated files contain existing guidance.
+    query: >-
+      Add a rule for Morgan to run the relevant tests before handing work back.
+    expected_outcome: >-
+      Morgan's durable instructions gain the requested rule while retaining unrelated guidance.
+      The response links to the agent or revision and explains when future work will use it. A
+      concurrent edit produces a visible conflict or a fresh merge rather than silently
+      overwriting the newer instructions.
+  - id: agents.restore-instructions
+    capabilities:
+      - agents/instructions
+    context: >-
+      Morgan has two visible instruction revisions and the latest introduced an unwanted rule.
+    query: >-
+      Undo Morgan's last instruction change.
+    expected_outcome: >-
+      The agent identifies the exact last revision and restores the previous contents through
+      the versioned instruction path. History retains both the unwanted edit and the
+      restoration, and chat describes what was restored without claiming to rewind tasks already
+      executed under the old instructions.
+  - id: agents.change-manager
+    capabilities:
+      - agents/organization
+    context: >-
+      Riley is a CTO, Morgan reports to the CEO, and the CEO can edit reporting lines.
+    query: >-
+      Have Morgan report to Riley from now on.
+    expected_outcome: >-
+      Morgan's saved manager becomes Riley and the org view agrees after reload. The agent
+      checks that the result remains a valid company reporting tree and does not change Morgan's
+      account, task ownership or permissions just because the manager changed.
+  - id: agents.choose-primary
+    capabilities:
+      - agents/primary-agent
+      - agent-chat/discovery
+    context: >-
+      The person has a primary agent already and wants Morgan instead. Primary-agent preferences
+      require the person's board session.
+    query: >-
+      Make Morgan my go-to agent when I open Chat.
+    expected_outcome: >-
+      The agent explains the personal primary-agent choice and directs the person to Morgan's
+      supported profile control, including the replacement confirmation. After the human action,
+      the preference belongs only to that person and company; a valid recent chat can still
+      reopen first. Chat does not falsely report a preference write by the agent.
+  - id: agents.pause-agent
+    capabilities:
+      - agents/lifecycle
+    context: >-
+      Morgan is working on a task. Pausing an agent requires board control.
+    query: >-
+      Pause Morgan until I say otherwise.
+    expected_outcome: >-
+      The agent provides the exact agent profile/control for the authorized human to pause
+      Morgan and makes the pending human step explicit. It does not claim a completed pause from
+      a chat acknowledgement. The resulting journey checks actual pause state and explains how
+      existing work settles under that control.
+  - id: agents.resume-agent
+    capabilities:
+      - agents/lifecycle
+    context: >-
+      Morgan is manually paused, the CEO has agent_config:update, and no budget, approval or
+      company hold remains.
+    query: >-
+      Resume Morgan so they can pick up their work.
+    expected_outcome: >-
+      The permitted resume operation changes Morgan's saved availability and chat links to the
+      affected agent. The agent distinguishes being available from a particular run having
+      started. If another execution gate remains, the response reports that gate instead of
+      promising work has resumed.
+  - id: agents.retire-agent
+    capabilities:
+      - agents/lifecycle
+    context: >-
+      Morgan is an ordinary agent with historical tasks and an active assignment. Termination is
+      board-only.
+    query: >-
+      Retire Morgan, but keep their old work.
+    expected_outcome: >-
+      The agent identifies the intended employee and guides the authorized person through the
+      supported retirement control and assignment consequences. Historical tasks and attribution
+      remain inspectable. It never treats deleting history or simply renaming the agent as
+      successful retirement.
+  - id: agents.configure-required-agent
+    capabilities:
+      - agents/built-in
+    context: >-
+      The company has a built-in summarizer whose configuration is editable by the current actor
+      but whose identity is protected.
+    query: >-
+      Tune our summarizer to write shorter updates.
+    expected_outcome: >-
+      The agent updates only supported configuration under the applicable policy and explains
+      the effective change. It preserves the required agent's identity and history. If the
+      requested setting needs a human management step, it points there instead of replacing the
+      built-in agent with an ordinary hire.
+  - id: agents.agent-api-key
+    capabilities:
+      - agents/api-keys
+    context: >-
+      Morgan is active; agent credential creation requires a human with agent-management
+      authority.
+    query: >-
+      Give Morgan a new API key called local integration.
+    expected_outcome: >-
+      The agent directs the authorized person to Morgan's credential controls. The key is
+      created only through that human path, shown once in the secure interface and absent from
+      chat and artifacts. The journey verifies the named key belongs to Morgan and revoking it
+      leaves Morgan's identity intact.
+  - id: agents.existing-grok-bot
+    capabilities:
+      - agents/grok-bot
+      - connection-setup/handoff
+    context: >-
+      The Grok Bot experiment is enabled and the person owns an existing Bot but has not
+      authorized Paperclip.
+    query: >-
+      Connect my existing Grok Bot as an agent here.
+    expected_outcome: >-
+      The agent starts or points to the supported human authorization flow and preserves the
+      chosen company and Bot. Setup is complete only after the authenticated two-way challenge
+      succeeds. Chat states any unsupported workspace, usage or termination capability instead
+      of promising parity with a local coding agent.
+  - id: agents.managed-profile
+    capabilities:
+      - agents/managed-agent-setup
+    context: >-
+      The person asks from ordinary Agent Chat; no qualified Anthropic managed-agent profile
+      exists.
+    query: >-
+      Set up an Anthropic managed agent for this company.
+    expected_outcome: >-
+      The agent explains that qualification and provider provisioning require the operator setup
+      path, including the locked environment and retention acknowledgement. It identifies the
+      next supported setup step without provisioning provider resources under ordinary agent
+      credentials or declaring an unqualified profile ready.

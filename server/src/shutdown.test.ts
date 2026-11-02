@@ -5,6 +5,7 @@ import {
   coordinateHeartbeatSchedulerShutdown,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
+  finishServiceShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
 
@@ -296,6 +297,20 @@ describe("closeHttpListenerForShutdown", () => {
     }
   });
 
+  it("waits for HTTP work without waiting for upgraded sockets to close", async () => {
+    const server = fakeServer({ listening: true, closeDelayMs: null });
+    const requests = deferred();
+    let finished = false;
+    const drain = closeHttpListenerForShutdown({ server, signal: "SIGTERM", log: stubLogger(),
+      drainRequests: () => requests.promise }).then(result => { finished = true; return result; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    requests.resolve();
+    await expect(drain).resolves.toBe("closed");
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(server.closeAllConnections).not.toHaveBeenCalled();
+  });
+
   it("does nothing when the listener was never bound", async () => {
     const server = fakeServer({ listening: false });
     await expect(
@@ -521,5 +536,28 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
       preparationError,
       waitedForSchedulerIdle: true,
     });
+  });
+});
+
+describe("service shutdown failure isolation", () => {
+  it("awaits remaining cleanup before reporting a scheduler failure", async () => {
+    const failure = new Error("plugin result could not be saved");
+    const gate = deferred();
+    const cleanup = vi.fn(() => gate.promise);
+    let finished = false;
+    const stopping = finishServiceShutdown(async () => { throw failure; }, cleanup)
+      .then(() => { finished = true; return undefined; }, error => { finished = true; return error; });
+    try {
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+      expect(finished).toBe(false);
+    } finally { gate.resolve(); }
+    expect(await stopping).toBe(failure);
+  });
+  it("reports both failures after attempting cleanup", async () => {
+    const stopFailure = new Error("scheduler failure"), cleanupFailure = new Error("worker failure");
+    const cleanup = vi.fn(async () => { throw cleanupFailure; });
+    await expect(finishServiceShutdown(async () => { throw stopFailure; }, cleanup))
+      .rejects.toMatchObject({ errors: [stopFailure, cleanupFailure] });
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 });

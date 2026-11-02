@@ -18,6 +18,7 @@ import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { cn } from "../lib/utils";
 import { useTranslation } from "@/i18n";
+import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -55,6 +56,7 @@ function GlobalToolbar({
 
 export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
   const { t } = useTranslation();
+  const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
     breadcrumbToolbar,
@@ -211,6 +213,9 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
             </h1>
           )}
         </div>
+        {coordinatorEnabled && breadcrumbs[0].trailing ? (
+          <span className="ml-2 flex shrink-0 items-center">{breadcrumbs[0].trailing}</span>
+        ) : null}
         {globalToolbarSlots}
       </div>
     );

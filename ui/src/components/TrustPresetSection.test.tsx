@@ -15,7 +15,7 @@ import { help } from "./agent-config-primitives";
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
-function renderSection(permissions: Partial<AgentPermissions>) {
+function renderSection(permissions: Partial<AgentPermissions>, withProjectEditor = false) {
   container = document.createElement("div");
   document.body.appendChild(container);
   const onChange = vi.fn();
@@ -25,6 +25,7 @@ function renderSection(permissions: Partial<AgentPermissions>) {
     createdRoot.render(
       <TooltipProvider>
         <TrustPresetSection
+          projectAccessEditor={withProjectEditor ? <div>Allowed projects</div> : undefined}
           permissions={permissions}
           onChange={onChange}
           companyId="company-1"
@@ -55,7 +56,7 @@ describe("TrustPresetSection", () => {
     flushSync(() => { void i18n.changeLanguage("ru"); });
     expect(view.text()).toContain("Профиль доверия");
     expect(container?.querySelector("select")?.value).toBe("standard");
-    expect(AGENT_DETAIL_NAVIGATION[0].items[1].label).toBe("Инструкции");
+    expect(AGENT_DETAIL_NAVIGATION[0].items[1].label).toBe("Профиль");
     expect(agentDetailHref("agent-raw-id", "api-keys")).toBe("/agents/agent-raw-id/api-keys");
     expect(labels.codex_local).toBe("Codex");
     expect(labels.process).toBe("Процесс");
@@ -64,7 +65,7 @@ describe("TrustPresetSection", () => {
     flushSync(() => { void i18n.changeLanguage("en"); });
     expect(view.text()).toContain("Trust preset");
     expect(labels.process).toBe("Process");
-    expect(AGENT_DETAIL_NAVIGATION[0].items[1].label).toBe("Instructions");
+    expect(AGENT_DETAIL_NAVIGATION[0].items[1].label).toBe("Identity");
   });
 
   it.each([[1, "проект"], [2, "проекта"], [5, "проектов"], [21, "проект"], [22, "проекта"], [25, "проектов"]])(
@@ -101,6 +102,22 @@ describe("TrustPresetSection", () => {
     expect(view.text()).toContain("Paperclip App");
     expect(view.text()).toContain("Get Paperclip EE.");
     expect(view.text()).not.toContain("Managed by EE/API");
+  });
+
+  it("keeps the single-boundary controls when the allowed-project editor is present", () => {
+    const view = renderSection({ trustPreset: "low_trust_review", authorizationPolicy: {
+      trustPreset: "low_trust_review", trustBoundary: {
+        mode: "low_trust_review", companyId: "company-1", projectIds: ["project-1"],
+      },
+    } }, true);
+    expect(view.text()).toContain("Allowed projects");
+    expect(view.text()).toContain("Boundary type");
+    const clear = [...container!.querySelectorAll("button")].find(button => button.textContent === "Clear boundary");
+    expect(clear).toBeDefined();
+    flushSync(() => clear!.click());
+    const changed = view.onChange.mock.calls[0][0];
+    expect(changed.trustPreset).toBe("low_trust_review");
+    expect(changed.authorizationPolicy.trustBoundary.projectIds).toBeUndefined();
   });
 
   it("renders multi-boundary policies as read-only", () => {

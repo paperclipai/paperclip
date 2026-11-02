@@ -1,3 +1,4 @@
+import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo, DbTransaction, ToolAccessMutationDb } from "../types.js";
 import { oauthConfig } from "./metadata.js";
 import { syncConnectionCredentialBindings } from "../../connection-credential-bindings.js";
@@ -80,8 +81,7 @@ async function syncCredentialBindings(
     let credentialSecretRefs = connection.credentialSecretRefs;
     if (
       connection.credentialPolicy === "per_user" &&
-      actor?.actorType === "user" &&
-      actor.actorId &&
+      Boolean(connectionActorUserId(actor)) &&
       !credentialSecretRefs.some(
         (ref) => ref.configPath === "oauth.client_secret",
       )
@@ -96,7 +96,7 @@ async function syncCredentialBindings(
             eq(connectionGrants.companyId, connection.companyId),
             eq(connectionGrants.connectionId, connection.id),
             eq(connectionGrants.kind, "user"),
-            eq(connectionGrants.subjectUserId, actor.actorId),
+            eq(connectionGrants.subjectUserId, connectionActorUserId(actor)!),
             eq(connectionGrants.status, "active"),
           ),
         )

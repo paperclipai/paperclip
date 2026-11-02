@@ -8,6 +8,7 @@ import { issuesApi } from "@/api/issues";
 import { projectsApi } from "@/api/projects";
 import { IssueFiltersPopover } from "@/components/IssueFiltersPopover";
 import { StatusIcon } from "@/components/StatusIcon";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -132,6 +133,7 @@ export function AgentTasksPanel({
       limit: AGENT_TASK_LIMIT,
     }),
   });
+  const tasksView = useQueryView(tasksQuery);
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects.list(companyId),
     queryFn: () => projectsApi.list(companyId),
@@ -211,10 +213,17 @@ export function AgentTasksPanel({
         </Popover>
       </div>
 
-      {tasksQuery.isPending ? (
+      {tasksView.kind === "loading" || tasksView.kind === "reconnecting" ? (
         <PanelMessage>{t("oct5Core.s0256")}</PanelMessage>
-      ) : tasksQuery.isError ? (
-        <PanelMessage tone="error">{t("oct5Core.s0257")}</PanelMessage>
+      ) : tasksView.kind === "error" ? (
+        <div className="py-4">
+          <QueryErrorState
+            error={tasksQuery.error}
+            action={t("nov02Components.actionLoadAgentTasks", { defaultValue: "load this agent’s tasks" })}
+            onRetry={tasksView.retry}
+            retrying={tasksView.isFetching}
+          />
+        </div>
       ) : total === 0 ? (
         <PanelMessage>{t("oct5Core.s0258")}</PanelMessage>
       ) : visible.length === 0 ? (
@@ -300,9 +309,24 @@ export function AgentArtifactsPanel({ companyId, agentId }: { companyId: string;
     queryFn: () => listAgentArtifacts(companyId, agentId),
   });
 
-  if (artifactsQuery.isPending) return <PanelMessage>{t("oct5Core.s0260")}</PanelMessage>;
-  if (artifactsQuery.isError) return <PanelMessage tone="error">{t("oct5Core.s0261")}</PanelMessage>;
-  const { artifacts, truncated } = artifactsQuery.data;
+  const artifactsView = useQueryView(artifactsQuery);
+
+  if (artifactsView.kind === "loading" || artifactsView.kind === "reconnecting") return <PanelMessage>{t("oct5Core.s0260")}</PanelMessage>;
+  if (artifactsView.kind === "error") {
+    return (
+      <div className="py-4">
+        <QueryErrorState
+          error={artifactsQuery.error}
+          action={t("nov02Components.actionLoadAgentArtifacts", { defaultValue: "load this agent’s artifacts" })}
+          onRetry={artifactsView.retry}
+          retrying={artifactsView.isFetching}
+        />
+      </div>
+    );
+  }
+  const loaded = artifactsQuery.data;
+  if (!loaded) return null;
+  const { artifacts, truncated } = loaded;
   if (artifacts.length === 0) return <PanelMessage>{t("oct5Core.s0262")}</PanelMessage>;
   return (
     <section className="flex flex-col gap-2" aria-label={t("oct5Core.s0263")}>

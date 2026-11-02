@@ -3,7 +3,8 @@ import { evalOtlpSchema as root, protobuf } from "./eval-otlp-schema.js";
 export type EvalOtlpSignal = "traces" | "logs";
 export const isEvalProjectId = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
-export function validateEvalOtlpParent(value: string, projectId: string): string {
+export function validateEvalOtlpParent(value: string, projectId: string, expectedParent?: string): string {
+  if (expectedParent !== undefined && value !== expectedParent) throw new Error("unexpected_otlp_parent");
   if (!isEvalProjectId(projectId)) throw new Error("invalid_otlp_project");
   if (value === `project_id:${projectId}`) return value;
   if (value.length > 2048 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new Error("invalid_otlp_parent");
@@ -47,7 +48,7 @@ function validateWire(body: Buffer, type: import("../../server/node_modules/prot
   inspect(type, body.length, 0);
 }
 
-export function validateEvalOtlpPayload(body: Buffer, contentType: string, signal: EvalOtlpSignal, projectId: string) {
+export function validateEvalOtlpPayload(body: Buffer, contentType: string, signal: EvalOtlpSignal, projectId: string, expectedParent?: string) {
   const type = root.lookupType(signal === "traces" ? "TracesData" : "LogsData");
   if (contentType !== "application/json") validateWire(body, type);
   const decoded: unknown = contentType === "application/json" ? JSON.parse(body.toString("utf8")) : type.decode(body).toJSON();
@@ -63,11 +64,11 @@ export function validateEvalOtlpPayload(body: Buffer, contentType: string, signa
       if (!parent || Object.keys(parent).length !== 1) throw new Error("invalid_otlp_parent");
       const text = parent.stringValue ?? parent.string_value;
       if (typeof text !== "string") throw new Error("invalid_otlp_parent");
-      validateEvalOtlpParent(text, projectId);
+      validateEvalOtlpParent(text, projectId, expectedParent);
     }
     if (Object.hasOwn(row, "braintrust.parent")) {
       if (typeof row["braintrust.parent"] !== "string") throw new Error("invalid_otlp_parent");
-      validateEvalOtlpParent(row["braintrust.parent"], projectId);
+      validateEvalOtlpParent(row["braintrust.parent"], projectId, expectedParent);
     }
     Object.values(row).forEach(item => inspect(item, depth + 1));
   };

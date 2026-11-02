@@ -1,3 +1,4 @@
+import { describeError } from "../api/errors";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useState } from "react";
 import { Trans } from "react-i18next";
@@ -95,7 +96,7 @@ export function ApprovalDetail() {
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("pages.approvalDetail.approveFailed", { defaultValue: "Approve failed" })),
+    onError: (err) => setError(describeError(err, { action: t("nov2Pages.action.approve_this_request", { defaultValue: "approve this request" }) }).body),
   });
 
   const rejectMutation = useMutation({
@@ -104,7 +105,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("pages.approvalDetail.rejectFailed", { defaultValue: "Reject failed" })),
+    onError: (err) => setError(describeError(err, { action: t("nov2Pages.action.reject_this_request", { defaultValue: "reject this request" }) }).body),
   });
 
   const revisionMutation = useMutation({
@@ -113,7 +114,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("pages.approvalDetail.revisionRequestFailed", { defaultValue: "Revision request failed" })),
+    onError: (err) => setError(describeError(err, { action: t("nov2Pages.action.request_a_revision", { defaultValue: "request a revision" }) }).body),
   });
 
   const resubmitMutation = useMutation({
@@ -122,7 +123,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("pages.approvalDetail.resubmitFailed", { defaultValue: "Resubmit failed" })),
+    onError: (err) => setError(describeError(err, { action: t("nov2Pages.action.resubmit_this_request", { defaultValue: "resubmit this request" }) }).body),
   });
 
   const addCommentMutation = useMutation({

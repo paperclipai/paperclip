@@ -1,29 +1,45 @@
+import { notifyNativeEnvironmentSettlement } from "../services/native-environment-settlement-notifications.js";
+import { notifyRetainedNativeSessionCleanup, onRetainedNativeSessionCleanupRelease, releaseRetainedNativeSessionCleanup } from "../services/retained-native-session-cleanup-notifications.js";
+import { environmentService } from "../services/environments.js";
+import { agentService } from "../services/agents.js";
+import { publishNativeHarnessBackup } from "../services/native-runtime/native-harness-backup-publication.js";
+import { registerNativeHarnessBackupExpirationWork } from "../services/native-runtime/native-harness-backup-expiration-work.js";
+import { noteNativeHarnessBackupChange } from "../services/native-harness-backup-expiration-notifications.js";
+import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
+import { issueService } from "../services/issues.js";
+import { applyPendingMigrations } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { registerNativeRunnerEvidenceRetentionWork } from "../services/native-runtime/native-runner-evidence-retention-work.js";
+import { noteNativeRunnerEvidence } from "../services/native-runtime/native-runner-evidence-signal.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import {
   agents,
   agentTaskSessions,
   companies,
   createDb,
   environmentLeases,
+  environments,
+  sandboxCreationOperations,
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
+  nativeRunnerCheckpoints,
 } from "@paperclipai/db";
-import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as embeddedPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.ts";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { logger } from "../middleware/logger.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_RETENTION_TEST_DATABASE_URL");
+const describeEmbeddedPostgres = external || embeddedPostgresSupport.supported ? describe : describe.skip;
 
-if (!embeddedPostgresSupport.supported) {
+if (!external && !embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres native harness backup expiration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
@@ -37,16 +53,25 @@ async function exists(target: string) {
 
 describeEmbeddedPostgres("native harness backup expiration", () => {
   let db!: ReturnType<typeof createDb>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let tempDb: Awaited<ReturnType<typeof startRecoveryPostgres>> | null = null;
   let stateBase = "";
   const now = new Date();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-backup-expiration-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startRecoveryPostgres("paperclip-native-backup-expiration-");
+    if (external) await applyPendingMigrations(external);
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  let worker: ReturnType<typeof registerNativeRunnerEvidenceRetentionWork> | undefined;
+  let admitted = true;
+  let backupWorker: ReturnType<typeof registerNativeHarnessBackupExpirationWork> | undefined;
+  const backupErrors: unknown[] = [];
   afterEach(async () => {
+    await backupWorker?.stop(); backupWorker = undefined; backupErrors.length = 0;
+    worker?.unsubscribe(); await coordinator?.stop(); coordinator = undefined; worker = undefined; admitted = true;
+    vi.useRealTimers(); vi.restoreAllMocks();
     await db.delete(agentTaskSessions);
     await db.delete(nativeRunFinalizations);
     await db.delete(environmentLeases);
@@ -59,10 +84,12 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
   async function seedSession(input: {
+    companyId?: string; agentId?: string;
     issueStatus?: string;
     closedDaysAgo?: number;
     runStatus?: string;
@@ -72,9 +99,10 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     cleanupActive?: boolean;
   } = {}) {
     if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
-    const companyId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Backups", issuePrefix: `B${companyId.slice(0, 6)}` });
-    const [agent] = await db.insert(agents).values({ companyId, name: "Coder" }).returning();
+    const companyId = input.companyId ?? randomUUID();
+    if (!input.companyId) await db.insert(companies).values({ id: companyId, name: "Backups", issuePrefix: `B${companyId.slice(0, 6)}` });
+    const [agent] = input.agentId ? [{ id: input.agentId }]
+      : await db.insert(agents).values({ companyId, name: "Coder" }).returning();
     const issueStatus = input.issueStatus ?? "done";
     const closedAt = new Date(now.getTime() - (input.closedDaysAgo ?? 10) * DAY_MS);
     const [issue] = await db.insert(issues).values({
@@ -134,7 +162,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
         metadata: { nativeHarnessBackup: { sessionScopeSha256: scope } },
       });
     }
-    return { companyId, agentId: agent!.id, issueId: issue!.id, sessionId, scope, root, current };
+    return { companyId, agentId: agent!.id, issueId: issue!.id, runId: run!.id, sessionId, scope, root, current };
   }
 
   function service() {
@@ -149,6 +177,187 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   async function taskSessionCount(agentId: string) {
     return (await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, agentId))).length;
   }
+
+  async function seedCheckpoint(session: Awaited<ReturnType<typeof seedSession>>) {
+    await db.insert(nativeRunnerCheckpoints).values(["header", "cursor", "event:1"].map(part => ({
+      companyId: session.companyId, issueId: session.issueId, runId: session.runId, part, material: { encrypted: true },
+    })));
+  }
+
+  it.each([false, true])("adds no periodic database work after startup (retained history: %s)", async retained => {
+    if (retained) {
+      const session = await seedSession({ finalization: { phase: "committed" } });
+      await seedCheckpoint(session); // Saved resume pointer deliberately protects it.
+      await fs.rm(stateBase, { recursive: true, force: true });
+    } else {
+      stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "empty-checkpoint-retention-"));
+    }
+    const expiration = service();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const select = vi.spyOn(db, "select");
+    try {
+      await expiration.registerCheckpointExpiration(coordinator).ready;
+      expect(select).toHaveBeenCalled();
+      const reads = select.mock.calls.length;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+      // The unchanged hourly filesystem sweep must not enumerate DB checkpoints.
+      for (let hour = 0; hour < 3; hour++) await expiration.tick();
+      expect(select).toHaveBeenCalledTimes(reads);
+      expect(coordinator.nextWakeAt()).toBeNull();
+    } finally {
+      await coordinator.stop();
+      select.mockRestore();
+      vi.useRealTimers();
+    }
+    if (retained) {
+      expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+      await db.delete(agentTaskSessions);
+      const nextStartup = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+      try {
+        await service().registerCheckpointExpiration(nextStartup).ready;
+        expect(await db.select().from(nativeRunnerCheckpoints)).toEqual([]);
+        expect(nextStartup.nextWakeAt()).toBeNull();
+      } finally { await nextStartup.stop(); }
+    }
+  });
+
+  it("preserves startup expiration across drain without querying while paused", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    await db.delete(agentTaskSessions);
+    let draining = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const select = vi.spyOn(db, "select");
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true, onError });
+    try {
+      await service().registerCheckpointExpiration(coordinator).ready;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(select).not.toHaveBeenCalled();
+      draining = false;
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      await coordinator.stop(); // Await the DB transaction before asserting.
+      expect(onError).not.toHaveBeenCalled();
+      expect(await db.select().from(nativeRunnerCheckpoints)).toEqual([]);
+    } finally {
+      await coordinator.stop();
+      select.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a failed checkpoint from an earlier page before startup cleanup goes quiet", async () => {
+    for (let index = 0; index < 2; index++) {
+      const session = await seedSession({ finalization: { phase: "committed" } });
+      await seedCheckpoint(session);
+    }
+    await db.delete(agentTaskSessions);
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("temporary retention failure"));
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+    try {
+      const expiration = nativeHarnessBackupExpirationService(db, { now, maxEntries: 1 });
+      await expiration.registerCheckpointExpiration(coordinator).ready;
+      await vi.waitFor(async () => {
+        expect(await db.select().from(nativeRunnerCheckpoints)).toEqual([]);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+    } finally {
+      await coordinator.stop();
+      transaction.mockRestore();
+    }
+  });
+
+  it.each(["query", "transaction"] as const)("bounds persistent startup %s failures and becomes quiet until the next startup", async fault => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    await db.delete(agentTaskSessions);
+    const failure = fault === "query"
+      ? vi.spyOn(db, "select").mockImplementation(() => { throw new Error("retention candidate query unavailable"); })
+      : vi.spyOn(db, "transaction").mockRejectedValue(new Error("retention transaction unavailable"));
+    const warning = vi.spyOn(logger, "warn");
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+    try {
+      await service().registerCheckpointExpiration(coordinator).ready;
+      await vi.waitFor(() => {
+        // No scheduled deadline can also mean a retry is currently running.
+        // Wait for the owner's final deferral before asserting quiet time.
+        expect(warning).toHaveBeenCalledWith(expect.objectContaining({ failedPasses: 3 }),
+          "startup checkpoint expiration retries exhausted; retained checkpoints deferred to next startup");
+        expect(failure).toHaveBeenCalledTimes(3);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const attempts = failure.mock.calls.length;
+      expect(attempts).toBe(3);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+      expect(failure).toHaveBeenCalledTimes(attempts);
+    } finally {
+      await coordinator.stop(); failure.mockRestore(); warning.mockRestore(); vi.useRealTimers();
+    }
+    expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+    const nextStartup = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+    try {
+      await service().registerCheckpointExpiration(nextStartup).ready;
+      expect(await db.select().from(nativeRunnerCheckpoints)).toEqual([]);
+      expect(nextStartup.nextWakeAt()).toBeNull();
+    } finally { await nextStartup.stop(); }
+  });
+
+  it("expires unreferenced settled checkpoints even with an empty controller disk and fences old writers", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    await db.delete(agentTaskSessions);
+    await fs.rm(stateBase, { recursive: true, force: true });
+    expect(await service().tickCheckpoints()).toMatchObject({ expiredCheckpoints: 1, checkpointCandidates: 1, failed: 0 });
+    expect(await db.select().from(nativeRunnerCheckpoints)).toEqual([]);
+    const [authority] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, session.runId));
+    expect(authority?.controllerGeneration).toBe(1);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
+  });
+
+  it.each(["resume", "lease", "lease_stamp", "recovery", "running", "recent", "open", "execution", "dry_run"])(
+    "preserves a checkpoint protected by %s without its controller disk", async protection => {
+      const session = await seedSession({ finalization: { phase: "committed" } });
+      await seedCheckpoint(session);
+      await fs.rm(stateBase, { recursive: true, force: true });
+      if (protection !== "resume") await db.delete(agentTaskSessions);
+      if (protection === "lease") await db.insert(environmentLeases).values({
+        companyId: session.companyId, issueId: session.issueId, status: "retained",
+      });
+      if (protection === "lease_stamp") await db.insert(environmentLeases).values({
+        companyId: session.companyId, status: "retained",
+        metadata: { nativeHarnessBackup: { normalizedSessionId: session.sessionId } },
+      });
+      if (protection === "recovery") await db.update(nativeRunFinalizations).set({ recoveryState: "pending" });
+      if (protection === "running") await db.update(heartbeatRuns).set({ status: "running" });
+      if (protection === "recent") await db.update(issues).set({ completedAt: now });
+      if (protection === "open") await db.update(issues).set({ status: "in_progress" });
+      if (protection === "execution") await db.update(issues).set({ executionRunId: session.runId });
+      expect(await service().tickCheckpoints({ dryRun: protection === "dry_run" })).toMatchObject({ expiredCheckpoints: 0, failed: 0 });
+      expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+      const [authority] = await db.select().from(nativeRunFinalizations);
+      expect(authority?.controllerGeneration).toBe(0);
+      // Break the issue/run reference cycle before the shared teardown.
+      if (protection === "execution") await db.update(issues).set({ executionRunId: null });
+    },
+  );
+
+  it("continues checkpoint expiration past retained sessions within bounded pages", async () => {
+    for (let index = 0; index < 3; index++) {
+      const session = await seedSession({ finalization: { phase: "committed" } });
+      await seedCheckpoint(session);
+    }
+    await fs.rm(stateBase, { recursive: true, force: true });
+    const expiration = service();
+    expect(await expiration.tickCheckpoints({ maxEntries: 2 })).toMatchObject({ expiredCheckpoints: 0, truncated: true });
+    expect(await expiration.tickCheckpoints({ maxEntries: 2 })).toMatchObject({ expiredCheckpoints: 0, truncated: false });
+    await db.delete(agentTaskSessions);
+    expect(await expiration.tickCheckpoints({ maxEntries: 2 })).toMatchObject({ expiredCheckpoints: 2, truncated: true });
+    expect(await expiration.tickCheckpoints({ maxEntries: 2 })).toMatchObject({ expiredCheckpoints: 1, truncated: false });
+  });
 
   it("expires the backup of a session whose issue closed before the window and clears its resume pointer", async () => {
     const session = await seedSession();
@@ -217,6 +426,15 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     const session = await seedSession({ finalization: { phase: "committed" }, leaseStatus: "expired" });
     expect(await service().tick()).toMatchObject({ expired: 1 });
     expect(await exists(session.current)).toBe(false);
+  });
+
+  it("retains incomplete native snapshot publications even after the issue closes", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeControllerRecovery: {
+      schema: "paperclip.native-controller-recovery.v1", checkpoint: null,
+    } } }).where(eq(heartbeatRuns.id, session.runId));
+    expect(await service().tick()).toMatchObject({ expired: 0, skipped: { native_recovery_incomplete: 1 } });
+    expect(await exists(session.current)).toBe(true);
   });
 
   it.each([
@@ -341,6 +559,637 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
     return createHash("sha256").update(randomUUID()).digest("hex");
   }
+
+  async function startEvidence(options: Parameters<typeof nativeHarnessBackupExpirationService>[1] = {}) {
+    if (!vi.isFakeTimers()) {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      vi.setSystemTime(now);
+    }
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
+      onError: error => { throw error; } });
+    worker = registerNativeRunnerEvidenceRetentionWork(coordinator, db, { stateBase, isSessionBusy: () => false, ...options }, () => admitted);
+    await worker.ready;
+  }
+  async function settled(deadline: number | null = null) {
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBe(deadline);
+    }, { timeout: 5000 });
+  }
+  async function quiet(ms = 3 * 60 * 60_000) {
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction"), directories = vi.spyOn(fs, "readdir");
+    await vi.advanceTimersByTimeAsync(ms);
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(directories).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore(); directories.mockRestore();
+  }
+
+  async function startBackups(options: Parameters<typeof nativeHarnessBackupExpirationService>[1] = {}) {
+    if (!stateBase) await emptyStateBase();
+    if (!vi.isFakeTimers()) {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      vi.setSystemTime(now);
+    }
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
+      onError: error => backupErrors.push(error) });
+    backupWorker = registerNativeHarnessBackupExpirationWork(coordinator, db,
+      { stateBase, isSessionBusy: () => false, ...options }, () => admitted);
+    await backupWorker.ready;
+  }
+
+  it.each([false, true])("backup deadline worker leaves empty and retained terminal history quiet (%s)", async history => {
+    await emptyStateBase();
+    if (history) {
+      const session = await seedSession();
+      await fs.rm(path.join(session.root, "failover-backups"), { recursive: true });
+      await db.insert(heartbeatRuns).values(Array.from({ length: 500 }, () => ({
+        companyId: session.companyId, agentId: session.agentId, status: "succeeded", issueId: session.issueId,
+        nativeIssueId: session.issueId, nativeSessionId: randomUUID(), finishedAt: now,
+      })));
+      for (let index = 0; index < 250; index++) await fs.mkdir(path.join(stateBase,
+        createHash("sha256").update(String(index)).digest("hex")));
+    }
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+    await startBackups({ maxEntries: 20 }); await settled();
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore(); await quiet();
+    expect(backupErrors).toEqual([]);
+  });
+
+  it("ordinary task close arms exact backup retention, deletes physical bytes and resume pointer, then stays quiet", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled(); await quiet();
+    const closed = await issueService(db).update(session.issueId, { status: "done", companyGuard: session.companyId });
+    const deadline = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(deadline); await quiet(60_000);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+    expect(await exists(session.current)).toBe(true);
+    expect(await taskSessionCount(session.agentId)).toBe(1);
+    await vi.advanceTimersByTimeAsync(1); await settled();
+    expect(await exists(session.current)).toBe(false);
+    expect(await taskSessionCount(session.agentId)).toBe(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, session.runId))).toHaveLength(1);
+    expect(backupErrors).toEqual([]); await quiet();
+  });
+
+  it("ordinary backup publication after quiet schedules its actual file age and leaves a durable cleanup result", async () => {
+    const session = await seedSession();
+    const backupRoot = path.dirname(session.current);
+    const pendingRoot = path.join(backupRoot, "pending-publication");
+    await fs.rename(session.current, pendingRoot);
+    await startBackups(); await settled(); await quiet();
+    const publishedAt = Date.now();
+    await fs.utimes(pendingRoot, new Date(publishedAt), new Date(publishedAt));
+    await publishNativeHarnessBackup({ db, companyId: session.companyId, scopeDigest: session.scope, backupRoot, pendingRoot });
+    const stat = await fs.stat(session.current);
+    const due = stat.mtime.getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); expect(await taskSessionCount(session.agentId)).toBe(0);
+    expect(await fs.readdir(backupRoot)).toEqual([]); await quiet();
+  });
+
+  it("a committed earlier close timestamp replaces the later deadline without early cleanup", async () => {
+    const session = await seedSession({ closedDaysAgo: 2 });
+    await startBackups(); await settled(now.getTime() + 5 * DAY_MS + 1);
+    const earlier = new Date(now.getTime() - 6 * DAY_MS);
+    await issueService(db).update(session.issueId, { completedAt: earlier });
+    const due = earlier.getTime() + 7 * DAY_MS + 1;
+    await settled(due); await quiet(60_000);
+    await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("holds nested ordinary close activation until the outer transaction commits", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled();
+    let release!: () => void, written!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const staged = new Promise<void>(resolve => { written = resolve; });
+    const transaction = db.transaction(async outer => {
+      await outer.transaction(nested => issueService(db).update(session.issueId, { status: "done" }, nested));
+      written(); await gate;
+    });
+    await staged;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await exists(session.current)).toBe(true);
+    expect(await taskSessionCount(session.agentId)).toBe(1);
+    release(); await transaction;
+    const [closed] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    const due = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("preserves failed cleanup retry across drain, then finishes its physical tombstone on resume", async () => {
+    const session = await seedSession(); const remove = fs.rm;
+    const fault = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (String(args[0]).includes(".expired-")) throw new Error("controlled drain retry failure");
+      return remove(...args);
+    });
+    await startBackups();
+    expect(backupErrors).toHaveLength(1); admitted = false; fault.mockRestore();
+    await quiet(60_000);
+    expect((await fs.readdir(path.dirname(session.current))).some(name => name.startsWith(".expired-"))).toBe(true);
+    admitted = true; await settled();
+    expect(await fs.readdir(path.dirname(session.current))).toEqual([]); await quiet();
+  });
+
+  it("reopen cancels a saved deadline and a later ordinary close restores retention", async () => {
+    const session = await seedSession({ closedDaysAgo: 2 });
+    await startBackups(); await settled(now.getTime() + 5 * DAY_MS + 1);
+    await issueService(db).update(session.issueId, { status: "todo" });
+    await settled(); await quiet(8 * DAY_MS); expect(await exists(session.current)).toBe(true);
+    const closed = await issueService(db).update(session.issueId, { status: "done" });
+    const due = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("reconstructs a retained backup deadline on restart without changing business timestamps", async () => {
+    const session = await seedSession({ closedDaysAgo: 2 });
+    const [before] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    const due = now.getTime() + 5 * DAY_MS + 1;
+    await startBackups(); await settled(due);
+    await backupWorker!.stop(); await coordinator!.stop();
+    await startBackups(); await settled(due);
+    const [after] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    expect(after!.updatedAt).toEqual(before!.updatedAt); expect(after!.completedAt).toEqual(before!.completedAt);
+    await quiet();
+  });
+
+  it("reports dry-run backups once and rechecks only after source invalidation", async () => {
+    const session = await seedSession(); const report = vi.spyOn(logger, "info");
+    await startBackups({ dryRun: true }); await settled();
+    expect(report.mock.calls.filter(call => call[1] === "native harness backup expiration")).toHaveLength(1);
+    expect(await taskSessionCount(session.agentId)).toBe(1); expect(await exists(session.current)).toBe(true);
+    await quiet();
+    noteNativeHarnessBackupChange(db, { companyId: session.companyId, scopeDigest: session.scope });
+    await settled();
+    expect(report.mock.calls.filter(call => call[1] === "native harness backup expiration")).toHaveLength(2);
+    await quiet();
+  });
+
+  it("company-only notifications inspect only the indexed company's blocked backup sources", async () => {
+    const own = await seedSession({ issueStatus: "todo" });
+    const other = await seedSession({ issueStatus: "todo" });
+    await startBackups({ maxEntries: 1 }); await settled(); await quiet();
+    const sql: Array<{ query: string; parameters: unknown[] }> = [];
+    const previous = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, parameters) => { sql.push({ query, parameters }); };
+    const directories = vi.spyOn(fs, "readdir");
+    try {
+      const closed = await issueService(db).update(own.issueId, { status: "done" });
+      await settled(new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1);
+      const unrelated = [other.companyId, other.agentId, other.runId, other.sessionId, other.issueId];
+      expect(sql.filter(query => query.parameters.some(parameter =>
+        unrelated.some(id => String(parameter).includes(id))))).toEqual([]);
+      expect(directories.mock.calls.some(call => call[0] === stateBase
+        || String(call[0]).startsWith(other.root))).toBe(false);
+      expect(await exists(other.current)).toBe(true);
+    } finally { db.$client.options.debug = previous; directories.mockRestore(); }
+    await quiet();
+  });
+
+  it("coalesces repeated task writes to one retained root in a large company with the same historical agent", async () => {
+    const own = await seedSession({ issueStatus: "todo" });
+    const unrelated = [];
+    for (let index = 0; index < 80; index++) unrelated.push(await seedSession({ companyId: own.companyId,
+      agentId: own.agentId, issueStatus: index % 2 ? "todo" : "done", closedDaysAgo: 2,
+      runStatus: index % 3 ? "succeeded" : "running" }));
+    const due = now.getTime() + 5 * DAY_MS + 1;
+    await startBackups({ isSessionBusy: digest => unrelated.some((entry, index) => index % 4 === 0 && entry.scope === digest) });
+    await settled(due); await quiet(60_000);
+    const reads = vi.spyOn(fs, "readFile");
+    const queries: Array<{ query: string; parameters: unknown[] }> = [];
+    const previous = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, parameters) => { queries.push({ query, parameters }); };
+    try {
+      await db.transaction(async tx => {
+        await issueService(db).update(own.issueId, { status: "done" }, tx);
+        for (let index = 0; index < 12; index++) await issueService(db).update(own.issueId,
+          { completedAt: new Date(now.getTime() - DAY_MS) }, tx);
+      });
+      const writes = queries.length;
+      await settled(due);
+      expect(reads.mock.calls.map(call => String(call[0]))).toEqual([path.join(own.root, "control-plane", "control-plane-state.json")]);
+      expect(queries.length - writes).toBeLessThanOrEqual(20);
+      const otherIds = unrelated.flatMap(entry => [entry.issueId, entry.runId, entry.sessionId]);
+      expect(queries.filter(query => query.parameters.some(parameter => otherIds.some(id => String(parameter).includes(id))))).toEqual([]);
+    } finally { reads.mockRestore(); db.$client.options.debug = previous; }
+    await issueService(db).update(own.issueId, { status: "todo" }); await settled(due);
+    await quiet(); expect(await exists(own.current)).toBe(true);
+  });
+
+  it.each([false, true])("sandbox attachment reconciles only its retained root using durable run authority (explicit run: %s)", async explicitRun => {
+    const own = await seedSession({ runStatus: "running" });
+    const unrelated = [];
+    for (let index = 0; index < 16; index++) unrelated.push(await seedSession({ companyId: own.companyId,
+      agentId: own.agentId, issueStatus: "todo", runStatus: index % 2 ? "running" : "succeeded" }));
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "sandbox" }).returning();
+    async function attach(runId: string) {
+      const operationId = randomUUID();
+      await db.insert(sandboxCreationOperations).values({ id: operationId, companyId: own.companyId,
+        environmentId: environment!.id, originalEnvironmentId: environment!.id, runId,
+        provider: "controlled", driverKey: "controlled", config: {}, metadata: {}, nextAttemptAt: new Date() });
+      return environmentService(db).acquireLease({ creationOperationId: operationId, companyId: own.companyId,
+        environmentId: environment!.id, ...(explicitRun ? { heartbeatRunId: runId } : {}) });
+    }
+    await startBackups(); await settled();
+    const reads = vi.spyOn(fs, "readFile");
+    try {
+      const lease = await attach(own.runId); await settled();
+      expect(reads.mock.calls.map(call => String(call[0])))
+        .toEqual([path.join(own.root, "control-plane", "control-plane-state.json")]);
+      expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.leaseId, lease.id)))[0])
+        .toMatchObject({ state: "attached", runId: own.runId });
+      reads.mockClear();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: own.companyId, agentId: own.agentId, status: "running" }).returning();
+      await attach(run!.id); await settled();
+      expect(reads).not.toHaveBeenCalled();
+      expect(await exists(own.current)).toBe(true);
+      for (const other of unrelated) expect(await exists(other.current)).toBe(true);
+      await quiet();
+    } finally {
+      reads.mockRestore();
+      await db.delete(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId, own.companyId));
+      await db.delete(environmentLeases).where(eq(environmentLeases.environmentId, environment!.id));
+      await db.delete(environments).where(eq(environments.id, environment!.id));
+    }
+  });
+
+  it("indexes protected session relations so a new run, historical task close and exact process release reactivate only its backup", async () => {
+    const own = await seedSession({ closedDaysAgo: 2 });
+    const other = await seedSession({ companyId: own.companyId, agentId: own.agentId, issueStatus: "todo" });
+    const [linked] = await db.insert(issues).values({ companyId: own.companyId, title: "New linked task", status: "todo" }).returning();
+    const due = now.getTime() + 5 * DAY_MS + 1;
+    await startBackups(); await settled(due); await quiet(60_000);
+    const reads = vi.spyOn(fs, "readFile");
+    const runId = randomUUID();
+    try {
+      await db.transaction(async tx => {
+        await notifyNativeEnvironmentSettlement(tx, { companyId: own.companyId, runId, issueId: linked!.id });
+        await tx.insert(heartbeatRuns).values({ id: runId, companyId: own.companyId, agentId: own.agentId,
+          nativeSessionId: own.sessionId, nativeIssueId: linked!.id, issueId: other.issueId, status: "running" });
+      });
+      await settled();
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+      expect(reads).toHaveBeenCalled(); reads.mockClear();
+      await issueService(db).update(linked!.id, { status: "done" }); await settled();
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true); reads.mockClear();
+      await db.transaction(async tx => {
+        await notifyRetainedNativeSessionCleanup(tx, { companyId: own.companyId, runId, agentId: own.agentId });
+        await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      });
+      const [closed] = await db.select().from(issues).where(eq(issues.id, linked!.id));
+      const later = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+      await settled(later); reads.mockClear();
+      const cleanupScope = { companyId: own.companyId, agentId: own.agentId };
+      const observed = vi.fn(); const stop = onRetainedNativeSessionCleanupRelease(db, observed);
+      releaseRetainedNativeSessionCleanup(db, cleanupScope, { companyId: own.companyId, runId });
+      expect(observed).toHaveBeenCalledWith(cleanupScope, { companyId: own.companyId, runId }); stop();
+      await settled(later);
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+      expect(reads).toHaveBeenCalled();
+      await issueService(db).update(linked!.id, { status: "todo" }); await settled();
+    } finally { reads.mockRestore(); }
+    expect(await exists(other.current)).toBe(true); await quiet();
+  });
+
+  it("ordinary lease release without a run uses its source identity instead of other retained roots", async () => {
+    const own = await seedSession({ leaseStatus: "retained" });
+    const other = await seedSession({ companyId: own.companyId, agentId: own.agentId, issueStatus: "todo" });
+    await startBackups(); await settled(); await quiet(60_000);
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, own.companyId));
+    const reads = vi.spyOn(fs, "readFile");
+    try {
+      await environmentService(db).releaseLease(lease!.id, "expired"); await settled();
+      expect(reads).toHaveBeenCalled();
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+    } finally { reads.mockRestore(); }
+    expect(await exists(own.current)).toBe(false); expect(await exists(other.current)).toBe(true); await quiet();
+  });
+
+  it("retains the future deadline when a lease metadata edit removes its last backup reference", async () => {
+    const own = await seedSession({ leaseStatus: "retained", closedDaysAgo: 2 });
+    const other = await seedSession({ companyId: own.companyId, agentId: own.agentId, issueStatus: "todo" });
+    await startBackups(); await settled();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, own.companyId));
+    const reads = vi.spyOn(fs, "readFile"); const due = now.getTime() + 5 * DAY_MS + 1;
+    try {
+      await environmentService(db).updateLeaseMetadata(lease!.id, {}); await settled(due);
+      expect(reads).toHaveBeenCalled(); expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+    } finally { reads.mockRestore(); }
+    await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(own.current)).toBe(false); expect(await exists(other.current)).toBe(true); await quiet();
+  });
+
+  it("allows an ordinary task reopen while backup byte counting is held outside the retirement lock", async () => {
+    const own = await seedSession(); const lstat = fs.lstat;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const held = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      if (String(args[0]) === path.join(own.current, "codex-home", "history.jsonl")) {
+        entered.resolve(); await release.promise;
+      }
+      return lstat(...args);
+    });
+    const startup = startBackups(); await entered.promise;
+    try {
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '500ms'`);
+        await issueService(db).update(own.issueId, { status: "todo" }, tx);
+      });
+    } finally { release.resolve(); await startup; held.mockRestore(); }
+    await settled(); expect(await exists(own.current)).toBe(true); expect(backupErrors).toEqual([]); await quiet();
+  });
+
+  it.each(["EIO", "EACCES"])("retains a failed identity read as real retry debt (%s)", async code => {
+    const own = await seedSession(); const read = fs.readFile;
+    const fault = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      if (String(args[0]) === path.join(own.root, "control-plane", "control-plane-state.json")) {
+        throw Object.assign(new Error("controlled identity I/O failure"), { code });
+      }
+      return read(...args);
+    });
+    await startBackups(); expect(backupErrors).toHaveLength(1);
+    const retry = coordinator!.nextWakeAt()!; expect(retry - Date.now()).toBeGreaterThanOrEqual(29_000);
+    expect(await exists(own.current)).toBe(true); fault.mockRestore(); await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retry - Date.now()); await settled();
+    expect(await exists(own.current)).toBe(false); expect(await taskSessionCount(own.agentId)).toBe(0); await quiet();
+  });
+
+  it.each(["EIO", "EACCES"])("retains expired-only cleanup after a directory read failure (%s)", async code => {
+    const session = await seedSession();
+    const backupRoot = path.dirname(session.current);
+    const expired = path.join(backupRoot, `.expired-${randomUUID()}`);
+    await fs.rename(session.current, expired);
+    const read = fs.readdir;
+    const fault = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+      if (String(args[0]) === backupRoot) throw Object.assign(new Error("controlled cleanup listing failure"), { code });
+      return read(...args);
+    });
+    await startBackups();
+    expect(backupErrors).toHaveLength(1);
+    const retry = coordinator!.nextWakeAt();
+    expect(retry).not.toBeNull();
+    expect(retry! - Date.now()).toBeGreaterThanOrEqual(29_000);
+    expect(await exists(session.current)).toBe(false);
+    expect(await exists(expired)).toBe(true);
+    fault.mockRestore();
+    await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retry! - Date.now()); await settled();
+    expect(await fs.readdir(backupRoot)).toEqual([]);
+    await quiet();
+  });
+
+  it("reconstructs future retention without issue row locks", async () => {
+    await seedSession({ closedDaysAgo: 2 }); const queries: string[] = [];
+    const previous = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => { queries.push(query); };
+    try {
+      await startBackups(); await settled(now.getTime() + 5 * DAY_MS + 1);
+      expect(queries.some(query => /for\s+share/i.test(query))).toBe(false);
+    } finally { db.$client.options.debug = previous; }
+    await quiet();
+  });
+
+  it("rejects destructive backup scopes outside the controller digest namespace", async () => {
+    await emptyStateBase(); const remove = vi.spyOn(fs, "rm");
+    await expect(service().expireBackup("../outside")).rejects.toThrow("Invalid native harness backup scope");
+    expect(remove).not.toHaveBeenCalled(); remove.mockRestore();
+  });
+
+  it.each([false, true])("finishes cleanup journals after ordinary agent deletion (restart %s)", async restart => {
+    const session = await seedSession(); const remove = fs.rm;
+    const fault = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (String(args[0]).includes(".expired-")) throw new Error("controlled orphan cleanup failure");
+      return remove(...args);
+    });
+    await startBackups();
+    expect(backupErrors).toHaveLength(1);
+    const retryAt = coordinator!.nextWakeAt()!;
+    const backupRoot = path.dirname(session.current);
+    expect((await fs.readdir(backupRoot)).some(name => name.startsWith(".expired-"))).toBe(true);
+    if (restart) { await backupWorker!.stop(); await coordinator!.stop(); }
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, session.agentId));
+    await agentService(db).remove(session.agentId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, session.runId))).toEqual([]);
+    fault.mockRestore();
+    if (restart) await startBackups(); else await vi.advanceTimersByTimeAsync(retryAt - Date.now());
+    await settled();
+    expect(await fs.readdir(backupRoot)).toEqual([]); expect(await taskSessionCount(session.agentId)).toBe(0);
+    await quiet();
+  });
+
+  it("restores an orphan retiring journal without expiring the recovered backup or unrelated names", async () => {
+    const session = await seedSession(); const backupRoot = path.dirname(session.current);
+    const retiring = path.join(backupRoot, `.retiring-${randomUUID()}`);
+    await fs.rename(session.current, retiring);
+    await fs.mkdir(path.join(backupRoot, ".expired-unrecognized"));
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, session.agentId));
+    await agentService(db).remove(session.agentId);
+    await fs.rm(path.join(session.root, "control-plane"), { recursive: true });
+    await startBackups(); await settled();
+    expect(await exists(session.current)).toBe(true); expect(await exists(retiring)).toBe(false);
+    expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+    expect(await exists(path.join(backupRoot, ".expired-unrecognized"))).toBe(true);
+    await quiet();
+  });
+
+  it("retains live lease references and only removes the owning company's backup after lease release", async () => {
+    const first = await seedSession({ leaseStatus: "retained" });
+    const other = await seedSession({ leaseStatus: "retained" });
+    await startBackups(); await settled(); await quiet();
+    await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "expired" })
+      .where(eq(environmentLeases.companyId, first.companyId)), { companyId: first.companyId });
+    await settled(); expect(await exists(first.current)).toBe(false); expect(await exists(other.current)).toBe(true);
+    expect(await taskSessionCount(other.agentId)).toBe(1); await quiet();
+  });
+
+  it("retries a partial physical deletion from its tombstone without recreating a resume pointer", async () => {
+    const session = await seedSession(); const remove = fs.rm; let failed = false;
+    const fault = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (!failed && String(args[0]).includes(".expired-")) { failed = true; throw new Error("controlled filesystem delete failure"); }
+      return remove(...args);
+    });
+    await startBackups();
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(100); expect(backupErrors).toHaveLength(1); });
+    const retry = coordinator!.nextWakeAt()!; expect(retry - Date.now()).toBeGreaterThan(20_000);
+    expect(await taskSessionCount(session.agentId)).toBe(0); expect(await exists(session.current)).toBe(false);
+    fault.mockRestore(); await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retry - Date.now()); await settled();
+    expect(await fs.readdir(path.join(session.root, "failover-backups"))).toEqual([]); await quiet();
+  });
+
+  it("retains a first ordinary close during drain and dispatches it after resume", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled(); admitted = false;
+    const closed = await issueService(db).update(session.issueId, { status: "done" });
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    await quiet(60_000); admitted = true;
+    const due = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("honors outer rollback for nested ordinary close and activates only on committed work", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled();
+    await expect(db.transaction(async outer => {
+      await outer.transaction(async nested => {
+        await issueService(db).update(session.issueId, { status: "done" }, nested);
+      });
+      expect(await exists(session.current)).toBe(true);
+      throw new Error("rollback outer close");
+    })).rejects.toThrow("rollback outer close");
+    await settled(); await quiet(8 * DAY_MS);
+    expect(await exists(session.current)).toBe(true);
+    const [saved] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    expect(saved!.status).toBe("todo");
+  });
+
+  it("pages multiple company backups, preserves a busy one and wakes from process release", async () => {
+    const sessions = [await seedSession(), await seedSession(), await seedSession()]; let busy = true;
+    await startBackups({ maxEntries: 1, maxRemovals: 1, isSessionBusy: digest => busy && digest === sessions[1]!.scope });
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+      expect(await exists(sessions[0]!.current)).toBe(false); expect(await exists(sessions[2]!.current)).toBe(false);
+      expect(backupErrors.length).toBeGreaterThan(0);
+    });
+    expect(await exists(sessions[1]!.current)).toBe(true); busy = false;
+    noteNativeHarnessBackupChange(db, { companyId: sessions[1]!.companyId });
+    await settled(); expect(await exists(sessions[1]!.current)).toBe(false); await quiet();
+  });
+
+  it("leaves empty evidence and retained backups quiet without invoking backup SQL", async () => {
+    const session = await seedSession();
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+    await startEvidence(); await settled(); expect(await exists(session.current)).toBe(true);
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore(); await quiet();
+  });
+
+  it("reconstructs and replaces the saved evidence deadline after a publication signal", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const first = await seedArchive(session.root, { stampedDaysAgo: 2 });
+    const firstDeadline = now.getTime() + 5 * DAY_MS + 1;
+    await startEvidence(); await settled(firstDeadline); await quiet();
+    const writtenAt = Date.now();
+    const next = await seedArchive(session.root, { name: `${writtenAt}-${randomUUID()}` });
+    noteNativeRunnerEvidence(writtenAt);
+    await settled(firstDeadline);
+    await vi.advanceTimersByTimeAsync(firstDeadline - Date.now());
+    await settled(writtenAt + 7 * DAY_MS + 1); expect(await exists(first)).toBe(false);
+    await vi.advanceTimersByTimeAsync(writtenAt + 7 * DAY_MS + 1 - Date.now()); await settled();
+    expect(await exists(next)).toBe(false); expect(await exists(session.current)).toBe(true); await quiet();
+  });
+
+  it.each(["session root", "archive directory"])("preserves an evidence inspection failure at %s until its concrete retry succeeds", async location => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root);
+    const original = fs.lstat;
+    const denied = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      if (String(args[0]) === (location === "session root" ? session.root : path.join(session.root, "continuity-breaks"))) throw Object.assign(new Error("unavailable"), { code: "EACCES" });
+      return original(...args);
+    });
+    await startEvidence(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    const retryAt = coordinator!.nextWakeAt()!; expect(await exists(archive)).toBe(true);
+    denied.mockRestore(); await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
+    expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("retries a busy evidence obligation and disarms after the session releases it", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root); let busy = true;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); vi.setSystemTime(now);
+    let inspectedAt: number | undefined;
+    await startEvidence({ isSessionBusy: () => { inspectedAt = Date.now(); return busy; } });
+    await vi.advanceTimersByTimeAsync(50);
+    const retryAt = coordinator!.nextWakeAt()!; expect(inspectedAt).toBeDefined();
+    expect(retryAt - inspectedAt!).toBeGreaterThanOrEqual(60 * 60_000);
+    await quiet(5000); busy = false;
+    await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
+    expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("retains the first publication during drain and cleans up on resume", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    await startEvidence(); await settled(); admitted = false;
+    const archive = await seedArchive(session.root);
+    noteNativeRunnerEvidence(now.getTime() - 10 * DAY_MS);
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    await quiet(60_000); expect(await exists(archive)).toBe(true);
+    admitted = true; await settled(); expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("reconstructs the same retained deadline after restart", async () => {
+    const scope = await emptyStateBase(); await seedQuarantine(scope, { stampedDaysAgo: 6 });
+    const deadline = now.getTime() + DAY_MS + 1;
+    await startEvidence(); await settled(deadline);
+    worker!.unsubscribe(); await coordinator!.stop();
+    await startEvidence(); await settled(deadline); await quiet(60_000);
+    expect(coordinator!.nextWakeAt()).toBe(deadline);
+  });
+
+  it("backs off a failed state-base inspection and lets publication reactivate it", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root), read = fs.readdir;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); vi.setSystemTime(now);
+    let inspectedAt: number | undefined;
+    const denied = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+      if (args[0] === stateBase) {
+        inspectedAt = Date.now();
+        throw Object.assign(new Error("state base unavailable"), { code: "EACCES" });
+      }
+      return read(...args);
+    });
+    await startEvidence(); await vi.advanceTimersByTimeAsync(50);
+    expect(inspectedAt).toBeDefined();
+    expect(coordinator!.nextWakeAt()! - inspectedAt!).toBeGreaterThanOrEqual(60 * 60_000);
+    denied.mockRestore(); await quiet(5 * 60_000); expect(await exists(archive)).toBe(true);
+    noteNativeRunnerEvidence(now.getTime() - 10 * DAY_MS);
+    await settled(); expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("lets healthy saved expiry preempt a long-busy evidence retry", async () => {
+    const busy = await seedSession({ issueStatus: "in_progress" }), healthy = await seedSession({ issueStatus: "in_progress" });
+    const held = await seedArchive(busy.root);
+    const dueAt = now.getTime() + 10_001;
+    const available = await seedArchive(healthy.root, { name: `${dueAt - 7 * DAY_MS - 1}-${randomUUID()}` });
+    await startEvidence({ isSessionBusy: scope => scope === busy.scope }); await settled(dueAt);
+    await vi.advanceTimersByTimeAsync(dueAt - Date.now());
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await exists(available)).toBe(false);
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThan(59 * 60_000);
+    });
+    expect(await exists(held)).toBe(true);
+    await quiet(60_000);
+  });
+
+  it("reports reclaimed evidence bytes and dry-run mode", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root); const reported = vi.spyOn(logger, "info");
+    await startEvidence(); await settled();
+    expect(reported.mock.calls).toEqual(expect.arrayContaining([[expect.objectContaining({ evidenceCandidates: 1,
+      evidenceRemoved: 1, evidenceReclaimedBytes: expect.any(Number), dryRun: false }), "native runner evidence retention"]]));
+    expect(await exists(archive)).toBe(false); await quiet();
+  });
+
+  it("schedules publication at the first removable instant after its retention boundary", async () => {
+    const scope = await emptyStateBase(); await startEvidence(); await settled(); await quiet();
+    const writtenAt = Date.now();
+    await seedQuarantine(scope, { name: `${scope}.identity_indeterminate.${writtenAt}.4242.${randomUUID()}` });
+    noteNativeRunnerEvidence(writtenAt); await settled(writtenAt + 7 * DAY_MS + 1);
+  });
+
+  it("uses bounded continuations without recounting an evidence session forever", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archives = [await seedArchive(session.root), await seedArchive(session.root)];
+    const quarantine = await seedQuarantine(session.scope);
+    await startEvidence({ maxEntries: 1 }); await settled();
+    for (const archive of [...archives, quarantine]) expect(await exists(archive)).toBe(false);
+    await quiet();
+  });
 
   it("removes continuity archives older than the retention window and keeps recent ones", async () => {
     const session = await seedSession({ issueStatus: "in_progress" });

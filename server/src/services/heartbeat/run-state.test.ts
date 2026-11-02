@@ -313,7 +313,7 @@ describePostgres("heartbeat run state database wiring", () => {
     const [run] = await db.insert(heartbeatRuns).values({
       companyId, agentId: agent.id, issueId: issue.id, runtimeMode: "native", status: "failed",
       errorCode: "provider_transport_failed", error: "Retain saved files", nativePhase: "terminal_failure",
-      runnerProfileJson: { nativeWorkspaceSync: sync, savedInput: bulk },
+      runnerProfileJson: { nativeWorkspaceSync: sync, nativeResourceDisposition: "keep_running", savedInput: bulk },
       resultJson: { workspaceExportRetry: { requestId: "retry-source" }, stdout: bulk },
       contextSnapshot: { timerClaimWasFirstHeartbeat: true, savedInput: bulk },
       stdoutExcerpt: bulk, stderrExcerpt: bulk,
@@ -329,7 +329,7 @@ describePostgres("heartbeat run state database wiring", () => {
     });
     expect(await state.getRunWorkspaceSettlement(run.id)).toEqual({
       id: run.id, status: run.status, error: run.error,
-      runnerProfileJson: { nativeWorkspaceSync: sync },
+      runnerProfileJson: { nativeWorkspaceSync: sync, nativeResourceDisposition: "keep_running" },
       resultJson: { workspaceExportRetry: { requestId: "retry-source" } },
       contextSnapshot: { timerClaimWasFirstHeartbeat: true },
     });

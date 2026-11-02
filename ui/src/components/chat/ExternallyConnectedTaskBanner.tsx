@@ -4,7 +4,7 @@ import { chatUiErrorMessage, type ChatUiError } from "@/pages/apps/chat/chat-cop
 import { formatNumber } from "@/lib/utils";
 import { TaskVoiceLauncher } from "@/components/voice/TaskVoiceLauncher";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Paperclip, Radio } from "lucide-react";
 import type {
   ChatPublicationState,
@@ -26,6 +26,11 @@ import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { issuesApi } from "@/api/issues";
+import { describeError } from "@/api/errors";
+import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
+import { useAutoResend } from "@/hooks/useDurableSubmit";
+import { useDraftOwner, useDraftOwnerReader } from "@/hooks/useDraftOwner";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import {
   boardSendDraftKey,
   clearBoardSendDraft,
@@ -36,6 +41,8 @@ import {
   type BoardSendRejection,
   type RetainedBoardSend,
 } from "./board-send-draft";
+
+import { LegacyBoardSendNotice } from "./LegacyBoardSendNotice";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -141,11 +148,13 @@ type ConnectedTaskProps = {
 export function ExternallyConnectedTaskBanner(props: ConnectedTaskProps) {
   useTranslation();
   const { binding } = useIssueChatBinding(props.companyId, props.issueId);
+  const draftOwner = useDraftOwner();
   return <>
-    {binding && binding.provider !== "speko" && binding.provider !== "agentmail" && <ConnectedTaskComposer
-      key={boardSendDraftKey(props.companyId, props.issueId, binding.endpointId, binding.conversationId)}
+    {draftOwner !== undefined && binding && binding.provider !== "speko" && binding.provider !== "agentmail" && <ConnectedTaskComposer
+      key={boardSendDraftKey(props.companyId, props.issueId, binding.endpointId, binding.conversationId, draftOwner)}
       {...props}
       binding={binding}
+      draftOwner={draftOwner}
     />}
     <TaskVoiceLauncher companyId={props.companyId} issueId={props.issueId} agentId={props.assigneeAgentId} boundEndpointId={binding?.provider === "speko" ? binding.endpointId : undefined} />
   </>;
@@ -158,7 +167,9 @@ function ConnectedTaskComposer({
   issueId,
   issueCacheRefs,
   binding,
-}: ConnectedTaskProps & { binding: ExternalChannelBindingSummary }) {
+  draftOwner,
+}: ConnectedTaskProps & { binding: ExternalChannelBindingSummary; draftOwner: string }) {
+  const readOwner = useDraftOwnerReader();
   useTranslation();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -180,6 +191,7 @@ function ConnectedTaskComposer({
   );
   const [selectionNotice, setSelectionNotice] = useState(false);
   const [storageError, setStorageError] = useState<ChatUiError | null>(null);
+  const [unownedRequest, setUnownedRequest] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadInFlight = useRef(false);
   const mounted = useRef(true);
@@ -200,13 +212,21 @@ function ConnectedTaskComposer({
         issueId,
         binding.endpointId,
         binding.conversationId,
+        draftOwner,
       )
     : null;
+  const legacyStorageKey = boardSendDraftKey(companyId, issueId, binding.endpointId, binding.conversationId);
   const loadedStorageKey = useRef<string | null>(null);
   useEffect(() => {
     if (!storageKey || loadedStorageKey.current === storageKey) return;
     loadedStorageKey.current = storageKey;
     try {
+      if (sessionStorage.getItem(legacyStorageKey) !== null) {
+        setUnownedRequest(true);
+        setStorageError({ key: "nov02Components.unknownEarlierSender" });
+        setComposing(true);
+        return;
+      }
       const saved = readBoardSendDraft(storageKey);
       retainedScopeKey.current = storageKey;
       retainedSend.current = saved;
@@ -226,7 +246,7 @@ function ConnectedTaskComposer({
       );
       setComposing(true);
     }
-  }, [storageKey]);
+  }, [legacyStorageKey, storageKey, unownedRequest]);
   const deliveryScopeReady = Boolean(
     storageKey &&
     loadedStorageKey.current === storageKey &&
@@ -271,6 +291,7 @@ function ConnectedTaskComposer({
   const publicationStatus = useQuery({
     queryKey: [
       "chat-publication-batch",
+      draftOwner,
       companyId,
       binding?.endpointId,
       binding?.conversationId,
@@ -300,21 +321,23 @@ function ConnectedTaskComposer({
       finishPublication();
     }
   }, [publication, publicationStatus.data, finishPublication]);
-  const publish = useMutation({
+  const publish = useAccountBoundMutation({
     mutationFn: (input: {
       attachmentIds: string[];
       body: string;
       idempotencyKey: string;
       endpointId: string;
       conversationId: string;
-    }) =>
-      chatEndpointsApi.publishBoardMessage(
+    }) => {
+      if (readOwner() !== draftOwner) throw new DOMException("Your account changed. Reopen this task to send from your current account.", "AbortError");
+      return chatEndpointsApi.publishBoardMessage(
         input.endpointId,
         input.conversationId,
         input.body,
         input.idempotencyKey,
         input.attachmentIds,
-      ),
+      );
+    },
     onSuccess: (result) => {
       invalidateTask();
       const feedback = publicationFeedback[result.state];
@@ -372,16 +395,50 @@ function ConnectedTaskComposer({
         });
         return;
       }
+      // Outages and lost receipts resend on their own with the same request
+      // identity; the inline notice covers them.
+      if (classifySendFailure(error) === "pending") return;
       pushToast({
         title: t("chatUi.externallyConnectedTaskBanner.couldnTConfirmChannelDelivery"),
-        body:
-          error instanceof Error
-            ? t("chatUi.channelDeliveryError", { error: error.message })
-            : t("chatUi.externallyConnectedTaskBanner.yourDraftIsKeptRetryingHereReusesTheSameRequest"),
+        body: t("nov02Components.channelDeliveryError", { defaultValue: "{{error}} Your draft is kept; retrying here reuses the same request identity.", error: describeError(error).body }),
         tone: "error",
       });
     },
   });
+  // A send that failed with an outage or a lost receipt in this session
+  // resends with its saved key; the server returns the original publication
+  // instead of queueing another message. A send restored after reload has an
+  // unknown outcome and waits for an explicit retry.
+  const resendWaiting = Boolean(
+    deliveryScopeReady &&
+    unconfirmedRequest &&
+    retainedSend.current &&
+    !rejection &&
+    !publication &&
+    !storageError &&
+    publish.status === "error" &&
+    classifySendFailure(publish.error) === "pending",
+  );
+  const autoResend = useAutoResend({
+    sourceId: `board-send:${storageKey ?? issueId}`,
+    active: resendWaiting,
+    resend: async (): Promise<SendOutcome> => {
+      const input = retainedSend.current;
+      if (!input || readOwner() !== draftOwner) return "rejected";
+      try {
+        await publish.mutateAsync({
+          ...input,
+          endpointId: binding.endpointId,
+          conversationId: binding.conversationId,
+        });
+        return "sent";
+      } catch (error) {
+        return classifySendFailure(error);
+      }
+    },
+  });
+  // Automatic resends gave up while online; only Resend now tries again.
+  const resendStalled = resendWaiting && autoResend.stalled && !autoResend.resending;
   const uploadDisabled = Boolean(
     retainedSend.current ||
     publication ||
@@ -641,9 +698,21 @@ function ConnectedTaskComposer({
           )}
           {storageError && (
             <p role="alert" className="text-xs text-destructive">
-              {chatUiErrorMessage(storageError)}
+              {chatUiErrorMessage(storageError)}{" "}
+              <Link className="underline underline-offset-4" to={activityPath}>{t("nov02Components.openActivity", { defaultValue: "Open Activity" })}</Link>
             </p>
           )}
+          {unownedRequest && <LegacyBoardSendNotice onDiscard={() => {
+            if (readOwner() !== draftOwner) return;
+            try { clearBoardSendDraft(legacyStorageKey); }
+            catch {
+              setStorageError({ key: "nov02Components.discardDeliveryRecordFailed" });
+              return;
+            }
+            loadedStorageKey.current = null;
+            setUnownedRequest(false);
+            setStorageError(null);
+          }} />}
           {rejection && (
             <div
               role="alert"
@@ -688,14 +757,27 @@ function ConnectedTaskComposer({
           )}
           {!rejection &&
             (publish.isError || unconfirmedRequest) &&
-            !publish.isPending &&
+            // An automatic resend keeps the waiting notice up while it runs.
+            (!publish.isPending || autoResend.resending) &&
             !publication && (
               <div
                 role="alert"
                 className="space-y-1 rounded-md border border-border bg-background p-3 text-xs"
               >
-                <p className="font-medium">{t("chatUi.externallyConnectedTaskBanner.deliveryResultNotConfirmed")}</p>
-                <p className="text-muted-foreground">{t("chatUi.externallyConnectedTaskBanner.yourExactDraftAndRequestIdentityAreKeptRetrySafely")}</p>
+                <p className="font-medium">
+                  {resendStalled
+                    ? t("nov02Components.updateNotSent", { defaultValue: "Couldn’t send this update yet." })
+                    : resendWaiting || autoResend.resending
+                      ? t("nov02Components.sendingWhenReconnected", { defaultValue: "Sending when reconnected…" })
+                      : t("chatUi.externallyConnectedTaskBanner.deliveryResultNotConfirmed")}
+                </p>
+                <p className="text-muted-foreground">
+                  {resendStalled
+                    ? t("nov02Components.resendStopped", { defaultValue: "Your exact draft and request identity are kept. Automatic resends stopped; choose Resend now to try again without creating a duplicate." })
+                    : resendWaiting || autoResend.resending
+                      ? t("nov02Components.resendsAutomatically", { defaultValue: "Your exact draft and request identity are kept. It resends on its own without creating a duplicate." })
+                      : t("chatUi.externallyConnectedTaskBanner.yourExactDraftAndRequestIdentityAreKeptRetrySafely")}
+                </p>
                 <Link
                   className="inline-block font-medium underline underline-offset-4"
                   to={activityPath}
@@ -812,11 +894,17 @@ function ConnectedTaskComposer({
               onClick={() => {
                 if (
                   uploadInFlight.current ||
+                  readOwner() !== draftOwner ||
                   !storageKey ||
                   loadedStorageKey.current !== storageKey ||
                   retainedScopeKey.current !== storageKey
                 )
                   return;
+                if (resendWaiting) {
+                  // Same saved request; also restarts the automatic resends.
+                  autoResend.resendNow();
+                  return;
+                }
                 idempotencyKey.current ??= crypto.randomUUID();
                 const input = retainedSend.current ?? {
                   attachmentIds: selectedAttachmentIds,
@@ -850,7 +938,9 @@ function ConnectedTaskComposer({
             >
               {publish.isPending
                 ? t("localizationIssueAux.ui_Sending_15r3dgd")
-                : !rejection && (publish.isError || unconfirmedRequest)
+                : resendWaiting
+                  ? t("nov02Components.resendNow", { defaultValue: "Resend now" })
+                  : !rejection && (publish.isError || unconfirmedRequest)
                   ? t("chatUi.externallyConnectedTaskBanner.retrySafely")
                   : t("chatUi.externallyConnectedTaskBanner.sendToChannel")}
             </Button>

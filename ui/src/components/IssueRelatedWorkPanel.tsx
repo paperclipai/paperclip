@@ -134,7 +134,7 @@ function ExternalObjectsSection({
         </p>
       </div>
 
-      {isError ? (
+      {isError ? ( // query-error-ok: set only for a real failure (useIssueExternalObjects keeps data through outages)
         <p className="text-xs text-muted-foreground">
           {t("localizationIssuePanels.ui_Couldn_t_load_external_objects_lsu0y")}{" "}
           {onRetry ? (

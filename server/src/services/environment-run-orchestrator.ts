@@ -1,4 +1,5 @@
 import { freshWorkspaceSchema } from "@paperclipai/plugin-sdk";
+import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRepositoryPath } from "./remote-workspaces.js";
 /**
  * Centralized environment run orchestrator.
  *
@@ -273,6 +274,7 @@ export function environmentRunOrchestrator(
     adapterType: string;
     adapterConfig?: Record<string, unknown>;
     admittedLifecycleMode?: "warm" | "per_turn";
+    managedAiCredentialIdentity?: string;
     issueId: string | null;
     heartbeatRunId: string;
     agentId: string;
@@ -280,7 +282,8 @@ export function environmentRunOrchestrator(
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     runnerTaskProjectIds?: readonly string[];
     /** Existing live runner recovery must use its original active lease, including ephemeral leases. */
-    reattachRemoteLease?: { leaseId: string; providerLeaseId: string; remoteCwd: string };
+    reattachRemoteLease?: { kind?: "sandbox"; leaseId: string; providerLeaseId: string; remoteCwd: string }
+      | { kind: "plugin_task"; leaseId: string };
     /** A new controller must stop the previous plugin task before allocating a replacement. */
     recoverPluginTask?: boolean;
   }): Promise<EnvironmentAcquisitionResult> {
@@ -292,7 +295,7 @@ export function environmentRunOrchestrator(
     });
 
     const environment = resolveRunnerEnvironmentForRun(
-      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode, input.managedAiCredentialIdentity,
     );
 
     if (input.recoverPluginTask && environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
@@ -329,15 +332,19 @@ export function environmentRunOrchestrator(
       // when the admitted per-turn policy deliberately disables reusable leases.
       const expected = input.reattachRemoteLease;
       const lease = await environmentsSvc.getLeaseById(expected.leaseId);
-      if (!lease || environment.driver !== "sandbox" ||
+      if (!lease ||
           lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
           lease.heartbeatRunId !== input.heartbeatRunId || lease.issueId !== input.issueId ||
           lease.executionWorkspaceId !== (input.persistedExecutionWorkspace?.id ?? null) ||
           lease.metadata?.agentId !== input.agentId || lease.status !== "active" ||
           lease.releasedAt !== null || lease.cleanupStatus !== null ||
           (lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now()) ||
-          lease.provider !== environment.config.provider || lease.providerLeaseId !== expected.providerLeaseId ||
-          lease.metadata?.remoteCwd !== expected.remoteCwd) {
+          (expected.kind === "plugin_task"
+            ? environment.driver !== "plugin" || input.adapterType !== "paperclip_runner"
+              || lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskDispatched !== true
+              || lease.metadata?.runnerTaskExecutionStopped === true
+            : environment.driver !== "sandbox" || lease.provider !== environment.config.provider
+              || lease.providerLeaseId !== expected.providerLeaseId || lease.metadata?.remoteCwd !== expected.remoteCwd)) {
         throw new Error("native_remote_recovery_lease_mismatch");
       }
       leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
@@ -406,6 +413,7 @@ export function environmentRunOrchestrator(
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
     runnerTaskProjectIds?: readonly string[];
+    assertOwned?: () => Promise<void>;
     /**
      * The host duplex observability recorder for this run. The orchestrator threads
      * it to `resolveEnvironmentExecutionTarget`, which stamps it on the sandbox
@@ -423,6 +431,51 @@ export function environmentRunOrchestrator(
       effectiveExecutionWorkspaceMode,
     } = input;
     let { lease, persistedExecutionWorkspace } = input;
+    const remoteAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
+    if (remoteAuthority && persistedExecutionWorkspace) {
+      if (adapterType !== "paperclip_runner" || environment.driver !== "sandbox") {
+        throw new EnvironmentRunError("unsupported_adapter_environment", "Remote workspace storage requires a qualified native sandbox");
+      }
+      const target = await resolveEnvironmentExecutionTarget({
+        db, companyId, adapterType, environment, leaseId: lease.id, leaseMetadata: lease.metadata,
+        lease, environmentRuntime, duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
+      });
+      if (!target || target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
+        throw new EnvironmentRunError("transport_resolution_failed", "Remote workspace storage requires a sandbox file transport");
+      }
+      const prepared = await prepareRemoteWorkspace({
+        db, workspace: persistedExecutionWorkspace, runId: heartbeatRunId, lease, target,
+        source: remoteAuthority.source,
+        assertOwned: input.assertOwned,
+        provisionCommand: persistedExecutionWorkspace.config?.provisionCommand,
+        runtimeProvisionCommand: persistedExecutionWorkspace.config?.runtimeProvisionCommand,
+      });
+      lease = prepared.lease;
+      const workspaceRealization = {
+        version: 1, mode: "in_place", authoritativeRoot: prepared.remoteRoot,
+        pathAliases: [], outboundRestorePaths: [], provider: lease.provider,
+        environmentId: environment.id, leaseId: lease.id, providerLeaseId: lease.providerLeaseId,
+        additional: (remoteAuthority.source.repositories ?? []).filter(repository => repository.readOnly)
+          .map(repository => ({ path: remoteWorkspaceRepositoryPath(prepared.remoteRoot, repository),
+            projectId: repository.projectId ?? null, projectWorkspaceId: repository.projectWorkspaceId ?? null,
+            repoUrl: repository.repoUrl, repoRef: repository.ref })),
+      };
+      const updatedLease = await environmentsSvc.updateLeaseMetadata(lease.id, {
+        ...lease.metadata, remoteCwd: prepared.remoteRoot, workspaceRealization,
+      });
+      if (!updatedLease) throw new Error("Remote workspace lease disappeared during preparation");
+      lease = updatedLease;
+      persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(companyId, prepared.workspace.id);
+      if (!persistedExecutionWorkspace) throw new Error("Remote workspace disappeared during preparation");
+      input.executionWorkspace.cwd = prepared.remoteRoot;
+      const executionTarget: AdapterExecutionTarget = {
+        ...target, remoteCwd: prepared.remoteRoot,
+        workspaceRealization: { mode: "in_place", authoritativeRoot: prepared.remoteRoot,
+          pathAliases: [], outboundRestorePaths: [] },
+      };
+      return { lease, workspaceRealization, executionTarget,
+        remoteExecution: adapterExecutionTargetToRemoteSpec(executionTarget), persistedExecutionWorkspace };
+    }
 
     if (executionWorkspace.providerBinding) {
       const binding = executionWorkspace.providerBinding;
@@ -672,6 +725,8 @@ export function environmentRunOrchestrator(
     failureReason?: string;
     /** Explicit Stop during adapter startup; never used for ordinary cleanup. */
     cancelActiveWork?: boolean;
+
+    respectCleanupDeadlines?: boolean;
     /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
     providerResourceDisposition?: ProviderResourceDisposition;
     nativeLifecycleTelemetry?: {
@@ -689,13 +744,15 @@ export function environmentRunOrchestrator(
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(
+      const releaseArgs: Parameters<typeof environmentRuntime.releaseRunLeases> = [
         input.heartbeatRunId,
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
         input.providerResourceDisposition,
-        ...(input.cancelActiveWork ? [true] as const : []),
-      );
+      ];
+      if (input.cancelActiveWork) releaseArgs[4] = true;
+      if (input.respectCleanupDeadlines) releaseArgs[5] = { respectCleanupDeadlines: true };
+      releasedLeases = await environmentRuntime.releaseRunLeases(...releaseArgs);
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;

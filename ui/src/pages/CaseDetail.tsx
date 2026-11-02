@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { EntityRow } from "@/components/EntityRow";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { QueryErrorState, queryViewKind, useQueryView } from "@/components/QueryView";
 import { CaseDocumentPreview } from "@/components/cases/CaseDocumentPreview";
 import { CaseHandoffHistory } from "@/components/cases/CaseHandoffHistory";
 import { CaseStatus } from "@/components/cases/CaseStatus";
@@ -50,6 +51,7 @@ export function CaseDetail() {
     queryFn: () => casesApi.get(caseIdentifier!),
     enabled: !!caseIdentifier,
   });
+  const caseView = useQueryView(caseQuery);
   const caseData = caseQuery.data;
   const listPath = `${caseHref()}${search}`;
   const childrenQuery = useQuery({
@@ -74,14 +76,16 @@ export function CaseDetail() {
   }, [setBreadcrumbs, listPath, caseData?.identifier, caseIdentifier, t]);
 
   if (!caseIdentifier) return <Navigate to={listPath} replace />;
-  if (caseQuery.isLoading) return <div data-testid="case-pages"><PageSkeleton variant="detail" /></div>;
-  if (caseQuery.isError || !caseData) {
+  if (caseQuery.isLoading || caseView.kind === "reconnecting") return <div data-testid="case-pages"><PageSkeleton variant="detail" /></div>;
+  if (caseView.kind === "error" || !caseData) {
+    // "Not found" only for a real 403/404; an outage never looks like a missing case.
     const unavailable = caseQuery.error instanceof ApiError && [403, 404].includes(caseQuery.error.status);
     return <div data-testid="case-pages" className="space-y-4">
-      <EmptyState icon={FolderOpen} message={unavailable ? t("oct26Cases.caseNotFound") : t("oct26Cases.caseLoadError")} />
+      {unavailable
+        ? <EmptyState icon={FolderOpen} message={t("oct26Cases.caseNotFound")} />
+        : <QueryErrorState size="page" error={caseQuery.error} action={t("nov2Pages.action.load_this_case", { defaultValue: "load this case" })} onRetry={caseView.retry} retrying={caseView.isFetching} />}
       <div className="flex justify-center gap-3">
         <Button variant="link" asChild><Link to={listPath}>{t("oct26Cases.backToCases")}</Link></Button>
-        {!unavailable && <Button variant="outline" size="sm" onClick={() => void caseQuery.refetch()}>{t("oct26Cases.tryAgain")}</Button>}
       </div>
     </div>;
   }
@@ -141,7 +145,7 @@ export function CaseDetail() {
         <summary className="w-fit cursor-pointer text-sm font-semibold">{t("oct26Cases.relatedCases")}</summary>
         {caseData.parent && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">{t("oct26Cases.parent")}</h3><CaseRelation item={caseData.parent} search={search} /></div>}
         {children.length > 0 && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">{t("oct26Cases.children")} {children.length}</h3>{children.map(child => <CaseRelation key={child.id} item={child} search={search} />)}</div>}
-        {childrenQuery.isError && <p role="alert" className="text-sm text-destructive">{t("oct26Cases.childrenError")}</p>}
+        {queryViewKind(childrenQuery) === "error" && <p role="alert" className="text-sm text-destructive">{t("oct26Cases.childrenError")}</p>}
       </details>}
 
       {!fields.length && !caseData.documents.length && !taskDocuments.length && !caseData.attachments.length && <p className="text-sm text-muted-foreground">{t("oct26Cases.noFindings")}</p>}

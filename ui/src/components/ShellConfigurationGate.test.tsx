@@ -19,6 +19,26 @@ vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: { getExperiment
 
 afterEach(() => vi.resetAllMocks());
 
+it.each([
+  ["/PAP/issues/PAP-1", true],
+  ["/PAP/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", true],
+  ["/PAP/issues/all", false],
+  ["/PAP/issues", false],
+  ["/PAP/chats/agent", false],
+  ["/PAP/apps", false],
+])("permits only a guarded task detail while the personal preference loads: %s", async (path, permitted) => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<MemoryRouter initialEntries={[path]}><Routes>
+      <Route element={<ShellConfigurationGate loaded={false} allowPendingTaskDetail />}>
+        <Route path="*" element={<div>Guarded task content</div>} />
+      </Route>
+    </Routes></MemoryRouter>));
+    expect(container.textContent).toBe(permitted ? "Guarded task content" : "Loading shell");
+  } finally { await act(async () => root.unmount()); }
+});
+
 it.each([false, true])("runs access checks while shell settings are pending (membership=%s)", async allowMembershipRequest => {
   let resolveSettings!: (value: unknown) => void;
   health.mockResolvedValue({ status: "ok", deploymentMode: "authenticated", bootstrapStatus: "ready" });

@@ -35,6 +35,12 @@ function classify(overrides: Partial<Parameters<typeof classifyTaskWatchdogSubtr
 }
 
 describe("task watchdog subtree classifier", () => {
+  it("does not produce a stopped fingerprint from an incomplete scan", () => {
+    const result = classify({ subtreeIncomplete: true });
+    expect(result.state).toBe("incomplete");
+    expect(result).not.toHaveProperty("stopFingerprint");
+  });
+
   it("suppresses watchdog wakeups while watched subtree work has a live path", () => {
     const result = classify({
       issues: [

@@ -63,7 +63,7 @@ test("a refreshed company consumer reads the retained provider", async ({ page }
     const body = pathname === "/api/auth/get-session"
       ? { user: { id: "test-user" }, session: { userId: "test-user" } }
       : pathname === "/api/companies"
-        ? [{ id: "test-company", name: "Test company", status: "active" }]
+        ? [{ id: "test-company", name: "Test company", issuePrefix: "TST", status: "active" }]
         : [];
     await route.fulfill({ json: body });
   });

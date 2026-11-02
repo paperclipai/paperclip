@@ -2,7 +2,7 @@ import { t as translateOct26, useTranslation as useOct26Translation } from "@/i1
 import { t, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentPermissions, TrustPreset } from "@paperclipai/shared";
-import { Lock, ShieldAlert } from "lucide-react";
+import { Check, Lock, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, CollapsibleSection } from "./agent-config-primitives";
 import {
@@ -63,6 +63,8 @@ export function TrustPresetSection({
   candidatesLoading,
   allowSingleIssue = true,
   projectAccessEditor,
+  layout = "select",
+  aside,
 }: {
   permissions: Partial<AgentPermissions> | null | undefined;
   onChange: (permissions: Partial<AgentPermissions>) => void;
@@ -73,6 +75,9 @@ export function TrustPresetSection({
   candidatesLoading?: boolean;
   allowSingleIssue?: boolean;
   projectAccessEditor?: ReactNode;
+  /** "cards" shows the presets as selectable cards beside `aside` (the agent page). */
+  layout?: "select" | "cards";
+  aside?: ReactNode;
 }) {
   useOct26Translation();
   const { t } = useTranslation();
@@ -111,24 +116,7 @@ export function TrustPresetSection({
   const targetCandidates = targetType === "project" ? projectCandidates : issueCandidates;
   const boundaryValue = boundaryTarget?.type === targetType ? boundaryTarget.id : "";
 
-  return (
-    <div>
-      <h3 className="mb-3 text-sm font-medium">{t("localizationAgents.ui235_Trust")}</h3>
-      <div className="rounded-lg border border-border p-4 space-y-3">
-        <Field label={t("localizationAgents.ui236_Trust_preset")} hint={t("localizationAgents.ui237_Choose_how_broadly_this_agent_can_read_and_act_on_Paperclip_")}>
-          <select
-            className={inputClass}
-            value={preset}
-            onChange={(event) => handlePresetChange(event.target.value)}
-            disabled={disabled}
-          >
-            <option value="standard">{TRUST_PRESET_LABELS.standard}</option>
-            <option value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</option>
-          </select>
-        </Field>
-        <p className="text-xs text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[preset]}</p>
-
-        {lowTrust ? (
+  const containment = lowTrust ? (
           <div
             role={hasScope ? "status" : "alert"}
             aria-live="polite"
@@ -155,7 +143,7 @@ export function TrustPresetSection({
                     : t("localizationAgents.ui241_This_agent_is_set_to_low_trust_review_but_no_project_root_is")}
                 </p>
               </div>
-              {projectAccessEditor && (boundary?.projectIds?.length ?? 0) > 0 ? null : boundaryEditable ? (
+              {projectAccessEditor && (boundary?.projectIds?.length ?? 0) > 1 ? null : boundaryEditable ? (
                 <div className="rounded-md border border-border/70 bg-background/70 p-3 text-foreground space-y-3">
                   <div className="grid gap-3 sm:grid-cols-(--gtc-12)">
                     <Field label={t("localizationAgents.ui242_Boundary_type")}>
@@ -247,7 +235,69 @@ export function TrustPresetSection({
               </CollapsibleSection>
             </div>
           </div>
-        ) : null}
+        ) : null;
+
+  if (layout === "cards") {
+    return (
+      <div className="flex flex-col gap-(--agent-detail-module-gap)">
+        <div className="grid gap-(--agent-detail-module-gap) sm:grid-cols-3">
+          <div role="radiogroup" aria-label={t("localizationAgents.ui236_Trust_preset")} className="contents">
+            {(["low_trust_review", "standard"] as const).map((value) => {
+              const selected = preset === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  data-agent-tile=""
+                  disabled={disabled}
+                  onClick={() => (selected ? undefined : handlePresetChange(value))}
+                  className={cn(
+                    "flex min-h-(--agent-detail-tile-min-h) flex-col gap-2 rounded-lg border bg-(--agent-detail-tile) p-(--agent-detail-module-inset) text-left transition-colors outline-none hover:bg-(--agent-detail-tile-hover) focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
+                    selected ? "border-foreground" : "border-transparent",
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-foreground">{TRUST_PRESET_LABELS[value]}</span>
+                    {selected ? <Check className="size-4 text-foreground" aria-hidden /> : null}
+                  </span>
+                  <span className="text-sm leading-5 text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[value]}</span>
+                </button>
+              );
+            })}
+          </div>
+          {aside}
+        </div>
+        {containment}
+        {lowTrust ? projectAccessEditor : null}
+        {managedPermissions.authorizationPolicy?.reviewPreset ? null : (
+          <p className="text-xs text-muted-foreground">
+            {t("localizationAgents.ui266_Advanced_permissions_remain_editable_through_the_EE_permissi")}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="mb-3 text-sm font-medium">{t("localizationAgents.ui235_Trust")}</h3>
+      <div className="rounded-lg border border-border p-4 space-y-3">
+        <Field label={t("localizationAgents.ui236_Trust_preset")} hint={t("localizationAgents.ui237_Choose_how_broadly_this_agent_can_read_and_act_on_Paperclip_")}>
+          <select
+            className={inputClass}
+            value={preset}
+            onChange={(event) => handlePresetChange(event.target.value)}
+            disabled={disabled}
+          >
+            <option value="standard">{TRUST_PRESET_LABELS.standard}</option>
+            <option value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</option>
+          </select>
+        </Field>
+        <p className="text-xs text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[preset]}</p>
+
+        {containment}
 
         {lowTrust && projectAccessEditor}
 

@@ -13,6 +13,7 @@ vi.mock("../api/projects", () => ({ projectsApi: { list: mocks.read } }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.read } }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: null }) }));
 vi.mock("../context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
+vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
 vi.mock("../hooks/useStreamlinedUiEnabled", () => ({ useStreamlinedUiEnabled: () => ({ enabled: mocks.streamlined }) }));
 vi.mock("@/hooks/useSharedPolling", () => ({ useSharedPollingQuery: () => ({ enabled: false, refetchInterval: false }), usePublishSharedQueryData: () => {} }));
 vi.mock("../components/IssuesList", () => ({ IssuesList: () => <div data-unexpected-issues-list /> }));

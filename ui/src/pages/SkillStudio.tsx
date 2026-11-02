@@ -4,6 +4,7 @@ import { interactionReadinessRefetchInterval } from "@/lib/issue-thread-interact
 import { SkillBinaryFile } from "../components/SkillBinaryFile";
 import { SkillSourceProvenance } from "../components/SkillSourceProvenance";
 import { AgentIdentity } from "@/components/AgentIdentity";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -39,7 +40,6 @@ import type {
   CompanySkillTestRunTemplate,
   CompanySkillTestRunTemplateCreateRequest,
   CompanySkillTestRunTemplateUpdateRequest,
-  CompanySkillVersion,
   IssueDocument,
   IssueThreadInteraction,
   AskUserQuestionsInteraction,
@@ -57,6 +57,7 @@ import { useOptionalToastActions } from "../context/ToastContext";
 import { classifySkillDenial } from "@/lib/skill-policy-denial";
 import { agentsApi } from "@/api/agents";
 import { companySkillsApi } from "@/api/companySkills";
+import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -302,6 +303,7 @@ export function SkillStudio() {
     queryFn: () => companySkillsApi.detail(companyId, skillId),
     enabled: Boolean(companyId && skillId && !isCreateMode),
   });
+  const detailView = useQueryView(detailQuery);
   const forkDetailQuery = useQuery({
     queryKey: queryKeys.companySkills.detail(companyId, forkFromSkillId ?? ""),
     queryFn: () => companySkillsApi.detail(companyId, forkFromSkillId!),
@@ -365,10 +367,22 @@ export function SkillStudio() {
       />
     );
   }
-  if (detailQuery.isLoading) {
+  if (detailQuery.isLoading || detailView.kind === "reconnecting") {
     return <StudioMessage message={t("localizationSkills.loadingSkill435")} />;
   }
-  if (detailQuery.isError || !detailQuery.data) {
+  // "Not found" only for a real 404; an outage never looks like a missing skill.
+  if (detailView.kind === "error" && detailView.errorKind !== "not_found") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={detailQuery.error}
+        action={t("nov2Pages.action.load_this_skill", { defaultValue: "load this skill" })}
+        onRetry={detailView.retry}
+        retrying={detailView.isFetching}
+      />
+    );
+  }
+  if (detailView.kind === "error" || !detailQuery.data) {
     return <StudioMessage message={t("localizationSkills.skillNotFound218")} />;
   }
 
@@ -1295,6 +1309,7 @@ function SkillPane({
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<string>("");
   const [savedContent, setSavedContent] = useState<string>("");
+  const [versionConflict, setVersionConflict] = useState(false);
   const [createDialog, setCreateDialog] = useState<"file" | "folder" | null>(null);
   const [deleteFolderOpen, setDeleteFolderOpen] = useState(false);
   // Gate rich-editor onChange until the user actually interacts with the body.
@@ -1310,6 +1325,10 @@ function SkillPane({
     [paths],
   );
 
+  const [baseVersionId, setBaseVersionId] = useState<string | null | undefined>();
+  const draftFileRef = useRef<string | null>(null);
+  const currentDraftRef = useRef({ skillId, selectedFile, draft });
+  currentDraftRef.current = { skillId, selectedFile, draft };
   const fileQuery = useQuery({
     queryKey: queryKeys.companySkills.file(companyId, skillId, selectedFile),
     queryFn: () => companySkillsApi.file(companyId, skillId, selectedFile),
@@ -1318,6 +1337,10 @@ function SkillPane({
 
   useEffect(() => {
     if (fileQuery.data) {
+      if (draftFileRef.current === selectedFile && draft !== savedContent) return;
+      draftFileRef.current = selectedFile;
+      setBaseVersionId(fileQuery.data.versionId);
+      setVersionConflict(false);
       bodyInteractedRef.current = false;
       setDraft(fileQuery.data.content);
       setSavedContent(fileQuery.data.content);
@@ -1345,9 +1368,15 @@ function SkillPane({
   }, [dirty, selectedFile, t]);
 
   const saveMutation = useMutation({
-    mutationFn: () => companySkillsApi.updateFile(companyId, skillId, selectedFile, draft),
+    mutationFn: ({ path, content, versionId }: { path: string; content: string; versionId: string | null | undefined }) =>
+      companySkillsApi.updateFile(companyId, skillId, path, content, { expectedVersionId: versionId }),
     onSuccess: (updated) => {
-      setSavedContent(updated.content);
+      queryClient.setQueryData(queryKeys.companySkills.file(companyId, skillId, updated.path), updated);
+      if (draftFileRef.current === updated.path) {
+        setBaseVersionId(updated.versionId);
+        setSavedContent(updated.content);
+        setVersionConflict(false);
+      }
       queryClient.invalidateQueries({
         queryKey: queryKeys.companySkills.detail(companyId, skillId),
       });
@@ -1358,13 +1387,33 @@ function SkillPane({
         queryKey: queryKeys.companySkills.versions(companyId, skillId),
       });
     },
-    onError: onError(t("localizationSkills.couldnTSaveFile466")),
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) setVersionConflict(true);
+      onError(t("localizationSkills.couldnTSaveFile466"))(error);
+    },
   });
+
+  async function loadLatestSavedFile() {
+    if (dirty && !window.confirm(t("nov2Pages.skills.discardBeforeReload", { defaultValue: "Discard unsaved edits and load the latest saved file?" }))) return;
+    const result = await fileQuery.refetch();
+    if (result.error) { onError(t("nov2Pages.skills.latestLoadError", { defaultValue: "Couldn't load latest file" }))(result.error); return; }
+    if (!result.data) return;
+    // Discard confirmation covers only the draft that started this request.
+    const current = currentDraftRef.current;
+    if (current.skillId !== skillId || current.selectedFile !== selectedFile || current.draft !== draft) return;
+    draftFileRef.current = selectedFile;
+    setDraft(result.data.content);
+    setSavedContent(result.data.content);
+    setBaseVersionId(result.data.versionId);
+    setVersionConflict(false);
+  }
 
   const createMutation = useMutation({
     mutationFn: ({ path, content }: { path: string; content: string }) =>
-      companySkillsApi.updateFile(companyId, skillId, path, content),
+      companySkillsApi.updateFile(companyId, skillId, path, content, { expectedVersionId: baseVersionId ?? skill.currentVersionId }),
     onSuccess: (created) => {
+      setBaseVersionId(created.versionId);
+      queryClient.setQueryData(queryKeys.companySkills.file(companyId, skillId, created.path), created);
       setSelectedFile(created.path);
       setDraft(created.content);
       setSavedContent(created.content);
@@ -1384,8 +1433,10 @@ function SkillPane({
 
   const deleteMutation = useMutation({
     mutationFn: (input: { path: string; target: "file" | "folder" }) =>
-      companySkillsApi.deleteFile(companyId, skillId, input),
+      companySkillsApi.deleteFile(companyId, skillId, { ...input, expectedVersionId: baseVersionId ?? skill.currentVersionId }),
     onSuccess: (result) => {
+      setBaseVersionId(result.versionId);
+      queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.file(companyId, skillId, selectedFile) });
       const deleted = new Set(result.deletedPaths);
       const remaining = paths.filter((path) => !deleted.has(path));
       setSelectedFile(remaining.find((path) => /skill\.md$/i.test(path)) ?? remaining[0] ?? "SKILL.md");
@@ -1463,6 +1514,14 @@ function SkillPane({
       }
     >
       <div className="flex min-h-0 flex-1 flex-col">
+        {versionConflict ? (
+          <div role="alert" className="flex items-center gap-2 border-b border-border bg-muted px-3 py-2 text-xs">
+            <span>{t("nov2Pages.skills.conflict", { defaultValue: "This skill changed since you opened it. Your unsaved edits are still here. Copy them before loading the latest file to reconcile the changes." })}</span>
+            <Button size="sm" variant="outline" disabled={fileQuery.isFetching} onClick={() => void loadLatestSavedFile()}>
+              {t("nov2Pages.skills.loadLatest", { defaultValue: "Load latest saved file" })}
+            </Button>
+          </div>
+        ) : null}
         {dirty && !readOnly ? (
           <div className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
@@ -1522,7 +1581,7 @@ function SkillPane({
                 <Button
                   size="sm"
                   disabled={!dirty || saveMutation.isPending}
-                  onClick={() => saveMutation.mutate()}
+                  onClick={() => saveMutation.mutate({ path: selectedFile, content: draft, versionId: baseVersionId })}
                 >
                   {saveMutation.isPending ? t("localizationSkills.saving264") : t("localizationSkills.save223")}
                 </Button>
@@ -3429,14 +3488,23 @@ function VersionHistorySheet({
   const [rightId, setRightId] = useState<string | null>(null);
 
   const restore = useMutation({
-    mutationFn: async (version: CompanySkillVersion) => {
-      // Restore = write each file from the chosen version back, then cut a new
-      // head version (immutability: never rewrites history).
-      for (const file of version.fileInventory) {
-        await companySkillsApi.updateFile(companyId, skillId, file.path, file.content, { encoding: file.encoding, executable: file.executable ?? false });
+    mutationFn: async (selection: { id: string }) => {
+      if (skill.sourceType === "local_path") {
+        const version = await companySkillsApi.version(companyId, skillId, selection.id);
+        let expectedVersionId = skill.currentVersionId;
+        for (const file of version.fileInventory) {
+          const saved = await companySkillsApi.updateFile(companyId, skillId, file.path, file.content, {
+            encoding: file.encoding, executable: file.executable ?? false, expectedVersionId,
+          });
+          expectedVersionId = saved.versionId ?? expectedVersionId;
+        }
+        return companySkillsApi.createVersion(companyId, skillId, {
+          label: t("localizationSkills.restoredVersion", { defaultValue: "Restore of v{{version}}", version: version.revisionNumber }), expectedVersionId,
+        });
       }
       return companySkillsApi.createVersion(companyId, skillId, {
-        label: t("localizationSkills.restoredVersion", { version: version.revisionNumber }),
+        sourceVersionId: selection.id, expectedVersionId: skill.currentVersionId,
+        label: t("nov2Pages.skills.restoredVersion", { defaultValue: "Restored saved version" }),
       });
     },
     onSuccess: () => {
@@ -3445,8 +3513,18 @@ function VersionHistorySheet({
     },
   });
 
-  const left = versions.find((v) => v.id === leftId) ?? null;
-  const right = versions.find((v) => v.id === rightId) ?? null;
+  const leftQuery = useQuery({
+    queryKey: [...queryKeys.companySkills.versions(companyId, skillId), leftId],
+    queryFn: () => companySkillsApi.version(companyId, skillId, leftId!),
+    enabled: open && Boolean(leftId && rightId),
+  });
+  const rightQuery = useQuery({
+    queryKey: [...queryKeys.companySkills.versions(companyId, skillId), rightId],
+    queryFn: () => companySkillsApi.version(companyId, skillId, rightId!),
+    enabled: open && Boolean(leftId && rightId),
+  });
+  const left = leftQuery.data ?? null;
+  const right = rightQuery.data ?? null;
   const diff = left && right ? buildLineDiff(
     left.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? "[Binary asset]" : f.content}`).join("\n\n"),
     right.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? "[Binary asset]" : f.content}`).join("\n\n"),
@@ -3497,6 +3575,14 @@ function VersionHistorySheet({
                 />
               ))}
             </div>
+          )}
+          {(versionsQuery.error || leftQuery.error || rightQuery.error || restore.error) && (
+            <p role="alert" className="text-sm text-destructive">
+              {(versionsQuery.error ?? leftQuery.error ?? rightQuery.error ?? restore.error)?.message}
+            </p>
+          )}
+          {leftId && rightId && (leftQuery.isLoading || rightQuery.isLoading) && (
+            <p className="text-sm text-muted-foreground">{t("nov2Pages.skills.versions", { defaultValue: "Loading selected versions…" })}</p>
           )}
           {diff && (
             <div className="rounded-md border border-border">

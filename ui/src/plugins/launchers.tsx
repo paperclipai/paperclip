@@ -26,6 +26,8 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
+import { describeError, isTransientError } from "@/api/errors";
+import { queryViewKind } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { useNavigate, useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
@@ -69,9 +71,12 @@ type UsePluginLaunchersFilters = {
 };
 
 type UsePluginLaunchersResult = {
+  /** The last loaded launchers. Kept through a transient failure so chrome never disappears. */
   launchers: ResolvedPluginLauncher[];
   contributionsByPluginId: Map<string, PluginUiContribution>;
+  /** True while nothing has loaded yet, including while reconnecting after an outage. */
   isLoading: boolean;
+  /** Readable copy for a non-transient failure, or null. Never set for an outage. */
   errorMessage: string | null;
 };
 
@@ -127,11 +132,6 @@ const supportedLauncherBounds = new Set<PluginLauncherBounds>(
 );
 
 const PluginLauncherRuntimeContext = createContext<PluginLauncherRuntimeContextValue | null>(null);
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return t("localizationActivityChrome.unknownError");
-}
 
 function buildLauncherHostContext(
   context: PluginLauncherContext,
@@ -292,11 +292,14 @@ export function usePluginLaunchers(
 ): UsePluginLaunchersResult {
   useTranslation();
   const queryEnabled = filters.enabled ?? true;
-  const { data, isLoading, error } = useQuery({
+  const query = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
     queryFn: () => pluginsApi.listUiContributions(),
     enabled: queryEnabled,
   });
+  const { data, isLoading, error } = query;
+  // Shared with `usePluginSlots`: an outage is never reported as an error here.
+  const viewKind = queryViewKind(query);
 
   const placementZonesKey = useMemo(
     () => [...filters.placementZones].sort().join("|"),
@@ -346,11 +349,14 @@ export function usePluginLaunchers(
     return rows;
   }, [data, filters.entityType, placementZonesKey]);
 
+  // Same as `usePluginSlots`: a transient failure never reports an error,
+  // even after the retry policy gives up while the server is reachable.
+  const transientFailure = viewKind === "error" && isTransientError(error);
   return {
     launchers,
     contributionsByPluginId,
-    isLoading: queryEnabled && isLoading,
-    errorMessage: error ? getErrorMessage(error) : null,
+    isLoading: queryEnabled && (isLoading || viewKind === "reconnecting" || transientFailure),
+    errorMessage: viewKind === "error" && !transientFailure ? describeError(error).body : null,
   };
 }
 
@@ -791,40 +797,28 @@ type PluginLauncherOutletProps = {
   entityType?: PluginUiSlotEntityType | null;
   className?: string;
   itemClassName?: string;
-  errorClassName?: string;
-  /**
-   * `hidden` suppresses the inline error and keeps rendering the last loaded
-   * launchers, so ambient chrome (the sidebar) stays quiet while the server is
-   * unreachable.
-   */
-  errorBehavior?: "inline" | "hidden";
 };
 
+/**
+ * Renders the plugin launchers for a host placement. Like `PluginSlotOutlet`,
+ * an outlet never shows a fetch error: it renders the last loaded launchers,
+ * or nothing if none have loaded yet.
+ */
 export function PluginLauncherOutlet({
   placementZones,
   context,
   entityType,
   className,
   itemClassName,
-  errorClassName,
-  errorBehavior = "inline",
 }: PluginLauncherOutletProps) {
   const { t } = useTranslation();
   const { activateLauncher } = usePluginLauncherRuntime();
-  const { launchers, contributionsByPluginId, errorMessage } = usePluginLaunchers({
+  const { launchers, contributionsByPluginId } = usePluginLaunchers({
     placementZones,
     entityType,
     companyId: context.companyId,
     enabled: !!context.companyId,
   });
-
-  if (errorMessage && errorBehavior === "inline") {
-    return (
-      <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        {t("localizationActivityChrome.launchersUnavailable", { error: errorMessage })}
-      </div>
-    );
-  }
 
   if (launchers.length === 0) return null;
 

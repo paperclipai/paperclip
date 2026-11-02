@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, applyPendingMigrations, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeManagedProjectWorkspace } from "../services/managed-repository-checkout.js";
 import { materializeIsolatedRemoteWorkspaceSource } from "../services/isolated-remote-workspace-source.js";
@@ -44,17 +44,21 @@ describe("nested clone migration batches", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NESTED_CLONE_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = support.supported ? describe : describe.skip;
 describeEmbeddedPostgres("nested repository clone migration", () => {
   let db: ReturnType<typeof createDb>;
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let root: string;
   const previousHome = process.env.PAPERCLIP_HOME;
   const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("nested-clone-migration-");
-    db = createDb(database.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else database = await startEmbeddedPostgresTestDatabase("nested-clone-migration-");
+    db = createDb(external ?? database!.connectionString);
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-nested-migration-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home");
     process.env.PAPERCLIP_INSTANCE_ID = "default";
@@ -68,7 +72,7 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     vi.unstubAllEnvs();
     if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
     if (previousInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID; else process.env.PAPERCLIP_INSTANCE_ID = previousInstance;
-    await db.$client.end({ timeout: 1 }); await database.cleanup(); await fs.rm(root, { recursive: true, force: true });
+    await db.$client.end({ timeout: 1 }); await database?.cleanup(); await fs.rm(root, { recursive: true, force: true });
   });
 
   async function repository(location: string, name: string, files: Record<string, string>) {
@@ -504,7 +508,10 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     const agentId = randomUUID();
     await db.insert(agents).values({ id: agentId, companyId: f.companyId, name: "Fixture", role: "engineer", adapterType: "process" });
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, issueId: f.issueId, status: "running" }).returning();
-    const busy = executionWorkspaceService(db, { nestedCloneMigrationEnabled: true });
+    // Make a second clock read observably different without changing the
+    // scheduler's saved business deadline during an early inspection.
+    let tick = Date.now();
+    const busy = executionWorkspaceService(db, { nestedCloneMigrationEnabled: true, now: () => new Date(tick++) });
     await busy.sweepTerminalWorkspaces();
     await expectUntouched(f, before);
     const retryAt = await busy.nextTerminalWorkspaceSweepAt();

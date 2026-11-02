@@ -1,3 +1,5 @@
+import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
+import { notifyChatConnectionHealth } from "../connection-health-notifications.js";
 import { slackQuestionFormValidationError } from "../slack/question-forms.js";
 import { chatInteractionForm, chatItemVerdicts } from "../../chat-interaction-forms.js";
 import { createDiscordQuestionForms } from "../discord/question-forms.js";
@@ -143,7 +145,7 @@ type InteractionCallbacksOptions = {
 export function createChatInteractionCallbacks(db: Db, options: InteractionCallbacksOptions) {
   const { CAPABILITIES, MAX_ERROR_TEXT, actionThreadMatchesConversation, nonDirectDestinationAllowed, sameTeamsThreadIdentity, ensurePrincipal, endpointRecord, runtimeCallbackRecord, runtimeCallbackEndpoint, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, recordCurrentMicrosoftTeamsRoute, lockTelegramCallbackNoticeAuthority, stageProviderEffect, scheduleProviderEffect, invalidateRuntime, redactError, persistence, questionResponses, scheduleMessageProcessing, processPendingPublications } = options;
   const { handleDiscordFormCorrection, acceptDiscordQuestionForm } = createDiscordQuestionForms(db, { requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, persistence });
-  const { reconcileTerminalConfirmationActions, handleChatConfirmation } = createChatConfirmationActions(db, {
+  const { reconcileTerminalConfirmationActions, handleChatConfirmation, registerTerminalConfirmationWork } = createChatConfirmationActions(db, {
     heartbeat: options.heartbeat, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications,
     get confirmationResolutionPersistBarrier() { return options.confirmationResolutionPersistBarrier; },
   });
@@ -416,6 +418,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
             ["active"],
           );
           if (currentEndpoint) {
+            await notifyChatEndpointConfiguration(tx, currentEndpoint);
             await tx
               .update(chatEndpoints)
               .set({
@@ -426,6 +429,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
                 updatedAt: processedAt,
               })
               .where(eq(chatEndpoints.id, endpoint.id));
+            await notifyChatConnectionHealth(tx, currentEndpoint);
             await tx
               .update(toolConnections)
               .set({
@@ -783,7 +787,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           .then((rows) => rows[0] ?? null);
         if (occupied && occupied.publicationId !== current.id) return null;
         const reconciledAt = new Date();
-        await notifyChatPublicationWork(tx);
+        await notifyChatPublicationWork(tx, current.state === "delivery_unknown" ? current : undefined);
         const [reconciled] = await tx
           .update(chatPublications)
           .set({
@@ -2025,5 +2029,5 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
     });
     return acceptedResponse();
   }
-  return { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions };
+  return { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions, registerTerminalConfirmationWork };
 }

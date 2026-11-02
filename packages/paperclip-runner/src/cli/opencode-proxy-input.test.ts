@@ -82,8 +82,21 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
   await writeFile(proxy, execFileSync(process.execPath, ["--input-type=module", "-e", `import { bundleVerifiedProviderEntrypoints } from "./scripts/build-verified-provider-entrypoints.mjs"; const entries = await bundleVerifiedProviderEntrypoints({ write: false }); process.stdout.write(entries.find(({ entrypoint }) => entrypoint.name === "opencode-app-server-proxy").verifiedResult.outputFiles[0].contents);`], { maxBuffer: 16 * 1024 * 1024 }));
   const fd = process.platform === "linux" ? openSync(executable, "r") : undefined;
   const runtime = join(root, "runtime");
+  const bodies: Array<{ resourceSpans: Array<{ scopeSpans: Array<{ spans: Array<{ attributes: Array<{ key: string; value: { stringValue?: string } }> }> }> }> }> = [];
+  const { createServer } = await import("node:http");
+  const collector = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", chunk => chunks.push(chunk));
+    request.on("end", () => { bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); response.end("{}"); });
+  });
+  await new Promise<void>(resolve => collector.listen(0, "127.0.0.1", resolve));
+  const address = collector.address();
+  if (!address || typeof address === "string") throw new Error("collector did not bind");
   const child = spawn(process.execPath, [proxy, "--paperclip-trusted-opencode-executable", fd === undefined ? executable : "/proc/self/fd/3"], {
-    env: { ...process.env, PAPERCLIP_OPENCODE_RUNTIME_DIR: runtime, OPENROUTER_API_KEY: "fixture-key" },
+    env: { ...process.env, PAPERCLIP_OPENCODE_RUNTIME_DIR: runtime, OPENROUTER_API_KEY: "fixture-key",
+      PAPERCLIP_RUN_ID: "stale-launch-run", PAPERCLIP_OBSERVABILITY_OPENCODE: "1",
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/v1/traces`,
+      OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=fixture-company" },
     stdio: fd === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", fd],
     detached: process.platform !== "win32",
   });
@@ -106,7 +119,7 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
     await response(1);
     send({ id: 2, method: "thread/start", params: { cwd: root, model: "openrouter/deepseek/deepseek-v4-flash-0731", completionContract: { revision: "proxy-v1", criterionIds: ["objective"] }, conversationMode: "prepared" } });
     await response(2);
-    send({ id: 3, method: "turn/start", params: { input: [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: "invalid-tool-feedback completion-feedback" }, completionContract: { revision: "proxy-v1", criteria: [{ id: "objective", requirement: "Complete the fixture." }] } }) }] } });
+    send({ id: 3, method: "turn/start", params: { paperclipRunId: "current-run-1", input: [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: "invalid-tool-feedback completion-feedback" }, completionContract: { revision: "proxy-v1", criteria: [{ id: "objective", requirement: "Complete the fixture." }] } }) }] } });
     await response(3);
     await expect.poll(() => messages.find(message => message.method === "item/tool/call"), { timeout: 5_000 }).toBeDefined();
     const call = messages.find(message => message.method === "item/tool/call")!;
@@ -132,11 +145,20 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
       await expect.poll(async () => JSON.parse(await readFile(join(runtime, sessions[0]!.name, "data/fake-completion-feedback.json"), "utf8"))).toMatchObject([
         { result: { content: [{ text: expect.stringContaining(feedback) }] } },
       ]);
+      await expect.poll(() => bodies.length, { timeout: 5_000 }).toBe(1);
+      send({ id: 5, method: "turn/start", params: { paperclipRunId: "current-run-2", input: [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: "completion-feedback" }, completionContract: { revision: "proxy-v1", criteria: [{ id: "objective", requirement: "Complete the fixture." }] } }) }] } });
+      await response(5);
+      await expect.poll(() => messages.find(message => message.method === "item/tool/call" && message.id !== call.id), { timeout: 5_000 }).toBeDefined();
+      const warmCall = messages.find(message => message.method === "item/tool/call" && message.id !== call.id)!;
+      send({ id: warmCall.id, result: { success: true, contentItems: [{ type: "inputText", text: "Accepted." }] } });
+      await expect.poll(() => bodies.length, { timeout: 5_000 }).toBe(2);
+      expect(bodies.map(body => body.resourceSpans[0]!.scopeSpans[0]!.spans[0]!.attributes
+        .find(attribute => attribute.key === "paperclip.run.id")?.value.stringValue)).toEqual(["current-run-1", "current-run-2"]);
       child.stdin!.end();
     }
     await expect.poll(() => exited, { timeout: 5_000 }).toBe(true);
     await exit;
-    expect(messages.filter(message => message.method === "paperclip/runResult")).toHaveLength(respond ? 1 : 0);
+    expect(messages.filter(message => message.method === "paperclip/runResult")).toHaveLength(respond ? 2 : 0);
   } finally {
     child.kill("SIGTERM");
     if (!exited) {
@@ -145,6 +167,7 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
       await exit;
     }
     input.close();
+    await new Promise<void>(resolve => { collector.close(() => resolve()); collector.closeAllConnections(); });
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);

@@ -68,6 +68,48 @@ describe("Codex ACPX runtime adapter", () => {
     expect(runtime.startTurn).not.toHaveBeenCalled();
     await port.close({ reason: "test complete" });
   });
+  it.each([false, true])("acknowledges configured Grok effort before admission (restoring=%s)", async restoring => {
+    const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async () => ({})) });
+    const child = fakeChild();
+    const options = openOptions({ spawn: () => child, close: async () => undefined });
+    options.profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    options.grokEffort = "high";
+    options.restoringSession = restoring;
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    const spawnProvider = () => created.spawnAgent!({ command: "ignored", args: [], options: {} });
+    const acknowledge = () => {
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { models: { currentModelId: "grok-4.7" },
+        _meta: { "x.ai/sessionConfig": { options: [{ id: "high", category: "mode", selected: true }] } } } });
+    };
+    vi.mocked(runtime.ensureSession).mockImplementation(async input => {
+      expect(input.sessionOptions).toMatchObject({ model: "grok-4.7" });
+      if (!restoring) { spawnProvider(); acknowledge(); }
+      return HANDLE;
+    });
+    runtime.requestExtension.mockImplementation(async () => {
+      spawnProvider(); acknowledge(); return {};
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
+    });
+    expect(runtime.setConfigOption).not.toHaveBeenCalled();
+    expect(await port.identity()).toMatchObject({ grokEffort: "high" });
+    if (restoring) {
+      expect(runtime.requestExtension).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, method: "_x.ai/session/info",
+        params: { sessionId: "backend-1" }, sessionMode: "persistent" });
+      expect(options.refreshConsumedCommand).toHaveBeenCalledOnce();
+    } else {
+      expect(runtime.requestExtension).not.toHaveBeenCalled();
+      expect(options.refreshConsumedCommand).not.toHaveBeenCalled();
+    }
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await port.close({ reason: "test complete" });
+  });
 
   it("admits an exact Claude model through the real ACP without a user model allowlist", async () => {
     const root = await mkdtemp(join(tmpdir(), "preconfigured-claude-model-"));

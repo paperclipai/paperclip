@@ -73,7 +73,7 @@ export interface TaskChatQueuedMessagesProps {
   onEdit: (commentId: string) => void;
   onReorder: (orderedCommentIds: string[], revision: string) => Promise<void>;
   onSteer: (commentId: string, revision: string) => Promise<void>;
-  onInterrupt?: () => Promise<void>;
+  onInterrupt?: () => Promise<IssueQueuedCommentQueue | void>;
   onDiscard: (commentId: string, revision: string) => Promise<void>;
 }
 
@@ -149,10 +149,11 @@ function SortableQueuedMessage({
         {label}
       </span>
 
-      {queue.targetRunId && (queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
+      {(queue.targetRunId || queue.state === "deferred") && (!queue.targetRunId || queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
         <button
           type="button"
           onClick={onInterrupt}
+          aria-label={!queue.targetRunId ? t("nov02Components.sendQueuedMessages", { defaultValue: "Send queued messages" }) : undefined}
           disabled={busy || !queue.queueId || !onInterrupt}
           title={queue.targetRunId ? t("sep12Chat.queue.interruptTitle") : t("sep13Queue.sendNow")}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
@@ -163,7 +164,7 @@ function SortableQueuedMessage({
           ) : (
             <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
           )}
-          {t("localizationTaskRuntime.ui_Interrupt_1arf5yo")}
+          {queue.targetRunId ? t("localizationTaskRuntime.ui_Interrupt_1arf5yo") : t("nov02Components.send", { defaultValue: "Send" })}
         </button>
       ) : (
         <button
@@ -249,6 +250,7 @@ export function TaskChatQueuedMessages({
   const [reordering, setReordering] = useState(false);
   const [announcement, setAnnouncement] = useState<QueueDisplayMessage | null>(null);
   const [visibleError, setVisibleError] = useState<QueueDisplayMessage | null>(null);
+  const [deferredStatus, setDeferredStatus] = useState<{ queueId: string | null; message: string | null } | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, {
@@ -262,6 +264,15 @@ export function TaskChatQueuedMessages({
       (entry) => !optimisticDeliveryIds.current.has(entry.comment.id),
     ));
   }, [queue.entries, queue.revision]);
+
+  useEffect(() => {
+    setDeferredStatus(current => {
+      if (!current) return null;
+      if (queue.state !== "deferred" || queue.queueId !== current.queueId || !queue.entries.length) return null;
+      const message = queue.executionWait?.message ?? null;
+      return current.message === message ? current : { ...current, message };
+    });
+  }, [queue.state, queue.queueId, queue.entries.length, queue.executionWait?.message]);
 
   const ids = useMemo(
     () => entries.map((entry) => entry.comment.id),
@@ -330,7 +341,7 @@ export function TaskChatQueuedMessages({
       ));
     }
     setPending({ commentId, action });
-    setVisibleError(null);
+    setVisibleError(null); setDeferredStatus(null);
     setAnnouncement({ key:
       action === "steer"
         ? "localizationTaskRuntime.ui_Steering_queued_message_14queke"
@@ -340,7 +351,16 @@ export function TaskChatQueuedMessages({
     });
     try {
       if (action === "steer") await onSteer(commentId, queue.revision);
-      else if (action === "interrupt") await onInterrupt?.();
+      else if (action === "interrupt") {
+        const updatedQueue = await onInterrupt?.();
+        if (updatedQueue?.state === "deferred") {
+          for (const entry of updatedQueue.entries) optimisticDeliveryIds.current.delete(entry.comment.id);
+          setEntries(updatedQueue.entries.filter(entry => !optimisticDeliveryIds.current.has(entry.comment.id)));
+          setDeferredStatus({ queueId: updatedQueue.queueId, message: updatedQueue.executionWait?.message ?? null });
+          setAnnouncement({ key: "nov02Components.messagesStillQueued" });
+          return;
+        }
+      }
       else await onDiscard(commentId, queue.revision);
       if (action === "discard") {
         setEntries((current) =>
@@ -351,7 +371,9 @@ export function TaskChatQueuedMessages({
         action === "steer"
           ? "localizationTaskRuntime.ui_Message_steered_into_the_active_turn_1a5u1dy"
           : action === "interrupt"
-            ? "sep13Queue.sendAfterStop"
+            ? queue.targetRunId
+              ? "sep13Queue.sendAfterStop"
+              : "nov02Components.queuedMessagesSubmitted"
             : "localizationTaskRuntime.ui_Queued_message_discarded_cx3l12",
       });
     } catch (error) {
@@ -369,7 +391,7 @@ export function TaskChatQueuedMessages({
           : action === "steer"
             ? "localizationTaskRuntime.ui_Couldn_t_steer_Message_is_still_queued_kglcgc"
             : action === "interrupt"
-              ? "localizationTaskRuntime.ui_Couldn_t_interrupt_Message_is_still_queued_ttxid2"
+              ? queue.targetRunId ? "localizationTaskRuntime.ui_Couldn_t_interrupt_Message_is_still_queued_ttxid2" : "nov02Components.queuedSendFailed"
               : code === "queued_comment_revision_conflict"
                 ? "localizationTaskRuntime.ui_The_queue_changed_in_another_session_Review_it_and_try_again_1rm1y02"
                 : "localizationTaskRuntime.ui_Couldn_t_discard_Message_is_still_queued_qbg3bz",
@@ -379,7 +401,7 @@ export function TaskChatQueuedMessages({
     }
   }
 
-  if (entries.length === 0 && !visibleError) return null;
+  if (entries.length === 0 && !visibleError && !deferredStatus) return null;
 
   return (
     <TaskChatComposerBar
@@ -420,6 +442,7 @@ export function TaskChatQueuedMessages({
           })}
         </SortableContext>
       </DndContext>
+      {deferredStatus ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{deferredStatus.message ?? t("nov02Components.messagesWaitForTask", { defaultValue: "Messages are still queued. They will send when the task is ready." })}</p> : null}
       {visibleError ? (
         <div
           role="status"

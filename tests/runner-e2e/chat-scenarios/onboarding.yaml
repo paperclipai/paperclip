@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: onboarding
+status: planned
+scenarios:
+  - id: onboarding.new-instance
+    capabilities:
+      - onboarding/instance
+      - instance-operations/diagnostics
+    context: >-
+      No Paperclip server or company exists yet, so in-app Agent Chat cannot execute this
+      request. This is a setup-guidance boundary for a future browser/operator journey.
+    query: >-
+      Help me set up Paperclip on this machine.
+    expected_outcome: >-
+      The scenario reaches the supported operator onboarding path, selects the intended instance
+      configuration and checks real service readiness. No nonexistent CEO conversation is
+      credited with creating its own runtime. The outcome must explicitly separate pre-chat
+      installation from the later chat-ready company.
+  - id: onboarding.new-company
+    capabilities:
+      - onboarding/company
+      - companies/selection
+      - agents/hire
+    context: >-
+      A signed-in human can use company onboarding; their existing chat belongs to another
+      company.
+    query: >-
+      Set up a new company for my website business with a CEO.
+    expected_outcome: >-
+      The agent points to the human company-creation flow and preserves the requested business
+      context for setup. The resulting company and first agent have distinct identities and
+      authority. The existing company's agent does not create or impersonate a board user to
+      manage the new company.
+  - id: onboarding.choose-first-runtime
+    capabilities:
+      - onboarding/adapter
+      - runs-adapters/validation
+    context: >-
+      The new-company wizard has a saved company but no usable first-agent account; the person
+      wants Claude Code on an available target.
+    query: >-
+      Use Claude Code for my CEO.
+    expected_outcome: >-
+      The wizard retains the requested harness and target, guides the person through the
+      eligible account step and verifies actual readiness. Unavailable models or runtimes
+      produce clear choices rather than a silent substitution. A saved CEO profile alone does
+      not count as successful first execution.
+  - id: onboarding.first-work
+    capabilities:
+      - onboarding/first-task
+      - tasks/create
+      - agent-chat/handoff
+    context: >-
+      The company and CEO are ready, and the person has reached their first in-app conversation.
+    query: >-
+      Make me a simple website introducing our business.
+    expected_outcome: >-
+      The agent captures enough business context, creates linked work under the available
+      execution policy and returns a visible task or missing-prerequisite state. A completed
+      journey delivers a usable website artifact. The conversation is not marked successful
+      merely because onboarding created an empty task.
+  - id: onboarding.resume-wizard
+    capabilities:
+      - onboarding/resume
+    context: >-
+      The human saved part of company onboarding and reloaded before account setup finished;
+      there is no working first-agent chat yet.
+    query: >-
+      Continue setting up the company I started earlier.
+    expected_outcome: >-
+      The browser restores the appropriate saved nonsecret wizard state and references existing
+      company and agent records. Missing secure inputs are requested through their proper
+      fields. Finishing setup does not duplicate the company, leak credentials from draft
+      storage or report an unfinished agent as ready.

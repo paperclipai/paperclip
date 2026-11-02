@@ -203,6 +203,7 @@ export function SidebarNavItem({
       )}
       {!rail && hasBadge && (
         <Badge variant="ghost"
+          aria-label={badgeDescription ?? (badgeLabel ? `${badge} ${badgeLabel}` : undefined)}
           className={cn(
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"

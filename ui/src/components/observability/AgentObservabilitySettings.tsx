@@ -97,7 +97,7 @@ export function AgentObservabilitySettingsView(props: AgentObservabilitySettings
   return <section aria-labelledby="agent-observability-heading" className="max-w-2xl space-y-4">
     <div className="space-y-1">
       <h2 id="agent-observability-heading" className="text-lg font-medium">{t("oct26Settings.observability.title")}</h2>
-      <p className="text-sm text-muted-foreground">{t("oct26Settings.observability.description")}</p>
+      <p className="text-sm text-muted-foreground">{t("nov02Components.observabilityDescription", { defaultValue: "Send Codex, Claude Code and native OpenCode execution data to your observability service." })}</p>
     </div>
     {!canManage ? <p className="text-sm text-muted-foreground">{t("oct26Settings.observability.permission")}</p> : <>
       <fieldset disabled={busy} className="space-y-4">

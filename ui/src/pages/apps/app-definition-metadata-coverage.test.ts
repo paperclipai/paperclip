@@ -6,6 +6,8 @@ import { APP_DEFINITION_COPY } from "./app-definition-copy";
 // Exact reviewed exceptions: brands, protocol/credential examples, and canonical metadata.
 // A source edit or a new display field must be reviewed instead of silently exempted.
 const untranslated: Record<string, string> = {
+  "google.name": "Google",
+  "google.methods.1.keyPlacement.name": "GEMINI_API_KEY",
   "airtable.methods.1.credentialFields.0.placeholder": "pat...",
   "airtable.methods.1.keyPlacement.name": "Authorization",
   "calendly.name": "Calendly",
@@ -100,8 +102,6 @@ const untranslated: Record<string, string> = {
   "google-sheets.name": "Google Sheets",
   "google-slides.name": "Google Slides",
   "google-workspace-search.name": "Google Workspace Search",
-  "google.name": "Google Gemini",
-  "google.methods.0.keyPlacement.name": "GEMINI_API_KEY",
   "honcho.name": "Honcho",
   "honcho.methods.0.keyPlacement.name": "Authorization",
   "hugging-face.name": "Hugging Face",

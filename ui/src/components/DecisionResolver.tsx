@@ -17,6 +17,8 @@ interface DecisionResolverProps {
   agentMap?: Map<string, Agent>;
   /** Complete terminal list item used to avoid one detail request per history row. */
   initialDecision?: DecisionOutcome;
+  /** Fresh, authorized terminal record owned by an enclosing detail query. */
+  recordedDecision?: DecisionOutcome;
   /** Called after a decide/dismiss so the parent can refresh the feed row. */
   onResolved?: () => void;
 }
@@ -41,7 +43,7 @@ export function signedCancelTreePreviewIds(targetIssueId: string, snapshot: { de
  * dismiss mutations, and invalidates the attention feed + target-issue keys on
  * success — same conventions as {@link AttentionInteractionResolver}.
  */
-export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, onResolved }: DecisionResolverProps) {
+export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, recordedDecision, onResolved }: DecisionResolverProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
@@ -54,11 +56,11 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
   const detail = useQuery({
     queryKey: queryKeys.decisions.detail(decisionId),
     queryFn: () => decisionsApi.get(decisionId),
-    enabled: !!decisionId,
+    enabled: !!decisionId && !recordedDecision,
     initialData: initialDecision,
     staleTime: 30_000,
   });
-  const decision = detail.data;
+  const decision = recordedDecision ?? detail.data;
 
   // Shared across every open decision row → a single fetch carries `targetChanged`.
   const openList = useQuery({
@@ -165,7 +167,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     },
   });
 
-  if (detail.isLoading) {
+  if (!recordedDecision && detail.isLoading) {
     return (
       <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("localizationFinalAudit.loadingDecision")}
@@ -173,7 +175,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     );
   }
 
-  if (detail.error || !decision) {
+  if ((!recordedDecision && detail.error) || !decision) {
     return (
       <p className="py-3 text-xs text-muted-foreground">
         {t("localizationFinalAudit.decisionUnavailable")}

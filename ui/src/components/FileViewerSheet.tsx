@@ -42,6 +42,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
 import { ApiError } from "@/api/client";
+import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
@@ -542,7 +543,6 @@ export function FileViewerSheet({
       : ["issues", "file-resources", issueId, "resolve", "__closed__"],
     queryFn: () => fileResourcesApi.resolve(issueId, state!),
     enabled: !!state && computedOpen,
-    retry: false,
     staleTime: 30_000,
   });
 
@@ -558,7 +558,6 @@ export function FileViewerSheet({
       : ["issues", "file-resources", issueId, "content", "__closed__"],
     queryFn: () => fileResourcesApi.content(issueId, state!),
     enabled: !!state && computedOpen && canPreview,
-    retry: false,
     staleTime: 30_000,
   });
 
@@ -989,11 +988,14 @@ export function FileViewerBody({
   htmlMode,
 }: FileViewerBodyProps) {
   const { t } = useTranslation();
-  if (resolveQuery.isFetching && !resolveQuery.data) {
+  // Loaded content stays on screen while a refetch fails; a quiet loading
+  // view covers an outage before anything has loaded.
+  const resolveKind = queryViewKind(resolveQuery);
+  if (!resolveQuery.data && (resolveQuery.isFetching || resolveKind === "reconnecting")) {
     return <LoadingView elapsedMs={elapsedMs} />;
   }
 
-  if (resolveQuery.isError) {
+  if (resolveKind === "error") {
     const normalized = normalizeError(resolveQuery.error);
     if (normalized.status === 404) {
       return (
@@ -1054,11 +1056,12 @@ export function FileViewerBody({
     return <FileViewerStateView icon={denial.icon} title={denial.title} body={denial.body} />;
   }
 
-  if (contentQuery.isFetching && !contentQuery.data) {
+  const contentKind = queryViewKind(contentQuery);
+  if (!contentQuery.data && (contentQuery.isFetching || contentKind === "reconnecting")) {
     return <LoadingView elapsedMs={elapsedMs} />;
   }
 
-  if (contentQuery.isError) {
+  if (contentKind === "error") {
     const normalized = normalizeError(contentQuery.error);
     const denial = describeDenial(normalized.code, normalized.message);
     return (

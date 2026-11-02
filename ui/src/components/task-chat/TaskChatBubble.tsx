@@ -1,5 +1,9 @@
 import { useTranslation } from "@/i18n";
 import { taskChatTimestampDisplay } from "./task-chat-display";
+import { CoordinatorRelativeTime } from "@/components/coordinator/CoordinatorRelativeTime";
+import { useAgentChatRead } from "@/hooks/useAgentChatRead";
+import { Link } from "@/lib/router";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
 import { ArtifactRow, ArtifactRowGroup, inlineRowStyle, subjectFromAttachmentRef } from "@/components/artifacts/v1";
@@ -149,7 +153,12 @@ function TaskChatBubbleContent({
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
   const { t } = useTranslation();
+  const readRef = useAgentChatRead(item.id, item.createdAtIso, item.author === "agent" && !item.optimistic);
   const streamlined = useStreamlinedTaskChatPresentation();
+  const coordinator = useCoordinatorPresentation();
+  const recordedTimestamp = item.createdAtIso ?? (typeof item.atMs === "number" && Number.isFinite(item.atMs) ? new Date(item.atMs) : null);
+  const timestamp = coordinator && recordedTimestamp && !item.optimistic
+    ? <CoordinatorRelativeTime value={recordedTimestamp} /> : taskChatTimestampDisplay(item.createdAtIso ?? item.atMs, item.timestamp);
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   const openText = useContext(TextAttachmentContext);
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
@@ -180,7 +189,6 @@ function TaskChatBubbleContent({
   }
 
   const isHuman = item.author === "human";
-  const timestamp = taskChatTimestampDisplay(item.createdAtIso ?? item.atMs, item.timestamp);
   const isOwnMessage = isHuman && item.isCurrentUser === true;
   const sentFromIMessage = isHuman && item.sourceChannel === "imessage-photon";
   // Non-image file references ("[name](/api/attachments/…/content)") render as
@@ -228,6 +236,7 @@ function TaskChatBubbleContent({
   return (
     <div
       data-conversation-message={isHuman ? "human" : "agent"}
+      ref={readRef}
       className={cn(
         "flex w-full flex-col gap-1",
         animateEntry && "tc-enter-bubble",
@@ -235,6 +244,9 @@ function TaskChatBubbleContent({
       )}
     >
       {beforeTurn ? <div className="w-full pb-1">{beforeTurn}</div> : null}
+      {item.chatMessage && <Link to={`/issues/${item.chatMessage.sourceTaskIdentifier}`} className="px-1 text-xs text-muted-foreground underline underline-offset-4">
+        {t("nov02Components.fromTask", { defaultValue: "From {{identifier}}", identifier: item.chatMessage.sourceTaskIdentifier })}
+      </Link>}
       {isHuman && !item.isCurrentUser && item.authorName ? (
         <span className="px-1 text-sm font-semibold text-foreground" data-testid="task-chat-human-identity" data-author-user-id={item.authorUserId}>
           <Identity name={item.humanAuthorFallback === "board" ? t("localizationTaskRuntime.ui_Board_1hpelzf")
@@ -396,6 +408,7 @@ function TaskChatBubbleContent({
           </ul>
         </div>
       ) : null}
+      {coordinator && recordedTimestamp && attachedTurn ? <span className="px-1 text-(length:--text-micro) text-muted-foreground"><CoordinatorRelativeTime value={recordedTimestamp!} /></span> : null}
       {item.optimistic ? (
         <span className="flex items-center gap-1 px-1 text-(length:--text-micro) text-muted-foreground">
           <span>{item.optimistic === "queued" ? t("status.queued") : t("localizationIssueDetail.ui_Sending")}</span>

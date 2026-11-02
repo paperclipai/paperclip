@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { agents, applyPendingMigrations, companies, createDb, executionWorkspaceRestorePoints, executionWorkspaces, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../services/managed-repository-checkout.js";
@@ -25,17 +25,21 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 const exists = (target: string) => fs.lstat(target).then(() => true, () => false);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ISOLATED_REHOME_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = support.supported ? describe : describe.skip;
 describeEmbeddedPostgres("isolated repository source re-home", () => {
   let db: ReturnType<typeof createDb>;
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let root: string;
   const previousHome = process.env.PAPERCLIP_HOME;
   const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("isolated-repository-rehome-");
-    db = createDb(database.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else database = await startEmbeddedPostgresTestDatabase("isolated-repository-rehome-");
+    db = createDb(external ?? database!.connectionString);
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-isolated-rehome-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home");
     process.env.PAPERCLIP_INSTANCE_ID = "default";
@@ -50,7 +54,7 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     vi.unstubAllEnvs();
     if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
     if (previousInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID; else process.env.PAPERCLIP_INSTANCE_ID = previousInstance;
-    await db.$client.end({ timeout: 1 }); await database.cleanup(); await fs.rm(root, { recursive: true, force: true });
+    await db.$client.end({ timeout: 1 }); await database?.cleanup(); await fs.rm(root, { recursive: true, force: true });
   });
 
   async function fixture(options: { sharedBase?: boolean; issueStatus?: "in_progress" | "done" } = {}) {
@@ -409,11 +413,16 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     await executionWorkspaceService(db, { gitCacheExpirationEnabled: true }).sweepTerminalWorkspaces();
     await executionWorkspaceService(db, { isolatedSourceRehomeEnabled: true }).sweepTerminalWorkspaces();
     await expectUntouched(f, before);
-    const dryRun = executionWorkspaceService(db, { gitCacheExpirationEnabled: true, isolatedSourceRehomeEnabled: true, isolatedSourceRehomeDryRun: true });
+    let tick = Date.now();
+    const dryRun = executionWorkspaceService(db, { gitCacheExpirationEnabled: true, isolatedSourceRehomeEnabled: true,
+      isolatedSourceRehomeDryRun: true, now: () => new Date(tick++) });
     await dryRun.sweepTerminalWorkspaces();
     await expectUntouched(f, before);
     expect(await exists(f.clone)).toBe(true);
-    expect(await dryRun.nextTerminalWorkspaceSweepAt()).toBeGreaterThan(Date.now());
+    const retryAt = await dryRun.nextTerminalWorkspaceSweepAt();
+    expect(retryAt).toBeGreaterThan(Date.now());
+    await dryRun.sweepTerminalWorkspaces();
+    expect(await dryRun.nextTerminalWorkspaceSweepAt()).toBe(retryAt);
     expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row(), { dryRun: true })).toMatchObject({ outcome: "dry_run", rehomed: false, to: f.target });
     await expectUntouched(f, before);
   });

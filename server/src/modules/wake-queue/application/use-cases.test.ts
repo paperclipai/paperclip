@@ -1129,6 +1129,48 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
   });
 
+  it("records an ordinary merged comment under its own actor without requiring durable receipt identity", async () => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader({ findExistingDeferredWake: vi.fn(async () => ({
+      id: "existing-deferred-wake", runId: null, payload: { issueId: "issue-1" }, deferredContext: {}, coalescedCount: 1,
+    })) });
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer,
+      helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
+    await expect(admit(SCOPE, admissionInput({ wakeCommentId: "second-comment", requestedByActorId: "second-user",
+      payload: { commentId: "second-comment", coalescedIntoWakeupRequestId: "forged-target" },
+    }))).resolves.toEqual({ kind: "deferred" });
+    const input = vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1];
+    expect(input.coalescedReceipt).toEqual({ agentId: "wake-agent", source: "on_demand", triggerDetail: null,
+      reason: null, payload: { issueId: "issue-1", commentId: "second-comment", coalescedIntoWakeupRequestId: "existing-deferred-wake" },
+      requestedByActorType: "user", requestedByActorId: "second-user", idempotencyKey: null, runId: null });
+    expect(input.coalescedReceipt).not.toHaveProperty("id");
+    expect(input.coalescedReceipt).not.toHaveProperty("requestedAt");
+    expect(reader.matchesActiveWakeActor).not.toHaveBeenCalled();
+  });
+
+  it("binds authoritative issue scope when durable merged input omits it from payload", async () => {
+    const writer = createFakeAdmissionWriter();
+    const durableReceipt = { id: "own-request", requestedAt: new Date("2026-09-10T00:00:00Z") };
+    const admit = createAdmitWakeBehindIssueExecution({ writer,
+      reader: createFakeAdmissionReader({ findExistingDeferredWake: vi.fn(async () => ({
+        id: "saved-wake", runId: null, payload: { issueId: "issue-1" }, deferredContext: {}, coalescedCount: 0,
+      })) }), helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
+    await admit(SCOPE, admissionInput({ durableReceipt, payload: { text: "saved input" } }));
+    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1].coalescedReceipt).toEqual(expect.objectContaining({
+      ...durableReceipt, payload: { text: "saved input", issueId: "issue-1", coalescedIntoWakeupRequestId: "saved-wake" },
+    }));
+  });
+
+  it.each(["agent", "system"])("does not create a user-comment authority receipt for an ordinary %s merge", async actor => {
+    const writer = createFakeAdmissionWriter();
+    const admit = createAdmitWakeBehindIssueExecution({ writer,
+      reader: createFakeAdmissionReader({ findExistingDeferredWake: vi.fn(async () => ({
+        id: "existing-deferred-wake", runId: null, payload: { issueId: "issue-1" }, deferredContext: {}, coalescedCount: 1,
+      })) }), helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
+    await admit(SCOPE, admissionInput({ wakeCommentId: "second-comment", requestedByActorType: actor }));
+    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1]).not.toHaveProperty("coalescedReceipt");
+  });
+
   it("gives manual input its own run boundary even when the active receipt has the same requester", async () => {
     const writer = createFakeAdmissionWriter();
     const admit = createAdmitWakeBehindIssueExecution({

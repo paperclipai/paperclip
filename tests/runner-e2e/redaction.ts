@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { redactDiagnosticText } from "../../packages/adapter-utils/src/command-redaction.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 
@@ -106,6 +107,28 @@ export function isEphemeralCodexRuntimeAuthFile(
       relative,
     )
   );
+}
+
+export function isEphemeralCodexRuntimeIdentityDatabase(paperclipHome: string, file: string) {
+  return /^(?:logs|state)_\d+\.sqlite(?:-wal|-shm)?$/.test(path.basename(file)) &&
+    isEphemeralCodexRuntimeAuthFile(paperclipHome, path.join(path.dirname(file), "auth.json"));
+}
+
+function isEphemeralCodexRolloutFile(paperclipHome: string, file: string) {
+  const match = /^(.*\/codex-home)\/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[\w-]+\.jsonl$/.exec(file.split(path.sep).join("/"));
+  return Boolean(match && isEphemeralCodexRuntimeAuthFile(paperclipHome, path.join(match[1]!, "auth.json")));
+}
+
+function privateCodexAccountIdentity(sources: SecretScanOptions["sources"]): string | undefined {
+  try {
+    const accountId = JSON.parse(sources?.CODEX_AUTH_JSON ?? "null")?.tokens?.account_id;
+    if (typeof accountId !== "string" || accountId.length < 8) return;
+    for (const [name, raw] of Object.entries(sources ?? {})) {
+      if (secretEntries(raw).some(entry => entry.value === accountId &&
+        (name !== "CODEX_AUTH_JSON" || entry.fieldPath !== ".tokens.account_id"))) return;
+    }
+    return accountId;
+  } catch { return; }
 }
 
 /** Browser navigation diagnostics need a route, never OAuth query credentials. */
@@ -248,9 +271,21 @@ export async function findSecretLeakInDirectory(
     sources?: SecretScanOptions["sources"];
     ignoreFile?: (file: string) => boolean;
     allowDisappearedFile?: (file: string) => boolean;
+    privateCodexRuntimeIdentityRoot?: string;
   } = {},
 ): Promise<({ file: string } & SecretLeakMatch) | null> {
   const index = secretMatchIndex(secrets, options.sources);
+  let privateIdentity: string | undefined;
+  if (options.privateCodexRuntimeIdentityRoot) {
+    if (path.resolve(options.privateCodexRuntimeIdentityRoot) !== path.resolve(root)) {
+      throw new Error("Private Codex identity policy requires the isolated home root");
+    }
+    const temporaryRoot = await lstat(path.dirname(root));
+    if (!temporaryRoot.isDirectory() || temporaryRoot.isSymbolicLink() || (temporaryRoot.mode & 0o077) !== 0) {
+      throw new Error("Private Codex identity policy requires an owner-only temporary root");
+    }
+    privateIdentity = privateCodexAccountIdentity(options.sources);
+  }
   const overlap = Math.max(
     256,
     ...index.map(entry => entry.value.length + 16),
@@ -270,6 +305,29 @@ export async function findSecretLeakInDirectory(
         if (leak) return leak;
       } else if (entry.isFile()) {
         if (options.ignoreFile?.(file)) continue;
+        if (privateIdentity && options.privateCodexRuntimeIdentityRoot && isEphemeralCodexRolloutFile(options.privateCodexRuntimeIdentityRoot, file)) {
+          const stream = createReadStream(file);
+          const lines = createInterface({ input: stream, crlfDelay: Infinity });
+          try {
+            for await (const line of lines) {
+              if (Buffer.byteLength(line) > 8 * 1024 * 1024) throw new Error("Codex rollout record exceeds private scan bound");
+              let scanned = line;
+              try {
+                const record = JSON.parse(line);
+                if (record?.type === "session_meta" && record.payload?.creator_account_id === privateIdentity) {
+                  delete record.payload.creator_account_id;
+                  scanned = JSON.stringify(record);
+                }
+              } catch {}
+              const match = matchSecret(scanned, index, options);
+              if (match) return { file, ...match };
+            }
+          } finally { lines.close(); stream.destroy(); }
+          continue;
+        }
+        const fileIndex = privateIdentity && options.privateCodexRuntimeIdentityRoot &&
+          isEphemeralCodexRuntimeIdentityDatabase(options.privateCodexRuntimeIdentityRoot, file)
+          ? index.filter(entry => entry.value !== privateIdentity) : index;
         let carry = Buffer.alloc(0);
         try {
           for await (const chunk of createReadStream(file)) {
@@ -277,7 +335,7 @@ export async function findSecretLeakInDirectory(
               carry,
               Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk),
             ]);
-            const match = matchSecret(data.toString("utf8"), index, options);
+            const match = matchSecret(data.toString("utf8"), fileIndex, options);
             if (match) return { file, ...match };
             carry = data.subarray(Math.max(0, data.length - overlap));
           }

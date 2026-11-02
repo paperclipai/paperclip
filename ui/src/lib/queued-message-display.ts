@@ -42,6 +42,15 @@ const TAIL_RUNTIME_WAIT_MESSAGE_KEYS = new Map<string, string>([
 
 /** Display-only projection for IssueQueuedCommentQueue.executionWait.message. */
 export function queuedMessageWaitMessage(message: string): string {
+  if (message === "Send the saved message again to continue.") {
+    return t("nov02Late.sendSavedMessageAgain");
+  }
+  if (message === "Send the saved message again now that the previous run has stopped.") {
+    return t("nov02Late.sendSavedMessageAfterStop");
+  }
+  if (message === "Waiting for the previous run to finish cleanup. Your message is saved.") {
+    return t("nov02Late.savedMessageWaitingForCleanup");
+  }
   if (message === "Recover the saved files or record reconstruction before continuing. Your message is saved.") {
     return t("oct19Tasks.workspaceReconstructionWait");
   }

@@ -3,7 +3,7 @@ import request from "supertest";
 import { request as httpRequest } from "node:http";
 import { createServer as createViteServer } from "vite";
 import { afterEach, describe, expect, it } from "vitest";
-import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
+import { drainHttpRequestWork, idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
 import { idleWorkSnapshot, startTaskDrain, stopTaskDrain, readTaskDrain, beginIdleTrackedWork } from "../services/task-admission.js";
 
 function deferred() {
@@ -43,10 +43,15 @@ describe("idle admission", () => {
     trackIdleRequestHandlers(server);
     await request(server).post("/api/work").expect(202);
     expect(idleWorkSnapshot().active).toBe(1);
+    let drained = false;
+    const drain = drainHttpRequestWork(server, new AbortController().signal).then(() => { drained = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(drained).toBe(false);
     startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
     await request(server).post("/api/work").expect(503);
     done.resolve();
-    await new Promise(resolve => setImmediate(resolve));
+    await drain;
+    expect(drained).toBe(true);
     expect(idleWorkSnapshot().active).toBe(0);
   });
 

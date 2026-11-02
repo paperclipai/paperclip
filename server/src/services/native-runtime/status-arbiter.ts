@@ -98,6 +98,8 @@ export function arbitrateNativeStatus(input: {
   workspaceFinalizeStatus: "succeeded" | "failed";
   governanceGate?: NativeGovernanceGate | null;
   completionClaimPolicyAccepted?: boolean;
+  /** Canonical exact-output human verdicts, only for an explicitly opted-in requirement. */
+  requiredQualityReviewSatisfied?: boolean;
   allowIncompleteContinuation?: boolean;
   /**
    * True when the issue already has a durable unresolved dependency edge.
@@ -356,6 +358,15 @@ export function arbitrateNativeStatus(input: {
       // Dependency completion owns the wake. Do not immediately rerun the
       // blocked issue merely because the provider mislabeled its scope/status.
       effects: [],
+    };
+  }
+  if (input.requiredQualityReviewSatisfied === false && input.assessment.reportedDisposition === "done") {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress", toStatus: "in_progress",
+      reasonCode: "required_quality_review_incomplete", unblockDescriptor: null,
+      effects: [{ kind: "release_checkout" }, { kind: "record_recovery", cause: "required_quality_review_incomplete",
+        nextAction: "Request or resume the task's required quality review for exact output versions; do not repeat completed work or create a generic completion approval.", agentId: input.agentId }],
     };
   }
   const evidenceComplete =

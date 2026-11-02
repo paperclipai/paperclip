@@ -27,6 +27,23 @@ interface ActivityFormatOptions {
 // collide with a built-in code (for example issue.read_marked / issue_read.marked).
 // These labels supplement the existing detail-aware formatters below.
 const LOCALIZED_FALLBACK_ACTIVITY_ACTIONS = new Set<string>([
+"instance.adapter.updated",
+"tool_gateway.created",
+"tool_gateway.updated",
+"tool_gateway.token_created",
+"tool_gateway.token_revoked",
+"tool_runtime.stopped",
+"tool_runtime.restarted",
+"issue.retry_workspace_reused",
+"workspace.remote_storage_migrated",
+"decision.recovery_failed",
+"workspace.remote_created",
+"workspace.snapshot_saved",
+"workspace_preferences.updated",
+"ai_connection.local_login_cleanup_requested",
+"project.git_authorized",
+"project.git_authorization_revoked",
+"issue.retry_inputs_restored",
 "agent.commentary_submitted",
 "agent.identity.created",
 "ai_connection.pool_deleted",

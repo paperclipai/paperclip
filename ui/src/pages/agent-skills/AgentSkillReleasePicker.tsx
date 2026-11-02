@@ -1,5 +1,5 @@
 import { t, useTranslation } from "@/i18n";
-import type { CompanySkillVersion } from "@paperclipai/shared";
+import type { CompanySkillVersionSummary } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -21,7 +21,7 @@ function defaultLabel() {
  * v7-roster manifest entry) render verbatim; full timestamps collapse to their
  * local calendar day so the picker reads `released 2026-07-21`.
  */
-export function formatReleaseDate(value: CompanySkillVersion["releasedAt"]): string | null {
+export function formatReleaseDate(value: CompanySkillVersionSummary["releasedAt"]): string | null {
   if (!value) return null;
   const raw = typeof value === "string" ? value : value.toISOString();
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
@@ -34,25 +34,25 @@ export function formatReleaseDate(value: CompanySkillVersion["releasedAt"]): str
 }
 
 /** Release display name, e.g. `V7 — Roster champion` (no date). */
-export function releaseName(release: CompanySkillVersion): string {
+export function releaseName(release: CompanySkillVersionSummary): string {
   return release.releaseName ?? release.label ?? release.releaseId ?? t("localizationAgentManagement.release");
 }
 
 /** Full option label, e.g. `V7 — Roster champion · released 2026-07-21`. */
-export function releaseOptionLabel(release: CompanySkillVersion): string {
+export function releaseOptionLabel(release: CompanySkillVersionSummary): string {
   const name = releaseName(release);
   const date = formatReleaseDate(release.releasedAt);
   return date ? t("localizationAgentManagement.releaseOption", { name, date }) : name;
 }
 
 /** Compact badge label for a pinned release, e.g. `V7`. */
-export function releaseShortLabel(release: CompanySkillVersion): string {
+export function releaseShortLabel(release: CompanySkillVersionSummary): string {
   const name = release.releaseName ?? release.label ?? release.releaseId ?? t("localizationAgentManagement.release");
   return name.split(" — ")[0]!.trim();
 }
 
 export interface AgentSkillReleasePickerProps {
-  releases: CompanySkillVersion[];
+  releases: CompanySkillVersionSummary[];
   /** Currently pinned version id, or null for the live default. */
   value: string | null;
   disabled?: boolean;

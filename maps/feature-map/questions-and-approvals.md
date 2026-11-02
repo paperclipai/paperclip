@@ -79,6 +79,8 @@ Channel-specific forms and identity linking require separate provider evidence.
 
 ## Driving it
 
+The explicit `plan-revise-accept` and `protected-actions` [Product journeys](../../tests/runner-e2e/PRODUCT-JOURNEYS.md) cover `questions-and-approvals/plan-review` and `questions-and-approvals/tool-review`. They share the classic browser actions and saved-state checks. Cloud qualification remains separate; source registration is not a passing result.
+
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
 Use separate disposable requests for accept, decline, and revision paths. Record
 the actor and request revision. Prepare a waiting question through a test agent;
@@ -215,6 +217,8 @@ qualify Slack, Discord, Telegram, email, or iMessage; record each as not run
 unless its actual provider journey was driven.
 
 ## Gotchas
+
+- Canonical question forms show field validation only after Next/Submit (including the keyboard submit shortcut) is attempted. Invalid answers remain unsent and the form stays on the relevant question; correction clears the field warning. Pagination arrows still browse without validation, drafts remain preserved, and uploads/requests in flight still disable submission.
 
 - Dismissing a question does not answer it. Dismissing an app review neither
   grants permission nor resumes the agent. Ordinary comments cannot approve it.

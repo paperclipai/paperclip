@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { applyPendingMigrations } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -17,19 +19,21 @@ async function sweepSkillVersionCache(db: ReturnType<typeof createDb>, options: 
   return { ...result, evicted: result.removed };
 }
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_SKILL_CACHE_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skill cache tests require Postgres: ${support.reason}`);
 
 describePostgres("immutable skill version cache", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let home: string;
   const previousHome = process.env.PAPERCLIP_HOME;
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("skill-version-cache-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("skill-version-cache-");
+    if (external) await applyPendingMigrations(external);
+    db = createDb(external ?? database!.connectionString);
     home = await fs.mkdtemp(path.join(os.tmpdir(), "skill-version-cache-"));
     process.env.PAPERCLIP_HOME = home;
   });
@@ -38,6 +42,7 @@ describePostgres("immutable skill version cache", () => {
     if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = previousHome;
     if (home) await fs.rm(home, { recursive: true, force: true });
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
   });
 
@@ -237,12 +242,14 @@ describePostgres("immutable skill version cache", () => {
     return { run, execution };
   }
 
-  it.each([false, true])("uses the legacy native manifest without changing unresolved recovery (bundled skill: %s)", async bundled => {
+  it.each([false, true])("protects unknown legacy versions without changing unresolved recovery (bundled skill: %s)", async bundled => {
     const f = await fixture();
     const old = await f.resolve(f.versions[0]!.id);
     await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
     const { run } = await legacyNativeRun(f.companyId, bundled ? [{ key: "paperclipai/paperclip/slack", versionId: null }] : []);
-    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+    const result = await sweepSkillVersionCache(db, { companyId: f.companyId });
+    expect(result.evicted).toBe(bundled ? 0 : 1);
+    if (bundled) expect(result.skipped.unknown_run_pins).toBe(1);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
       .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]!.contextSnapshot).toBeNull();
@@ -293,7 +300,7 @@ describePostgres("immutable skill version cache", () => {
         .where(eq(heartbeatRuns.id, run.id));
     });
     await ready.promise;
-    const other = createDb(database.connectionString);
+    const other = createDb(external ?? database!.connectionString);
     try {
       const cleaning = await sweepSkillVersionCache(other, { companyId: f.companyId });
       expect(cleaning.evicted).toBe(0);
@@ -312,7 +319,7 @@ describePostgres("immutable skill version cache", () => {
       expect(entries[0]!.sourceStatus).toBe("available");
       throw new Error("durable pin write failed");
     })).rejects.toThrow("durable pin write failed");
-    const other = createDb(database.connectionString);
+    const other = createDb(external ?? database!.connectionString);
     try {
       expect(await withSkillVersionCacheLock(other, f.companyId, async () => "released", true)).toBe("released");
     } finally { await other.$client.end({ timeout: 0 }); }
@@ -359,7 +366,7 @@ describePostgres("immutable skill version cache", () => {
     }) as typeof fs.lstat);
     const sweep = sweepSkillVersionCache(db, { companyId: f.companyId });
     await inspecting.promise;
-    const other = createDb(database.connectionString);
+    const other = createDb(external ?? database!.connectionString);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const preparation = withSkillVersionCacheLock(other, f.companyId, async () => {
       await companySkillService(other).listRuntimeSkillEntries(f.companyId, {

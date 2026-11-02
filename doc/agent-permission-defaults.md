@@ -29,3 +29,13 @@ Agent-authenticated callers cannot set process adapter configuration or switch a
 The new direct grants are withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged actions even if an agent has a grant. There is no permission backfill or upgrade migration for existing agents. A standard pending new hire receives the new default set when approved and activated. Invitation approval retains the set when it replaces a new agent's grants and preserves any explicitly scoped default grant. Existing scoped grants stay unchanged. A grant removed by an operator stays removed; ordinary updates and startup do not reapply it.
 
 The standard agent configuration default supports the agent setup in the linked runner task. Enabling a warm runtime can still depend on the target agent's adapter and runtime configuration, provider availability, and any responsible-user or approval checks.
+
+## Connection administration (2026-10-13)
+
+The five default tool grants are usable through the existing connection APIs and default native `search_api`/`call_api`. A fresh standard agent for a normally provisioned Operator can configure app/tool, chat/email and AI connections, profiles and gateways without additional agent grants. Gateway management uses the agent's `tools:manage_connections` grant and still requires `tools:admin` on the responsible human. It does not grant blanket agent administration.
+
+Connection management always intersects the current human's authority, including in responsible-user shadow mode. Personal self-service remains available where the human setup surface permits it; sharing and assignments require authority over their targets. Current run/work-mode/trust restrictions, scoped grants and explicit grant removal remain effective. No existing-agent permissions are backfilled. Agent-issued gateway clients preserve this delegation at every use, even after the setup run ends.
+
+See [the authorization and qualification record](plans/2026-10-13-connection-api-parity.md) and the operation-reviewed [agent access maps](../maps/agent-access-map/connection-setup.md). Human consent, credential entry and identity confirmation remain bounded handoffs to saved setup.
+
+Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.

@@ -119,3 +119,14 @@ it("retains the original projectless lease across warm run placeholders but reje
   const changed = { ...binding, workspaceId: providerPackWorkspaceId("project-workspace", "run-2", "original-lease") };
   expect(() => resolveRemoteProviderPackAuthority({ ...input, binding: changed, reattach: true })).toThrow("does not match this execution");
 });
+
+it("persists the compatible installation selected at launch, then pins it on reattachment", () => {
+  const { input } = fixture();
+  const authority = resolveRemoteProviderPackAuthority(input);
+  const installed = manifest("b");
+  authority.select(installed);
+  authority.verified();
+  const attached = resolveRemoteProviderPackAuthority({ ...input, reattach: true });
+  expect(attached.manifest).toEqual(installed);
+  expect(() => attached.select(manifest("c"))).toThrow("cannot replace an attached pack authority");
+});

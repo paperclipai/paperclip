@@ -40,6 +40,7 @@ export const externalObjectCategoryIcon: Record<string, LucideIcon> = {
   closed: Circle,
   archived: Archive,
   auth_required: KeyRound,
+  rate_limited: AlertCircle,
   unreachable: CloudOff,
 };
 
@@ -71,6 +72,7 @@ export function externalObjectIconForKey(iconKey: string | null | undefined): Lu
 
 export function externalObjectIconForLiveness(liveness: string): LucideIcon | null {
   if (liveness === "auth_required") return KeyRound;
+  if (liveness === "rate_limited") return AlertCircle;
   if (liveness === "unreachable") return CloudOff;
   return null;
 }
@@ -87,6 +89,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   get archived() { return t("localizationExternalChrome.category_archived"); },
   get auth_required() { return t("localizationExternalChrome.category_auth_required"); },
   get unreachable() { return t("localizationExternalChrome.category_unreachable"); },
+  get rate_limited() { return t("nov02Core.rateLimited"); },
 };
 
 export function externalObjectCategoryLabel(category: string): string {
@@ -99,6 +102,7 @@ const LIVENESS_LABELS: Record<string, string> = {
   get stale() { return t("localizationExternalChrome.liveness_stale"); },
   get auth_required() { return t("localizationExternalChrome.liveness_auth_required"); },
   get unreachable() { return t("localizationExternalChrome.category_unreachable"); },
+  get rate_limited() { return t("nov02Core.rateLimited"); },
 };
 
 export function externalObjectLivenessLabel(liveness: string): string {
@@ -152,6 +156,7 @@ const CATEGORY_TONE_FALLBACK: Record<string, ExternalObjectStatusTone> = {
   closed: "muted",
   archived: "muted",
   auth_required: "warning",
+  rate_limited: "warning",
   unreachable: "danger",
 };
 
