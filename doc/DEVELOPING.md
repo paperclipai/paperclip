@@ -1089,6 +1089,9 @@ uses immediate PostgreSQL shutdown if needed. A failed stop fails the hook and
 retains its data directory. Worker termination also requests owned server
 shutdown. A forced `SIGKILL` can bypass these handlers; the separate host cleanup
 job remains the backstop for stale macOS semaphore sets.
+Database and CLI hooks use the same 30-second deadline as server hooks. This
+allows the ten-second shutdown protocol and client/database cleanup to finish
+before the test runner ends a worker. A shutdown timeout still fails the hook.
 
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
 without an administrative URL get their own embedded Postgres cluster. The first such suite on a host builds
