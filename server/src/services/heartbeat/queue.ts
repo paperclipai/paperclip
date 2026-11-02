@@ -2299,7 +2299,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId ?? ""}`,
       ));
       const retry = readTaskRetryIntent(receipt?.payload);
-      if (!receipt || retry?.generationId !== receipt.id || retry.canonicalIntentId ||
+      if (!receipt || retry?.generationId !== receipt.id || retry.canonicalIntentId || retry.queuedChatRequestId ||
           retry.actorId !== receipt.requestedByActorId) return null;
       const chatRetry = retry.chatActionId && durableRequest?.id === retry.chatActionId &&
         durableRequest.failedRunRetry?.failedRunId === retry.sourceRunId;

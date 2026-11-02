@@ -33,6 +33,8 @@ import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.js";
 import { requestTaskRetry, reconcileTaskChatRetryReceipts } from "../services/task-retry.js";
+import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
+import { withQueuedCommentIdsInWakePayload } from "../services/issue-queued-comment-queue.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { stageReceiptReactionRemovals } from "../services/chat-receipt-reactions.js";
@@ -112,6 +114,7 @@ import {
   isNotNull,
   isNull,
   like,
+  ne,
   notInArray,
   or,
   sql,
@@ -7152,6 +7155,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(await readChatConversationsByEndpointId(f.endpoint.id)).toHaveLength(0);
       expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toHaveLength(0);
     });
+    it("offers Retry for a saved automatic PR event after a successful older review", async () => {
+      const f = await reviewBotFixture();
+      const payload = {
+        action: "opened", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 77, login: "maintainer" },
+        pull_request: { number: 81, title: "Review successive heads", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [] },
+      };
+      const send = async (event: typeof payload) => {
+        await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+          event: "pull_request", delivery: randomUUID(), payload: event, webhookSecret: f.webhookSecret,
+        }));
+        await f.service.processPendingDeliveries();
+      };
+      await send(payload);
+      await expect.poll(async () => {
+        await f.service.processPendingDeliveries();
+        return (await readChatConversationsByEndpointId(f.endpoint.id)).length;
+      }, { timeout: 10_000 }).toBe(1);
+      const [conversation] = await readChatConversationsByEndpointId(f.endpoint.id);
+      const [task] = await readIssuesById(conversation.issueId!);
+      const [original] = await db.select().from(chatActions).where(and(
+        eq(chatActions.conversationId, conversation.id), eq(chatActions.kind, "inbound_wakeup")));
+      await expect.poll(async () => (await readAgentWakeupRequestsById(original.id)).length).toBe(1);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        issueId: task.id, status: "succeeded", finishedAt: new Date(), wakeupRequestId: original.id,
+        contextSnapshot: { issueId: task.id, taskKey: task.identifier, source: "chat:github", wakeCommentIds: [original.payload.commentId] },
+      }).returning();
+      await db.update(agentWakeupRequests).set({ status: "completed", runId: run.id }).where(eq(agentWakeupRequests.id, original.id));
+      await send({ ...payload, action: "synchronize", pull_request: { ...payload.pull_request, head: { sha: "c".repeat(40) } } });
+      await expect.poll(async () => {
+        await f.service.processPendingDeliveries();
+        return (await db.select().from(chatActions).where(and(
+          eq(chatActions.conversationId, conversation.id), eq(chatActions.kind, "inbound_wakeup")))).length;
+      }).toBe(2);
+      const [pending] = await db.select().from(chatActions).where(and(
+        eq(chatActions.conversationId, conversation.id), eq(chatActions.kind, "inbound_wakeup"), ne(chatActions.id, original.id)));
+      await expect.poll(async () => (await readAgentWakeupRequestsById(pending.id)).length).toBe(1);
+      const [receipt] = await readAgentWakeupRequestsById(pending.id);
+      await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution", runId: null,
+        payload: withQueuedCommentIdsInWakePayload(receipt.payload, [String(pending.payload.commentId)]),
+        requestedAt: new Date(Date.now() - 60_000) }).where(eq(agentWakeupRequests.id, pending.id));
+      expect(receipt.requestedByActorType).toBe("user");
+      await db.update(issues).set({ status: "blocked", executionRunId: null }).where(eq(issues.id, task.id));
+      expect(await taskInterruptionPresentation(db, { ...task, status: "blocked" }))
+        .toMatchObject({ state: "failed", canRetry: true, intentId: pending.id, observedRunId: run.id });
+      await db.update(agents).set({ status: "running", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+        .where(eq(agents.id, f.assignedAgentId));
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId, status: "running", startedAt: new Date() });
+      f.wakeup.mockImplementation(heartbeatService(db).wakeup);
+      const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: task.id, actorId: "owner-user",
+        actorSource: "cloud_tenant", observedRunId: run.id, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry });
+      await reconcileTaskChatRetryReceipts(db, { companyId: f.companyId });
+      const [resumed] = await readAgentWakeupRequestsById(pending.id);
+      expect(resumed.runId).toBeTruthy();
+      expect((await readHeartbeatRunsById(resumed.runId!))[0]).toMatchObject({ status: "queued", retryOfRunId: null,
+        contextSnapshot: { wakeCommentIds: [pending.payload.commentId] } });
+      expect((await readAgentWakeupRequestsById(retry.requestId!))[0]).toMatchObject({ status: "coalesced", runId: resumed.runId });
+    });
+
     it("admits signed PR events into an ordinary assigned task and deduplicates delivery", async () => {
       const f = await reviewBotFixture();
       const { buildSkillMentionHref } = await import("@paperclipai/shared");
@@ -64139,6 +64204,112 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     f.wakeup.mockImplementation(heartbeatService(db).wakeup);
     return { ...f, pending, originalDelivery };
   }
+
+  async function successfulGitHubQueuedInputFixture() {
+    const f = await currentGitHubTaskRetryFixture(true);
+    const companyId = f.fixture.companyId, issueId = f.issue.id;
+    const [saved] = await readAgentWakeupRequestsById(f.pending!.id);
+    await db.update(agentWakeupRequests).set({ payload: withQueuedCommentIdsInWakePayload(saved.payload,
+      [String(f.pending!.payload.commentId)]) }).where(eq(agentWakeupRequests.id, saved.id));
+    const contractId = randomUUID(), resultId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: {},
+      canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null, nativePhase: "committed",
+      completionContractId: contractId }).where(eq(heartbeatRuns.id, f.runId));
+    const [result] = await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId: f.runId,
+      completionContractId: contractId, serverFingerprint: resultId, schemaStatus: "accepted", canonicalSha256: resultId,
+      resultJson: { terminal: { runTerminalState: "succeeded" }, summary: "Earlier review remains saved" } }).returning();
+    await db.update(nativeRunFinalizations).set({ phase: "committed", resultId }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, f.receipt.id));
+    const input = { db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+      observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry };
+    return { ...f, input, result };
+  }
+
+  it("retries saved GitHub input after a successful run without replaying that run", async () => {
+    const f = await successfulGitHubQueuedInputFixture();
+    try {
+      const { input } = f;
+      const companyId = f.fixture.companyId;
+      const before = (await readHeartbeatRunsById(f.runId))[0];
+      const [request, duplicate] = await Promise.all([requestTaskRetry(input),
+        requestTaskRetry({ ...input, idempotencyKey: randomUUID() })]);
+      expect(request.accepted).toBe(true);
+      expect(duplicate.requestId).toBe(request.requestId);
+      await reconcileTaskChatRetryReceipts(db, { companyId });
+      const [source] = await readAgentWakeupRequestsById(f.pending!.id);
+      expect(source.runId).toBeTruthy();
+      const [successor] = await readHeartbeatRunsById(source.runId!);
+      expect(successor).toMatchObject({ status: "queued", retryOfRunId: null,
+        contextSnapshot: { wakeCommentIds: [f.pending!.payload.commentId] } });
+      await reconcileTaskChatRetryReceipts(db, { companyId });
+      expect((await readAgentWakeupRequestsById(request.requestId!))[0])
+        .toMatchObject({ status: "coalesced", runId: successor.id });
+      expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.wakeupRequestId === f.pending!.id)).toHaveLength(1);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toEqual(before);
+      expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.result.id)))[0]).toEqual(f.result);
+    } finally { await f.service.shutdown(); }
+  });
+
+  it.each(["connection_revoked", "source_rebound", "task_completed", "agent_paused", "cleanup_pending"] as const)(
+    "keeps saved-input Retry behind current admission gates: %s", async gate => {
+      const f = await successfulGitHubQueuedInputFixture();
+      try {
+        const companyId = f.fixture.companyId;
+        const request = await requestTaskRetry(f.input);
+        const before = (await readHeartbeatRunsById(f.runId))[0];
+        if (gate === "connection_revoked") await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.endpoint.id));
+        if (gate === "source_rebound") await db.update(chatActions).set({ payload: { ...f.pending!.payload, commentId: randomUUID() } })
+          .where(eq(chatActions.id, f.pending!.id));
+        if (gate === "task_completed") await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issue.id));
+        if (gate === "agent_paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.fixture.assignedAgentId));
+        const lease = { id: randomUUID(), companyId, issueId: f.issue.id, heartbeatRunId: f.runId,
+          provider: "daytona", providerLeaseId: randomUUID(), leasePolicy: "ephemeral" };
+        if (gate === "cleanup_pending") {
+          await db.insert(environmentLeases).values({ ...lease, status: "pending_cleanup" });
+          await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issue.id));
+        }
+        await reconcileTaskChatRetryReceipts(db, { companyId });
+        expect((await readAgentWakeupRequestsById(f.pending!.id))[0].runId).toBeNull();
+        expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.wakeupRequestId === f.pending!.id)).toHaveLength(0);
+        expect((await readHeartbeatRunsById(f.runId))[0]).toEqual(before);
+        expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.result.id)))[0]).toEqual(f.result);
+        if (gate === "cleanup_pending") {
+          expect((await readAgentWakeupRequestsById(request.requestId!))[0].status).toBe("deferred_issue_execution");
+          await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date(),
+            metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }) },
+          }).where(eq(environmentLeases.id, lease.id));
+          await reconcileTaskChatRetryReceipts(db, { companyId });
+          expect((await readAgentWakeupRequestsById(f.pending!.id))[0].runId).toBeTruthy();
+        }
+      } finally { await f.service.shutdown(); }
+    });
+
+  it("dispatches saved input through the task Retry HTTP endpoint and survives a repeated click", async () => {
+    const f = await successfulGitHubQueuedInputFixture();
+    const { issueRoutes } = await import("../routes/issues.js");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = boardActor(f.fixture.companyId); next(); });
+    app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+    app.use(errorHandler);
+    try {
+      const body = { observedRunId: f.runId, idempotencyKey: randomUUID() };
+      const first = await request(app).post(`/api/issues/${f.issue.id}/retry`).send(body);
+      expect(first.status, JSON.stringify(first.body)).toBe(202);
+      await expect.poll(async () => (await readAgentWakeupRequestsById(f.pending!.id))[0].runId).toBeTruthy();
+      const second = await request(app).post(`/api/issues/${f.issue.id}/retry`).send(body);
+      expect(second.status).toBe(202);
+      expect(second.body.requestId).toBe(first.body.requestId);
+      expect((await readHeartbeatRunsByCompanyId(f.fixture.companyId)).filter(run => run.wakeupRequestId === f.pending!.id)).toHaveLength(1);
+      const detail = await request(app).get(`/api/issues/${f.issue.id}`);
+      expect(detail.status).toBe(200);
+      expect(detail.body.interruption).toMatchObject({ state: "working", canRetry: false });
+      expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.result.id)))[0]).toEqual(f.result);
+    } finally { await f.service.shutdown(); }
+  });
 
   it.each(["reconnected", "newer_input", "reconnected_newer_input", "snapshot_newer_input"] as const)(
     "admits current GitHub task Retry without replaying obsolete input: %s", async kind => {
