@@ -40,7 +40,7 @@ patchedDependencies:
     hash: vbylpnnxt5av2zdnuqmf6hjyjy
     path: patches/@discordjs__ws@1.2.3.patch
   acpx@0.12.0:
-    hash: 6st5fzvttegjv64llnfegwwpca
+    hash: wdjgu7ncdys5laj4uno4gvcnwa
     path: patches/acpx@0.12.0.patch
   acpx@0.13.1:
     hash: xh3fclih3ztrbsibpfnxdcx7pe
@@ -167,7 +167,7 @@ importers:
         version: link:../shared
       acpx:
         specifier: 0.12.0
-        version: 0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca)
+        version: 0.12.0(patch_hash=wdjgu7ncdys5laj4uno4gvcnwa)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -13960,7 +13960,7 @@ snapshots:
 
   acorn@8.18.0: {}
 
-  acpx@0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca):
+  acpx@0.12.0(patch_hash=wdjgu7ncdys5laj4uno4gvcnwa):
     dependencies:
       '@agentclientprotocol/sdk': 1.2.1(zod@4.4.3)
       commander: 15.0.0
