@@ -9383,6 +9383,7 @@ export function issueRoutes(
       let ownerNotifiedAt: Date | null = null;
       await deliverAgentUnblockNotification({
         issue: blockedIssue,
+        actorAgentId: actor.agentId ?? null,
         wakeup: heartbeat.wakeup,
         markNotified: async (blockedOwnerNotifiedAt) => {
           ownerNotifiedAt = blockedOwnerNotifiedAt;
