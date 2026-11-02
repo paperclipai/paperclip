@@ -231,11 +231,19 @@ export type GitHubApiCredential = {
 export async function resolveGitHubApiCredential(
   db: Db,
   companyId: string,
-  opts: { secretNames?: readonly string[]; env?: NodeJS.ProcessEnv; secrets?: GitCredentialSecretsDeps } = {},
+  opts: {
+    secretNames?: readonly string[];
+    env?: NodeJS.ProcessEnv;
+    secrets?: Pick<GitCredentialSecretsDeps, "resolveSecretValue"> & {
+      getByNames: (companyId: string, names: readonly string[]) => Promise<{ id: string; name: string }[]>;
+    };
+  } = {},
 ): Promise<GitHubApiCredential | null> {
   const secrets = opts.secrets ?? secretService(db);
-  for (const secretName of opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
-    const secret = await Promise.resolve(secrets.getByName(companyId, secretName)).catch(() => null);
+  const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
+  const candidates = await secrets.getByNames(companyId, secretNames).catch(() => []);
+  for (const secretName of secretNames) {
+    const secret = candidates.find((candidate) => candidate.name === secretName);
     if (!secret) continue;
     const token = await secrets
       .resolveSecretValue(companyId, secret.id, "latest")

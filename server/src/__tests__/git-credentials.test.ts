@@ -29,7 +29,9 @@ function buildSecretsFake(byName: Record<string, string | Error>) {
     if (value instanceof Error) throw value;
     return value ?? "";
   });
-  return { getByName, resolveSecretValue };
+  const getByNames = vi.fn(async (_companyId: string, names: readonly string[]) =>
+    names.filter((name) => name in byName).reverse().map((name) => ({ id: `secret-${name}`, name })));
+  return { getByName, getByNames, resolveSecretValue };
 }
 
 describe("isGitHubHttpsRemoteUrl", () => {
@@ -50,6 +52,29 @@ describe("isGitHubHttpsRemoteUrl", () => {
 });
 
 describe("resolveGitHubApiCredential", () => {
+  it("uses one lookup and preserves priority regardless of database row order", async () => {
+    const secrets = buildSecretsFake({ GITHUB_TOKEN: " first ", GH_TOKEN: "second" });
+    await expect(resolveGitHubApiCredential(fakeDb, "company-1", { secrets, env: {} }))
+      .resolves.toEqual({ token: "first", source: "company_secret", secretName: "GITHUB_TOKEN" });
+    expect(secrets.getByNames).toHaveBeenCalledExactlyOnceWith("company-1", DEFAULT_GITHUB_TOKEN_SECRET_NAMES);
+    expect(secrets.getByName).not.toHaveBeenCalled();
+    expect(secrets.resolveSecretValue).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues past blank and failed secrets in custom priority order", async () => {
+    const secrets = buildSecretsFake({ CUSTOM: " ", GH_TOKEN: new Error("unavailable"), GITHUB_TOKEN: "ok" });
+    await expect(resolveGitHubApiCredential(fakeDb, "company-1", {
+      secrets, env: {}, secretNames: ["CUSTOM", "GH_TOKEN", "GITHUB_TOKEN"],
+    })).resolves.toEqual({ token: "ok", source: "company_secret", secretName: "GITHUB_TOKEN" });
+  });
+
+  it("falls back to the environment when the candidate lookup fails", async () => {
+    const secrets = buildSecretsFake({});
+    secrets.getByNames.mockRejectedValueOnce(new Error("database unavailable"));
+    await expect(resolveGitHubApiCredential(fakeDb, "company-1", { secrets, env: { GH_TOKEN: " fallback " } }))
+      .resolves.toEqual({ token: "fallback", source: "server_env", secretName: null });
+  });
+
   it("prefers a company secret over the server environment and marks it company-scoped", async () => {
     const secrets = buildSecretsFake({ GH_TOKEN: "gh-token" });
     const credential = await resolveGitHubApiCredential(fakeDb, "company-1", {
