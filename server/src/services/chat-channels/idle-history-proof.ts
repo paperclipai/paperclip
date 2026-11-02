@@ -42,7 +42,14 @@ function completedAction(a: string): string {
 }
 
 export const idleChatHistoryChecks = [
-  { reason: "chat_deliveries", query: `SELECT 1 FROM chat_deliveries d WHERE (
+  { reason: "chat_deliveries", query: `WITH action_outcomes AS MATERIALIZED (
+    SELECT a.delivery_id, a.kind, (${completedAction('a')}) IS TRUE AS completed
+      FROM chat_actions a WHERE a.delivery_id IS NOT NULL
+  ), action_receipts AS (
+    SELECT delivery_id, bool_and(completed) AS completed,
+      bool_or(kind = 'inbound_wakeup' AND completed) AS consumed
+      FROM action_outcomes GROUP BY delivery_id
+  ) SELECT 1 FROM chat_deliveries d LEFT JOIN action_receipts receipt ON receipt.delivery_id = d.id WHERE (
     EXISTS (SELECT 1 FROM chat_endpoints e WHERE e.id = d.endpoint_id AND e.company_id = d.company_id)
     AND jsonb_typeof(d.normalized_event) = 'object'
     AND d.normalized_event->>'providerEventId' = d.provider_event_id
@@ -50,14 +57,11 @@ export const idleChatHistoryChecks = [
     AND d.event_kind IN ('mention', 'message', 'direct_message', 'message_updated', 'message_deleted', 'message_restored',
       'reaction_added', 'reaction_removed', 'action', 'modal_submitted', 'modal_closed', 'slash_command', 'file_shared', 'installation', 'uninstallation', 'unknown')
     AND (d.state <> 'processed' OR d.event_kind NOT IN ('mention', 'message', 'direct_message')
-      OR EXISTS (SELECT 1 FROM chat_actions consumed WHERE consumed.delivery_id = d.id
-        AND consumed.company_id = d.company_id AND consumed.endpoint_id = d.endpoint_id
-        AND consumed.kind = 'inbound_wakeup' AND (${completedAction('consumed')})))
+      OR receipt.consumed IS TRUE)
     AND d.next_attempt_at IS NULL AND (d.state = 'failed' OR (d.state IN ('processed', 'filtered') AND d.processed_at IS NOT NULL))
     AND (d.conversation_id IS NULL OR EXISTS (SELECT 1 FROM chat_conversations c WHERE c.id = d.conversation_id
       AND c.company_id = d.company_id AND c.endpoint_id = d.endpoint_id))
-    AND NOT EXISTS (SELECT 1 FROM chat_actions a WHERE a.delivery_id = d.id
-      AND (a.company_id <> d.company_id OR a.endpoint_id <> d.endpoint_id OR (${completedAction('a')}) IS NOT TRUE))) IS NOT TRUE` },
+    AND COALESCE(receipt.completed, true)) IS NOT TRUE` },
   { reason: "chat_publications", query: `SELECT 1 FROM chat_publications p WHERE (
     (p.state = 'published' AND p.published_at IS NOT NULL AND p.redacted_error IS NULL
       OR (p.state IN ('failed', 'cancelled') AND p.next_attempt_at IS NULL))

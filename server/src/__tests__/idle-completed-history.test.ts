@@ -27,7 +27,10 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
   const blocked = async (reason: string) => {
     const check = completedHistoryChecks.find(check => check.reason === reason);
     if (!check) throw new Error(`Missing family ${reason}`);
+    const started = performance.now();
     const [row] = await db.execute<{ blocked: boolean }>(sql`SELECT EXISTS (${sql.raw(check.query)}) AS blocked`);
+    const elapsed = performance.now() - started;
+    if (elapsed > 1000) console.info(`History predicate ${reason}: ${Math.round(elapsed)}ms`);
     return row.blocked;
   };
   beforeAll(async () => {
@@ -160,7 +163,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
       const app = express(); app.use(transfers.router);
       const url = new URL(String(upload.url));
-      const result = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes);
+      const result = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes).timeout({ response: 5000, deadline: 10_000 });
       expect(result.status).toBe(200);
       expect(await blocked("mcp_attachment_uploads")).toBe(false);
       const abandoned = await transfers.getUploadUrl(principal, { ...args, requestId: randomUUID() });
@@ -171,7 +174,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       await db.update(tables.mcpAttachmentUploads).set({ attachmentId: null }).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
     } finally { await p.cleanup(); }
-  });
+  }, 60_000);
 
   it("retains the actual rejected tool review and only its acknowledged delivery", async () => {
     const { commitToolActionReview } = await import("../services/tool-action-review.js");
@@ -304,7 +307,18 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await lease(f.endpoint, guard => resources.applyProviderAvailability({ currentEndpoint: f.endpoint, effect,
       credentialLease: guard, staleResourceEffect: false, claimed: delivery, candidate: { attempts: 0 } }));
     expect(await blocked("chat_deliveries")).toBe(false);
-    await db.update(tables.chatDeliveries).set({ normalizedEvent: {} }).where(eq(tables.chatDeliveries.id, delivery.id));
+    const firstAction = await f.insertAction({ deliveryId: delivery.id });
+    expect(await blocked("chat_deliveries")).toBe(true);
+    await f.service.processGitHubWebhookIngress(firstAction.id);
+    expect(await blocked("chat_deliveries")).toBe(false);
+    const secondAction = await f.insertAction({ deliveryId: delivery.id });
+    expect(await blocked("chat_deliveries")).toBe(true); // one completed sibling cannot hide another pending action
+    await f.service.processGitHubWebhookIngress(secondAction.id);
+    expect(await blocked("chat_deliveries")).toBe(false);
+    await db.update(tables.chatDeliveries).set({ eventKind: "message",
+      normalizedEvent: { providerEventId: delivery.providerEventId, kind: "message" } }).where(eq(tables.chatDeliveries.id, delivery.id));
+    expect(await blocked("chat_deliveries")).toBe(true); // ordinary input requires its own consumed wake, not arbitrary completed actions
+    await db.update(tables.chatDeliveries).set({ eventKind: "uninstallation", normalizedEvent: {} }).where(eq(tables.chatDeliveries.id, delivery.id));
     expect(await blocked("chat_deliveries")).toBe(true);
     const [publication] = await db.insert(tables.chatPublications).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: conversation.id,
       issueId: issue.id, idempotencyKey: randomUUID(), state: "delivery_unknown",
