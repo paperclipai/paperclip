@@ -1,6 +1,6 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-02 17:13 UTC): Core #18554 is merged as
+Date: 2026-10-31. Status (2026-11-02 17:23 UTC): Core #18554 is merged as
 `1a6017d6460267ad89d7e1784e2b521c28d8e9ac`. The ten-roll and native-agent
 proof used Cloud `461c4aea28`. Separately reviewed Cloud #1091/#1092 subsequently
 reached staging as `89dd0cfec2`; their changes concern workspace cleanup and
@@ -129,7 +129,18 @@ failed idle and cancelled browser lifecycle receipts remain unchanged. Fix
 ownership belongs to remote termination proof resolution and agent-directory
 cleanup scheduling; no polling cadence or sleep-safety check should be relaxed.
 
-Next: complete current-image idle/sleep/wake, then the
+The isolated source branch is now based on current master `97c4dc969e`. The
+recovery fix resolves the destroyed allocation through the existing validated
+handoff-chain contract at read time; it does not stamp historical leases or infer
+stop from task status. Agent-file cleanup also reconciles stale retry deadlines
+with a receipt comparison. Both owning service suites passed 169 tests, and the
+server typecheck passed. The first new deadline test caught a public guard that
+skipped settlement; that failed attempt is retained and the corrected five-case
+selection passed. The final seven-case selection passed, including a concurrent receipt change and
+cross-company rejection. Repository-wide checks and PR review are pending.
+This source has not been deployed and is not covered by the prior ten-roll proof.
+
+Next: review and ship the cleanup fix, complete current-image idle/sleep/wake, then the
 isolated production forward/rollback canary. No production deployment has occurred.
 Dotta completed the authorized GitHub sign-in; the production browser is back on
 the ordinary organization list. The production canary still waits for staging. Its new organization form is
