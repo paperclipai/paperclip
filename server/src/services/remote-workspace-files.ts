@@ -293,7 +293,7 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
       };
       // A final save clears dirty state and writer authority. Its accepted
       // bytes do not depend on an allocation that can already be closing.
-      if (authority.snapshotId && !authority.dirty && !authority.writerRunId) {
+      if (authority.snapshotId && !authority.dirty && !authority.writerRunId && options.loadSavedWorkspace) {
         ({ root, source } = await loadSaved());
       } else if (authority.location) {
         const [leaseRow] = await db.select().from(environmentLeases).where(and(

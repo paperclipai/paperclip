@@ -397,6 +397,19 @@ describeDatabase("remote workspace ordinary file routes", () => {
     expect(unavailable.body).not.toHaveProperty("content"); expect(loadSavedWorkspace).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])("preserves the optional saved-loader boundary with a recorded location=%s", async keepLocation => {
+    const f = await savedFileFixture(keepLocation);
+    const remoteFiles = createRemoteWorkspaceFiles(db, { environmentRuntime: { execute: f.execute, syncOut: f.syncOut } });
+    const response = await request(filesApp(f.ids.company, remoteFiles)).get(`/api/issues/${f.ids.issue}/file-resources/content`)
+      .query({ workspace: "execution", path: "docs/result.md" }).expect(keepLocation ? 200 : 422);
+    if (keepLocation) {
+      expect(response.body).toMatchObject({ resource: { source: { kind: "live" } }, content: { data: "Remote useful result\n" } });
+      expect(f.execute).toHaveBeenCalled();
+    } else {
+      expect(response.body).not.toHaveProperty("content"); expect(f.execute).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["company", "workspace", "uncommitted"] as const)("rejects a saved snapshot with an invalid %s binding before object retrieval", async invalid => {
     const f = await savedFileFixture(true);
     if (invalid === "company") {
