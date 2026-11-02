@@ -38,6 +38,7 @@ import { tmpdir } from "node:os";
 import { inspect } from "node:util";
 import { dirname, join } from "node:path";
 import {
+  activityLog,
   heartbeatRuns,
   environmentLeases,
   heartbeatRunEvents,
@@ -6436,6 +6437,8 @@ type LeaseCoordinator = {
   controllerBootId?: string;
   controllerPid?: number;
   controllerGeneration?: number;
+  recoveryState?: string;
+  recoveryHistory?: Array<Record<string, unknown>>;
   runId: string;
   companyId: string;
   issueId: string;
@@ -6516,6 +6519,8 @@ function leaseDb(
                     checkoutRunId: null,
                   },
                 ]
+              : table === activityLog
+                ? [{ id: (runResultJson.nativeCancellation as Record<string, unknown> | undefined)?.intentAuditId }]
               : table === heartbeatRunEvents
                 ? priorAccountingEvents.map((event, seq) => ({ seq, eventType: event.eventType, sourceSeq: event.sourceSeq, payload: { prpEvent: event } }))
                 : [];
@@ -6669,12 +6674,22 @@ function cancellationDb(options?: {
 }
 
 describe("native startup cancellation fence", () => {
-  it.each(["current", "stale"] as const)("reattaches a %s remote recovery claim only to deliver an existing Stop", async mode => {
+  it.each([
+    { mode: "current", startupFence: false },
+    { mode: "stale", startupFence: false },
+    { mode: "current", startupFence: true },
+  ] as const)("reattaches a $mode remote recovery claim only to deliver an existing Stop (startup fence=$startupFence)", async ({ mode, startupFence }) => {
     const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
     const controller = await currentNativeControllerIdentity();
-    const resultJson = { nativeCancellation: { schema: "paperclip.native-cancellation.v1", scope: "run",
+    const resultJson = { ...(startupFence ? { startupCancellation: { beforeNativeSelection: false,
+      requestedAt: new Date().toISOString(), errorCode: "cancelled" },
+      cancellation: { source: "operator", expected: true, initiator: { type: "user" },
+        reason: "Operator requested Stop", recordedAt: new Date().toISOString() },
+      executionCancellation: { state: "requested", requestedAt: new Date().toISOString() } } : {}),
+      nativeCancellation: { schema: "paperclip.native-cancellation.v1", scope: "run",
       companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId,
-      dispatchState: "pending", intentId: "native-cancellation:recovered-stop", effects: ["release_run_resources"] } };
+      dispatchState: "pending", dispatched: false, intentId: `native-cancellation:${randomUUID()}`,
+      intentAuditId: randomUUID(), reasonCode: "cancellation_run_only", effects: ["release_run_resources"] } };
     const cancel = vi.fn(() => ({ cleanup: Promise.resolve() })), submit = vi.fn();
     state.execute.mockReset().mockImplementationOnce(async options => {
       try { await options.onSession({ cancel }); submit(); }
@@ -6682,7 +6697,9 @@ describe("native startup cancellation fence", () => {
       throw new Error("a stopped recovery must not submit a turn");
     });
     const db = leaseDb(execution, { leaseOwner: "stop-recovery", controllerBootId: controller.bootId,
-      controllerPid: controller.pid, controllerGeneration: 2, attempt: 1 }, resultJson);
+      controllerPid: controller.pid, controllerGeneration: 2, attempt: 1,
+      leaseExpiresAt: new Date(Date.now() + 60_000), recoveryState: "awaiting_runner_reattach",
+      recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }] }, resultJson);
     await expect(executePaperclipNativeSession({ db, execution, runnerInstanceId: "recovered-stop",
       leaseOwner: "stop-recovery", restartRecovery: { kind: "reattach_remote_runner", runId: execution.binding.runId,
         leaseOwner: "stop-recovery", controllerGeneration: mode === "current" ? 2 : 1, providerAttempt: 1,

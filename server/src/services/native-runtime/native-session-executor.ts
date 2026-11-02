@@ -1,4 +1,5 @@
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
+import { isClaimedNativeStopRecovery, readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
@@ -8549,7 +8550,10 @@ async function executePaperclipNativeSessionWithinScope(
           }
           // A cancellation can win after heartbeat dispatch admission but
           // before this claim. Never revive a terminal run or a settled startup.
-          if (boundRun.status !== "running" || boundRun.resultJson?.startupCancellation ||
+          const stopRecovery = input.restartRecovery?.kind === "reattach_remote_runner"
+            && isClaimedNativeStopRecovery({ ...boundRun, id: input.execution.binding.runId }, coordinator, leaseOwner)
+            && await readPendingNativeRunStop(tx as unknown as Db, { ...boundRun, id: input.execution.binding.runId });
+          if (boundRun.status !== "running" || (boundRun.resultJson?.startupCancellation && !stopRecovery) ||
               coordinator.phase === "terminal_failure") {
             throw new NativeCancellationPendingRecoveryError();
           }
@@ -8576,7 +8580,7 @@ async function executePaperclipNativeSessionWithinScope(
             // Fresh execution, dead-runner resume and acknowledged Stops remain
             // fenced: none authorize launching another provider turn.
             if (input.restartRecovery?.kind !== "reattach_remote_runner"
-              || cancellationIntent.dispatchState !== "pending") {
+              || cancellationIntent.dispatchState !== "pending" || !stopRecovery) {
               throw new NativeCancellationPendingRecoveryError();
             }
           }
@@ -9841,7 +9845,11 @@ async function executePaperclipNativeSessionWithinScope(
                     currentRun.resultJson?.startupCancellation ||
                     (cancellation.scope === "run" &&
                       ["pending", "acknowledged"].includes(String(cancellation.dispatchState)))) {
-                  await cancelNativeSession(input.execution.binding.runId, "Run stopped during native session startup");
+                  if (input.restartRecovery?.kind === "reattach_remote_runner") {
+                    await cancelNativeSession(input.execution.binding.runId, "Run stopped during native session startup", { db: input.db, scope: "run" });
+                  } else {
+                    await cancelNativeSession(input.execution.binding.runId, "Run stopped during native session startup");
+                  }
                   // The execution-owned finally closes the session when this
                   // callback fails; no provider turn may follow publication.
                   throw new NativeCancellationPendingRecoveryError();
@@ -10002,7 +10010,7 @@ async function executePaperclipNativeSessionWithinScope(
       // another turn to perform completion bookkeeping.
       const stoppedBeforeFirstTurn = error instanceof Error && error.message === "native_session_cancelled";
       if (protocolIntegrityFailure === null && error instanceof Error &&
-          (stoppedBeforeFirstTurn || error instanceof NativePermissionDeclinedError || error.message === "native_finalization_missing: session returned no semantic result")) {
+          (stoppedBeforeFirstTurn || error instanceof NativePermissionDeclinedError || error instanceof NativeCancellationPendingRecoveryError || error.message === "native_finalization_missing: session returned no semantic result")) {
         const [stoppedRun] = await input.db.select().from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, input.execution.binding.runId),
           eq(heartbeatRuns.companyId, input.execution.binding.companyId),
