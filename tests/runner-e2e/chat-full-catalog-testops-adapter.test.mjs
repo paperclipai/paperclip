@@ -154,6 +154,36 @@ test('a full ready snapshot fits its read budget while a late snapshot still fai
   t.diagnostic(JSON.stringify({ fixtureOnly: true, selectedCases: 244, readyElapsedMs: ready.clock, lateElapsedMs: late.clock }));
 });
 
+test('changing valid page counts retry only within the existing snapshot bounds', async () => {
+  async function replay(alwaysChanging, malformed = false) {
+    const f = api(); let polls = 0, waits = 0, clock = 0;
+    const get = async route => {
+      if (route === '/api/jobrun/77') polls++;
+      const page = await f.get(route);
+      if (route === '/api/testresult?launchId=12&page=0&size=100' && (alwaysChanging || polls === 1)) {
+        return { ...page, totalElements: 150, totalPages: 2 };
+      }
+      if (malformed && route === '/api/testresult?launchId=12&page=1&size=100') return { ...page, totalElements: '244' };
+      return page;
+    };
+    try {
+      const value = await verifyPilotUpload(get, selection, context, exported, { now: () => clock,
+        wait: async ms => { clock += ms; waits++; } });
+      return { value, polls, waits };
+    } catch (error) { return { error, polls, waits }; }
+  }
+  const converged = await replay(false);
+  assert.ifError(converged.error);
+  assert.equal(converged.value.verification, 'VERIFIED'); assert.equal(converged.value.results.length, 244);
+  assert.equal(converged.polls, 2); assert.equal(converged.waits, 1);
+  const moving = await replay(true);
+  assert.match(moving.error?.message ?? '', /upload_unverified/);
+  assert.equal(moving.polls, 12); assert.equal(moving.waits, 11);
+  const malformed = await replay(false, true);
+  assert.match(malformed.error?.message ?? '', /result_page/);
+  assert.equal(malformed.polls, 1); assert.equal(malformed.waits, 0);
+});
+
 test('an incomplete last page and a wrong registered selector cannot qualify a full catalog run', async () => {
   const missing = api({ '/api/testresult?launchId=12&page=2&size=100': { content: [], totalElements: 244, totalPages: 3, number: 2 } });
   await assert.rejects(verifyPilotUpload(missing.get, selection, context, exported), /result_page/);

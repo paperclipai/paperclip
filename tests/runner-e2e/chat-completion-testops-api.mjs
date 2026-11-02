@@ -21,8 +21,8 @@ async function resultRows(get, launchId, maximum, full) {
     }
     if (!Array.isArray(page?.content) || page.content.length > 100 || page.number !== index
       || !Number.isSafeInteger(page.totalPages) || page.totalPages < 0 || page.totalPages > 3
-      || !Number.isSafeInteger(page.totalElements) || page.totalElements < 0 || page.totalElements > maximum
-      || pages !== undefined && (pages !== page.totalPages || total !== page.totalElements)) reject('result_page');
+      || !Number.isSafeInteger(page.totalElements) || page.totalElements < 0 || page.totalElements > maximum) reject('result_page');
+    if (pages !== undefined && (pages !== page.totalPages || total !== page.totalElements)) return null;
     pages = page.totalPages; total = page.totalElements; rows.push(...page.content);
     if (index + 1 >= pages) break;
   }
@@ -256,6 +256,10 @@ export async function verifyPilotUpload(api, selection, context, exported, { now
     const launch = await get(`/api/launch/${selection.launchId}`);
     if (launch.id !== selection.launchId || launch.projectId !== 1) reject('launch_mismatch');
     const listed = await resultRows(get, selection.launchId, selected.length, context.catalog === 'full');
+    if (listed === null) {
+      if (poll < 11 && now() + 5000 < deadline) await wait(5000);
+      continue;
+    }
     if (listed.length > selected.length
       || new Set(listed.map(row => row.id)).size !== listed.length || new Set(listed.map(row => row.testCaseId)).size !== listed.length) reject('result_page');
     let ready = listed.length === selected.length; const verified = [];
