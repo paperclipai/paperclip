@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, afterEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentFileRoots, agents, companies, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
+import { agentFileRoots, agents, companies, companySkills, companySkillVersions, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { assertEphemeralServerData } from "../services/ephemeral-server-contract.js";
+import { assertEphemeralServerData, readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
 import { initializeDurableAgentFiles } from "../services/agent-file-durability.js";
 vi.mock("../storage/index.js", () => ({ getStorageService: () => ({ provider: "s3" }) }));
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -39,4 +39,29 @@ it("refuses volume-dependent rows before readiness and accepts their durable rep
     throw new Error("abort hire");
   })).rejects.toThrow("abort hire");
   expect(await db.select().from(agentFileRoots)).toHaveLength(1);
+});
+
+it("keeps replacement readiness independent of a serving controller's unfinished skill selection", async () => {
+  vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true"); vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
+  const companyId = randomUUID(), agentId = randomUUID(), skillId = randomUUID(), versionId = randomUUID();
+  await db.insert(companies).values({ id: companyId, name: "Overlapping skill preparation", issuePrefix: "PINS" });
+  await db.insert(agents).values({ id: agentId, companyId, name: "Preparing agent" });
+  await db.transaction(tx => initializeDurableAgentFiles(tx, { id: agentId, companyId }));
+  await db.insert(companySkills).values({ id: skillId, companyId, key: "overlap", slug: "overlap", name: "Overlap",
+    sourceType: "managed", markdown: "# Overlap", fileInventory: [{ path: "SKILL.md", kind: "entrypoint" }] });
+  await db.insert(companySkillVersions).values({ id: versionId, companyId, companySkillId: skillId, revisionNumber: 1,
+    fileInventory: [{ path: "SKILL.md", kind: "entrypoint", content: "# Overlap" }] });
+  await db.update(companySkills).set({ currentVersionId: versionId }).where(eq(companySkills.id, skillId));
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+  // Admission marks the run running before preparation publishes its skill pins.
+  // That prevents cache eviction/migration, but does not make durable bytes local.
+  const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "on_demand",
+    status: "running", contextSnapshot: {} }).returning();
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+  expect((await readEphemeralServerDataEligibility(db)).blockers).toContain("skills_require_migration");
+  await db.update(heartbeatRuns).set({ contextSnapshot: { skillVersions: { overlap: versionId } } }).where(eq(heartbeatRuns.id, run.id));
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+  expect((await readEphemeralServerDataEligibility(db)).eligible).toBe(true);
+  await db.update(companySkills).set({ currentVersionId: null }).where(eq(companySkills.id, skillId));
+  await expect(assertEphemeralServerData(db)).rejects.toThrow("skills_require_migration");
 });

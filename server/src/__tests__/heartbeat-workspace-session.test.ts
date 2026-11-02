@@ -2703,6 +2703,31 @@ describe("effective run session config freshness", () => {
     expect(next.fingerprints.sessionFingerprint.canonicalJson).not.toContain("Version two instructions");
   });
 
+  it("retains a session across relocated durable instruction and versioned skill caches", async () => {
+    const metadata = (home: string, contentHash = "sha256:entry-v1", versionId = "skill-version-1") => {
+      const runtimeSkills = [{ key: "paperclip", runtimeName: "paperclip", versionId,
+        currentVersionId: versionId, source: `${home}/packages/skill`, sourceStatus: "available" }];
+      return buildSessionConfigMetadata({
+        adapterType: "paperclip_runner",
+        effectiveAdapterConfig: { model: "gpt-5.4-mini", instructionsBundleMode: "managed",
+          instructionsRootPath: `${home}/instructions`, instructionsFilePath: `${home}/instructions/AGENTS.md`,
+          instructionsEntryFile: "AGENTS.md", paperclipRuntimeSkills: runtimeSkills },
+        managedInstructions: { entryFile: "AGENTS.md", contentHash },
+        runtimeSkills,
+      });
+    };
+    const before = await metadata("/retired-controller");
+    const after = await metadata("/replacement-controller");
+    const freshness = (next: SessionConfigMetadata) => resolveTaskSessionConfigFreshness({
+      hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(before), configMetadata: next,
+    });
+    expect(freshness(after).reset).toBe(false);
+    expect(after.fingerprints.sessionFingerprint.canonicalJson).not.toContain("/replacement-controller");
+    expect(freshness(await metadata("/replacement-controller", "sha256:entry-v2")).changedCategories).toContain("instructions");
+    expect(freshness(await metadata("/replacement-controller", "sha256:entry-v1", "skill-version-2")).changedCategories).toContain("runtimeSkills");
+  });
+
   it("does not read unbounded legacy instructions paths for config fingerprints", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-session-fingerprint-"));
     const instructionsPath = path.join(root, "AGENTS.md");
