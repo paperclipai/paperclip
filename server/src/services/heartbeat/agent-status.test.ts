@@ -264,6 +264,44 @@ describePostgres("heartbeat agent status", () => {
     expect((await agent(agentId)).status).toBe("idle");
   });
 
+  it.each(["succeeded", "cancelled"] as const)(
+    "reconciles an agent stuck running behind an orphaned run recovered as %s with pending cost accounting",
+    async (status) => {
+      const { agentId, runId } = await seed();
+      await db.update(heartbeatRuns).set({
+        status,
+        startedAt: old(),
+        finishedAt: old(),
+        errorCode: null,
+        scheduledRetryAt: null,
+        costAccountingPending: true,
+        usageJson: { accountingReceiptReady: false },
+      }).where(eq(heartbeatRuns.id, runId));
+      expect(await reconcile()).toEqual([agentId]);
+      expect((await agent(agentId)).status).toBe("idle");
+    },
+  );
+
+  it.each(["succeeded", "cancelled"] as const)(
+    "reconciles an agent stuck running behind a coalesced wake whose target was recovered as %s with pending cost accounting",
+    async (status) => {
+      const { companyId, agentId, runId } = await seed();
+      await db.update(heartbeatRuns).set({
+        status,
+        startedAt: old(),
+        finishedAt: old(),
+        errorCode: null,
+        costAccountingPending: true,
+        usageJson: { accountingReceiptReady: false },
+      }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(agentWakeupRequests).values({ companyId, agentId, runId,
+        source: "comment", status: "coalesced", finishedAt: old(),
+        requestedAt: old(), createdAt: old(), updatedAt: old() });
+      expect(await reconcile()).toEqual([agentId]);
+      expect((await agent(agentId)).status).toBe("idle");
+    },
+  );
+
   it("reconciles an agent stuck running behind a coalesced wake whose target run still owes accounting", async () => {
     const { companyId, agentId, runId } = await seed();
     await db.update(heartbeatRuns).set({

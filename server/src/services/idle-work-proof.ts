@@ -14,7 +14,11 @@ export function finishedIdleRun(alias: string, options: FinishedIdleRunOptions =
   const accounting = options.ignoreCostAccounting
     ? ""
     : options.settledOrphanedAccounting
-      ? `\n    AND (${alias}.cost_accounting_pending = false OR ${alias}.error_code LIKE 'orphaned_running_run%')`
+      ? `\n    AND (${alias}.cost_accounting_pending = false
+        OR ${alias}.error_code LIKE 'orphaned_running_run%'
+        OR (${alias}.usage_json->>'accountingReceiptReady' = 'false'
+            AND (${alias}.usage_json->>'accountingProviderWorkStarted') IS DISTINCT FROM 'false'
+            AND (${alias}.result_json->'executionRecovery'->>'providerWorkStarted') IS DISTINCT FROM 'false'))`
       : `\n    AND ${alias}.cost_accounting_pending = false`;
   return `${alias}.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
     AND ${alias}.finished_at IS NOT NULL
