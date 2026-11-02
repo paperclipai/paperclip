@@ -9788,10 +9788,10 @@ it("retains the authenticated command failure without implicitly logging its str
   expect(structured).toHaveProperty("result.message", "closed runtime failure");
 });
 
-it("keeps a provider explanation in the command receipt and out of implicit error logging", async () => {
+it.each(["RPC failed: Private provider explanation.", "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)"])("keeps a provider explanation private and retains command diagnosis: %s", async message => {
   const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "unknown", message: "Private provider explanation.", retryability: "unknown" };
-  const result = { result: { code: "command_execution_failed", message: `RPC failed: ${providerFailure.message}`, providerFailure } };
+  const result = { result: { code: "command_execution_failed", message, providerFailure } };
   let failure: unknown;
   try {
     await waitForRunnerCommand({ type: "session.open", deadline: Date.now() + 1000, abortOnClose: true,
@@ -9799,6 +9799,7 @@ it("keeps a provider explanation in the command receipt and out of implicit erro
       runnerHasExited: async () => false, failureCode: () => "startup_failed" });
   } catch (error) { failure = error; }
   expect(failure).toHaveProperty("runnerCommandResult.result.providerFailure", providerFailure);
+  expect(failure).toHaveProperty("runnerCommandResult.result.message", message);
   expect((failure as Error).message).not.toContain(providerFailure.message);
   expect(JSON.stringify(failure)).not.toContain(providerFailure.message);
 });
