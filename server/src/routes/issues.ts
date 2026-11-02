@@ -14719,7 +14719,14 @@ export function issueRoutes(
             "Cancelled before issue terminalization",
             {
               errorCode: "issue_terminalized",
-              resultJson: { terminalizationStopConfirmed: true, issueMutationStopId },
+              resultJson: {
+                terminalizationStopConfirmed: true,
+                issueMutationStopId,
+                ...(actor.actorType === "user" ? {
+                  cancelledByActorType: "user",
+                  cancelledByUserId: actor.actorId,
+                } : {}),
+              },
               eventMessage: "run cancelled before issue terminalization",
               eventPayload: {
                 issueId: existing.id,

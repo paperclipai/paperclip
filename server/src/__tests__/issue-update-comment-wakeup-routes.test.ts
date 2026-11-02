@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { isAcknowledgedNativeStop } from "../services/acknowledged-native-stop.js";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../services/activity-log.js", () => ({
@@ -363,6 +364,16 @@ describe("issue update comment wakeups", () => {
         resultJson: expect.objectContaining({ terminalizationStopConfirmed: true }),
         eventPayload: { issueId: existing.id, status },
       }));
+    const stopMetadata = mockHeartbeatService.cancelRun.mock.calls[0]![2].resultJson;
+    // Exercise the recovery consumer with the route's actual producer fields.
+    // A Stop receipt alone must not authorize this intentional-stop exception.
+    expect(isAcknowledgedNativeStop({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      status: "cancelled", nativeIssueId: existing.id, resultJson: { ...stopMetadata,
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: SOURCE_RUN_ID,
+          companyId: existing.companyId, issueId: existing.id, scope: "run",
+          reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+          intentAuditId: "stop-intent", acknowledgementAuditId: "stop-acknowledgement" },
+      } })).toBe(true);
     expect(res.body).toMatchObject({ status, executionRunId: null });
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
