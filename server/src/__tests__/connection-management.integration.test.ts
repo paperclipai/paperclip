@@ -433,7 +433,7 @@ describe("connection management with production default agents", () => {
     expect(uidResult).toMatchObject({ status: 200 });
     expect(uidResult.body.profiles.map((p: { id: string }) => p.id).sort()).toEqual([app.id, intent.id].sort());
     const foreign = await fixture();
-    expect(await foreign.request("GET", `/tool-connections/${owned.id}/profile-configuration`)).toMatchObject({ status: 403 });
+    expect(await foreign.request("GET", `/tool-connections/${owned.id}/profile-configuration`)).toMatchObject({ status: 404 });
     for (const token of [f.key.token, f.jwt]) {
       const result = await f.request("GET", path, undefined, token);
       expect(result).toMatchObject({ status: 200 });

@@ -75,3 +75,7 @@ first HTTP suite could not resolve the unbuilt plugin SDK; the owning
 barrel export failed the first shared typecheck and was fixed. The first broad
 typecheck inherited an unpinned nested pnpm executable; its stalled owned
 processes were stopped and the command was restarted with a pinned pnpm wrapper.
+
+The added foreign-company HTTP assertion first expected 403. The existing guard
+returned 404 to hide the resource, as designed. The test expectation was corrected;
+production authorization did not change.
