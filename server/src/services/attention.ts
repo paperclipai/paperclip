@@ -71,7 +71,7 @@ import {
   attentionDelegationEnabled,
   blockerDelegation,
   isDelegatableRecovery,
-  recoveryOccurrenceStart,
+  recoveryOccurrence,
   stalledBlockerOccurrences,
   unblockDescriptorMap,
   type DelegatableOccurrence,
@@ -1443,11 +1443,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const recoveryIssue = recovery.recoveryIssueId ? recoveryIssueMap.get(recovery.recoveryIssueId) ?? null : null;
         const dedupKey = `recovery:${recovery.kind}:${recovery.sourceIssueId}:${recovery.cause}:${recovery.fingerprint}`;
         if (delegable && isDelegatableRecovery(recovery)) {
-          delegable.set(`attention:${dedupKey}`, {
-            sourceKind: "recovery_action",
-            issueId: recovery.sourceIssueId,
-            occurrenceStartedAt: recoveryOccurrenceStart(recovery),
-          });
+          delegable.set(`attention:${dedupKey}`, recoveryOccurrence(recovery));
         }
         add(createItem({
           companyId,

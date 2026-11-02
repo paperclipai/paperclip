@@ -18,10 +18,15 @@
  * - board-owned recovery of the listed kinds;
  * - stalled `blocker:` trees whose unblock step is neither human-owned nor a grant, spend or access step.
  * A decision covers only the current occurrence of an item, for a mandatory hold of at most 7 days.
+ * A recovery occurrence is identified by the action row and its escalation time. A blocker occurrence is
+ * identified by the terminal blocker, the sorted set of blocked issues and their latest blocked transition. It
+ * also ends if any issue in the tree starts a run after the decision: the tree went live, so a later stall is
+ * new.
  */
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq, gt, inArray, max, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import type { AttentionDelegateDecision, AttentionItem } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
@@ -47,11 +52,15 @@ const NON_DELEGATABLE_TEXT =
 /** Verbs that hand an item back to the humans instead of settling it. */
 const DELEGATE_RETURN_VERBS = new Set(["escalate_owner", "reopen"]);
 
-/** One delegatable occurrence: the issue its decisions are recorded on and when it began. */
+/** One delegatable occurrence: the issue its decisions are recorded on, its identity, and when it began. */
 export interface DelegatableOccurrence {
   sourceKind: "recovery_action" | "blocker_attention";
   issueId: string;
   occurrenceStartedAt: string;
+  /** Stored with the decision and compared on read; any change means a new occurrence. */
+  occurrenceKey: string;
+  /** Issues whose runs after the decision end it (blocker trees only). */
+  liveCheckIssueIds?: string[];
 }
 
 type UnblockDescriptor = { owner?: unknown; action?: unknown } | null | undefined;
@@ -75,7 +84,9 @@ interface BlockedIssueLike {
 }
 
 export interface BlockerOccurrence {
-  start: number;
+  /** Latest blocked transition in the tree; a newly blocked issue moves it forward. */
+  latest: number;
+  blockedIssueIds: string[];
   descriptors: UnblockDescriptor[];
 }
 
@@ -167,15 +178,16 @@ export function recoveryOccurrenceStart(row: Pick<RecoveryRowLike, "createdAt" |
   return new Date(Math.max(timestamp(row.createdAt), timestamp(exhaustedAt))).toISOString();
 }
 
-/** Groups stalled, non-live blocked issues by terminal blocker. A tree's occurrence starts at its earliest blocked transition. */
+/** Groups stalled, non-live blocked issues by terminal blocker, with the tree's blocked set and latest blocked transition. */
 export function stalledBlockerOccurrences(blockedIssues: BlockedIssueLike[]): Map<string, BlockerOccurrence> {
   const byTerminal = new Map<string, BlockerOccurrence>();
   for (const issue of blockedIssues) {
     const attention = issue.blockerAttention;
     if ((attention?.state !== "stalled" && attention?.state !== "needs_attention") || attention.blockingTreeLive) continue;
     const terminalIssueId = attention.terminalBlockerIssueId ?? issue.id;
-    const current = byTerminal.get(terminalIssueId) ?? { start: Number.MAX_SAFE_INTEGER, descriptors: [] };
-    current.start = Math.min(current.start, timestamp(issue.blockedTransitionAt ?? issue.updatedAt));
+    const current = byTerminal.get(terminalIssueId) ?? { latest: 0, blockedIssueIds: [], descriptors: [] };
+    current.latest = Math.max(current.latest, timestamp(issue.blockedTransitionAt ?? issue.updatedAt));
+    current.blockedIssueIds.push(issue.id);
     current.descriptors.push(issue.unblockDescriptor ?? null);
     byTerminal.set(terminalIssueId, current);
   }
@@ -191,11 +203,21 @@ export function blockerDelegation(
   if (!occurrence || isHumanOrSensitiveUnblock(terminalDescriptor) || occurrence.descriptors.some(isHumanOrSensitiveUnblock)) {
     return null;
   }
+  const occurrenceStartedAt = new Date(occurrence.latest).toISOString();
+  const blockedIssueIds = [...new Set(occurrence.blockedIssueIds)].sort();
   return {
     sourceKind: "blocker_attention",
     issueId: terminalIssueId,
-    occurrenceStartedAt: new Date(occurrence.start).toISOString(),
+    occurrenceStartedAt,
+    occurrenceKey: `blocker:${createHash("sha256").update(`${terminalIssueId}|${blockedIssueIds.join(",")}|${occurrenceStartedAt}`).digest("hex").slice(0, 32)}`,
+    liveCheckIssueIds: [terminalIssueId, ...blockedIssueIds],
   };
+}
+
+/** The occurrence identity of a recovery action: the row, plus when its current escalation began. */
+export function recoveryOccurrence(row: RecoveryRowLike & { id: string; sourceIssueId: string }): DelegatableOccurrence {
+  const occurrenceStartedAt = recoveryOccurrenceStart(row);
+  return { sourceKind: "recovery_action", issueId: row.sourceIssueId, occurrenceStartedAt, occurrenceKey: `recovery:${row.id}:${occurrenceStartedAt}` };
 }
 
 /** The unblock descriptor of each issue id that exists in the company. */
@@ -238,7 +260,7 @@ export async function findDelegatableAttentionItem(
     if (!isDelegatableRecovery(row)) {
       return { ineligible: `recovery ${row.kind}/${row.cause} owned by ${row.ownerType} is not delegatable`, issueId: sourceIssueId };
     }
-    return { sourceKind: "recovery_action", issueId: sourceIssueId, occurrenceStartedAt: recoveryOccurrenceStart(row) };
+    return recoveryOccurrence(row);
   }
   if (itemKey.startsWith("attention:blocker:")) {
     const terminalIssueId = itemKey.slice("attention:blocker:".length);
@@ -288,6 +310,7 @@ async function delegateDecisionsForIssues(db: Db, companyId: string, issueIds: s
         verb: readString(details.verb) ?? "",
         reason: readString(details.reason),
         holdUntil: readString(details.holdUntil),
+        occurrenceKey: readString(details.occurrenceKey),
         decidedByType: row.actorType,
         decidedById: row.actorId,
         decidedAt,
@@ -297,18 +320,38 @@ async function delegateDecisionsForIssues(db: Db, companyId: string, issueIds: s
   return byKey;
 }
 
-/** The decision that keeps this occurrence off the board queue, or null. */
+/** Latest run creation time per issue since `since`, served by heartbeat_runs_company_issue_created_idx. */
+async function latestRunByIssue(db: Db, companyId: string, issueIds: string[], since: number): Promise<Map<string, number>> {
+  const byIssue = new Map<string, number>();
+  for (const chunk of chunks([...new Set(issueIds)])) {
+    const rows = await db
+      .select({ issueId: heartbeatRuns.issueId, latest: max(heartbeatRuns.createdAt) })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.issueId, chunk), gt(heartbeatRuns.createdAt, new Date(since))))
+      .groupBy(heartbeatRuns.issueId);
+    for (const row of rows) if (row.issueId) byIssue.set(row.issueId, timestamp(row.latest));
+  }
+  return byIssue;
+}
+
+/**
+ * The decision that keeps this occurrence off the board queue, or null. It must name this occurrence's key,
+ * postdate its start, be within its capped hold, and (for blocker trees) predate any run in the tree.
+ */
 export function activeDelegateDecision(
   decision: AttentionDelegateDecision | null | undefined,
-  occurrence: Pick<DelegatableOccurrence, "occurrenceStartedAt"> | null | undefined,
+  occurrence: Pick<DelegatableOccurrence, "occurrenceStartedAt" | "occurrenceKey"> | null | undefined,
   now: number,
+  lastLiveAt = 0,
 ): AttentionDelegateDecision | null {
   if (!decision || !occurrence || !decision.verb || DELEGATE_RETURN_VERBS.has(decision.verb)) return null;
+  if (!decision.occurrenceKey || decision.occurrenceKey !== occurrence.occurrenceKey) return null;
   if (!decision.holdUntil) return null;
   const decidedAt = timestamp(decision.decidedAt);
   const holdEnds = Math.min(timestamp(decision.holdUntil), decidedAt + ATTENTION_DELEGATE_MAX_HOLD_MS);
   if (holdEnds <= now) return null;
   if (decidedAt < timestamp(occurrence.occurrenceStartedAt)) return null;
+  if (lastLiveAt > decidedAt) return null;
   return decision;
 }
 
@@ -329,10 +372,21 @@ export async function applyDelegateDecisions(
   if (candidates.length === 0) return;
   const issueIds = [...new Set(candidates.map((item) => eligible.get(item.dismissalKey)!.issueId))];
   const decisions = await delegateDecisionsForIssues(db, companyId, issueIds, now);
+  // Live check only for blocker trees that would otherwise stay hidden.
+  const liveIds = candidates.flatMap((item) => {
+    const occurrence = eligible.get(item.dismissalKey)!;
+    return occurrence.liveCheckIssueIds && activeDelegateDecision(decisions.get(item.dismissalKey), occurrence, now)
+      ? occurrence.liveCheckIssueIds
+      : [];
+  });
+  const latestRuns = liveIds.length > 0
+    ? await latestRunByIssue(db, companyId, liveIds, now - ATTENTION_DELEGATE_MAX_HOLD_MS)
+    : new Map<string, number>();
   const kept: AttentionItem[] = [];
   for (const item of items) {
     const occurrence = eligible.get(item.dismissalKey);
-    const decision = occurrence ? activeDelegateDecision(decisions.get(item.dismissalKey), occurrence, now) : null;
+    const lastLiveAt = Math.max(0, ...(occurrence?.liveCheckIssueIds ?? []).map((id) => latestRuns.get(id) ?? 0));
+    const decision = occurrence ? activeDelegateDecision(decisions.get(item.dismissalKey), occurrence, now, lastLiveAt) : null;
     if (decision && !includeDismissed) continue;
     kept.push(decision ? { ...item, delegateDecision: decision } : item);
   }

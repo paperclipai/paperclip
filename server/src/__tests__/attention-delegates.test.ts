@@ -64,13 +64,13 @@ describe("attention delegates", () => {
     expect(isHumanOrSensitiveUnblock({ owner: { userId: "u" }, action: "Answer" })).toBe(true);
     expect(isHumanOrSensitiveUnblock({ owner: { agentId: AG }, action: "Grant repo access" })).toBe(true);
     expect(isHumanOrSensitiveUnblock({ owner: { agentId: AG }, action: "Approve spend on GPU hours" })).toBe(true);
-    const occ = { start: Date.parse("2026-11-01T00:00:00Z"), descriptors: [null] };
+    const occ = { latest: Date.parse("2026-11-01T00:00:00Z"), blockedIssueIds: ["a"], descriptors: [null] };
     expect(blockerDelegation(ISSUE, occ, null)?.occurrenceStartedAt).toBe("2026-11-01T00:00:00.000Z");
     expect(blockerDelegation(ISSUE, occ, { owner: "board", action: "x" })).toBeNull();
     expect(blockerDelegation(ISSUE, { ...occ, descriptors: [{ owner: { userId: "u" }, action: "y" }] }, null)).toBeNull();
   });
 
-  it("starts a blocker occurrence at the earliest blocked transition of the stalled tree", () => {
+  it("identifies a blocker occurrence by its blocked set and latest transition", () => {
     const blocked = (id: string, at: string, o: Record<string, unknown> = {}) => ({
       id, updatedAt: new Date("2026-11-02"), blockedTransitionAt: new Date(at),
       blockerAttention: { state: "needs_attention", blockingTreeLive: false, terminalBlockerIssueId: ISSUE, ...o },
@@ -81,20 +81,35 @@ describe("attention delegates", () => {
       blocked("c", "2026-10-01T00:00:00Z", { blockingTreeLive: true }),
       blocked("d", "2026-10-01T00:00:00Z", { state: "covered" }),
     ]);
-    expect(new Date(occ.get(ISSUE)!.start).toISOString()).toBe("2026-11-01T03:00:00.000Z");
+    expect(new Date(occ.get(ISSUE)!.latest).toISOString()).toBe("2026-11-01T05:00:00.000Z");
+    expect(occ.get(ISSUE)!.blockedIssueIds).toEqual(["a", "b"]);
+    const before = blockerDelegation(ISSUE, occ.get(ISSUE), null)!;
+    // A newly blocked sibling, even one blocked earlier than the latest transition, is a new occurrence.
+    const withSibling = stalledBlockerOccurrences([blocked("a", "2026-11-01T05:00:00Z"), blocked("b", "2026-11-01T03:00:00Z"), blocked("e", "2026-11-01T01:00:00Z")]);
+    expect(blockerDelegation(ISSUE, withSibling.get(ISSUE), null)!.occurrenceKey).not.toBe(before.occurrenceKey);
+    // Same blocked set re-blocked later (tree went live and stalled again): new occurrence.
+    const reblocked = stalledBlockerOccurrences([blocked("a", "2026-11-03T05:00:00Z"), blocked("b", "2026-11-01T03:00:00Z")]);
+    expect(blockerDelegation(ISSUE, reblocked.get(ISSUE), null)!.occurrenceKey).not.toBe(before.occurrenceKey);
+    // Order of the list does not matter.
+    const reordered = stalledBlockerOccurrences([blocked("b", "2026-11-01T03:00:00Z"), blocked("a", "2026-11-01T05:00:00Z")]);
+    expect(blockerDelegation(ISSUE, reordered.get(ISSUE), null)!.occurrenceKey).toBe(before.occurrenceKey);
   });
 
   it("applies a decision only to the current occurrence within a mandatory 7-day hold", () => {
     const now = Date.parse("2026-11-02T12:00:00Z");
-    const occ = { occurrenceStartedAt: "2026-11-01T00:00:00.000Z" };
-    const d = (o: Record<string, unknown> = {}) => ({ verb: "nudge", reason: "r", decidedByType: "agent", decidedById: AG,
+    const occ = { occurrenceStartedAt: "2026-11-01T00:00:00.000Z", occurrenceKey: "k1" };
+    const d = (o: Record<string, unknown> = {}) => ({ verb: "nudge", reason: "r", occurrenceKey: "k1", decidedByType: "agent", decidedById: AG,
       decidedAt: "2026-11-02T10:00:00.000Z", holdUntil: "2026-11-04T00:00:00.000Z", ...o }) as never;
     expect(activeDelegateDecision(d(), occ, now)).not.toBeNull();
     expect(activeDelegateDecision(d({ holdUntil: null }), occ, now)).toBeNull();
     expect(activeDelegateDecision(d({ holdUntil: "2026-11-02T11:00:00.000Z" }), occ, now)).toBeNull();
     expect(activeDelegateDecision(d({ decidedAt: "2026-10-25T00:00:00.000Z", holdUntil: "2027-01-01T00:00:00.000Z" }),
-      { occurrenceStartedAt: "2026-10-20T00:00:00.000Z" }, now)).toBeNull();
-    expect(activeDelegateDecision(d(), { occurrenceStartedAt: "2026-11-02T11:00:00.000Z" }, now)).toBeNull();
+      { occurrenceStartedAt: "2026-10-20T00:00:00.000Z", occurrenceKey: "k1" }, now)).toBeNull();
+    expect(activeDelegateDecision(d(), { occurrenceStartedAt: "2026-11-02T11:00:00.000Z", occurrenceKey: "k1" }, now)).toBeNull();
+    expect(activeDelegateDecision(d(), { ...occ, occurrenceKey: "k2" }, now)).toBeNull();
+    expect(activeDelegateDecision(d({ occurrenceKey: null }), occ, now)).toBeNull();
+    expect(activeDelegateDecision(d(), occ, now, Date.parse("2026-11-02T09:00:00Z"))).not.toBeNull();
+    expect(activeDelegateDecision(d(), occ, now, Date.parse("2026-11-02T11:00:00Z"))).toBeNull();
     expect(activeDelegateDecision(d({ verb: "escalate_owner" }), occ, now)).toBeNull();
     expect(activeDelegateDecision(d({ verb: "reopen" }), occ, now)).toBeNull();
   });
@@ -117,9 +132,10 @@ describe("attention delegates", () => {
   it("fetches decisions only for candidate issues through the entity index and hides decided occurrences", async () => {
     const now = Date.parse("2026-11-02T12:00:00Z");
     const decided = "2026-11-02T10:00:00.000Z";
-    const { db, queries } = proxyDb(() => [
-      ["agent", AG, AG, { itemKey: `attention:blocker:${ISSUE}`, verb: "nudge", reason: "woke the owner", holdUntil: "2026-11-04T00:00:00Z" }, decided],
-      ["agent", OTHER, OTHER, { itemKey: "attention:recovery:x", verb: "park", reason: "not a delegate", holdUntil: "2026-11-04T00:00:00Z" }, decided],
+    let liveRun: unknown[][] = [];
+    const { db, queries } = proxyDb((sql) => /"heartbeat_runs"/.test(sql) ? liveRun : [
+      ["agent", AG, AG, { itemKey: `attention:blocker:${ISSUE}`, verb: "nudge", reason: "woke the owner", holdUntil: "2026-11-04T00:00:00Z", occurrenceKey: "kb" }, decided],
+      ["agent", OTHER, OTHER, { itemKey: "attention:recovery:x", verb: "park", reason: "not a delegate", holdUntil: "2026-11-04T00:00:00Z", occurrenceKey: "kr" }, decided],
     ]);
     const items = [
       { dismissalKey: `attention:blocker:${ISSUE}`, sourceKind: "blocker_attention" },
@@ -127,16 +143,23 @@ describe("attention delegates", () => {
       { dismissalKey: "attention:approval:z", sourceKind: "approval" },
     ] as AttentionItem[];
     const eligible = new Map([
-      [`attention:blocker:${ISSUE}`, { sourceKind: "blocker_attention" as const, issueId: ISSUE, occurrenceStartedAt: "2026-11-01T00:00:00.000Z" }],
-      ["attention:recovery:x", { sourceKind: "recovery_action" as const, issueId: "55555555-5555-4555-8555-555555555555", occurrenceStartedAt: "2026-11-01T00:00:00.000Z" }],
+      [`attention:blocker:${ISSUE}`, { sourceKind: "blocker_attention" as const, issueId: ISSUE, occurrenceStartedAt: "2026-11-01T00:00:00.000Z", occurrenceKey: "kb", liveCheckIssueIds: [ISSUE, "b1"] }],
+      ["attention:recovery:x", { sourceKind: "recovery_action" as const, issueId: "55555555-5555-4555-8555-555555555555", occurrenceStartedAt: "2026-11-01T00:00:00.000Z", occurrenceKey: "kr" }],
     ]);
     const hidden = [...items];
     await applyDelegateDecisions(db, CID, hidden, eligible, now, false);
     expect(hidden.map((i) => i.dismissalKey)).toEqual(["attention:recovery:x", "attention:approval:z"]);
     expect(hidden.some((i) => "delegateDecision" in i)).toBe(false);
-    expect(queries).toHaveLength(1);
+    expect(queries).toHaveLength(2);
     expect(queries[0].sql).toMatch(/"activity_log"\."entity_type" = \$1/);
     expect(queries[0].sql).toMatch(/"activity_log"\."entity_id" in \(\$2, \$3\)/);
+    expect(queries[1].sql).toMatch(/"heartbeat_runs"\."issue_id" in \(\$2, \$3\)/);
+    // A run in the tree after the decision means the tree went live: the item shows again.
+    liveRun = [["b1", "2026-11-02T11:00:00.000Z"]];
+    const afterLive = [...items];
+    await applyDelegateDecisions(db, CID, afterLive, eligible, now, false);
+    expect(afterLive.map((i) => i.dismissalKey)).toContain(`attention:blocker:${ISSUE}`);
+    liveRun = [];
     const shown = [...items];
     await applyDelegateDecisions(db, CID, shown, eligible, now, true);
     expect(shown[0].delegateDecision?.verb).toBe("nudge");
@@ -156,7 +179,7 @@ describe("attention delegates", () => {
     const key = `attention:recovery:stranded_assigned_issue:${ISSUE}:c1:f:1`;
     let current = [row()];
     const { db } = proxyDb(() => current);
-    expect(await findDelegatableAttentionItem(db, CID, key, null)).toMatchObject({ sourceKind: "recovery_action", occurrenceStartedAt: "2026-11-02T01:00:00.000Z" });
+    expect(await findDelegatableAttentionItem(db, CID, key, null)).toMatchObject({ sourceKind: "recovery_action", occurrenceStartedAt: "2026-11-02T01:00:00.000Z", occurrenceKey: "recovery:r1:2026-11-02T01:00:00.000Z" });
     current = [row({ status: "escalated", evidence: { recoveryBudget: { exhaustedAt: "2026-11-02T05:00:00.000Z" } } })];
     expect(await findDelegatableAttentionItem(db, CID, key, null)).toMatchObject({ occurrenceStartedAt: "2026-11-02T05:00:00.000Z" });
     current = [row({ ownerType: "user", ownerUserId: "u1" })];

@@ -9730,6 +9730,7 @@ export function issueRoutes(
         await denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
         return;
       }
+      if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "update"))) return;
     }
     if ("ineligible" in live) {
       res.status(422).json({ error: `This item stays with humans: ${live.ineligible}` });
@@ -9742,6 +9743,7 @@ export function issueRoutes(
       holdUntil: new Date(holdTime).toISOString(),
       sourceKind: live.sourceKind,
       occurrenceStartedAt: live.occurrenceStartedAt,
+      occurrenceKey: live.occurrenceKey,
     };
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -9935,13 +9937,17 @@ export function issueRoutes(
         executionReconciliation,
         workspaceBaseRef,
       } = req.body;
-      // A delegate passes this gate; requireRecoveryActionAuthority still limits it to board-owned, delegatable actions.
-      if (
+      // A delegate defers this gate until the target action is loaded; it then passes only for a delegatable action.
+      const delegateBoardBypass =
         (outcome === "false_positive" || outcome === "cancelled") &&
-        !(req.actor.type === "agent" && isAttentionDelegate(existing.companyId, req.actor.agentId))
-      ) {
+        req.actor.type === "agent" &&
+        isAttentionDelegate(existing.companyId, req.actor.agentId);
+      if ((outcome === "false_positive" || outcome === "cancelled") && !delegateBoardBypass) {
         assertBoard(req);
       }
+      const assertDelegateBoardBypassTarget = (action: { ownerType: string; kind: string; cause: string | null }) => {
+        if (delegateBoardBypass && !isDelegatableRecovery(action)) assertBoard(req);
+      };
 
       if (workspaceBaseRef) {
         assertBoard(req);
@@ -10019,6 +10025,7 @@ export function issueRoutes(
               ),
             );
           if (settled) {
+            assertDelegateBoardBypassTarget(settled);
             await requireRecoveryActionAuthority(
               req,
               lockedIssue,
@@ -10063,6 +10070,7 @@ export function issueRoutes(
         ) {
           throw notFound("Active recovery action not found");
         }
+        assertDelegateBoardBypassTarget(activeRecoveryAction);
         await requireRecoveryActionAuthority(
           req,
           lockedIssue,

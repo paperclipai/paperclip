@@ -270,6 +270,8 @@ export interface AttentionDelegateDecision {
   verb: string;
   reason: string | null;
   holdUntil: string | null;
+  /** The occurrence the decision was made on; a different current occurrence shows the item again. */
+  occurrenceKey: string | null;
   decidedByType: string;
   decidedById: string;
   decidedAt: string;
