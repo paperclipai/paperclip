@@ -1,3 +1,5 @@
+import { readIdleIncomingWakeProof, incomingWakeWorkCheck, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
+import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import { readIdleLocalWork, type IdleLocalWork } from "./idle-local-work.js";
 import { readIdleRoutineSchedule, type ScheduledWake } from "./idle-scheduled-work.js";
@@ -20,9 +22,16 @@ export interface IdleSleepDrainStatus {
 }
 
 export interface IdleSleepSafety {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   backgroundWork: "none" | "present" | "unknown";
   scheduledWake?: ScheduledWake;
+  incomingWake?: IdleIncomingWakeCapability;
+}
+
+export interface IdleSleepSafetyOptions {
+  incomingWake?: VerifiedIdleCapabilities;
+  deadlineCapability?: VerifiedIdleCapabilities;
+  collectDiagnostics?: true;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
@@ -298,6 +307,7 @@ export async function readIdleSleepSafety(
   prepareBackup?: () => Promise<boolean>,
   scheduledRoutines = false,
   scheduledIssueMonitors = false,
+  options: IdleSleepSafetyOptions = {},
 ): Promise<IdleSleepSafety> {
   const unknown: IdleSleepSafety = { version: 1, backgroundWork: "unknown" };
   const before = getDrainStatus();
@@ -316,12 +326,17 @@ export async function readIdleSleepSafety(
       quietPlugins = pluginWork.pluginIds;
     }
     let scheduledWake: ScheduledWake | undefined;
+    let incomingProof: IdleIncomingWakeProof | undefined;
     const blocked = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      if (options.incomingWake?.incomingWake) {
+        if (!ownerId || ownerId !== before.ownerId) return undefined;
+        incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db });
+      }
       const checks = WORK_CHECKS.filter(query =>
         (!scheduledRoutines || query !== `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`)
         && (!scheduledIssueMonitors || query !== `SELECT 1 FROM issues WHERE status NOT IN ('done', 'cancelled')`))
-        .map((query) => sql`EXISTS (${sql.raw(query)})`);
+        .map((query) => incomingWakeWorkCheck(query, incomingProof));
       checks.push(sql`EXISTS (SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()})`);
       checks.push(sql`EXISTS (SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()})`);
@@ -366,6 +381,12 @@ export async function readIdleSleepSafety(
     const localAfter = idleWorkSnapshot();
     if (!sameQuietHold(before, after, now()) || localAfter.active !== 0 ||
         expectedGeneration !== localAfter.generation) return unknown;
+    if (local === "none" && incomingProof) {
+      // Until the negotiated deadline catalog owns the combined proof, retain
+      // legacy scheduled obligations rather than silently omit their alarm.
+      if (scheduledWake) return unknown;
+      return { version: 3, backgroundWork: "none", incomingWake: incomingProof.capability };
+    }
     if (local === "none" && scheduledWake) {
       if (Date.parse(scheduledWake.nextWakeAt) <= now()) return { version: 1, backgroundWork: "present" };
       return { version: 2, backgroundWork: "none", scheduledWake };

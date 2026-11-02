@@ -1,3 +1,4 @@
+import { idleApiActivity } from "./idle-api-activity.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -65,7 +66,7 @@ export async function readIdleLocalWork(options: { backupCheckpoint?: boolean } 
   if (!startupComplete || !ingressTracked) return "unknown";
   // This exemption belongs only to a scan which will finish a new backup
   // under the same admission hold before it can return an empty report.
-  if ((scheduledBackups && !options.backupCheckpoint) || idleWorkSnapshot().active !== 0) return "present";
+  if (idleApiActivity.active() || (scheduledBackups && !options.backupCheckpoint) || idleWorkSnapshot().active !== 0) return "present";
   try {
     const local = [...localWorkProbes].map(probe => probe());
     if (local.includes("unknown")) return "unknown";
