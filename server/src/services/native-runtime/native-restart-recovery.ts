@@ -31,7 +31,7 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
-import { getServerInfoSnapshot } from "../../server-info.js";
+import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
@@ -157,7 +157,7 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
 
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
   const observed = await observedProcessStart(process.pid);
-  const fallback = new Date(getServerInfoSnapshot().processStartedAt);
+  const fallback = new Date(getServerProcessStartedAt());
   return {
     bootId: controllerBootId,
     pid: process.pid,

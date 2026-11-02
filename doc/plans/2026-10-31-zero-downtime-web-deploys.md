@@ -1,5 +1,44 @@
 # Zero-downtime web deployments
 
+Current state (2026-11-02 18:31 UTC): cleanup recovery PR
+[#18633](https://github.com/paperclipai/paperclip/pull/18633) merged as
+`60a99307b3bb1062078d35af6677e3f377d8bab8`. Its final head passed all PR CI,
+full local typecheck and build, and seven focused cleanup regressions. Greptile
+reviewed that head at 5/5; both review threads are resolved. The duplicate full
+local test run was stopped after six chat shards passed, while general suites
+were still running. Its incomplete local result is preserved separately from
+successful full PR CI.
+
+Canonical Linux release verification failed on the unchanged two-second busy-row
+startup test on several consecutive revisions, including the cleanup merge.
+The held-row diagnostic completed in 420 ms on macOS without a database lock
+wait. Inspection found that `currentNativeControllerIdentity` always called the
+server-info snapshot, which synchronously probes Git three times even when the
+OS process birth time is available. Controlled one-second delays in real Git
+commands reproduced the exact startup assertion failure with real PostgreSQL.
+The follow-up separates the constant fallback process birth time from diagnostic
+Git metadata. New regressions cover both available and unavailable OS birth time.
+The two-second startup limit and release gates remain unchanged. Linux release
+verification must pass before the new source can enter hosted qualification.
+
+The earlier ten-roll result remains evidence for its recorded images. Neither
+the cleanup fix nor the controller-identity follow-up has reached the staging
+fixture. Final acceptance still requires a qualified compatible image pair,
+fresh staging replacements, natural idle and browser sleep/wake, followed by the
+isolated production canary. Cloud source is `b44304603d`; its private packages
+require comparison against the new Core SDK and shared archive. Earlier candidate
+Core `42c64d4ec4` differs in SDK; `b9e94b85a6` differs in shared types. Neither is
+a valid rollback pair for the cleanup merge. No release gate was bypassed.
+
+The production browser was signed in as Dotta B on the ordinary new-organization
+form. No organization was submitted and no production config changed. The only
+hosted target changed so far is the pinned staging qualification fixture.
+Disposable local PostgreSQL and Moto S3 fixtures passed an independent object
+read/write preflight. Docker subsequently stopped; local container qualification
+requires restoring that dependency. Hosted acceptance uses real object storage.
+
+Earlier retained evidence and failure history follows.
+
 Date: 2026-10-31. Status (2026-11-02 17:23 UTC): Core #18554 is merged as
 `1a6017d6460267ad89d7e1784e2b521c28d8e9ac`. The ten-roll and native-agent
 proof used Cloud `461c4aea28`. Separately reviewed Cloud #1091/#1092 subsequently
