@@ -26,6 +26,8 @@ const quietMs = 90_000, apiCooldownMs = 600_000;
 describe.skipIf(!enabled)('configured assembled sleep qualification (explicit owned external PostgreSQL only)', () => {
   beforeAll(async () => { await prepareMaintenanceRuntime(); }, 150_000);
   it('retains normal credentials, completed work and a future routine through a real cooldown and quiet window', async () => {
+    const phase = (name: string) => console.info(JSON.stringify({ qualificationPhase: name, at: new Date().toISOString() }));
+    phase('starting-owned-fixtures');
     const collectorRequests: Array<{ path: string; body: unknown }> = [];
     const collector = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -44,6 +46,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
       const server = await startMaintenanceServer(databaseUrl!, { configuration, controlJwks: JSON.stringify({ keys: [jwk] }), githubOrigin: broker.origin,
         connector: { origin: broker.origin, instanceId: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID,
           signPrivateKey: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY, sealPrivateKey: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY } });
+      phase('actual-server-ready');
       let fixture = createDb(databaseUrl!, { maxConnections: 1 });
       const control = (action: string, idleCapabilities?: unknown) => {
         const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -91,6 +94,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         await fixture.$client.end({ timeout: 1 });
         const lastApiActivity = performance.now();
         await server.trace();
+        phase('first-real-ten-minute-api-cooldown');
         // The real authenticated-use cooldown is part of ordinary behavior.
         // No fake clock, production timing override, tenant health poll or SQL observer.
         await delay(apiCooldownMs + 100);
@@ -100,6 +104,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(collectorRequests.some(entry => entry.path === '/telemetry')).toBe(true);
         const before = await server.snapshot(), queries = server.proxy.queries.length, transport = server.proxy.transport;
         const wallStart = performance.now(), quietStartedAt = new Date().toISOString();
+        phase('first-real-ninety-second-quiet-window');
         await delay(quietMs);
         const elapsedMs = performance.now() - wallStart, after = await server.snapshot(), finalTransport = server.proxy.transport;
         expect(elapsedMs).toBeGreaterThanOrEqual(quietMs);
@@ -115,6 +120,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const capabilities = { incomingWake: await broker.capability(drain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };
         const read = () => server.api<any>('GET', `/instance/task-drain?idleSleepSafety=1&scheduledWake=domain-deadlines-v1&ownerId=${drain.ownerId}`, undefined, control('task-drain:read', capabilities));
         const initial = await read(), final = await read();
+        phase('first-owned-eligibility-reports-read');
         const { parseApiWakeAdmission, authorizeApiWakeAdmission } = await import('../services/idle-api-wake-admission.js');
         const assertIncomingProof = (report: any, incomingWake: any, ownerId: string) => {
           expect(report.idleSleepSafety.incomingWake).toEqual(incomingWake);
@@ -154,10 +160,12 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(executions.count).toBe(1);
         await fixture.$client.end({ timeout: 1 });
         const reactivationApiAt = performance.now();
+        phase('reactivation-real-ten-minute-api-cooldown');
         await delay(apiCooldownMs + 100);
         await server.settled();
         const resumed = await server.snapshot(), resumedQueries = server.proxy.queries.length, resumedTransport = server.proxy.transport;
         const resumedStart = performance.now(), resumedStartedAt = new Date().toISOString();
+        phase('reactivation-real-ninety-second-quiet-window');
         await delay(quietMs);
         const resumedElapsedMs = performance.now() - resumedStart;
         const resumedEnd = await server.snapshot(), resumedFinalTransport = server.proxy.transport;
@@ -196,6 +204,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
           eligibility: resumedProof.idleSleepSafety,
           boundary: 'Actual local application reactivation, real cooldown and fresh eligibility; no provider suspension or deployed inbound-wake claim',
         }, null, 2));
+        phase('configured-qualification-receipts-complete');
       } finally { await server.stop(); await fixture.$client.end(); }
     });
     } finally { await broker.stop(); }
