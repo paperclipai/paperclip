@@ -49,6 +49,8 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Prep
 
 ### `permissions`
 
+The page loads saved profiles for the displayed connection through the configuration read. It preserves complete app bindings for saves and the install fallback when bindings are empty. It does not request profile summaries or pending-review counts.
+
 Automated: [app detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers agent/action controls, quarantined actions, and navigation using mocked requests.
 
 [Installation permission regressions](../../server/src/__tests__/tool-connection-installs.test.ts)

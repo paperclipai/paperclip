@@ -83,6 +83,15 @@ Evidence: `verified` — [authenticated integration fixtures](../../server/src/_
 Verification: `passed` — deterministic local fixture; no live provider qualification.
 Gaps: Provider fixtures do not qualify live provider setup or availability.
 
+### `get-tool-connections-profile-configuration`
+
+API: `present` — `GET /api/tool-connections/{connectionId}/profile-configuration`; JSON REST. Returns saved app and eligible connection-intent profiles, including complete ordered entries and bindings. Omits summary and pending-review counts. The company-wide full profile list stays available.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; the displayed connection and every selected profile use current management-resource authorization. Profiles that span a hidden personal account are omitted. Connection visibility alone does not grant profile visibility.
+Evidence: `verified` — [authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts) covers standard agent keys and run JWTs, private accounts, missing resources, and revoked authority on local PostgreSQL.
+Verification: `passed` — deterministic local fixture. [Configuration differential test](../../server/src/__tests__/connection-profile-configuration.test.ts) compares complete selected entries and bindings with the full list, including mutations and empty bindings.
+Gaps: These fixtures do not qualify live providers or hosted performance.
+
 ### `get-tool-connections-installs`
 
 API: `present` — `GET /api/tool-connections/{connectionId}/installs`; JSON REST.

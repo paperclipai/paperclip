@@ -12072,6 +12072,15 @@ registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:profiles",
   method: "get",
+  path: "/api/tool-connections/{connectionId}/profile-configuration",
+  tags: ["tool-access"],
+  summary: "Read connection Permissions profile configuration without summaries or review counts",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:profiles",
+  method: "get",
   path: "/api/companies/{companyId}/tools/profiles",
   tags: ["tool-access"],
   summary: "List tool access profiles with entries and bindings",
