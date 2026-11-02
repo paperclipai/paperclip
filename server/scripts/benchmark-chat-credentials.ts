@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { eq } from "drizzle-orm";
-import { agents, chatEndpoints, companies, companySecrets, createDb, secretAccessEvents, startEmbeddedPostgresTestDatabase,
-  toolApplications, toolConnections } from "../../packages/db/src/index.js";
+import { companySecrets, createDb, secretAccessEvents, startEmbeddedPostgresTestDatabase } from "../../packages/db/src/index.js";
 import * as schema from "../../packages/db/src/schema/index.js";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "../../packages/db/src/response-capture.js";
 import { secretService } from "../src/services/secrets.js";
 import { createChatCredentials } from "../src/services/chat-channels/credentials.js";
+import { seedChatCredentialBenchmark } from "../src/__tests__/helpers/chat-credential-benchmark-fixture.js";
 
 // Synthetic local PostgreSQL only. No provider or network request is made.
 const baselineRef = process.argv.find(arg => arg.startsWith("--baseline-ref="))?.slice(15);
@@ -36,27 +35,7 @@ try {
   const baseline = await import(pathToFileURL(baselineFile).href) as { secretService: typeof secretService };
   pg = await startEmbeddedPostgresTestDatabase("chat-credential-benchmark-");
   db = createDb(pg.connectionString);
-  const companyId = randomUUID(), applicationId = randomUUID(), connectionId = randomUUID(), endpointId = randomUUID(), agentId = randomUUID();
-  await db.insert(companies).values({ id: companyId, name: "Synthetic credentials", issuePrefix: companyId });
-  await db.insert(agents).values({ id: agentId, companyId, name: "Synthetic agent", adapterType: "process" });
-  await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "chat" });
-  await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Slack", uid: connectionId,
-    transport: "chat_sdk", connectionPurpose: "channel", enabled: true, status: "active" });
-  await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId, assignedAgentId: agentId });
-  const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId));
-  assert.ok(endpoint);
-  const service = secretService(db);
-  const refs = [];
-  const expected: Record<string, string> = {};
-  for (const key of ["botToken", "signingSecret", "appToken", "webhookSecret"]) {
-    const value = `synthetic-${key}-${"x".repeat(128)}`;
-    const secret = await service.create(companyId, { name: key, provider: "local_encrypted", value });
-    await service.createBinding({ companyId, secretId: secret.id, targetType: "tool_connection", targetId: connectionId,
-      configPath: `credentials.${key}` });
-    refs.push({ secretId: secret.id, versionSelector: "latest" as const, configPath: `credentials.${key}`, required: true });
-    expected[key] = value;
-  }
-  await db.update(toolConnections).set({ credentialSecretRefs: refs }).where(eq(toolConnections.id, connectionId));
+  const { companyId, endpoint, expected } = await seedChatCredentialBenchmark(db);
   function reader(database: typeof db & {}, factory: typeof secretService) {
     return createChatCredentials(database, {
       secrets: factory(database), PROVIDER_LABELS: {} as Parameters<typeof createChatCredentials>[1]["PROVIDER_LABELS"],
