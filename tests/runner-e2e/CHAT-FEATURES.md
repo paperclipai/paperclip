@@ -225,6 +225,9 @@ Initial setup uses the existing workflow operations:
    binding. Only the observed single `Branch/defaultValue` definition for
    `refs/heads/master` is accepted. Bootstrap enables the job and assigns cases
    while preserving that definition; the plan uses its default branch.
+   Assignment inspection records unassigned and existing-job counts before
+   binding. A single unassigned bucket must cover the exact selected cases;
+   foreign jobs and unknown or incomplete buckets stop before writes.
 2. Read the closed registration receipt. Store its observed `binding` JSON as
    `CHAT_COMPLETION_TESTOPS_BINDING` in `runner-e2e-testops-reporting`.
 3. Use TestOps **Run**. For the initial operator launch, set an exact next

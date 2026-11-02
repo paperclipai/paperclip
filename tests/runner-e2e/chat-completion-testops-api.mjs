@@ -72,6 +72,11 @@ function assertBranchDefinition(job) {
     || job.parameters[0].name !== 'Branch' || job.parameters[0].defaultValue !== 'refs/heads/master'
     || Object.hasOwn(job.parameters[0], 'value')) reject('job_parameters');
 }
+function isUnassignedBucket(row, expectedCount) {
+  return row !== null && typeof row === 'object' && !Array.isArray(row)
+    && Object.keys(row).every(key => ['job', 'testCasesCount'].includes(key))
+    && (row.job === null || !Object.hasOwn(row, 'job')) && row.testCasesCount === expectedCount;
+}
 
 export async function validatePilotSelection(api, env, context, workflowId) {
   const { cases, targetSha, planName } = catalogDefinition(context);
@@ -168,6 +173,7 @@ export async function completePilotRegistration(api, prepared, official, context
   const binding = { ...prepared, jobId: run.job.id };
   assertPlan(await api(`/api/testplan/${binding.planId}`), binding, context);
   const job = await api(`/api/job/${binding.jobId}`); assertJob(job, binding, workflowId, context);
+  const assignments = await api(`/api/testplan/${binding.planId}/job`);
   await observe({ schema: 'paperclip.chat-completion-testops-registration-observed/v1', ...context,
     projectId: 1, jobId: job.id, launchId: official.launchId, allureJobRunId: official.jobRunId,
     parameterCount: Array.isArray(job.parameters) ? job.parameters.length : null,
@@ -175,17 +181,22 @@ export async function completePilotRegistration(api, prepared, official, context
       id: positive(row?.id) ? row.id : null, name: row?.name === 'Branch' ? 'Branch' : 'UNRESOLVED',
       defaultValue: row?.defaultValue === 'refs/heads/master' ? 'refs/heads/master' : 'NOT_PROJECTED',
       runtimeValuePresent: Object.hasOwn(row ?? {}, 'value') })) : null,
+    assignmentCount: Array.isArray(assignments) ? assignments.length : null,
+    assignments: Array.isArray(assignments) ? assignments.slice(0, 4).map(row => ({
+      kind: isUnassignedBucket(row, cases.length) ? 'unassigned' : row?.job?.id === binding.jobId ? 'owned' : 'foreign_or_unrecognized',
+      jobId: positive(row?.job?.id) ? row.job.id : null,
+      testCasesCount: Number.isSafeInteger(row?.testCasesCount) && row.testCasesCount >= 0 ? row.testCasesCount : null })) : null,
     qualification: 'inspection_only', actualResult: null });
   assertBranchDefinition(job);
-  const assignments = await api(`/api/testplan/${binding.planId}/job`);
-  if (!Array.isArray(assignments) || assignments.length > 1 || assignments.some(row => row.job?.id !== binding.jobId || row.testCasesCount !== cases.length)) reject('plan_job_mismatch');
+  if (!Array.isArray(assignments) || assignments.length > 1 || assignments.some(row => !isUnassignedBucket(row, cases.length)
+    && (row?.job?.id !== binding.jobId || row?.testCasesCount !== cases.length))) reject('plan_job_mismatch');
   await markOnce('bind_owned_job');
   // PATCH only the documented enable/integration fields. Preserve the opaque
   // definition exactly; no guessed parameter-definition write codec is used.
   await api(`/api/job/${binding.jobId}`, 'PATCH', { integrationId: binding.integrationId, canRun: true });
   const patched = await api(`/api/job/${binding.jobId}`); assertJob(patched, binding, workflowId, context); assertBranchDefinition(patched);
   if (!same(patched.parameters, job.parameters) || (Object.hasOwn(patched, 'canRun') && patched.canRun !== true)) reject('job_parameters');
-  if (!assignments.length) {
+  if (!assignments.length || isUnassignedBucket(assignments[0], cases.length)) {
     await markOnce('assign_plan');
     await api(`/api/testplan/${binding.planId}/assign`, 'POST', { jobId: binding.jobId,
       selection: { inverted: false, manual: false, leafsInclude: binding.cases.map(row => row.caseId) } });
