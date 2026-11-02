@@ -23,7 +23,7 @@ import { checkTestPostgresAdmin, startTestPostgresDatabase, testPostgresAdminUrl
 // passes while a genuine hang still fails fast.
 export const EMBEDDED_POSTGRES_TEST_TIMEOUT_MS = 90_000;
 
-type EmbeddedPostgresInstance = TestPostgresInstance;
+type EmbeddedPostgresInstance = ReturnType<typeof ownTestPostgres>;
 
 type EmbeddedPostgresCtor = new (opts: {
   databaseDir: string;
@@ -34,7 +34,7 @@ type EmbeddedPostgresCtor = new (opts: {
   initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
+}) => TestPostgresInstance;
 
 export type EmbeddedPostgresTestSupport = {
   supported: boolean;
@@ -264,10 +264,6 @@ const TEMPLATE_ROOT_DIR_NAME = "paperclip-embedded-postgres-templates";
 // Templates whose key no longer matches are pruned once they have not been
 // used for this long. Every reuse refreshes the template's timestamp.
 const TEMPLATE_PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-// Publishing a template requires the builder cluster to have exited for real,
-// so its data files are quiescent before the rename. Give that stop more room
-// than the per-suite bounded stop; a template build happens once per host.
-const TEMPLATE_BUILD_STOP_TIMEOUT_MS = 30_000;
 
 export type EmbeddedPostgresStartMode = "template" | "fresh";
 
@@ -440,18 +436,10 @@ function pruneStaleTemplates(rootDir: string, keepDir: string): void {
 // Waits for the raw `stop()` so the builder cluster has really exited before
 // its data directory is published. Returns false if the stop overran.
 async function stopForTemplatePublish(instance: EmbeddedPostgresInstance): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      instance.stop().then(() => true, () => false),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), TEMPLATE_BUILD_STOP_TIMEOUT_MS);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+    await instance.stopGracefully();
+    return true;
+  } catch { return false; }
 }
 
 // Builds a migrated cluster and publishes its data directory at `templateDir`.

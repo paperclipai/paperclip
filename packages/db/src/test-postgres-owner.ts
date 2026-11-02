@@ -7,7 +7,7 @@ export type TestPostgresInstance = {
   process?: ChildProcess;
 };
 
-type Owner = { stop(): Promise<void>; interrupt(): void };
+type Owner = { stop(clean?: boolean): Promise<void>; interrupt(): void };
 export class TestPostgresShutdownError extends Error {}
 const owners = new Set<Owner>();
 type ShutdownTask = { stop(signal: NodeJS.Signals): Promise<void>; interrupt(): void };
@@ -76,10 +76,14 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   }
 }
 
-export function ownTestPostgres(instance: TestPostgresInstance): TestPostgresInstance {
+export function ownTestPostgres(instance: TestPostgresInstance): Pick<TestPostgresInstance, "initialise" | "start" | "stop"> & {
+  stopGracefully(): Promise<void>;
+} {
   let pending: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
   let stopped = false;
+  let usedImmediateShutdown = false;
+  let stoppedCleanly = false;
 
   async function run(operation: () => Promise<void>): Promise<void> {
     if (stopped || stopPromise) throw new Error("Test PostgreSQL is shutting down");
@@ -93,10 +97,11 @@ export function ownTestPostgres(instance: TestPostgresInstance): TestPostgresIns
     interrupt() {
       const child = instance.process;
       if (process.platform !== "win32" && child && child.exitCode === null && child.signalCode === null) {
+        usedImmediateShutdown = true;
         try { child.kill("SIGQUIT"); } catch {}
       }
     },
-    stop() {
+    stop(clean = false) {
       if (stopped) return Promise.resolve();
       if (stopPromise) return stopPromise;
       stopPromise = (async () => {
@@ -113,7 +118,9 @@ export function ownTestPostgres(instance: TestPostgresInstance): TestPostgresIns
           const exited = new Promise<void>((resolve) => { onExit = resolve; child.once("exit", onExit); });
           try {
             child.kill("SIGINT");
-            if (!await settlesWithin(exited, 5_000)) {
+            if (!await settlesWithin(exited, clean ? 30_000 : 5_000)) {
+              if (clean) throw new TestPostgresShutdownError("Test PostgreSQL did not complete clean shutdown; the template cannot be published");
+              usedImmediateShutdown = true;
               child.kill("SIGQUIT");
               if (!await settlesWithin(exited, 5_000)) {
                 throw new TestPostgresShutdownError("Test PostgreSQL did not exit after fast and immediate shutdown; its data directory is retained");
@@ -122,6 +129,10 @@ export function ownTestPostgres(instance: TestPostgresInstance): TestPostgresIns
           } finally {
             child.removeListener("exit", onExit!);
           }
+        }
+        stoppedCleanly = !usedImmediateShutdown && (!child || (child.exitCode === 0 && child.signalCode === null));
+        if (clean && !stoppedCleanly) {
+          throw new TestPostgresShutdownError("Test PostgreSQL exited without clean shutdown; the template cannot be published");
         }
         instance.process = undefined;
         stopped = true;
@@ -141,5 +152,9 @@ export function ownTestPostgres(instance: TestPostgresInstance): TestPostgresIns
     initialise: () => run(() => instance.initialise()),
     start: () => run(() => instance.start()),
     stop: () => owner.stop(),
+    stopGracefully: async () => {
+      await owner.stop(true);
+      if (!stoppedCleanly) throw new TestPostgresShutdownError("Test PostgreSQL exited without clean shutdown; the template cannot be published");
+    },
   };
 }

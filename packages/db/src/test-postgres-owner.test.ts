@@ -74,4 +74,32 @@ describe.skipIf(process.platform === "win32")("test PostgreSQL ownership", () =>
     b.exit(); await b.owner.stop();
     expect(process.listenerCount("exit")).toBe(before);
   });
+
+  it("never uses immediate shutdown when preparing a clean template", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const clean = expect(f.owner.stopGracefully()).rejects.toThrow("template cannot be published");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await clean;
+    expect(f.child.kill.mock.calls).toEqual([["SIGINT"]]);
+    f.exit();
+    await f.owner.stop();
+  });
+
+  it("rejects a crashed process as a publishable template", async () => {
+    const f = fixture();
+    f.child.exitCode = 1;
+    await expect(f.owner.stopGracefully()).rejects.toThrow("without clean shutdown");
+    await f.owner.stop();
+  });
+
+  it("does not reuse an earlier immediate stop as a clean template shutdown", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const stopped = f.owner.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    f.exit();
+    await stopped;
+    await expect(f.owner.stopGracefully()).rejects.toThrow("without clean shutdown");
+  });
 });

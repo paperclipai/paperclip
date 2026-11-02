@@ -1093,6 +1093,8 @@ job remains the backstop for stale macOS semaphore sets.
 Database and CLI hooks use the same 30-second deadline as server hooks. This
 allows the ten-second shutdown protocol and client/database cleanup to finish
 before the test runner ends a worker. A shutdown timeout still fails the hook.
+Template publication requires a clean fast shutdown and allows thirty seconds
+for it. A template is never published after immediate shutdown or a crash.
 
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
 without an administrative URL get their own embedded Postgres cluster. The first such suite on a host builds
