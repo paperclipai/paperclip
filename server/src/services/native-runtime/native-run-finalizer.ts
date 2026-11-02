@@ -921,15 +921,17 @@ async function recoverCommittedNativeChatResponseInScope(
         && run.contextSnapshot?.issueId === issue.id
         && typeof run.contextSnapshot.conversationSessionGeneration === "number"
         && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
+      // A deferred ordinary-task review still needs its recorded final reply.
+      // Publishing that reply must not resolve the interaction or the task.
       if (
         (!conversation || currentConversation) &&
         run.status === "succeeded" &&
         record(run.contextSnapshot).skipIssueComment !== true &&
         !isExternalChatPresentationContext(run.contextSnapshot) &&
-        result.reportedWorkDisposition === "done" &&
         terminal.runTerminalState === "succeeded" &&
         terminal.turnTerminalState === "completed" &&
-        terminal.reportedWorkDisposition === "done" &&
+        ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
+          (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
