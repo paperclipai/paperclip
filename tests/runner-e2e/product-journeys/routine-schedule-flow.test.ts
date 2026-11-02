@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routineUiStep } from "./routine-schedule-flow.js";
+import { enableRoutineScheduleTrigger, routineUiStep } from "./routine-schedule-flow.js";
 import { JourneyError } from "./types.js";
 
 describe("routine UI failure evidence", () => {
@@ -20,5 +20,27 @@ describe("routine UI failure evidence", () => {
     const response = { status: 201 };
     expect(await routineUiStep("submit", async () => { count += 1; return response; })).toBe(response);
     expect(count).toBe(1);
+  });
+});
+
+
+describe("schedule trigger controls", () => {
+  it("opens the collapsed schedule editor before its single enable action", async () => {
+    let expanded = false, clicks = 0, resolveResponse!: (value: any) => void;
+    const response = { status: () => 200 };
+    const pending = new Promise<any>(resolve => { resolveResponse = resolve; });
+    const schedule = { getByRole: (_role: string, options: { name: string }) => ({ click: async () => {
+      if (options.name === "Edit schedule") { expanded = true; return; }
+      if (options.name !== "Enable trigger" || !expanded) throw new Error("schedule control is not rendered");
+      clicks += 1;
+      resolveResponse(response);
+    } }) };
+    const page = { getByRole: (role: string, options: { name: string }) => {
+      if (role === "region" && options.name === "Schedule trigger") return schedule;
+      return schedule.getByRole(role, options);
+    }, waitForResponse: () => pending } as unknown as Parameters<typeof enableRoutineScheduleTrigger>[0];
+    expect(await enableRoutineScheduleTrigger(page, "/api/routine-triggers/owned-trigger")).toBe(response);
+    expect(expanded).toBe(true);
+    expect(clicks).toBe(1);
   });
 });
