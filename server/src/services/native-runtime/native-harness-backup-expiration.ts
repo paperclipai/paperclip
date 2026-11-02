@@ -301,10 +301,19 @@ export function nativeHarnessBackupExpirationService(
       .from(nativeRunnerCheckpoints)
       .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, nativeRunnerCheckpoints.runId))
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+      .innerJoin(issues, and(
+        eq(issues.companyId, heartbeatRuns.companyId),
+        eq(issues.id, sql`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`),
+      ))
       .where(and(
         sql`${nativeRunnerCheckpoints.part} = 'header'`,
         checkpointCursor ? gt(nativeRunnerCheckpoints.runId, checkpointCursor) : undefined,
         lt(heartbeatRuns.finishedAt, options.closedBefore),
+        // Necessary eligibility only: the transaction still checks every run and
+        // issue in the session, locks authority, and checks leases/resume pointers.
+        inArray(issues.status, CLOSED_ISSUE_STATUSES),
+        lt(sql`coalesce(${issues.completedAt}, ${issues.cancelledAt})`, options.closedBefore.toISOString()),
+        isNull(issues.executionRunId),
         inArray(nativeRunFinalizations.phase, SETTLED_FINALIZATION_PHASES),
         isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.recoveryState),
       ))

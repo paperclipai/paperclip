@@ -345,6 +345,45 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     },
   );
 
+  it.each(["open", "recent", "execution"])("skips transaction setup for an obviously %s originating issue", async protection => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    await db.delete(agentTaskSessions);
+    if (protection === "open") await db.update(issues).set({ status: "in_progress" });
+    if (protection === "recent") await db.update(issues).set({ completedAt: now });
+    if (protection === "execution") await db.update(issues).set({ executionRunId: session.runId });
+    const transaction = vi.spyOn(db, "transaction");
+    expect(await service().tickCheckpoints()).toMatchObject({ expiredCheckpoints: 0, failed: 0 });
+    expect(transaction).not.toHaveBeenCalled();
+    expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+    if (protection === "execution") await db.update(issues).set({ executionRunId: null });
+  });
+
+  it("rechecks originating issue eligibility after the candidate scan", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    await db.delete(agentTaskSessions);
+    const transact = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementationOnce(async (...args) => {
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, session.issueId));
+      return transact(...args);
+    });
+    expect(await service().tickCheckpoints()).toMatchObject({ expiredCheckpoints: 0, failed: 0 });
+    expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+    expect((await db.select().from(nativeRunFinalizations))[0]?.controllerGeneration).toBe(0);
+  });
+
+  it("still checks other issues in a session when the originating issue is eligible", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    const other = await seedSession({ companyId: session.companyId, agentId: session.agentId,
+      issueStatus: "in_progress", finalization: { phase: "committed" } });
+    await db.update(heartbeatRuns).set({ nativeSessionId: session.sessionId }).where(eq(heartbeatRuns.id, other.runId));
+    await db.delete(agentTaskSessions);
+    expect(await service().tickCheckpoints()).toMatchObject({ expiredCheckpoints: 0, failed: 0 });
+    expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+  });
+
   it("continues checkpoint expiration past retained sessions within bounded pages", async () => {
     for (let index = 0; index < 3; index++) {
       const session = await seedSession({ finalization: { phase: "committed" } });

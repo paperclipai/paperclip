@@ -891,6 +891,18 @@ The exact run also needs its successful workspace-finalization receipt. Pending
 final-reply recovery shares its discovery predicate with the recovery worker, and
 live warm sessions remain local work through close/checkpoint completion.
 
+Startup checkpoint expiration excludes originating issues that are open, recently
+closed, or still have an execution owner before opening per-session transactions.
+The destructive transaction still checks every session run and issue, locks
+finalizations, and checks leases and resume pointers. This is one bounded startup
+pass, with bounded failure retries; protected checkpoints wait for a later startup.
+The synthetic PostgreSQL comparison checks identical retained parts and writer
+generations, then measures query/row counts, Node CPU, and foreground HTTP progress:
+
+```sh
+node --import ./server/node_modules/tsx/dist/loader.mjs scripts/benchmark-checkpoint-expiration.ts --baseline-ref=<pre-fix-commit>
+```
+
 ## Feedback history and idle sleep
 
 Automatic idle checks treat private, unshared feedback as saved data. A sent
