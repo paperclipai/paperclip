@@ -38,6 +38,44 @@ describe("routable blocked notifications", () => {
     expect(markNotified).toHaveBeenCalledWith(now);
   });
 
+  it("does not wake an agent that blocks an issue and names itself, and records it as notified", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+    const now = new Date("2026-11-02T12:00:00.000Z");
+
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue(),
+      actorAgentId: agentId,
+      wakeup,
+      markNotified,
+      now: () => now,
+    })).resolves.toBe(false);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(markNotified).toHaveBeenCalledWith(now);
+  });
+
+  it("still wakes the named agent when a board user blocks the issue", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({ issue: blockedIssue(), actorAgentId: null, wakeup, markNotified }))
+      .resolves.toBe(true);
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ reason: "issue_unblock_requested" }));
+  });
+
+  it("still wakes the named agent when another agent blocks the issue", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue(),
+      actorAgentId: "00000000-0000-4000-8000-000000000003",
+      wakeup,
+      markNotified,
+    })).resolves.toBe(true);
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ reason: "issue_unblock_requested" }));
+  });
+
   it("leaves pre-existing blocked issues untouched", async () => {
     const wakeup = vi.fn(async () => undefined);
     const markNotified = vi.fn(async () => undefined);
