@@ -2458,6 +2458,12 @@ async function startRuntime(input: {
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
+  const { providers: customProviders, resolvedSecretValues: customProviderSecretValues } =
+    parseOpenCodeCustomProviders(input.options.environment);
+  if (customProviderSecretValues.length > 0) {
+    sensitiveValues.push(...customProviderSecretValues);
+    input.trace?.addSensitiveValues(customProviderSecretValues);
+  }
   const providerRoute = modelProvider === "openrouter"
     ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
     : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
@@ -2510,18 +2516,29 @@ async function startRuntime(input: {
       // catalog. Bind the already-qualified exact model slug into the built-in
       // provider instead of silently falling back or rejecting a newer model.
       provider: {
+        ...customProviders,
         [modelProvider!]: {
-          ...(modelProvider === "openrouter" ? { options: { headers: OPENROUTER_ATTRIBUTION_HEADERS } } : {}),
+          ...customProviders[modelProvider!],
+          ...(modelProvider === "openrouter"
+            ? {
+                options: {
+                  ...record(customProviders[modelProvider!]?.options),
+                  headers: OPENROUTER_ATTRIBUTION_HEADERS,
+                },
+              }
+            : {}),
           ...(providerProxy ? {
             npm: "@ai-sdk/openai-compatible",
             name: modelProvider === "openrouter" ? "OpenRouter" : "Paperclip connection",
             options: {
+              ...record(customProviders[modelProvider!]?.options),
               ...(modelProvider === "openrouter" ? { headers: OPENROUTER_ATTRIBUTION_HEADERS } : {}),
               baseURL: providerProxy.baseURL,
               apiKey: providerProxy.token,
             },
           } : {}),
           models: {
+            ...record(customProviders[modelProvider!]?.models),
             [providerModelId]: {
               name: providerModelId,
               ...(modelProvider === "openrouter"
@@ -3180,6 +3197,58 @@ function record(value: unknown): Record<string, unknown> {
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const OPENCODE_CUSTOM_PROVIDERS_ENV = "PAPERCLIP_OPENCODE_PROVIDERS";
+
+function expandEnvPlaceholders(
+  value: unknown,
+  resolve: (name: string) => string | undefined,
+  resolvedSecretValues: string[],
+): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
+      const entry = resolve(name);
+      if (entry === undefined || entry.length === 0) return match;
+      resolvedSecretValues.push(entry);
+      return entry;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => expandEnvPlaceholders(entry, resolve, resolvedSecretValues));
+  }
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = expandEnvPlaceholders(entry, resolve, resolvedSecretValues);
+    }
+    return out;
+  }
+  return value;
+}
+
+export function parseOpenCodeCustomProviders(
+  environment: Record<string, string | undefined> | undefined,
+): { providers: Record<string, Record<string, unknown>>; resolvedSecretValues: string[] } {
+  const raw = environment?.[OPENCODE_CUSTOM_PROVIDERS_ENV];
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return { providers: {}, resolvedSecretValues: [] };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { providers: {}, resolvedSecretValues: [] };
+  }
+  if (!isRecord(parsed)) return { providers: {}, resolvedSecretValues: [] };
+  const resolvedSecretValues: string[] = [];
+  const resolve = (name: string) => environment?.[name];
+  const providers: Record<string, Record<string, unknown>> = {};
+  for (const [providerId, entry] of Object.entries(parsed)) {
+    if (!isRecord(entry)) continue;
+    providers[providerId] = expandEnvPlaceholders(entry, resolve, resolvedSecretValues) as Record<string, unknown>;
+  }
+  return { providers, resolvedSecretValues };
 }
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
