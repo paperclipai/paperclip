@@ -1082,6 +1082,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         }
       }).catch(() => false);
       expect(issueRowFree).toBe(true);
+      // Dispatch creates its issue in a separate transaction that must update
+      // companies.issueCounter before releasing the routine. Recovery must not
+      // hold the company row while waiting for that routine.
+      const companyRowFree = await probeDb.transaction(async (tx) => {
+        await tx.select({ id: companies.id }).from(companies)
+          .where(eq(companies.id, companyId)).for("update", { noWait: true });
+        return true;
+      }).catch(() => false);
+      expect(companyRowFree).toBe(true);
     } finally {
       release();
       await dispatch;

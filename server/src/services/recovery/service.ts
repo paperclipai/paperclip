@@ -4324,8 +4324,8 @@ export function recoveryService(
     const publications: ActivityPublication[] = [];
     const postCommitActions: IssuePostCommitAction[] = [];
     const updated = await db.transaction(async (tx) => {
-      // Lock order for a routine firing: company, routine, project, then issue.
-      // Company pause/archive updates lock the company before cascading to work.
+      // Lock the routine before company, project, and issue rows. Dispatch holds
+      // the routine while issue creation increments the company counter.
       // `dispatchRoutineRun` holds the routine row while `create` waits for the
       // company `issue-privacy-tree` lock, and `createChild` holds that company
       // lock while waiting for the parent issue row. Taking the issue row here
@@ -4335,15 +4335,18 @@ export function recoveryService(
         ? readNonEmptyString(input.issue.originId)
         : null;
       if (originRoutineId) {
-        // Hold eligibility stable until cancellation commits, and take this lock
-        // before issue rows to match company pause/archive cascades.
-        await tx.select({ id: companies.id }).from(companies).where(
-          eq(companies.id, input.issue.companyId),
-        ).for("share");
         const lockedRoutine = await tx.select({ projectId: routines.projectId }).from(routines).where(and(
           eq(routines.companyId, input.issue.companyId),
           eq(routines.id, originRoutineId),
         )).for("share").then((rows) => rows[0] ?? null);
+        // A company pause/archive can already hold this row before cascading
+        // to routines. Do not wait in the reverse order: leave this candidate
+        // untouched for a later sweep. Once acquired, keep eligibility stable
+        // until cancellation commits.
+        const lockedCompany = await tx.select({ id: companies.id }).from(companies).where(
+          eq(companies.id, input.issue.companyId),
+        ).for("share", { skipLocked: true }).then((rows) => rows[0] ?? null);
+        if (!lockedCompany) return null;
         // The project row comes next, still before the issue row: a project
         // edit locks the project and then rewrites its issues, so reading the
         // project after the issue (inside `routineExecutionWillFireAgain`)
