@@ -1,0 +1,122 @@
+{
+  "schema": "paperclip.pi-native-controls-proof.v1",
+  "sourceRevision": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+  "providerPackDigest": "sha256:4df7e9fa164929c7ae7d8e8711f0bf7d587d9fa6a246d0a8340f318f57168855",
+  "profileDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+  "actualSelectedModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "modelPromptRequests": 1,
+  "visibleText": "STEERED_CURRENTQUEUED_NEXT",
+  "staleSteerRejected": true,
+  "permissionRequests": 1,
+  "settlement": {
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 2030,
+      "outputTokens": 1293,
+      "cachedReadTokens": 5632,
+      "cachedWriteTokens": 0,
+      "totalTokens": 8955,
+      "_meta": {
+        "paperclipPi": {
+          "provenance": "assistant_message_receipts",
+          "costUsd": 0.000803936,
+          "costSource": "pi_pricing_estimate"
+        }
+      }
+    },
+    "metadata": null
+  },
+  "oracle": {
+    "markerExistedBefore": false,
+    "markerExistsAfter": false,
+    "method": "independent filesystem stat before cleanup"
+  },
+  "limits": [
+    "Direct ACP active steering, queued native follow-up and owned extension denial; durable PRP restart replay is not exercised.",
+    "Pipe write acknowledgement is followed by the matching failed tool update and settled prompt."
+  ],
+  "attemptId": "pi-native-controls-02",
+  "profileVersion": 4,
+  "qualificationStatus": "pending",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "execution": "direct-native-acp"
+  },
+  "controls": [
+    {
+      "method": "pi/steer",
+      "kind": "steer",
+      "accepted": true,
+      "activePromptPending": true,
+      "ackBeforePermissionResponse": true,
+      "activeSessionIdentityMatched": true
+    },
+    {
+      "method": "pi/follow_up",
+      "kind": "follow_up",
+      "accepted": true,
+      "activePromptPending": true,
+      "ackBeforePermissionResponse": true,
+      "activeSessionIdentityMatched": true
+    }
+  ],
+  "decision": {
+    "count": 1,
+    "normalizedInvocationId": "pi-1635ad4557c73da41a62a757dc1598a7acfc89ed44351ffe5a36d615d7e6493a",
+    "toolTitle": "Pi write",
+    "originalOfferedOptionIds": [
+      "allow_once",
+      "allow_always",
+      "reject_once"
+    ],
+    "selectedOriginalOptionId": "reject_once",
+    "persistedAndFsyncedBeforeResponse": true,
+    "pipeWriteAcknowledged": true,
+    "matchingFailedToolUpdate": true,
+    "rawRequestAndSessionIdsRetainedPrivately": true
+  },
+  "result": {
+    "durationSeconds": 20.255,
+    "exitCode": 0,
+    "stopReason": null,
+    "status": "passed"
+  },
+  "cost": {
+    "catalogEstimateUsd": 0.000803936,
+    "costSource": "pi_pricing_estimate",
+    "providerReportedUsd": null,
+    "observedKeyDeltaUsd": 0.000546502,
+    "earlyObservedKeyDeltaUsd": 0,
+    "cumulativeObservedExclusiveKeyDeltaUsd": 0.028706633,
+    "billingReconciliation": "Later exclusive-key observation resolves initial unchanged reads; no intervening provider activity."
+  },
+  "supervision": {
+    "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "source": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+    "packDigest": "sha256:4df7e9fa164929c7ae7d8e8711f0bf7d587d9fa6a246d0a8340f318f57168855",
+    "reservationUsd": 2,
+    "billingWatchdogUsd": 0.5,
+    "activeDeadlineSeconds": 120,
+    "outerDeadlineSeconds": 300,
+    "deadlineClocks": [
+      "wall",
+      "monotonic"
+    ],
+    "sleepAssertion": "caffeinate -i",
+    "automaticRetries": 0,
+    "providerPromptMaximum": 1
+  },
+  "cleanup": {
+    "probeFinallyCompleted": true,
+    "childCloseAndVerifiedCommandLeaseCloseAwaited": true,
+    "temporaryWorkspaceRemovalAwaited": true,
+    "matchingLiveProbeOrPiProcesses": 0,
+    "databaseStarted": false
+  },
+  "publication": {
+    "hiddenReasoningIncluded": false,
+    "credentialsIncluded": false,
+    "providerSessionIdsIncluded": false
+  }
+}

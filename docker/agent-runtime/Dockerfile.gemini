@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+RUN npm install -g @google/gemini-cli@latest \
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
+
+USER 1000:1000
+
+# Verify the CLI is on PATH for the shim's exec.LookPath
+RUN command -v gemini >/dev/null 2>&1 || (echo "gemini not on PATH"; exit 1)
+
+# Pre-select the gemini-api-key auth mode: gemini-cli refuses headless runs with
+# "Invalid auth method selected." unless settings.json picks an auth type (the
+# GEMINI_DEFAULT_AUTH_TYPE env alone does NOT work, proven empirically). Both
+# schema generations are written (selectedAuthType = legacy, security.auth
+# .selectedType = current). Correct for managed-gateway AND BYOK api-key modes;
+# OAuth flows are interactive and out of scope for sandbox pods.
+RUN mkdir -p /home/paperclip/.gemini \
+    && printf '%s\n' '{"selectedAuthType":"gemini-api-key","security":{"auth":{"selectedType":"gemini-api-key"}}}' > /home/paperclip/.gemini/settings.json

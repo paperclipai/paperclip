@@ -1,3 +1,4 @@
+import { describeError } from "../api/errors";
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -12,6 +13,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { Badge } from "@/components/ui/badge";
 
 type StatusFilter = "pending" | "all";
 
@@ -49,7 +51,7 @@ export function Approvals() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(describeError(err, { action: "approve this request" }).body);
     },
   });
 
@@ -60,7 +62,7 @@ export function Approvals() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(describeError(err, { action: "reject this request" }).body);
     },
   });
 
@@ -75,7 +77,7 @@ export function Approvals() {
   ).length;
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
 
   if (isLoading) {
@@ -88,12 +90,12 @@ export function Approvals() {
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
           <PageTabBar items={[
             { value: "pending", label: <>Pending{pendingCount > 0 && (
-              <span className={cn(
-                "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+              <Badge variant="ghost" className={cn(
+                "ml-1.5 px-1.5 text-(length:--text-nano)",
                 "bg-yellow-500/20 text-yellow-500"
               )}>
                 {pendingCount}
-              </span>
+              </Badge>
             )}</> },
             { value: "all", label: "All" },
           ]} />

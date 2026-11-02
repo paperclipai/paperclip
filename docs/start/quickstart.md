@@ -25,7 +25,7 @@ npx paperclipai run
 
 ## Local Development
 
-For contributors working on Paperclip itself. Prerequisites: Node.js 20+ and pnpm 9+.
+For contributors working on Paperclip itself. Prerequisites: Node.js 24.11+ and pnpm 9+.
 
 Clone the repository, then:
 

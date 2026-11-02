@@ -1,6 +1,6 @@
 import { unprocessable } from "../errors.js";
 
-function isGitHubDotCom(hostname: string) {
+export function isGitHubDotCom(hostname: string) {
   const h = hostname.toLowerCase();
   return h === "github.com" || h === "www.github.com";
 }

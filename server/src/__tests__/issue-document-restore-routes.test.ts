@@ -46,6 +46,7 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
@@ -111,10 +112,13 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
     executionWorkspaceService: () => ({}),
@@ -240,6 +244,7 @@ describe("issue document revision routes", () => {
         changeSummary: null,
         createdByAgentId: null,
         createdByUserId: "board-user",
+        createdByRunId: "33333333-3333-4333-8333-333333333333",
         createdAt: new Date("2026-03-26T12:00:00.000Z"),
       },
     ]);
@@ -290,8 +295,18 @@ describe("issue document revision routes", () => {
         title: "Plan v2",
         format: "markdown",
         body: "# Two",
+        createdByRunId: "33333333-3333-4333-8333-333333333333",
       }),
     ]);
+  });
+
+  it("does not expose revision bodies or writer run IDs when task read access is denied", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: false, action: "issue:read", reason: "deny_issue_private",
+      explanation: "Task read access denied." });
+    const res = await request(await createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Issue not found" });
+    expect(mockDocumentsService.listIssueDocumentRevisions).not.toHaveBeenCalled();
   });
 
   it("filters system documents by default on the document list route", async () => {
@@ -345,7 +360,7 @@ describe("issue document revision routes", () => {
     }));
   });
 
-  it("blocks cheap status-only recovery runs from restoring issue documents", async () => {
+  it("blocks status-only recovery runs from restoring issue documents", async () => {
     mockIssueService.getById.mockResolvedValueOnce({
       id: issueId,
       companyId,
@@ -364,7 +379,6 @@ describe("issue document revision routes", () => {
         source: "agent_jwt",
       },
       createRunContextDb({
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -375,7 +389,7 @@ describe("issue document revision routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("Cheap status-only recovery runs cannot update issue documents");
+    expect(res.body.error).toContain("Status-only recovery runs cannot update issue documents");
     expect(mockDocumentsService.restoreIssueDocumentRevision).not.toHaveBeenCalled();
   });
 

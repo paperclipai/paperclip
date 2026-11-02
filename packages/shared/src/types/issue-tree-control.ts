@@ -113,3 +113,8 @@ export interface IssueTreeHold {
   updatedAt: Date;
   members?: IssueTreeHoldMember[];
 }
+
+/** A completed release can include best-effort wake failures. */
+export interface ReleaseIssueTreeHoldResponse extends IssueTreeHold {
+  wakeFailures?: Array<{ issueId: string; message: string }>;
+}

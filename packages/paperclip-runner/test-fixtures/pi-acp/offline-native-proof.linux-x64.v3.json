@@ -1,0 +1,42 @@
+{
+  "provider": "pi",
+  "target": {
+    "platform": "linux",
+    "architecture": "x64"
+  },
+  "sourceSha": "06cf356a8bc94f709fcd15606fe05e17933fe3b2",
+  "packDigest": "sha256:5d4cf665692088c34b90f46fc37d943e63dbf81cdfb0bed890b626d145aeebf0",
+  "candidate": {
+    "version": "0.84.2",
+    "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+    "closureDigest": "sha256:002812b62463ffae84b8e8b58567a6f4ba5025dd830528c5ed3b4c50c2a0ee29",
+    "qualification": "pending",
+    "path": "provider-assets/pi/linux-x64",
+    "sha256": "sha256:1122af73027d3824b3cc964e4d85f80dd6c28216300be7f12842786732d15b72"
+  },
+  "commandDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+  "runnerdSha256": "7935dd1ab411c0e4a577fbad0d7dc432b5bc396cc349f2fd597fa97c28a039a7",
+  "protocolVersion": 1,
+  "nativeInfo": {
+    "name": "pi-acp",
+    "title": "pi ACP adapter",
+    "version": "0.0.33"
+  },
+  "exitCode": 0,
+  "eofSettled": true,
+  "prompts": 0,
+  "network": "none",
+  "credentials": false,
+  "schema": "paperclip.pi-linux-native-admission-proof.v1",
+  "imageDigest": "sha256:c5fa7976bba92a186a2f70dc8b8ddc58ab86606b80a819c89bf550d2d057c832",
+  "imageName": "ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-14a042557b61ea6e83046aa67c2d10028ed6a21101444ee6adc9d1c69b3d27db",
+  "profileVersion": 3,
+  "sourceBoundary": "Pi-only committed source06cf, before combined provider stack. No authenticated session or Daytona allocation.",
+  "qualificationStatus": "pending",
+  "publicationBoundary": {
+    "hiddenReasoningIncluded": false,
+    "rawTranscriptsIncluded": false,
+    "providerSessionIdsIncluded": false,
+    "credentialsIncluded": false
+  }
+}

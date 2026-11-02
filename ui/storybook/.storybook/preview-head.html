@@ -1,0 +1,7 @@
+<script>
+  // Give the iframe a dark canvas before the JS/CSS graph loads. React applies
+  // the selected story theme before mounting the app (including light stories).
+  const storybookTheme = new URLSearchParams(location.search).get("globals")?.includes("theme:light") ? "light" : "dark";
+  document.documentElement.classList.toggle("dark", storybookTheme === "dark");
+  document.documentElement.style.colorScheme = storybookTheme;
+</script>

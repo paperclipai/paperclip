@@ -1,0 +1,271 @@
+{
+  "audit": {
+    "file": "ui/src/pages/Timeline.test.tsx",
+    "base": "c39262305b6b48a5decd564af8369083cd972b33",
+    "originalSha256": "19543e8f10e41d438633bd3a825f45a9fa3c56f2807c01bc245b4e8e185a1108",
+    "candidateSha256": "8d5909b8aaf4d5d882d2fd1bc9072a2e8bb7fce9c98466ca15a6382e279ec9a7",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "additionalDeclaredCleanup": "Remove extra blank line before describe closes",
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 2,
+    "rootRendersRemoved": 2,
+    "netTestLinesRemoved": 26,
+    "migrations": [
+      {
+        "retired": "requests the collapsed app sidebar by default",
+        "keeper": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+        "setupAstEqual": true,
+        "setupBindingNormalization": null,
+        "guards": [
+          "expect(container.querySelector('[data-testid=\"request-collapsed-sidebar\"]')).not.toBeNull();"
+        ],
+        "registeredInvocationsRemoved": 1
+      },
+      {
+        "retired": "requests the company timeline without a user lens parameter",
+        "keeper": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+        "setupAstEqual": true,
+        "setupBindingNormalization": null,
+        "guards": [
+          "expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(\n      \"company-1\",\n      expect.objectContaining({\n        from: expect.any(String),\n        to: expect.any(String),\n      }),\n      { signal: expect.any(AbortSignal) },\n    );",
+          "expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty(\"userId\");"
+        ],
+        "registeredInvocationsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "0f1b173c8a399bb8c3e831edac6805634304a749faffcfff7b8b1900da3d34a3",
+  "mutationVerifierSha256": "a05f5ba9071c0ce7ce8eac1bc0f6c7dd83401c4e720816389d779f8919312064",
+  "runs": [
+    {
+      "kind": "baseline",
+      "jsonSha256": "ae7cd09b89cd59f8f56d2ce5da5de1c87118bfd6b2893f212d61feff14398d1e",
+      "logSha256": "85573e535172170fc924ed4ec78737698a3a21cebb3cc9d1aa5fdc72564c44c8",
+      "total": 9,
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "kind": "candidate",
+      "jsonSha256": "8ae0a854a756f627c20177d38418368d2ba82e141cc85a2010136af545449938",
+      "logSha256": "122fdad4346b64464466e96f0f34d5169578dcdc83de673df9ea82306a51224f",
+      "total": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "collapsed",
+      "owner": "ui/src/pages/Timeline.tsx",
+      "sourceSha256": "32dd72ff0b295bf23863f438a1be2b0262f039ea4e86b20c0e8df12abc5fb703",
+      "title": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+      "mutation": {
+        "before": "{!embedded && <RequestCollapsedSidebar />}",
+        "after": "{false && !embedded && <RequestCollapsedSidebar />}",
+        "replacementCount": 2,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(container.querySelector('[data-testid=\"request-collapsed-sidebar\"]')).not.toBeNull()",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "3c601ebb6478cc5815ab76983793956f042357ebc63a753df89d786ff5487e7d",
+        "logSha256": "bc0475e992fcaddd61f32e2bc5038fc469b86a8895c33159909cb089f5f1fc1b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "1669312785afa8b36c3e8495ff74cadddc7669a208289aa2a18687b4035cb89e",
+        "logSha256": "caf49d3737ee24ea97c9f3adbf9165b8943ee107f66454c0a594ae5015afbc81",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected null not to be null\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/pages/Timeline.test.tsx:187:86\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "userId",
+      "owner": "ui/src/pages/Timeline.tsx",
+      "sourceSha256": "32dd72ff0b295bf23863f438a1be2b0262f039ea4e86b20c0e8df12abc5fb703",
+      "title": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+      "mutation": {
+        "before": "      ...params,",
+        "after": "      ...params,\n      userId: \"unexpected-user\",",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty(\"userId\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "f7f10efaff0dd60e4cdcf0cc25f48382b14abc2223a8999e570444988940af60",
+        "logSha256": "eb14e95f3ba6aa4ef7c296071894a3ef933c82f5d89d9624e2fba7ce6faadd5b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "d809b1ab3cc65b66e7de8d8f09dc33f26ab2ce30c45fd7d5b1960389628cb0e8",
+        "logSha256": "73d702114b4bb05f2629e7b07be87a62b0cbdfb92958c2db55a3808bb7156b6f",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected { \u2026(5) } to not have property \"userId\"\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/pages/Timeline.test.tsx:197:60\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "company",
+      "owner": "ui/src/pages/Timeline.tsx",
+      "sourceSha256": "32dd72ff0b295bf23863f438a1be2b0262f039ea4e86b20c0e8df12abc5fb703",
+      "title": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+      "mutation": {
+        "before": "workTimelineApi.get(companyId, {",
+        "after": "workTimelineApi.get(\"wrong-company\", {",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "cd568cc81271b304b2fc0c977a746436f7e6b49ebbc5e2f662fc9edfd20d517e",
+        "logSha256": "b0e17b15d6b5feeeabfa130ef7450242c7903631ee3ad90c15c348bea3924e8b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "5336632844af286db208fdf555dd21685ab4e6cc22ac09f26ad3550379d24bc0",
+        "logSha256": "340421b7b504bd8d0676f36fc2761f33a1a492e3e93dc3fb2bd8b5e183d13546",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ 'company-1', \u2026(2) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   \"company-1\",\n-   ObjectContaining {\n-     \"from\": Any<String>,\n-     \"to\": Any<String>,\n+   \"wrong-company\",\n+   {\n+     \"from\": \"2026-10-06T05:00:00.000Z\",\n+     \"limit\": 500,\n+     \"offset\": 0,\n+     \"to\": \"2026-10-13T04:59:59.999Z\",\n    },\n    {\n-     \"signal\": Any<AbortSignal>,\n+     \"signal\": AbortSignal {\n+       Symbol(kEvents): Map {},\n+       Symbol(events.maxEventTargetListeners): 0,\n+       Symbol(events.maxEventTargetListenersWarned): false,\n+       Symbol(kHandlers): Map {},\n+       Symbol(kAborted): false,\n+       Symbol(kReason): undefined,\n+       Symbol(kComposite): false,\n+     },\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/pages/Timeline.test.tsx:189:37\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "from",
+      "owner": "ui/src/pages/Timeline.tsx",
+      "sourceSha256": "32dd72ff0b295bf23863f438a1be2b0262f039ea4e86b20c0e8df12abc5fb703",
+      "title": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+      "mutation": {
+        "before": "      ...params,",
+        "after": "      ...params,\n      from: 123,",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "0aa7e25d872ce8864151a25adf4ed3d744b425e99273a24a55edf55f6ab1b6ba",
+        "logSha256": "aaf0f2657f7bb1ca04517ce053e0728fb83c94223664d4ef1fb0cae0f9d61cd5",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "9feb2d30523ad4e7567d61d28e24f69eaa1a1869eaf1ff6e01cdb829d5c50b15",
+        "logSha256": "dd4740f663a636023f5ced054eaed3e51b0d1ee3db5df51f8f0127c8329564a6",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ 'company-1', \u2026(2) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n    \"company-1\",\n-   ObjectContaining {\n-     \"from\": Any<String>,\n-     \"to\": Any<String>,\n+   {\n+     \"from\": 123,\n+     \"limit\": 500,\n+     \"offset\": 0,\n+     \"to\": \"2026-10-13T04:59:59.999Z\",\n    },\n    {\n-     \"signal\": Any<AbortSignal>,\n+     \"signal\": AbortSignal {\n+       Symbol(kEvents): Map {},\n+       Symbol(events.maxEventTargetListeners): 0,\n+       Symbol(events.maxEventTargetListenersWarned): false,\n+       Symbol(kHandlers): Map {},\n+       Symbol(kAborted): false,\n+       Symbol(kReason): undefined,\n+       Symbol(kComposite): false,\n+     },\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/pages/Timeline.test.tsx:189:37\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "to",
+      "owner": "ui/src/pages/Timeline.tsx",
+      "sourceSha256": "32dd72ff0b295bf23863f438a1be2b0262f039ea4e86b20c0e8df12abc5fb703",
+      "title": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+      "mutation": {
+        "before": "      ...params,",
+        "after": "      ...params,\n      to: 123,",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "21260048ec34af7eda86634ddd81d75077b8e8cbaa7b8fd54406a59de8ac2d7c",
+        "logSha256": "3100577ba46ffe7b80de31995086231d60745954b26e5e95cab0462b7925f4bf",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "8c49b367f7089b044ea8084ec2c03f7896402544b0d1f917601d941b000c4355",
+        "logSha256": "e00c810574b08bb023ddb25751e81a0320b013ea8bd6b9a25f4b56406a246ccb",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ 'company-1', \u2026(2) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n    \"company-1\",\n-   ObjectContaining {\n-     \"from\": Any<String>,\n-     \"to\": Any<String>,\n+   {\n+     \"from\": \"2026-10-06T05:00:00.000Z\",\n+     \"limit\": 500,\n+     \"offset\": 0,\n+     \"to\": 123,\n    },\n    {\n-     \"signal\": Any<AbortSignal>,\n+     \"signal\": AbortSignal {\n+       Symbol(kEvents): Map {},\n+       Symbol(events.maxEventTargetListeners): 0,\n+       Symbol(events.maxEventTargetListenersWarned): false,\n+       Symbol(kHandlers): Map {},\n+       Symbol(kAborted): false,\n+       Symbol(kReason): undefined,\n+       Symbol(kComposite): false,\n+     },\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/pages/Timeline.test.tsx:189:37\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "signal",
+      "owner": "ui/src/pages/Timeline.tsx",
+      "sourceSha256": "32dd72ff0b295bf23863f438a1be2b0262f039ea4e86b20c0e8df12abc5fb703",
+      "title": "renders range controls plus icon zoom controls without the user lens selector or visible-duration readout",
+      "mutation": {
+        "before": "    }, { signal });",
+        "after": "    }, { signal: undefined });",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "f7137b440fa63b4b7dfcaa7d733a6836389ff6a3385d768021dcd9cd4a600961",
+        "logSha256": "74011dd8441e744c01a605d359e1f714fef60505e180f010bd7a364962ff038b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "e52b536a50fd6fd1dfa8aeb0a71411e67277be3003911be7e592a3d70657c7c7",
+        "logSha256": "e8be8243f0804bb96128cc9b62c55658309267c156cf0bc238081d317f1f3eb5",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ 'company-1', \u2026(2) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n    \"company-1\",\n-   ObjectContaining {\n-     \"from\": Any<String>,\n-     \"to\": Any<String>,\n+   {\n+     \"from\": \"2026-10-06T05:00:00.000Z\",\n+     \"limit\": 500,\n+     \"offset\": 0,\n+     \"to\": \"2026-10-13T04:59:59.999Z\",\n    },\n    {\n-     \"signal\": Any<AbortSignal>,\n+     \"signal\": undefined,\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/pages/Timeline.test.tsx:189:37\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0,
+  "postControlPolish": {
+    "controlCandidateSha256": "e5f6171e4fa9998e4bf14edad445701c5ae003f401875e7fcf278546e3f9cdf7",
+    "polishedCandidateSha256": "8d5909b8aaf4d5d882d2fd1bc9072a2e8bb7fce9c98466ca15a6382e279ec9a7",
+    "difference": "Remove extra blank line before describe closes",
+    "allIntendedGuardStatementsAndLocationsUnchanged": true,
+    "completePolishedFileReplayPassed": true
+  }
+}

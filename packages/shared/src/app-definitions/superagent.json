@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "slug": "superagent",
+  "name": "Superagent",
+  "description": "Review security findings, start red-team reports, and score content and packages before agents trust them.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/superagent.png"
+  },
+  "urlPatterns": [
+    "https://www.superagent.sh/*"
+  ],
+  "docsUrl": "https://www.superagent.sh/docs/mcp",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Connect with a Superagent organization API key.",
+      "defaults": {
+        "serverUrl": "https://www.superagent.sh/mcp"
+      },
+      "guidanceMd": "Open Superagent Settings → API keys, create a separate key for Paperclip, and paste it below.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Superagent API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "sk_live_...",
+          "secret": true,
+          "helperMd": "Superagent organization keys are not scoped: a key reaches everything in its organization, including permanently deleting findings and starting billable report and triage work. Create a separate key for Paperclip so it can be revoked independently, and set billable and destructive actions to Ask first before agents run unattended."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://www.superagent.sh/app/settings#api-keys",
+        "docs": "https://www.superagent.sh/docs/mcp"
+      },
+      "warnings": [
+        "Superagent report and triage tools consume organization credits, and deleting a finding is permanent. Set those actions to Ask first before agents run unattended."
+      ]
+    }
+  ]
+}

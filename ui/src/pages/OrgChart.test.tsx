@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { OrgChart } from "./OrgChart";
 
 const navigateMock = vi.fn();
@@ -128,6 +129,8 @@ describe("OrgChart mobile gestures", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
   let queryClient: QueryClient;
+  let viewportWidth: number;
+  let viewportHeight: number;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -135,19 +138,21 @@ describe("OrgChart mobile gestures", () => {
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    viewportWidth = 360;
+    viewportHeight = 520;
     orgMock.mockResolvedValue(orgTree);
     listMock.mockResolvedValue(agents);
 
     Object.defineProperty(HTMLElement.prototype, "clientWidth", {
       configurable: true,
       get() {
-        return this.getAttribute("data-testid") === "org-chart-viewport" ? 360 : 0;
+        return this.getAttribute("data-testid") === "org-chart-viewport" ? viewportWidth : 0;
       },
     });
     Object.defineProperty(HTMLElement.prototype, "clientHeight", {
       configurable: true,
       get() {
-        return this.getAttribute("data-testid") === "org-chart-viewport" ? 520 : 0;
+        return this.getAttribute("data-testid") === "org-chart-viewport" ? viewportHeight : 0;
       },
     });
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function getRect(this: HTMLElement) {
@@ -157,10 +162,10 @@ describe("OrgChart mobile gestures", () => {
           y: 0,
           left: 0,
           top: 0,
-          right: 360,
-          bottom: 520,
-          width: 360,
-          height: 520,
+          right: viewportWidth,
+          bottom: viewportHeight,
+          width: viewportWidth,
+          height: viewportHeight,
           toJSON: () => ({}),
         };
       }
@@ -261,5 +266,33 @@ describe("OrgChart mobile gestures", () => {
     });
 
     expect(layer.style.transform).toBe("translate(-45px, 40px) scale(1.5)");
+  });
+
+  it("does not produce a negative zoom while the viewport has no usable height", async () => {
+    viewportHeight = 2;
+    const { layer } = await renderOrgChart();
+
+    expect(layer.style.transform).toBe("translate(0px, 0px) scale(1)");
+
+    await act(async () => {
+      (container.querySelector('[aria-label="Fit chart to screen"]') as HTMLButtonElement).click();
+    });
+
+    expect(layer.style.transform).toBe("translate(0px, 0px) scale(1)");
+  });
+
+  it("shows both portability buttons on self-hosted instances", async () => {
+    await renderOrgChart();
+
+    expect(container.textContent).toContain("Import organization");
+    expect(container.textContent).toContain("Export organization");
+  });
+
+  it("hides the Import button but keeps Export on a Cloud-managed instance", async () => {
+    queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    await renderOrgChart();
+
+    expect(container.textContent).not.toContain("Import organization");
+    expect(container.textContent).toContain("Export organization");
   });
 });

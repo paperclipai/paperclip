@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/usage.schema.json",
+  "title": "PRP provider usage receipt",
+  "type": "object",
+  "required": ["provider", "model", "cumulative", "runDelta"],
+  "properties": {
+    "provider": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "model": { "type": ["string", "null"], "maxLength": 240 },
+    "providerSessionId": { "type": ["string", "null"], "maxLength": 240 },
+    "providerRequestId": { "type": ["string", "null"], "maxLength": 240 },
+    "cumulative": { "$ref": "#/$defs/measurement" },
+    "runDeltaAvailable": { "type": "boolean" },
+    "runDeltaBasis": { "const": "run" },
+    "reconciliation": {
+      "type": "object",
+      "required": [
+        "reason",
+        "receivedTurnId",
+        "cumulative",
+        "priorOrigin"
+      ],
+      "properties": {
+        "reason": {
+          "const": "accounting_reconciliation_required"
+        },
+        "receivedTurnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 240
+        },
+        "cumulative": {
+          "$ref": "#/$defs/measurement"
+        },
+        "priorOrigin": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "runnerInstanceId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+            "itemId"
+          ],
+          "properties": {
+            "runnerInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "normalizedSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "turnId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "itemId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "runDelta": { "$ref": "#/$defs/measurement" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "measurement": {
+      "type": "object",
+      "required": ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "activeSeconds", "requests", "providerCostUsd"],
+      "properties": {
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "cacheReadTokens": { "type": "integer", "minimum": 0 },
+        "cacheWriteTokens": { "type": "integer", "minimum": 0 },
+        "activeSeconds": { "type": "number", "minimum": 0 },
+        "requests": { "type": "integer", "minimum": 0 },
+        "providerCostUsd": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

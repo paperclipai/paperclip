@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: gateways-profiles
+status: planned
+scenarios:
+  - id: gateways-profiles.create-gateway
+    capabilities:
+      - gateways-profiles/gateway
+    context: >-
+      A tool access profile exists; gateway management requires tools:admin in board context.
+    query: >-
+      Create a gateway for our website team's tools.
+    expected_outcome: >-
+      The agent identifies the profile and supported gateway-management step for the authorized
+      human. The eventual endpoint references the intended profile and company. Chat does not
+      expose a token or claim that an ordinary agent can create a management endpoint merely
+      because it can use assigned tools.
+  - id: gateways-profiles.define-profile
+    capabilities:
+      - gateways-profiles/profiles
+    context: >-
+      The company wants a reusable read-only notes profile and has no matching profile;
+      management is board-only.
+    query: >-
+      Make a tools profile with Notion reads and no write actions.
+    expected_outcome: >-
+      The human configuration path saves the intended account and allowed read actions while
+      excluding writes. Chat distinguishes a profile draft from a published effective
+      assignment. Empty agent selections, company-wide access and action policy are not
+      conflated.
+  - id: gateways-profiles.connect-client
+    capabilities:
+      - gateways-profiles/client-connect
+    context: >-
+      The agent has an admitted runtime and may create a scoped tool session for its own
+      assigned profile.
+    query: >-
+      Use the tools from our launch profile for this task.
+    expected_outcome: >-
+      The supported session or client path binds only the current authorized task and effective
+      profile. Discovery and a bounded synthetic read prove access while disallowed writes
+      remain denied. Chat does not copy an operator token or assume every optional MCP client is
+      installed in the runtime.
+  - id: gateways-profiles.rotate-token
+    capabilities:
+      - gateways-profiles/tokens
+    context: >-
+      An existing gateway client token needs replacement; only authorized board management can
+      create or revoke it.
+    query: >-
+      Replace the old gateway token for our test client.
+    expected_outcome: >-
+      The agent directs the human through scoped token management and secure one-time delivery.
+      The test client uses the new credential and the old one is revoked at the intended point.
+      Token bytes never enter chat, and unrelated clients' credentials retain their existing
+      access.
+  - id: gateways-profiles.inspect-gateway-error
+    capabilities:
+      - gateways-profiles/activity
+    context: >-
+      A tool call failed and the agent has its own receipt; company-wide gateway audit requires
+      board permission.
+    query: >-
+      Why did the notes tool fail for Morgan?
+    expected_outcome: >-
+      The agent uses any permitted task receipt or routes the person to the authorized gateway
+      audit view. It distinguishes policy denial, discovery failure and provider error when
+      evidence supports that distinction. It does not fabricate Morgan's tool history or claim
+      its own receipt represents all gateway activity.

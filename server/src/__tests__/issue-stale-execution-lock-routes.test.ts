@@ -4,6 +4,8 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  authUsers,
+  companyMemberships,
   activityLog,
   agents,
   companies,
@@ -47,7 +49,9 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -78,6 +82,8 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(authUsers).values({ id: "board-user", name: "Board", email: "board@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "admin" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -147,6 +153,9 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionAgentNameKey: "codexcoder",
       executionLockedAt: new Date(),
     });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
 
     const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
       .patch(`/api/issues/${issueId}`)
@@ -170,6 +179,85 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionRunId: currentRunId,
     });
   });
+
+  it.each([
+    { status: "done" as const, title: "Done release preserves owner", completedAt: new Date(), retainAssignee: true },
+    { status: "cancelled" as const, title: "Cancelled release preserves owner", cancelledAt: new Date(), retainAssignee: true },
+    { status: "in_review" as const, title: "In review release preserves status" },
+    { status: "blocked" as const, title: "Blocked release preserves status" },
+    { status: "backlog" as const, title: "Backlog release relinquishes ownership" },
+    { status: "todo" as const, title: "Todo release relinquishes ownership" },
+    { status: "in_progress" as const, title: "Active release requeues work", expectedStatus: "todo" },
+  ])(
+    "$title and clears execution locks",
+    async ({ status, title, completedAt, cancelledAt, retainAssignee, expectedStatus = status }) => {
+      const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title,
+        status,
+        priority: "medium",
+        assigneeAgentId: agentId,
+        checkoutRunId: currentRunId,
+        executionRunId: currentRunId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date(),
+        ...(completedAt ? { completedAt } : {}),
+        ...(cancelledAt ? { cancelledAt } : {}),
+      });
+
+      const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+        .post(`/api/issues/${issueId}/release`)
+        .send();
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const expectedAssignee = retainAssignee ? agentId : null;
+      expect(res.body).toMatchObject({ status: expectedStatus, assigneeAgentId: expectedAssignee });
+
+      const row = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
+          completedAt: issues.completedAt,
+          cancelledAt: issues.cancelledAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]);
+      expect(row).toEqual({
+        status: expectedStatus,
+        assigneeAgentId: expectedAssignee,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        completedAt: completedAt ?? null,
+        cancelledAt: cancelledAt ?? null,
+      });
+
+      const events = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+      expect(events).toContainEqual(expect.objectContaining({
+        action: "issue.released", companyId, agentId, runId: currentRunId,
+      }));
+
+      if (retainAssignee) {
+        // Repeated cleanup, including by the board, must not erase attribution.
+        const retried = await request(createApp(boardActor(companyId)))
+          .post(`/api/issues/${issueId}/release`)
+          .send();
+        expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+        expect(retried.body).toMatchObject({ status, assigneeAgentId: agentId, checkoutRunId: null, executionRunId: null });
+        const [saved] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(saved).toMatchObject(row);
+      }
+    },
+  );
 
   it("allows the rightful assignee to release after the owning run failed", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
@@ -213,6 +301,147 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
+  it("lets the current assignee recover a timed_out stale checkout owner during PATCH", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const timedOutRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: timedOutRunId,
+      companyId,
+      agentId,
+      status: "timed_out",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: timedOutRunId,
+      executionRunId: timedOutRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Recovered stale checkout lock" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("still returns 409 when a different live checkout owner is active", async () => {
+    const { companyId, agentId, failedRunId } = await seedCompanyAgentAndRuns();
+    const liveOwnerRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: liveOwnerRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live checkout lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: liveOwnerRunId,
+      executionRunId: liveOwnerRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, failedRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should fail" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body?.error).toBe("Issue run ownership conflict");
+  });
+
+  it("preserves live checkout ownership on checkout conflicts without retry side effects", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const contenderRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: contenderRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live checkout race",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, contenderRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Issue checkout conflict",
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const checkoutActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checked_out"));
+    expect(checkoutActivity).toHaveLength(0);
+  });
+
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
@@ -241,7 +470,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       source: "session",
     }))
       .post(`/api/issues/${issueId}/admin/force-release`)
-      .expect(403);
+      .expect(404);
 
     const res = await request(createApp(boardActor(companyId)))
       .post(`/api/issues/${issueId}/admin/force-release?clearAssignee=true`)
@@ -281,6 +510,67 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         prevExecutionRunId: failedRunId,
         clearAssignee: true,
       },
+    });
+  });
+
+  it("self-heals a stale checkoutRunId via clearCheckoutRunIfTerminal on checkout (Fix B path)", async () => {
+    // Reproduces the recurrence pattern: prior owning run died, executionRunId
+    // was cleared by releaseIssueExecutionAndPromote, but checkoutRunId stayed
+    // pinned to the dead run. The new agent's POST /checkout would 409 forever
+    // without the clearCheckoutRunIfTerminal helper in svc.checkout.
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout lock after reassignment",
+      // Status off in_progress + checkoutRunId still set — adoptStaleCheckoutRun
+      // cannot recover from this; only clearCheckoutRunIfTerminal can.
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: otherAgentId,
+      checkoutRunId: failedRunId,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const res = await request(createApp(agentActor(companyId, otherAgentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId: otherAgentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      assigneeAgentId: otherAgentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
     });
   });
 });

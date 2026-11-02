@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { workspaceFileRefSchema } from "./workspace-file-resource.js";
+import { objectWithoutDefaults } from "./partial.js";
 
 function attachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
@@ -34,7 +36,7 @@ export const issueWorkProductReviewStateSchema = z.enum([
 ]);
 
 export const attachmentArtifactWorkProductMetadataSchema = z.object({
-  attachmentId: z.string().uuid(),
+  attachmentId: z.string().guid(),
   contentType: z.string().min(1),
   byteSize: z.number().int().nonnegative(),
   contentPath: z.string().min(1),
@@ -68,10 +70,18 @@ export const attachmentArtifactWorkProductMetadataSchema = z.object({
 
 export type AttachmentArtifactWorkProductMetadata = z.infer<typeof attachmentArtifactWorkProductMetadataSchema>;
 
+export const issueWorkProductMetadataSchema = z
+  .object({
+    resourceRef: workspaceFileRefSchema.optional().nullable(),
+  })
+  .passthrough();
+
+export type IssueWorkProductMetadata = z.infer<typeof issueWorkProductMetadataSchema>;
+
 export const createIssueWorkProductSchema = z.object({
-  projectId: z.string().uuid().optional().nullable(),
-  executionWorkspaceId: z.string().uuid().optional().nullable(),
-  runtimeServiceId: z.string().uuid().optional().nullable(),
+  projectId: z.string().guid().optional().nullable(),
+  executionWorkspaceId: z.string().guid().optional().nullable(),
+  runtimeServiceId: z.string().guid().optional().nullable(),
   type: issueWorkProductTypeSchema,
   provider: z.string().min(1),
   externalId: z.string().optional().nullable(),
@@ -82,12 +92,14 @@ export const createIssueWorkProductSchema = z.object({
   isPrimary: z.boolean().optional().default(false),
   healthStatus: z.enum(["unknown", "healthy", "unhealthy"]).optional().default("unknown"),
   summary: z.string().optional().nullable(),
-  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
-  createdByRunId: z.string().uuid().optional().nullable(),
+  metadata: issueWorkProductMetadataSchema.optional().nullable(),
+  createdByRunId: z.string().guid().optional().nullable(),
 });
 
 export type CreateIssueWorkProduct = z.infer<typeof createIssueWorkProductSchema>;
 
-export const updateIssueWorkProductSchema = createIssueWorkProductSchema.partial();
+export const updateIssueWorkProductSchema = objectWithoutDefaults(
+  createIssueWorkProductSchema,
+).partial();
 
 export type UpdateIssueWorkProduct = z.infer<typeof updateIssueWorkProductSchema>;

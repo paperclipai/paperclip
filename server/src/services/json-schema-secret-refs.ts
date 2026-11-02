@@ -5,6 +5,31 @@ export function isUuidSecretRef(value: string): boolean {
   return UUID_RE.test(value);
 }
 
+export type SecretRefBindingObject = {
+  secretId: string;
+  version: "latest" | number;
+};
+
+/**
+ * Parses the `{ type: "secret_ref", secretId, version? }` binding object that
+ * secret pickers submit for `format: "secret-ref"` config fields. Returns null
+ * for anything else (raw values, bare secret-id strings, malformed objects).
+ */
+export function parseSecretRefBindingObject(value: unknown): SecretRefBindingObject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "secret_ref") return null;
+  if (typeof record.secretId !== "string" || !isUuidSecretRef(record.secretId.trim())) return null;
+  const version = record.version;
+  if (version === undefined || version === null || version === "latest") {
+    return { secretId: record.secretId.trim(), version: "latest" };
+  }
+  if (typeof version === "number" && Number.isInteger(version) && version > 0) {
+    return { secretId: record.secretId.trim(), version };
+  }
+  return null;
+}
+
 export function collectSecretRefPaths(
   schema: Record<string, unknown> | null | undefined,
 ): Set<string> {

@@ -1,0 +1,151 @@
+{
+  "schema": "paperclip.pi-product-plan-failure.v1",
+  "attemptId": "pi-product-plan-02",
+  "sourceRevision": "e35b11db21b8da8527fa0b6c6f5fe186bdced111",
+  "packSourceRevision": "7ab463697037c9456a4ad2b83ea0e9c28b353f8a",
+  "profileVersion": 3,
+  "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+  "providerPackDigest": "sha256:0800f10114e3d8e2e981ea27f0ab47f1da9349dbcc22bf55a76ebbc4af00601d",
+  "runnerdDigest": "sha256:955d0714472a0a8727aaac55c357425b4157cba54f37483ded58217e8859a26d",
+  "runnerBuild": {
+    "sourceRevision": "e35b11db21b8da8527fa0b6c6f5fe186bdced111",
+    "rustTree": "e2c76e35ae8bb19b968a64a2b2eb75c6df216c82",
+    "sha256": "955d0714472a0a8727aaac55c357425b4157cba54f37483ded58217e8859a26d",
+    "mode": "0555",
+    "build": "cargo build --release --locked -p paperclip-runner-core --bin paperclip-runnerd -j2",
+    "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472"
+  },
+  "executionTrees": {
+    "packages/paperclip-runner/src": "c1d4c8f25cce16c3600697b9430480d5711c84bd",
+    "packages/paperclip-runner/scripts": "651962ebb671e1de4fbc1b0886051955de5ed4fd",
+    "packages/paperclip-runner/runner": "e2c76e35ae8bb19b968a64a2b2eb75c6df216c82",
+    "patches": "3384cf8e956e766c4ec730ccf76c424ab9d99ec9",
+    "server/src": "1a4c4b7000becae6021d74e7dc0f2f36180c767c",
+    "tests/runner-e2e": "6d15ec5668fda2eed3bd308e11e0fda0cf48ca19"
+  },
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "execution": "local"
+  },
+  "result": {
+    "status": "failed",
+    "failureClass": "candidate_failure",
+    "durationMs": 260246,
+    "supervisorDurationSeconds": 288.581,
+    "outerDeadlineFired": false,
+    "matcherResults": [],
+    "cleanup": "passed"
+  },
+  "semanticState": {
+    "issueStatus": "in_progress",
+    "initialRunStatus": "succeeded",
+    "initialRunDisposition": "yielded",
+    "resumedRunStatus": "failed",
+    "resumedRunErrorCode": "native_session_interrupted",
+    "resumedRunError": "native session timed out after 120000ms",
+    "planRevision": 1,
+    "planBody": "# OpenRouter breadth plan 4842a379236d-1\n\nPlan status marker: PC_P_READY_4842a379236d-1\n\n## Steps\n\n1. Survey the OpenRouter provider surface relevant to breadth coverage, inventory available models/providers and the current integration gaps, and record findings as the basis for the work items.\n2. Define the concrete breadth expansion work items (target providers, models, and acceptance criteria) and sequence them for implementation after this plan is approved.",
+    "confirmationStatus": "accepted",
+    "confirmationResult": {
+      "version": 1,
+      "outcome": "accepted"
+    },
+    "targetRevisionMatchesPlan": true,
+    "canonicalNativePlanBoundaryPassed": true
+  },
+  "resumedToolResults": [
+    {
+      "executionId": "call_0",
+      "name": "paperclip_finish",
+      "namespace": "paperclip",
+      "transport": "mcp",
+      "status": "failed",
+      "output": "{\"content\":[{\"type\":\"text\",\"text\":\"Paperclip tool request was rejected: completionClaim.criteria must contain exactly these criterion IDs, once each: [\\\"human_response\\\"]. Keep contractRevision \\\"2\\\" and correct the report without repeating completed work.\"}],\"details\":{}}",
+      "outputTruncated": false
+    },
+    {
+      "executionId": "call_0",
+      "name": "paperclip_finish",
+      "namespace": "paperclip",
+      "transport": "mcp",
+      "status": "failed",
+      "output": "{\"content\":[{\"type\":\"text\",\"text\":\"Paperclip tool request was rejected: Duplicate call identity conflict.\"}],\"details\":{}}",
+      "outputTruncated": false
+    },
+    {
+      "executionId": "call_0",
+      "name": "get_task_context",
+      "namespace": "paperclip",
+      "transport": "mcp",
+      "status": "failed",
+      "output": "{\"content\":[{\"type\":\"text\",\"text\":\"Paperclip tool request was rejected: Duplicate call identity conflict.\"}],\"details\":{}}",
+      "outputTruncated": false
+    }
+  ],
+  "diagnosis": {
+    "projectionRepair": "5aa02662b34fc70f5fe9ffd5ac8f7ae81b5fe3bd",
+    "projectionConfirmed": "Canonical Plan preview matched before revision-bound acceptance; tool names now normalize to MCP namespace/name.",
+    "laterBoundary": "All three distinct resumed semantic executions reuse native call_0. Owned extension forwards it as MCP JSON-RPC id, causing shared exact-call dedupe to reject later corrected/different requests.",
+    "requiredFix": "Occurrence-scoped provider-owned identities, keeping exact invocation replay and shared bridge authority intact.",
+    "timeoutChanged": false,
+    "graderChanged": false
+  },
+  "usage": {
+    "byRun": [
+      null,
+      null
+    ],
+    "coverage": "unavailable"
+  },
+  "cost": {
+    "exclusiveKeyDeltaUsd": 0.002440082,
+    "providerReportedUsd": null,
+    "terminalUsageAvailable": false
+  },
+  "screenshots": {
+    "pending": {
+      "sha256": "fb25f41cee954bf808614623011cab696abaf728878a400422fdc51b094a94b3",
+      "visuallyInspected": true,
+      "observed": [
+        "Plan revision1 at canonical tool boundary",
+        "complete two-step Plan in side pane",
+        "Confirm and Request changes"
+      ]
+    },
+    "failure": {
+      "sha256": "de6f1e84f7b329a99f76e90fcbba7db788d9189bee0f616bc89c423835694fe4",
+      "visuallyInspected": true,
+      "observed": [
+        "Accepted Plan context",
+        "visible completion validation correction",
+        "Run failed banner"
+      ]
+    }
+  },
+  "supervision": {
+    "reservationUsd": 2,
+    "billingWatchdogUsd": 0.5,
+    "activeTimeoutSeconds": 120,
+    "outerTimeoutSeconds": 300,
+    "deadlineClocks": [
+      "wall",
+      "monotonic"
+    ],
+    "sleepAssertion": "caffeinate -i",
+    "automaticRetries": 0
+  },
+  "cleanup": {
+    "canonicalCleanupPassed": true,
+    "fixtureRootRemoved": true,
+    "residualAttemptProcesses": 0
+  },
+  "qualificationStatus": "pending",
+  "publicationBoundary": {
+    "credentialsIncluded": false,
+    "hiddenReasoningIncluded": false,
+    "rawTranscriptsIncluded": false,
+    "providerSessionIdsIncluded": false
+  }
+}

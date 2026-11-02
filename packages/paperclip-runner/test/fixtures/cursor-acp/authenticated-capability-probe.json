@@ -1,0 +1,2271 @@
+{
+  "schema": "paperclip-cursor-authenticated-capability-probe/v1",
+  "capturedAt": "2026-09-28T19:09:06.609Z",
+  "runnerSourceRevision": "653ea40135b1dc6586b8de4ebf49ad5befbc6e66",
+  "packSourceRevision": "a92d06ca5940a42d45cba937f19ba7e7e9c03018",
+  "providerVersion": "2026.09.26-dd393fe",
+  "credentialKind": "explicit CURSOR_AUTH_TOKEN; value withheld",
+  "modelPromptCalls": 0,
+  "scope": "Native ACP discovery and configuration through verified installation lease; not runner/product inference qualification",
+  "modelCatalog": [
+    {
+      "value": "default",
+      "name": "Auto",
+      "configOptions": []
+    },
+    {
+      "value": "grok-4.7",
+      "name": "Grok 4.7",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "256k",
+          "options": [
+            {
+              "value": "256k",
+              "name": "256K"
+            },
+            {
+              "value": "500k",
+              "name": "500K"
+            }
+          ]
+        },
+        {
+          "id": "reasoning_effort",
+          "name": "Effort",
+          "description": "Controls how much reasoning effort the model uses before responding.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "Significantly faster but consumes more usage",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast\u200b\u200b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "grok-4.6",
+      "name": "Grok 4.6",
+      "configOptions": [
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "Significantly faster but consumes more usage",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast\u200b\u200b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "composer-2.5",
+      "name": "Composer 2.5",
+      "configOptions": [
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "Significantly faster but consumes more usage",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but significantly faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-opus-5",
+      "name": "Claude Opus 5",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but significantly faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-opus-4-8",
+      "name": "Claude Opus 4.8",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but significantly faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "272k",
+          "options": [
+            {
+              "value": "272k",
+              "name": "272K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "None"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.5",
+      "name": "GPT-5.5",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "272k",
+          "options": [
+            {
+              "value": "272k",
+              "name": "272K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "None"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "extra-high",
+              "name": "Extra High"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2.5x more expensive, but faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-fable-5",
+      "name": "Claude Fable 5",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "grok-4.5",
+      "name": "Grok 4.5",
+      "configOptions": [
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "Significantly faster but consumes more usage",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast\u200b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "configOptions": [
+        {
+          "id": "reasoning_effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash",
+      "configOptions": [
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "muse-spark-1.3",
+      "name": "Muse Spark 1.3",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "minimal",
+              "name": "Minimal"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.6-terra",
+      "name": "GPT-5.6 Terra",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "272k",
+          "options": [
+            {
+              "value": "272k",
+              "name": "272K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "None"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "reasoning_effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-sonnet-5",
+      "name": "Claude Sonnet 5",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-sonnet-4-6",
+      "name": "Claude Sonnet 4.6",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "200k",
+          "options": [
+            {
+              "value": "200k",
+              "name": "200K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.3-codex",
+      "name": "Codex 5.3",
+      "configOptions": [
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "extra-high",
+              "name": "Extra High"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-opus-4-7",
+      "name": "Claude Opus 4.7",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "300k",
+          "options": [
+            {
+              "value": "300k",
+              "name": "300K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "xhigh",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "6x more expensive, but significantly faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.4",
+      "name": "GPT-5.4",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "272k",
+          "options": [
+            {
+              "value": "272k",
+              "name": "272K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "None"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "extra-high",
+              "name": "Extra High"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-opus-4-6",
+      "name": "Claude Opus 4.6",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "200k",
+          "options": [
+            {
+              "value": "200k",
+              "name": "200K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-opus-4-5",
+      "name": "Claude Opus 4.5",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.2",
+      "name": "GPT-5.2",
+      "configOptions": [
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "extra-high",
+              "name": "Extra High"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.6-luna",
+      "name": "GPT-5.6 Luna",
+      "configOptions": [
+        {
+          "id": "context",
+          "name": "Context",
+          "description": "Context size the model has available.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "272k",
+          "options": [
+            {
+              "value": "272k",
+              "name": "272K"
+            },
+            {
+              "value": "1m",
+              "name": "1M"
+            }
+          ]
+        },
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "None"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        },
+        {
+          "id": "fast",
+          "name": "Fast",
+          "description": "2x more expensive, but faster speeds.",
+          "category": "model_config",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "Fast"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gemini-3.6-flash",
+      "name": "Gemini 3.6 Flash",
+      "configOptions": [
+        {
+          "id": "effort",
+          "name": "Effort",
+          "description": "Effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "minimal",
+              "name": "Minimal"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gemini-3.1-pro",
+      "name": "Gemini 3.1 Pro",
+      "configOptions": []
+    },
+    {
+      "value": "gpt-5.4-mini",
+      "name": "GPT-5.4 Mini",
+      "configOptions": [
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "None"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.4-nano",
+      "name": "GPT-5.4 Nano",
+      "configOptions": [
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "None"
+            },
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "xhigh",
+              "name": "Extra High"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "claude-sonnet-4-5",
+      "name": "Claude Sonnet 4.5",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "true",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5.1",
+      "name": "GPT-5.1",
+      "configOptions": [
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "medium",
+              "name": "Medium"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gemini-3-flash",
+      "name": "Gemini 3 Flash",
+      "configOptions": []
+    },
+    {
+      "value": "gemini-3.5-flash",
+      "name": "Gemini 3.5 Flash",
+      "configOptions": []
+    },
+    {
+      "value": "claude-sonnet-4",
+      "name": "Claude Sonnet 4",
+      "configOptions": [
+        {
+          "id": "thinking",
+          "name": "Thinking",
+          "description": "Does the model use thinking to generate its response?",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "false",
+          "options": [
+            {
+              "value": "false",
+              "name": "Off"
+            },
+            {
+              "value": "true",
+              "name": "On"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "gpt-5-mini",
+      "name": "GPT-5 Mini",
+      "configOptions": []
+    },
+    {
+      "value": "gemini-2.5-flash",
+      "name": "Gemini 2.5 Flash",
+      "configOptions": []
+    },
+    {
+      "value": "kimi-k3",
+      "name": "Kimi K3",
+      "configOptions": [
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "max",
+          "options": [
+            {
+              "value": "low",
+              "name": "Low"
+            },
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": "kimi-k2.7-code",
+      "name": "Kimi K2.7 Code",
+      "configOptions": []
+    },
+    {
+      "value": "glm-5.2",
+      "name": "GLM 5.2",
+      "configOptions": [
+        {
+          "id": "reasoning",
+          "name": "Reasoning",
+          "description": "Reasoning effort the model uses to generate its response.",
+          "category": "thought_level",
+          "type": "select",
+          "currentValue": "high",
+          "options": [
+            {
+              "value": "high",
+              "name": "High"
+            },
+            {
+              "value": "max",
+              "name": "Max"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "ordinaryPicker": {
+    "sessionCreationSucceeded": true,
+    "availableModels": [
+      {
+        "modelId": "default[]",
+        "name": "Auto"
+      },
+      {
+        "modelId": "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
+        "name": "grok-4.7"
+      },
+      {
+        "modelId": "grok-4.6[effort=high,fast=true]",
+        "name": "grok-4.6"
+      },
+      {
+        "modelId": "composer-2.5[fast=true]",
+        "name": "composer-2.5"
+      },
+      {
+        "modelId": "claude-opus-5-5[context=300k,effort=medium,fast=false]",
+        "name": "claude-opus-5-5"
+      },
+      {
+        "modelId": "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+        "name": "claude-opus-5"
+      },
+      {
+        "modelId": "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+        "name": "claude-opus-4-8"
+      },
+      {
+        "modelId": "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+        "name": "gpt-5.6-sol"
+      },
+      {
+        "modelId": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+        "name": "gpt-5.5"
+      },
+      {
+        "modelId": "claude-fable-5-1[thinking=true,context=300k,effort=high]",
+        "name": "claude-fable-5-1"
+      },
+      {
+        "modelId": "claude-fable-5[thinking=true,context=300k,effort=high]",
+        "name": "claude-fable-5"
+      },
+      {
+        "modelId": "grok-4.5[effort=high,fast=true]",
+        "name": "grok-4.5"
+      },
+      {
+        "modelId": "gemini-3.8-flash[reasoning_effort=high]",
+        "name": "gemini-3.8-flash"
+      },
+      {
+        "modelId": "gemini-3.7-flash[effort=high]",
+        "name": "gemini-3.7-flash"
+      },
+      {
+        "modelId": "muse-spark-1.3[context=300k,effort=high]",
+        "name": "muse-spark-1.3"
+      },
+      {
+        "modelId": "gpt-5.6-terra[context=272k,reasoning=medium,fast=false]",
+        "name": "gpt-5.6-terra"
+      },
+      {
+        "modelId": "claude-sonnet-5-5[context=300k,reasoning_effort=high]",
+        "name": "claude-sonnet-5-5"
+      },
+      {
+        "modelId": "claude-sonnet-5[thinking=true,context=300k,effort=high]",
+        "name": "claude-sonnet-5"
+      },
+      {
+        "modelId": "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+        "name": "claude-sonnet-4-6"
+      },
+      {
+        "modelId": "gpt-5.3-codex[reasoning=medium,fast=false]",
+        "name": "gpt-5.3-codex"
+      },
+      {
+        "modelId": "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]",
+        "name": "claude-opus-4-7"
+      },
+      {
+        "modelId": "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+        "name": "gpt-5.4"
+      },
+      {
+        "modelId": "claude-opus-4-6[thinking=true,context=200k,effort=high]",
+        "name": "claude-opus-4-6"
+      },
+      {
+        "modelId": "claude-opus-4-5[thinking=true]",
+        "name": "claude-opus-4-5"
+      },
+      {
+        "modelId": "gpt-5.2[reasoning=medium,fast=false]",
+        "name": "gpt-5.2"
+      },
+      {
+        "modelId": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "name": "gpt-5.6-luna"
+      },
+      {
+        "modelId": "gemini-3.6-flash[effort=high]",
+        "name": "gemini-3.6-flash"
+      },
+      {
+        "modelId": "gemini-3.1-pro[]",
+        "name": "gemini-3.1-pro"
+      },
+      {
+        "modelId": "gpt-5.4-mini[reasoning=medium]",
+        "name": "gpt-5.4-mini"
+      },
+      {
+        "modelId": "gpt-5.4-nano[reasoning=medium]",
+        "name": "gpt-5.4-nano"
+      },
+      {
+        "modelId": "claude-haiku-4-5[thinking=true]",
+        "name": "claude-haiku-4-5"
+      },
+      {
+        "modelId": "claude-sonnet-4-5[thinking=true,context=200k]",
+        "name": "claude-sonnet-4-5"
+      },
+      {
+        "modelId": "gpt-5.1[reasoning=medium]",
+        "name": "gpt-5.1"
+      },
+      {
+        "modelId": "gemini-3-flash[]",
+        "name": "gemini-3-flash"
+      },
+      {
+        "modelId": "gemini-3.5-flash[]",
+        "name": "gemini-3.5-flash"
+      },
+      {
+        "modelId": "claude-sonnet-4[thinking=false,context=200k]",
+        "name": "claude-sonnet-4"
+      },
+      {
+        "modelId": "gpt-5-mini[]",
+        "name": "gpt-5-mini"
+      },
+      {
+        "modelId": "gemini-2.5-flash[]",
+        "name": "gemini-2.5-flash"
+      },
+      {
+        "modelId": "kimi-k3[reasoning=max]",
+        "name": "kimi-k3"
+      },
+      {
+        "modelId": "kimi-k2.7-code[]",
+        "name": "kimi-k2.7-code"
+      },
+      {
+        "modelId": "glm-5.2[reasoning=high]",
+        "name": "glm-5.2"
+      }
+    ],
+    "selectedModel": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+    "setModelSucceeded": true,
+    "returnedConfiguration": [
+      {
+        "id": "mode",
+        "name": "Mode",
+        "description": "Controls how the agent executes tasks",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "agent",
+        "options": [
+          {
+            "value": "agent",
+            "name": "Agent",
+            "description": "Full agent capabilities with tool access"
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Read-only mode for planning and designing before implementation"
+          },
+          {
+            "value": "ask",
+            "name": "Ask",
+            "description": "Q&A mode - no edits or command execution"
+          }
+        ]
+      },
+      {
+        "id": "model",
+        "name": "Model",
+        "description": "Controls which model variant is used for responses",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "options": [
+          {
+            "value": "default[]",
+            "name": "Auto"
+          },
+          {
+            "value": "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
+            "name": "grok-4.7"
+          },
+          {
+            "value": "grok-4.6[effort=high,fast=true]",
+            "name": "grok-4.6"
+          },
+          {
+            "value": "composer-2.5[fast=true]",
+            "name": "composer-2.5"
+          },
+          {
+            "value": "claude-opus-5-5[context=300k,effort=medium,fast=false]",
+            "name": "claude-opus-5-5"
+          },
+          {
+            "value": "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-5"
+          },
+          {
+            "value": "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-4-8"
+          },
+          {
+            "value": "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-sol"
+          },
+          {
+            "value": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.5"
+          },
+          {
+            "value": "claude-fable-5-1[thinking=true,context=300k,effort=high]",
+            "name": "claude-fable-5-1"
+          },
+          {
+            "value": "claude-fable-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-fable-5"
+          },
+          {
+            "value": "grok-4.5[effort=high,fast=true]",
+            "name": "grok-4.5"
+          },
+          {
+            "value": "gemini-3.8-flash[reasoning_effort=high]",
+            "name": "gemini-3.8-flash"
+          },
+          {
+            "value": "gemini-3.7-flash[effort=high]",
+            "name": "gemini-3.7-flash"
+          },
+          {
+            "value": "muse-spark-1.3[context=300k,effort=high]",
+            "name": "muse-spark-1.3"
+          },
+          {
+            "value": "gpt-5.6-terra[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-terra"
+          },
+          {
+            "value": "claude-sonnet-5-5[context=300k,reasoning_effort=high]",
+            "name": "claude-sonnet-5-5"
+          },
+          {
+            "value": "claude-sonnet-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-sonnet-5"
+          },
+          {
+            "value": "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+            "name": "claude-sonnet-4-6"
+          },
+          {
+            "value": "gpt-5.3-codex[reasoning=medium,fast=false]",
+            "name": "gpt-5.3-codex"
+          },
+          {
+            "value": "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]",
+            "name": "claude-opus-4-7"
+          },
+          {
+            "value": "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.4"
+          },
+          {
+            "value": "claude-opus-4-6[thinking=true,context=200k,effort=high]",
+            "name": "claude-opus-4-6"
+          },
+          {
+            "value": "claude-opus-4-5[thinking=true]",
+            "name": "claude-opus-4-5"
+          },
+          {
+            "value": "gpt-5.2[reasoning=medium,fast=false]",
+            "name": "gpt-5.2"
+          },
+          {
+            "value": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-luna"
+          },
+          {
+            "value": "gemini-3.6-flash[effort=high]",
+            "name": "gemini-3.6-flash"
+          },
+          {
+            "value": "gemini-3.1-pro[]",
+            "name": "gemini-3.1-pro"
+          },
+          {
+            "value": "gpt-5.4-mini[reasoning=medium]",
+            "name": "gpt-5.4-mini"
+          },
+          {
+            "value": "gpt-5.4-nano[reasoning=medium]",
+            "name": "gpt-5.4-nano"
+          },
+          {
+            "value": "claude-haiku-4-5[thinking=true]",
+            "name": "claude-haiku-4-5"
+          },
+          {
+            "value": "claude-sonnet-4-5[thinking=true,context=200k]",
+            "name": "claude-sonnet-4-5"
+          },
+          {
+            "value": "gpt-5.1[reasoning=medium]",
+            "name": "gpt-5.1"
+          },
+          {
+            "value": "gemini-3-flash[]",
+            "name": "gemini-3-flash"
+          },
+          {
+            "value": "gemini-3.5-flash[]",
+            "name": "gemini-3.5-flash"
+          },
+          {
+            "value": "claude-sonnet-4[thinking=false,context=200k]",
+            "name": "claude-sonnet-4"
+          },
+          {
+            "value": "gpt-5-mini[]",
+            "name": "gpt-5-mini"
+          },
+          {
+            "value": "gemini-2.5-flash[]",
+            "name": "gemini-2.5-flash"
+          },
+          {
+            "value": "kimi-k3[reasoning=max]",
+            "name": "kimi-k3"
+          },
+          {
+            "value": "kimi-k2.7-code[]",
+            "name": "kimi-k2.7-code"
+          },
+          {
+            "value": "glm-5.2[reasoning=high]",
+            "name": "glm-5.2"
+          }
+        ]
+      }
+    ],
+    "rejectedVariant": {
+      "model": "grok-4.7[context=256k,reasoning_effort=low,fast=false]",
+      "error": {
+        "code": -32602,
+        "message": "Invalid params",
+        "data": {
+          "message": "Invalid model value: grok-4.7[context=256k,reasoning_effort=low,fast=false]"
+        }
+      }
+    }
+  },
+  "parameterizedPicker": {
+    "clientCapability": {
+      "_meta": {
+        "parameterizedModelPicker": true
+      }
+    },
+    "model": "grok-4.7",
+    "returnedConfiguration": [
+      {
+        "id": "mode",
+        "currentValue": "agent"
+      },
+      {
+        "id": "model",
+        "currentValue": "grok-4.7"
+      },
+      {
+        "id": "context",
+        "currentValue": "256k"
+      },
+      {
+        "id": "reasoning_effort",
+        "currentValue": "low"
+      },
+      {
+        "id": "fast",
+        "currentValue": "false"
+      }
+    ],
+    "paperclipSupport": "Not exposed; separate model and parameter identity verification required"
+  },
+  "redactions": [
+    "All session IDs, private filesystem paths, credential values, account identity and raw stderr excluded"
+  ],
+  "qualification": {
+    "inferenceEntitlement": "unverified",
+    "runnerExecution": "pending shared sidecar admission fix",
+    "daytona": "not run",
+    "modelCosts": "no model prompt sent"
+  }
+}

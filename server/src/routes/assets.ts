@@ -1,13 +1,19 @@
+import { canActorReadAssetContent } from "../services/asset-content-access.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
-import { createAssetImageMetadataSchema } from "@paperclipai/shared";
+import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  formatAttachmentSize,
+  isAllowedContentType,
+  isInlineAttachmentContentType,
+  MAX_ATTACHMENT_BYTES,
+} from "../attachment-types.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/png",
@@ -116,7 +122,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({
+            error: `File is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -133,7 +141,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const parsedMeta = createAssetImageMetadataSchema.safeParse(req.body ?? {});
     if (!parsedMeta.success) {
-      res.status(400).json({ error: "Invalid image metadata", details: parsedMeta.error.issues });
+      res.status(400).json({
+        error: `Invalid image metadata: ${ASSET_NAMESPACE_RULE}`,
+        details: parsedMeta.error.issues,
+      });
       return;
     }
 
@@ -174,7 +185,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       sha256: stored.sha256,
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : req.actor.onBehalfOfUserId ?? null,
     });
 
     await logActivity(db, {
@@ -183,11 +194,12 @@ export function assetRoutes(db: Db, storage: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "asset.created",
       entityType: "asset",
       entityId: asset.id,
       details: {
-        originalFilename: asset.originalFilename,
+        ...(namespaceSuffix.startsWith("issues/") ? {} : { originalFilename: asset.originalFilename }),
         contentType: asset.contentType,
         byteSize: asset.byteSize,
       },
@@ -219,7 +231,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Image exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({
+            error: `Image is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -281,6 +295,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "asset.created",
       entityType: "asset",
       entityId: asset.id,
@@ -311,28 +326,53 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.get("/assets/:assetId/content", async (req, res, next) => {
     const assetId = req.params.assetId as string;
-    const asset = await svc.getById(assetId);
-    if (!asset) {
-      res.status(404).json({ error: "Asset not found" });
+    const asset = await getAccessibleResource(req, res, svc.getById(assetId), "Asset not found");
+    if (!asset) return;
+    if (!(await canActorReadAssetContent(db, req.actor, asset))) {
+      res.status(404).json({ error: "Asset not found" }); return;
+    }
+
+    // Use the persisted size only after resource authorization. Single ranges
+    // keep saved API text pages bounded all the way to disk or object storage.
+    const rawRange = req.headers.range;
+    const rangeSyntax = rawRange && /^bytes=(\d*)-(\d*)$/i.exec(rawRange);
+    const emptyRead = asset.byteSize === 0 && rangeSyntax?.[1] === "0";
+    const ranges = rawRange && !emptyRead ? req.range(asset.byteSize) : undefined;
+    res.setHeader("Accept-Ranges", "bytes");
+    if (/^[a-f0-9]{64}$/.test(asset.sha256)) res.setHeader("ETag", `"${asset.sha256}"`);
+    if (rawRange && (!rangeSyntax || (!rangeSyntax[1] && !rangeSyntax[2])
+      || (!emptyRead && (!Array.isArray(ranges) || ranges.length !== 1)))) {
+      res.setHeader("Content-Range", `bytes */${asset.byteSize}`);
+      res.status(416).end();
       return;
     }
-    assertCompanyAccess(req, asset.companyId);
-
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+    const range = Array.isArray(ranges) ? ranges[0] : undefined;
+    const object = await storage.getObject(asset.companyId, asset.objectKey, range ? { range } : undefined);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
+    const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const inlineSafe = mediaType !== SVG_CONTENT_TYPE
+      && isInlineAttachmentContentType(mediaType);
     res.setHeader("Content-Type", responseContentType);
-    res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
-    res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("Content-Length", String(range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0));
+    if (range) {
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${asset.byteSize}`);
+    }
+    res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    if (responseContentType === SVG_CONTENT_TYPE) {
-      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+    if (!inlineSafe) {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
     }
     const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition = inlineSafe
+      ? "inline"
+      : "attachment";
+    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     object.stream.on("error", (err) => {
       next(err);
     });
+    res.on("close", () => object.stream.destroy());
     object.stream.pipe(res);
   });
 

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "slug": "github",
+  "name": "GitHub",
+  "description": "Connect GitHub repository access or authenticate GitHub Copilot agents.",
+  "categories": [
+    "developer",
+    "ai"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/github.svg",
+    "darkLogoUrl": "/brands/apps/github-dark.svg"
+  },
+  "urlPatterns": [
+    "https://api.githubcopilot.com/mcp/*",
+    "https://github.com/*"
+  ],
+  "methods": [
+    {
+      "key": "managed",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Connect your GitHub account for durable MCP, shell Git, gh, and repository access.",
+      "defaults": {
+        "serverUrl": "https://api.githubcopilot.com/mcp/"
+      },
+      "guidanceMd": "Authorize Paperclip, then choose selected repositories in GitHub. You can edit repository access later from GitHub's installation settings.",
+      "riskTier": "S3",
+      "label": "Connect GitHub",
+      "purpose": "tool",
+      "oauthStrategy": "paperclip_cloud_connector",
+      "connectorProfile": "github.code",
+      "grantKinds": [
+        "user",
+        "agent"
+      ],
+      "warnings": [
+        "Shell Git and gh receive this identity for the run and are not constrained by per-tool Ask-first controls."
+      ],
+      "requiredResourceFilters": [
+        "organization",
+        "repository"
+      ]
+    },
+    {
+      "key": "mcp-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://api.githubcopilot.com/mcp/"
+      },
+      "guidanceMd": "Create a fine-grained token limited to the repositories agents should use.",
+      "riskTier": "S3",
+      "label": "Personal access token (advanced)",
+      "purpose": "tool",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "GitHub token",
+          "type": "password",
+          "required": true,
+          "placeholder": "github_pat_...",
+          "secret": true,
+          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "requiredResourceFilters": [
+        "organization",
+        "repository"
+      ]
+    },
+    {
+      "key": "copilot-token",
+      "label": "GitHub Copilot personal access token",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "github",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate the GitHub Copilot agent runtime with a personal or explicitly shared account.",
+      "guidanceMd": "Create a personal fine-grained token with the Copilot Requests permission. Copilot authentication is separate from repository and MCP access. [GitHub authentication instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli).",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Personal access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "github_pat_...",
+          "secret": true,
+          "helperMd": "Use a personal fine-grained token with Copilot Requests permission."
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "COPILOT_GITHUB_TOKEN"
+      }
+    }
+  ]
+}
