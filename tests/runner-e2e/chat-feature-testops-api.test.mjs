@@ -196,6 +196,22 @@ test('launch configures only the exact registered public job/plan then issues on
   assert.ok(!server.calls.some(row => /jobrun.*rerun|dispatches/.test(row.route)));
 });
 
+test('backlog launch preflight sends the typed UTF-8 name filter required by TestOps', async () => {
+  const server = launchServer();
+  const api = async (route, ...args) => {
+    if (route.startsWith('/api/launch?')) {
+      const wire = new URL(route, 'https://paperclip.testops.cloud').searchParams.get('search');
+      let filters;
+      try { filters = JSON.parse(Buffer.from(wire, 'base64').toString('utf8')); }
+      catch { throw new Error('TestOps HTTP 400: typed launch search required'); }
+      assert.deepEqual(filters, [{ id: 'name', type: 'string', value: `Chat feature evals · ${launchEnv.CHAT_TESTOPS_LAUNCH_NONCE}` }]);
+    }
+    return server.api(route, ...args);
+  };
+  await launchChatPlan(api, launchEnv, async () => {}, await fence());
+  assert.equal(server.requests(), 1);
+});
+
 test('observed launch nonce prevents a second run request across separate local entry attempts', async () => {
   const server = launchServer(); await launchChatPlan(server.api, launchEnv, async () => {}, await fence());
   const result = await launchChatPlan(server.api, launchEnv, () => assert.fail('existing launch must not mark or write'), await fence());

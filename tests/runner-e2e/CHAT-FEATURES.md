@@ -239,6 +239,12 @@ Initial setup uses the existing workflow operations:
    independent checks, private-evidence receipts and cleanup. Inspect screenshots
    through authenticated private-history retrieval. Retain earlier failed attempts.
 
+Launch preflight searches use TestOps' typed name filter, encoded as Base64 of
+UTF-8 JSON in the `search` query parameter. Plain name text returns HTTP 400.
+The backlog and completion launchers share this encoding; the full-catalog
+launcher uses the completion adapter. Existing nonce and once-only guards still
+apply before a plan-run request.
+
 The runtime accepts only `operation`, `ALLURE_JOB_RUN_ID` and reserved username
 metadata. It rejects arbitrary source/model/budget selectors, branch workflows,
 replays and foreign cases. All secret-bearing jobs recheck actual GitHub run and
