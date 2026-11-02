@@ -4,9 +4,9 @@ import { and, eq, lte, or, sql } from "drizzle-orm";
 import { companies, environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
-import { ENVIRONMENT_CLEANUP_RETRY_MS } from "./environment-cleanup-state.js";
+import { ENVIRONMENT_CLEANUP_RETRY_MS, recoverableSandboxCreationCondition } from "./environment-cleanup-state.js";
 import { logger } from "../middleware/logger.js";
-import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { notifyEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 
 export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSelect;
 
@@ -80,15 +80,18 @@ export async function recordSandboxCreationResource(db: Db, input: {
   id: string; companyId: string; environmentId: string; providerLeaseId: string;
   providerMetadata?: Record<string, unknown>;
 }): Promise<void> {
-  const [recorded] = await db.update(sandboxCreationOperations).set({
-    metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ creationProviderLeaseId: input.providerLeaseId, ...(input.providerMetadata ? { creationProviderMetadata: input.providerMetadata } : {}) })}::jsonb`,
-    updatedAt: new Date(),
-  }).where(and(eq(sandboxCreationOperations.id, input.id), eq(sandboxCreationOperations.companyId, input.companyId),
-    eq(sandboxCreationOperations.originalEnvironmentId, input.environmentId),
-    or(sql`${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' is null`,
-      sql`${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' = ${input.providerLeaseId}`),
-  )).returning({ id: sandboxCreationOperations.id });
-  if (!recorded) throw new Error("Sandbox creation resource identity changed");
+  await writeEnvironmentCleanup(db, async tx => {
+    const [recorded] = await tx.update(sandboxCreationOperations).set({
+      nextAttemptAt: sql`case when ${sandboxCreationOperations.state} = 'needs_reconciliation' then clock_timestamp() else ${sandboxCreationOperations.nextAttemptAt} end`,
+      metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ creationProviderLeaseId: input.providerLeaseId, ...(input.providerMetadata ? { creationProviderMetadata: input.providerMetadata } : {}) })}::jsonb`,
+      updatedAt: new Date(),
+    }).where(and(eq(sandboxCreationOperations.id, input.id), eq(sandboxCreationOperations.companyId, input.companyId),
+      eq(sandboxCreationOperations.originalEnvironmentId, input.environmentId),
+      or(sql`${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' is null`,
+        sql`${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' = ${input.providerLeaseId}`),
+    )).returning({ id: sandboxCreationOperations.id });
+    if (!recorded) throw new Error("Sandbox creation resource identity changed");
+  }, { companyId: input.companyId });
 }
 
 export async function queueSandboxCreationCleanup(db: Db, input: {
@@ -103,10 +106,11 @@ export async function queueSandboxCreationCleanup(db: Db, input: {
       throw new Error("Sandbox creation cleanup ownership changed");
     }
     if (["attached", "cleanup_pending", "resolved"].includes(operation.state)) return;
-    if (operation.state !== "pending") throw new Error("Sandbox creation cleanup ownership changed");
-    await notifyEnvironmentCleanup(tx, { companyId: operation.companyId, runId: operation.runId });
     const contextId = operation.metadata.runnerTaskLease === true && typeof operation.metadata.runnerTaskCreationContextId === "string"
       ? operation.metadata.runnerTaskCreationContextId : null;
+    if (operation.state !== "pending" && !(operation.state === "needs_reconciliation" && contextId &&
+        operation.metadata.creationProviderLeaseId === input.providerLeaseId)) throw new Error("Sandbox creation cleanup ownership changed");
+    await notifyEnvironmentCleanup(tx, { companyId: operation.companyId, runId: operation.runId });
     const lease = await environmentService(tx as unknown as Db).insertPendingCleanupLease({
       companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
       heartbeatRunId: operation.runId, issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId,
@@ -127,7 +131,7 @@ export async function recoverSandboxCreations(db: Db,
   inspect: (operation: SandboxCreationOperation) => Promise<PluginEnvironmentLeaseObservation | null>,
 ): Promise<void> {
   const due = await db.select().from(sandboxCreationOperations).where(and(
-    eq(sandboxCreationOperations.state, "pending"), lte(sandboxCreationOperations.nextAttemptAt, new Date()),
+    recoverableSandboxCreationCondition(), lte(sandboxCreationOperations.nextAttemptAt, new Date()),
   )).limit(100);
   for (const candidate of due) {
     try {
@@ -179,7 +183,7 @@ export async function recoverSandboxCreations(db: Db,
           ? { nextAttemptAt: new Date(Date.now() + ENVIRONMENT_CLEANUP_RETRY_MS), updatedAt: new Date() }
           : { state: "needs_reconciliation", updatedAt: new Date(),
             metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || '{"creationReconciliationReason":"company_deleted"}'::jsonb` })
-          .where(and(eq(sandboxCreationOperations.id, candidate.id), eq(sandboxCreationOperations.state, "pending")));
+          .where(and(eq(sandboxCreationOperations.id, candidate.id), recoverableSandboxCreationCondition()));
         return Boolean(company);
       });
       logger.warn({ errorKind: retry ? "sandbox_creation_recovery_failed" : "sandbox_creation_needs_reconciliation", operationId: candidate.id, companyId: candidate.companyId },

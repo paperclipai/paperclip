@@ -1,5 +1,5 @@
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
-import { createOwnedSandbox } from "../services/sandbox-creation-operations.js";
+import { createOwnedSandbox, recordSandboxCreationResource } from "../services/sandbox-creation-operations.js";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,15 +116,18 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     ]));
     await quiet();
   });
-  it("settles a deleted-company creation as manual history across restart without idle polling", async () => {
+  it.each([false, true])("settles a deleted-company creation as manual history across restart without idle polling (contextual=%s)", async contextual => {
     await start(); await quiet();
-    await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {}, metadata: {} },
+    const created = await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {},
+      metadata: contextual ? { runnerTaskLease: true, runnerTaskCreationContextId: randomUUID() } : {} },
       async () => ({ providerLeaseId: "fixture-deleted-company" }));
     await db.delete(companies).where(eq(companies.id, companyId));
     await settle(31 * 60_000);
     await vi.waitFor(async () => expect(await db.select().from(sandboxCreationOperations)).toEqual([
       expect.objectContaining({ state: "needs_reconciliation", metadata: expect.objectContaining({ creationReconciliationReason: "company_deleted" }) }),
     ]));
+    if (contextual) await recordSandboxCreationResource(db, { id: String(created.metadata!.creationOperationId), companyId, environmentId,
+      providerLeaseId: created.providerLeaseId });
     await quiet();
     worker!.stop(); await coordinator!.stop();
     await start(); await quiet();
