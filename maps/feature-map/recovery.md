@@ -33,6 +33,8 @@ Agent access: [companion](../agent-access-map/recovery.md).
   tests cover cleanup acknowledgement, fenced alternatives, and receipt debt.
   Cleanup does not stage new attachments, retire another warm owner, or replay
   pending semantic work. Authenticated Core intake retains that input unanswered.
+  Close still requires confirmed provider exit, durable event drain, and exact
+  runner suspension; the cleanup purpose alone cannot certify termination.
   Hosted provider settlement remains separate acceptance.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.

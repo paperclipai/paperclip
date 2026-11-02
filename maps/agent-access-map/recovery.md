@@ -131,6 +131,8 @@ remote-session claim can reuse its original held reservation during budget pause
 fresh startup, dead-runner resume, foreign owners and missing audit proof remain
 fenced. Cleanup transport retains pending semantic input without a tool dispatch
 or reply, and grants no attachment staging or warm-owner retirement authority.
+Closing with unanswered input still requires confirmed provider exit, durable
+event drain, and exact runner suspension.
 Local PostgreSQL tests exercise the cancellation producer and late usage
 settlement. They do not prove hosted provider termination or deployed recovery.
 

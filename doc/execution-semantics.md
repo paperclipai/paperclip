@@ -284,7 +284,10 @@ cancellation producer. Only its acknowledgement closes the execution owner.
 Cleanup skips attachment staging and warm-owner retirement. Its transport
 retains authenticated pending semantic inputs without dispatch, recovery, or a
 semantic reply. The server derives this purpose from current audited Stop,
-lease, and held-reservation authority. Ordinary execution retains its existing
+lease, and held-reservation authority. Closing with unanswered input requires a
+new exact provider-stop receipt confirming process exit, the durable event drain,
+and identity-checked runner suspension. The input stays unanswered; the cleanup
+purpose alone cannot certify termination. Ordinary execution retains its existing
 semantic dispatcher requirement. Missing usage remains pending accounting debt;
 a complete receipt settles the original reservation and charge once.
 
