@@ -24,10 +24,12 @@ test.describe("failed-attempt notice", () => {
           return {
             background: style.backgroundColor,
             padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].map(parseFloat),
+            topPadding: parseFloat(getComputedStyle(element.parentElement!).paddingTop),
           };
         });
         expect(surface.background).not.toBe("rgba(0, 0, 0, 0)");
         expect(surface.padding.every(value => value > 0)).toBe(true);
+        expect(surface.topPadding).toBeCloseTo(16);
 
         const iconBounds = (await icon.boundingBox())!;
         const textBounds = (await message.boundingBox())!;

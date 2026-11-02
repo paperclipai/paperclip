@@ -214,7 +214,9 @@ use the server-owned authenticated relay. The provider sees bounded
 then uses pinned aliases. Search describes its 1–20 page limit and default of 5
 in the tool and parameter descriptions. It intersects fresh grants and work modes; calls
 retain the run's original gateway policy, validation, approvals, revocation and
-audit path. Prompt arguments cannot select gateway authority. Assigned gateway
+audit path. Blank schema references perform normal discovery; positive schema
+offsets require an exact reference, and unavailable references explain how to
+search again. Prompt arguments cannot select gateway authority. Assigned gateway
 launch credentials stay on the controller. Former direct-catalog OpenCode
 checkpoints refresh; other provider fingerprints stay unchanged. The
 [projection controls](../../server/src/services/native-runtime/assigned-mcp-tools.test.ts)

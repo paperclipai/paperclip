@@ -1,11 +1,11 @@
 import {
   COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS,
   ISSUE_PRIORITIES,
-  ISSUE_STATUSES,
+  ISSUE_DISPLAY_STATUSES,
   isUuidLike,
   normalizeAgentUrlKey,
   type IssuePriority,
-  type IssueStatus,
+  type IssueDisplayStatus,
 } from "@paperclipai/shared";
 import type { CompanySearchParams } from "@/api/search";
 
@@ -20,8 +20,8 @@ const SEARCH_FILTER_PARAM_KEYS = [
   "updatedAfter",
 ] as const;
 
-const OPEN_STATUSES: IssueStatus[] = ["backlog", "todo", "in_progress", "in_review", "blocked"];
-const CLOSED_STATUSES: IssueStatus[] = ["done", "cancelled"];
+const OPEN_STATUSES: IssueDisplayStatus[] = ["backlog", "todo", "in_progress", "monitoring", "in_review", "blocked"];
+const CLOSED_STATUSES: IssueDisplayStatus[] = ["done", "cancelled"];
 
 export type SearchOperatorKey = "status" | "assignee" | "project" | "label" | "priority" | "updated" | "is";
 
@@ -166,8 +166,8 @@ function appendText(parts: string[], raw: string) {
   if (raw.trim().length > 0) parts.push(raw);
 }
 
-function parseStatus(value: string): IssueStatus | null {
-  return (ISSUE_STATUSES as readonly string[]).includes(value) ? value as IssueStatus : null;
+function parseStatus(value: string): IssueDisplayStatus | null {
+  return (ISSUE_DISPLAY_STATUSES as readonly string[]).includes(value) ? value as IssueDisplayStatus : null;
 }
 
 function parsePriority(value: string): IssuePriority | null {
@@ -341,7 +341,7 @@ function validValues<T extends string>(values: string[], allowed: readonly T[]):
 
 export function readSearchFiltersFromParams(search: URLSearchParams): ParsedSearchQuery["filters"] {
   const filters: ParsedSearchQuery["filters"] = {};
-  const statuses = validValues(search.getAll("status").flatMap((value) => value.split(",")), ISSUE_STATUSES);
+  const statuses = validValues(search.getAll("status").flatMap((value) => value.split(",")), ISSUE_DISPLAY_STATUSES);
   const priorities = validValues(search.getAll("priority").flatMap((value) => value.split(",")), ISSUE_PRIORITIES);
   const assigneeAgentId = search.get("assigneeAgentId");
   const assigneeUserId = search.get("assigneeUserId");

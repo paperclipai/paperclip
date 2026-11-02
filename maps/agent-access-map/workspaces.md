@@ -74,6 +74,9 @@ without a controller checkout fallback. Current authorization and responsible-us
 checks still apply;
 read-only cross-project referenced folders and explicitly concurrent shared
 writers are rejected. Managed mutable same-project repositories are supported.
+Portable capture streams validated working files while staging self-contained
+Git metadata. The smaller temporary-space requirement grants no new agent access
+or execution authority. Changed sources still fail before a save receipt.
 An inherited isolated workspace or operator branch can be reserved through the
 task's current persisted binding. The original source task remains provenance.
 Reservation checks task/run, binding, trust, and retained source visibility before

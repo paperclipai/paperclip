@@ -2299,7 +2299,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId ?? ""}`,
       ));
       const retry = readTaskRetryIntent(receipt?.payload);
-      if (!receipt || retry?.generationId !== receipt.id || retry.canonicalIntentId ||
+      if (!receipt || retry?.generationId !== receipt.id || retry.canonicalIntentId || retry.queuedChatRequestId ||
           retry.actorId !== receipt.requestedByActorId) return null;
       const chatRetry = retry.chatActionId && durableRequest?.id === retry.chatActionId &&
         durableRequest.failedRunRetry?.failedRunId === retry.sourceRunId;
@@ -4369,7 +4369,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issue.id)),
                 )).then(rows => rows[0] ?? null)
               : null;
-          const canCoalesceComments = !isConversation(issue) && opts.allowRunCoalescing !== false;
+          // External input owns an exact authorized source batch. Board input
+          // must retain its separate receipt, including during normal resume.
+          const canCoalesceComments = !durableRequest && !isConversation(issue) && opts.allowRunCoalescing !== false;
           // A resumed receipt already passed admission under this issue lock.
           // Consume it with its successor even when chat keeps other messages
           // in separate turns, or finalization will deliver it a second time.

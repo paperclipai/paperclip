@@ -74,7 +74,7 @@ API: `present` — GET /api/companies/{companyId}/issues; optional view=compact.
 
 Agent access: `partial` — REST/call_api full query; CLI issue list exposes status/agent/project and local --match on one fetched page; native search_tasks query up to 500 characters, statuses, limit 1..200 (default 50), and a nextCursor in ascending task-ID order. Responses expose effective limit, returnedCount and hasMore. Exhaust nextCursor with the same filters before treating an inventory as complete. Each page checks current access; concurrent task changes require a fresh scan. Project/label/workspace knobs remain REST-only.
 
-Policy: Company/read privacy filtering and inaccessible edge redaction; task-bridge company list denied. Default 500, maximum 1000, offset>=0, sortField updated|id, sortDir asc|desc, afterId. Supports status/assignee/participant/project/workspace/parent/descendant/label/origin/text/date and routine/plugin/blocker query groups. includeAgentCreatedTasks=false filters independent roots before search/pagination; omission retains agent/API behavior. includeParticipatedTasks and user me filters require board identity. Compact ETag is actor-private; 429 is not empty results.
+Policy: Company/read privacy filtering and inaccessible edge redaction; task-bridge company list denied. Default 500, maximum 1000, offset>=0, sortField updated|created|id, sortDir asc|desc, afterId. Blocked attention lists reject created and id ordering with 422. Supports status/assignee/participant/project/workspace/parent/descendant/label/origin/text/date and routine/plugin/blocker query groups. includeAgentCreatedTasks=false filters independent roots before search/pagination; omission retains agent/API behavior. includeParticipatedTasks and user me filters require board identity. Compact ETag is actor-private; 429 is not empty results.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [issues.ts](../../server/src/services/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue.ts](../../cli/src/commands/client/issue.ts), [issues-list-query-parsing.test.ts](../../server/src/__tests__/issues-list-query-parsing.test.ts), [issues-creation-visibility.test.ts](../../server/src/__tests__/issues-creation-visibility.test.ts), [issue-list-assignee-filter-routes.test.ts](../../server/src/__tests__/issue-list-assignee-filter-routes.test.ts), [private-json-etag.test.ts](../../server/src/__tests__/private-json-etag.test.ts). No live execution claimed.
 
@@ -120,7 +120,10 @@ Agent access: `not-applicable` — no agent layout API; permitted underlying tas
 
 Policy: IssuesList loads/saves browser preferences by company/collection, with separate agent-created visibility. The Tasks page also owns a routine-only
 checkbox and `originKind=routine_execution` URL state; it uses the existing
-company-scoped task-list origin filter before pagination. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
+company-scoped task-list origin filter before pagination. Sort controls write
+`sortField` and `sortDir` to the URL; explicit URL sorting overrides browser
+preferences. `created` sorting runs on the server before pagination, with ID as
+a stable tie-breaker. The routines task link requests `created` descending. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [IssuesList.tsx](../../ui/src/components/IssuesList.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx). No live execution claimed.
 
@@ -349,6 +352,12 @@ Agent access: `partial` — authorized REST/call_api and CLI status updates; nat
 
 Policy: Task mutation/run/assignment/recovery/resolver gates. Blocked requires unresolved blocker/pending input/approval or unblockDescriptor; agent can name only SELF unblock owner. In_review requires actionable path. Native bound completion contract/criterion revision, deliverable evidence and verification must agree; done rejects unfinished work; needs_review names valid different reviewer. Pending input/approval/review/blocker can keep task open. Final state commits after provider turn/workspace finalization; report never overwrites successor/already terminal state.
 
+Board PATCH to Done or Cancelled stops an active native run before releasing
+execution ownership, even when it has no session goal. An unconfirmed stop
+returns 409 without updating the task. Native self-completion still uses its
+semantic finish tools. Route regression:
+[issue-update-comment-wakeup-routes.test.ts](../../server/src/__tests__/issue-update-comment-wakeup-routes.test.ts).
+
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [native-completion-feedback.ts](../../server/src/services/native-runtime/native-completion-feedback.ts), [native-completion-feedback.test.ts](../../server/src/services/native-runtime/native-completion-feedback.test.ts), [native-deliverable-feedback.test.ts](../../server/src/services/native-runtime/native-deliverable-feedback.test.ts), [paperclip-runner-tool-authority.test.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.test.ts), [issue-stalled-review-decision-routes.test.ts](../../server/src/__tests__/issue-stalled-review-decision-routes.test.ts). No live execution claimed.
 
 Verification: `not-run` — Actual native accepted report→provider stop→workspace finalization→persisted status/output; stale/failed report correction without repeating work. Test blocked/review/done, pending question/blocker, invalid/self/foreign reviewer, missing output and duplicate report.
@@ -516,3 +525,9 @@ Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7
 Verification: `not-run` — Compare eligible owner/admin ordinary denied with explicit read/audit+notice; ordinary operator/agent/foreign denied, grants unchanged.
 
 Gaps: Local implicit/instance admin bypass cannot establish ordinary two-user private isolation.
+
+Task reads expose optional read-only `displayStatus`. `monitoring` describes a
+scheduled ordinary monitor wait; it is not accepted as a writable task `status`.
+Existing lifecycle `status` filters retain their meaning. Board collection and
+search readers can use the separate `displayStatus` filter before pagination.
+Agents keep using the existing monitor and semantic completion tools.

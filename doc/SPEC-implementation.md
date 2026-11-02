@@ -423,6 +423,7 @@ retain their titles and default to no generation request.
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- Task reads additionally expose read-only `displayStatus`: the lifecycle status, or `monitoring` for an agent-owned scheduled ordinary monitor wait with no active execution, locks, review participant or active recovery action. Board collection/search `displayStatus` filters and counts use the same projection before pagination. This field is not persisted and cannot authorize a status transition; existing `status` filters retain their lifecycle semantics.
 - `priority` enum: `critical | high | medium | low`
 - `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
@@ -2712,9 +2713,16 @@ its upstream authors; operators can pause updates to review changes manually.
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
 when other automatic tasks are hidden. The routines list's **View all tasks**
-link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+link opens `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` with that checkbox
 selected. The URL retains the selection across reloads and task navigation.
-Search and pagination apply the routine origin filter on the server.
+Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
+saved collection sorting, and the routines link opens newest-created tasks first.
+Shared sort links retain their order across task interfaces. Workflow sorting
+requests the existing authorized dependency-edge projection. Search and board
+queries keep their existing server order. Blocked-attention lists reject
+`sortField=created` with `422` because they use their own activity order.
+Search and pagination apply the routine origin filter on the server. Creation-time
+sorting also runs before pagination, with task ID as a stable tie-breaker.
 
 Tasks and project collections default to hiding agent/system-created tasks and
 provide a saved **Show agent-created tasks** filter. Classify creation using

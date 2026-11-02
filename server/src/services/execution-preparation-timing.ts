@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { withDatabaseOperation } from "@paperclipai/db";
 import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
@@ -156,7 +157,7 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
       ended: false,
       details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>(),
     };
-    operation = Promise.resolve().then(() =>
+    operation = withDatabaseOperation(name, () => Promise.resolve().then(() =>
       ownership.run(owned, () => runWithRuntimeParent(owned.parent, work))).then(value => {
         try { span?.end(); } catch {}
         owned.ended = true;
@@ -166,10 +167,10 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
         try { span?.end(); } catch {}
         owned.ended = true;
         throw error;
-      });
+      }));
     return operation;
   };
-  if (!endpointEnabled()) return (async () => work())();
+  if (!endpointEnabled()) return withDatabaseOperation(name, async () => work());
   try {
     const parent = independent ? undefined : activeParent ?? getRunExecutionTraceContext(runId);
     const trigger = parent ? undefined : trace.getActiveSpan()?.spanContext();
@@ -202,20 +203,22 @@ export function withRunWorkspaceFinalizationTiming<T>(runId: string, work: () =>
 export function withRunResponsePresentationTiming<T>(runId: string, work: () => T | Promise<T>): Promise<T> {
   const owned = ownership.getStore();
   if (owned?.runId === runId && owned.phase === "task.response_presentation" && !owned.ended) {
-    return (async () => work())();
+    return withDatabaseOperation("task.response_presentation", async () => work());
   }
   return measure(runId, "task.response_presentation", work, true);
 }
 
-export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
-  const owned = ownership.getStore();
-  if (!endpointEnabled() || !owned || owned.ended) return work();
-  const count = owned.details.get(phase) ?? 0;
-  if (count >= 16) return work();
-  owned.details.set(phase, count + 1);
-  // A startup step can be more specific than the owning run phase. Keep that
-  // causal parent while the child publishes its own context to plugin workers.
-  return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
+export function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
+  return withDatabaseOperation(phase, async () => {
+    const owned = ownership.getStore();
+    if (!endpointEnabled() || !owned || owned.ended) return work();
+    const count = owned.details.get(phase) ?? 0;
+    if (count >= 16) return work();
+    owned.details.set(phase, count + 1);
+    // A startup step can be more specific than the owning run phase. Keep that
+    // causal parent while the child publishes its own context to plugin workers.
+    return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
+  });
 }
 
 export function beginRunPhase(phase: ExecutionPhase): (failed?: boolean) => void {

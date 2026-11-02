@@ -2621,6 +2621,16 @@ connections, including provider-native tools. Company permissions, approval
 gates, and workspace isolation still apply. Explicit restrictive modes remain
 restrictive; omitted settings use full auto.
 
+Assigned app tools can use `paperclip_search_assigned_tools` and
+`paperclip_call_assigned_tool` instead of direct tool definitions. Search with
+`{"query":"github"}` and call an exact returned tool name. Omitted, empty or
+whitespace-only `schemaTool` values perform normal discovery, including when
+`schemaOffset` is zero. To read a large schema, set `schemaTool` to the exact
+`inputSchemaRef` from discovery and follow `nextSchemaOffset`. A positive
+`schemaOffset` requires a nonblank reference. Unknown or revoked references
+return guidance to search again; discovery still checks current grants and work
+modes against the session's pinned catalog.
+
 Test questions, saved plan revisions, approval before task handoff, status
 lookups, and `/new` preserving chat history. Hiring additionally requires the
 operator-controlled [runner API tools](runner-api-tools.md) rollout; enabling

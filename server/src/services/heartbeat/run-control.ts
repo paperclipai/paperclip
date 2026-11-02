@@ -765,6 +765,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       eq(agentWakeupRequests.requestedByActorType, "user"),
     ));
     const intent = readTaskRetryIntent(wake?.payload);
+    if (intent?.queuedChatRequestId) {
+      await reconcileTaskChatRetryReceipts(db, { companyId, requestId });
+      return;
+    }
     if (!wake || !intent || intent.chatActionId || intent.canonicalIntentId || intent.generationId !== wake.id ||
         intent.actorId !== wake.requestedByActorId) return;
     const issueId = readNonEmptyString(wake.payload?.issueId);
@@ -790,6 +794,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
         eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
         sql`${agentWakeupRequests.payload}->'taskRetry'->>'chatActionId' is null`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'queuedChatRequestId' is null`,
         notInArray(issues.status, ["done", "cancelled"])))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const chatEnabled = !retries.some(retry => retry.conversationAgentId)
