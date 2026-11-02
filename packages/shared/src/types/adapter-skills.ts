@@ -1,5 +1,7 @@
 export type AgentSkillSyncMode = "unsupported" | "persistent" | "ephemeral";
 
+export type AgentSkillAssignmentMode = "add" | "remove" | "replace";
+
 export type AgentSkillState =
   | "available"
   | "configured"
@@ -10,7 +12,6 @@ export type AgentSkillState =
 
 export type AgentSkillOrigin =
   | "company_managed"
-  | "paperclip_required"
   | "user_installed"
   | "external_unknown";
 
@@ -26,8 +27,6 @@ export interface AgentSkillEntry {
   currentVersionId?: string | null;
   desired: boolean;
   managed: boolean;
-  required?: boolean;
-  requiredReason?: string | null;
   state: AgentSkillState;
   origin?: AgentSkillOrigin;
   originLabel?: string | null;
@@ -49,5 +48,6 @@ export interface AgentSkillSnapshot {
 }
 
 export interface AgentSkillSyncRequest {
+  mode: AgentSkillAssignmentMode;
   desiredSkills: Array<string | AgentDesiredSkillEntry>;
 }

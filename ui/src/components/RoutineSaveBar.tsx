@@ -79,7 +79,7 @@ export function RoutineSaveBar({
         )}
       >
         {saveConflict ? (
-          <div className="flex items-center gap-2 text-sm text-amber-200">
+          <div className="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4" />
             <span>Routine changed elsewhere. Reload to merge.</span>
           </div>
@@ -154,7 +154,7 @@ export function RoutineSaveBar({
               >
                 {isSaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                 Save changes
-                <kbd className="ml-2 hidden rounded bg-foreground/10 px-1 text-[10px] font-medium sm:inline">
+                <kbd className="ml-2 hidden rounded bg-foreground/10 px-1 text-(length:--text-nano) font-medium sm:inline">
                   ⌘S
                 </kbd>
               </Button>

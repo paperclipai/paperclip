@@ -3,6 +3,7 @@ import type { BetterAuthOptions } from "better-auth";
 import { getCookies } from "better-auth/cookies";
 import {
   buildBetterAuthAdvancedOptions,
+  buildBetterAuthRateLimitOptions,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
   shouldDisableSecureAuthCookies,
@@ -47,6 +48,34 @@ describe("Better Auth cookie scoping", () => {
     expect(getCookies({
       advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: true }),
     } as BetterAuthOptions).sessionToken.name).toBe("paperclip-pap-worktree.session_token");
+  });
+
+  it("enables Better Auth rate limiting for authenticated private instances by default", () => {
+    expect(buildBetterAuthRateLimitOptions({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+    })).toEqual({ enabled: true });
+  });
+
+  it("keeps Better Auth rate limiting enabled for authenticated public instances", () => {
+    expect(buildBetterAuthRateLimitOptions({
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+    })).toEqual({ enabled: true });
+  });
+
+  it("allows an explicit Better Auth rate-limit override", () => {
+    expect(buildBetterAuthRateLimitOptions({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      override: "true",
+    })).toEqual({ enabled: true });
+
+    expect(buildBetterAuthRateLimitOptions({
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      override: "false",
+    })).toEqual({ enabled: false });
   });
 
   it("disables secure cookies for authenticated private auto-origin dev servers", () => {
@@ -148,6 +177,35 @@ describe("Better Auth cookie scoping", () => {
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: "https://board.example.test",
     })).toBe(false);
+  });
+
+  it("disables secure cookies only for HTTP loopback requests in a managed HTTPS runtime", () => {
+    const managedRuntimeInput = {
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://worktree.example.test",
+      publicUrl: "https://worktree.example.test",
+      managedRuntimePublicUrl: "https://worktree.example.test",
+    } as const;
+
+    expect(shouldDisableSecureAuthCookies({
+      ...managedRuntimeInput,
+      requestUrl: "http://127.0.0.1:42013/api/auth/sign-in/email",
+    } as Parameters<typeof shouldDisableSecureAuthCookies>[0])).toBe(true);
+    expect(shouldDisableSecureAuthCookies({
+      ...managedRuntimeInput,
+      requestUrl: "https://worktree.example.test/api/auth/sign-in/email",
+    } as Parameters<typeof shouldDisableSecureAuthCookies>[0])).toBe(false);
+    expect(shouldDisableSecureAuthCookies({
+      ...managedRuntimeInput,
+      managedRuntimePublicUrl: undefined,
+      requestUrl: "http://127.0.0.1:42013/api/auth/sign-in/email",
+    } as Parameters<typeof shouldDisableSecureAuthCookies>[0])).toBe(false);
+    expect(shouldDisableSecureAuthCookies({
+      ...managedRuntimeInput,
+      requestUrl: "http://board.example.test:42013/api/auth/sign-in/email",
+    } as Parameters<typeof shouldDisableSecureAuthCookies>[0])).toBe(false);
   });
 
   it("adds hostname port variants for authenticated mode on non-default ports", () => {

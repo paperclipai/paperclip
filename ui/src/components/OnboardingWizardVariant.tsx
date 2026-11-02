@@ -1,20 +1,26 @@
-import { useConferenceRoomChatEnabled } from "@/hooks/useConferenceRoomChatEnabled";
-import { OnboardingWizard } from "./OnboardingWizard";
-import { OnboardingWizardClassic } from "./OnboardingWizardClassic";
+import { lazy, useEffect } from "react";
+import { useDialogActions, useDialogState } from "../context/DialogContext";
+import { useLocation } from "../lib/router";
+import { isOnboardingPath } from "../lib/onboarding-route";
+import { DeferredOverlay } from "./DeferredOverlay";
+
+const OnboardingWizard = lazy(() => import("./OnboardingWizard").then((module) => ({ default: module.OnboardingWizard })));
 
 /**
- * Variant selector for the onboarding wizard (PAP-136 / PAP-138, plan §3
- * Tier B).
- *
- * Flag off (the default) renders `OnboardingWizardClassic` — the
- * fork-and-freeze of master's wizard — so the experience stays
- * pixel-identical to master. Flag on renders the new capsule wizard. While
- * the flag query is still in flight nothing renders (same `loaded` pattern
- * as `ConferenceRoomChatGate`) so a flag-on user never sees the classic
- * wizard flash in first.
+ * Default onboarding wizard. Conference-room chat is now the only surface left
+ * behind `enableConferenceRoomChat`; onboarding stays available without that
+ * experimental flag.
  */
 export function OnboardingWizardVariant() {
-  const { enabled, loaded } = useConferenceRoomChatEnabled();
-  if (!loaded) return null;
-  return enabled ? <OnboardingWizard /> : <OnboardingWizardClassic />;
+  const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
+  const { closeOnboarding, setOnboardingRouteDismissed } = useDialogActions();
+  const { pathname } = useLocation();
+  useEffect(() => {
+    setOnboardingRouteDismissed(false);
+  }, [pathname, setOnboardingRouteDismissed]);
+  const requested = onboardingOpen || (isOnboardingPath(pathname) && !onboardingRouteDismissed);
+  return <DeferredOverlay requested={requested} title="Setup" onClose={() => {
+    closeOnboarding();
+    if (isOnboardingPath(pathname)) setOnboardingRouteDismissed(true);
+  }}><OnboardingWizard /></DeferredOverlay>;
 }

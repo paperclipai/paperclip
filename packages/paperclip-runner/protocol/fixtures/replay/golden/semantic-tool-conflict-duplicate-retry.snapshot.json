@@ -1,0 +1,172 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Semantic tool conflict and duplicate retry",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_semantic_retry",
+    "issueId": "issue_semantic_retry",
+    "runId": "run_semantic_retry",
+    "environmentLeaseId": "lease_semantic_retry",
+    "runnerInstanceId": "runner_semantic_retry",
+    "normalizedSessionId": "session_semantic_retry",
+    "driverSessionId": "driver_semantic_retry"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "provider-neutral",
+      "version": "1.0.0"
+    },
+    "steer": false,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "semanticTools": {
+      "schema": "paperclip.prp.semantic_tools.v1",
+      "schemaVersion": 1,
+      "operations": [
+        {
+          "operationId": "write_document",
+          "version": 1,
+          "availability": "available",
+          "redactionDisposition": "digest_only",
+          "requiredClaims": []
+        }
+      ]
+    },
+    "unsupported": []
+  },
+  "runPhase": "terminal",
+  "sessionState": "not_started",
+  "turnState": "not_started",
+  "activeTurnId": null,
+  "items": [],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "done",
+    "summary": "The revision-safe retry committed once.",
+    "completionClaim": {
+      "contractRevision": "semantic-receipts-v1",
+      "objectiveSatisfied": true,
+      "criteria": [],
+      "remainingWork": []
+    },
+    "evidence": [
+      {
+        "receiptId": "receipt_semantic_conflict"
+      },
+      {
+        "receiptId": "receipt_semantic_document_commit"
+      }
+    ],
+    "verification": [
+      {
+        "commandOrCheck": "conflict then exact duplicate retry",
+        "status": "passed"
+      }
+    ],
+    "attentionRequests": [],
+    "artifacts": []
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "done",
+    "workAssessmentId": "assessment_semantic_retry",
+    "statusDecisionId": "decision_semantic_retry"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "semantic_retry_01",
+      "sourceSeq": 1,
+      "eventType": "mcp_app.tool_input",
+      "emittedAt": "2026-08-11T10:20:00.000Z",
+      "itemId": "item_semantic_conflict",
+      "summary": "mcp_app tool_input"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "semantic_retry_02",
+      "sourceSeq": 2,
+      "eventType": "mcp_app.tool_result",
+      "emittedAt": "2026-08-11T10:20:00.010Z",
+      "itemId": "item_semantic_conflict",
+      "summary": "mcp_app tool_result"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "semantic_retry_03",
+      "sourceSeq": 3,
+      "eventType": "mcp_app.tool_input",
+      "emittedAt": "2026-08-11T10:20:00.020Z",
+      "itemId": "item_semantic_fresh",
+      "summary": "mcp_app tool_input"
+    },
+    {
+      "position": 4,
+      "sourceEventId": "semantic_retry_04",
+      "sourceSeq": 4,
+      "eventType": "mcp_app.tool_result",
+      "emittedAt": "2026-08-11T10:20:00.030Z",
+      "itemId": "item_semantic_fresh",
+      "summary": "mcp_app tool_result"
+    },
+    {
+      "position": 5,
+      "sourceEventId": "semantic_retry_05",
+      "sourceSeq": 5,
+      "eventType": "mcp_app.tool_input",
+      "emittedAt": "2026-08-11T10:20:00.040Z",
+      "itemId": "item_semantic_duplicate",
+      "summary": "mcp_app tool_input"
+    },
+    {
+      "position": 6,
+      "sourceEventId": "semantic_retry_06",
+      "sourceSeq": 6,
+      "eventType": "mcp_app.tool_result",
+      "emittedAt": "2026-08-11T10:20:00.050Z",
+      "itemId": "item_semantic_duplicate",
+      "summary": "mcp_app tool_result"
+    },
+    {
+      "position": 7,
+      "sourceEventId": "semantic_retry_07",
+      "sourceSeq": 7,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-11T10:20:00.060Z",
+      "summary": "The revision-safe retry committed once."
+    },
+    {
+      "position": 8,
+      "sourceEventId": "semantic_retry_08",
+      "sourceSeq": 8,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-11T10:20:00.070Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_semantic_retry": 8
+  },
+  "processedEventIds": [
+    "semantic_retry_01",
+    "semantic_retry_02",
+    "semantic_retry_03",
+    "semantic_retry_04",
+    "semantic_retry_05",
+    "semantic_retry_06",
+    "semantic_retry_07",
+    "semantic_retry_08"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

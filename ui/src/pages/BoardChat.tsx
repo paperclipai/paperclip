@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import {
   useEffect,
   useLayoutEffect,
@@ -29,7 +30,6 @@ import {
   AgentBubbleActionRow,
   agentBubbleDateLabel,
 } from "../components/AgentBubbleActionRow";
-import { AgentIcon } from "../components/AgentIconPicker";
 import { cn, formatDateTime } from "../lib/utils";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -51,7 +51,7 @@ const BOARD_CHAT_MARKDOWN_CLASS =
   "max-w-full overflow-visible [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto";
 
 const boardChatBubbleShell =
-  "min-w-0 max-w-[85%] break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
+  "min-w-0 max-w-(--pct-85) break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
 
 /** First-letter(s) fallback for an agent with no icon. */
 function agentInitials(name: string): string {
@@ -63,21 +63,8 @@ function agentInitials(name: string): string {
  * Icon-adjacent-to-name header rendered directly above an agent bubble —
  * the shared `[agent icon][agent name]` convention (PAP-105 / PAP-97).
  */
-function AgentBubbleHeader({ name, icon }: { name: string; icon: string | null }) {
-  return (
-    <div className="mb-1 flex items-center gap-1.5 pl-1">
-      <Avatar size="sm" className="shrink-0">
-        <AvatarFallback>
-          {icon ? (
-            <AgentIcon icon={icon} className="h-3.5 w-3.5" />
-          ) : (
-            agentInitials(name)
-          )}
-        </AvatarFallback>
-      </Avatar>
-      <span className="text-sm font-medium text-foreground">{name}</span>
-    </div>
-  );
+function AgentBubbleHeader({ agent }: { agent: import("../components/AgentAvatar").AvatarAgent }) {
+  return <div className="mb-1 flex items-center gap-1.5 pl-1"><AgentAvatar agent={agent} size={24} /><span className="text-sm font-medium text-foreground">{agent.name}</span></div>;
 }
 
 /** Agent-styled chat bubble containing the three-dot typing indicator. */
@@ -381,7 +368,7 @@ export function BoardChat() {
   }, [selectedCompanyId]);
 
   // The onboarding wizard renders as an overlay above an already-mounted
-  // Conference Room (sidebar "Create new team..." path). Holding the reveal
+  // Conference Room (sidebar "Create new company..." path). Holding the reveal
   // timer while it's open guarantees the dots window can't burn off behind
   // the wizard before the user ever sees the chat (PAP-134).
   const { onboardingOpen } = useDialogState();
@@ -658,9 +645,9 @@ export function BoardChat() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center max-w-sm">
-          <h2 className="text-lg font-semibold">No company selected</h2>
+          <h2 className="text-lg font-semibold">No organization selected</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Select a company to start chatting with your board concierge.
+            Select an organization to start chatting with your board concierge.
           </p>
         </div>
       </div>
@@ -668,7 +655,7 @@ export function BoardChat() {
   }
 
   return (
-    <div className="flex h-[calc(100%+3rem)] flex-col -m-6">
+    <div className="flex h-(--sz-calc-29) flex-col -m-6">
       <div
         ref={splitContainerRef}
         className="flex min-h-0 min-w-0 flex-1 flex-row"
@@ -692,7 +679,7 @@ export function BoardChat() {
                 {ceoAgent?.name ?? "Conference Room"}
               </h3>
               <p className="text-xs text-muted-foreground">
-                {selectedCompany?.name ?? "Your company"}
+                {selectedCompany?.name ?? "Your organization"}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
@@ -756,8 +743,8 @@ export function BoardChat() {
 
                 const chips: Array<{ label: string; prompt: string }> = [
                   {
-                    label: "Draft a Company Brief",
-                    prompt: `Draft a one-page Company Brief for ${companyName} — include our mission, team roster, and first priorities.`,
+                    label: "Draft an Organization Brief",
+                    prompt: `Draft a one-page Organization Brief for ${companyName} — include our mission, team roster, and first priorities.`,
                   },
                   {
                     label: "Create a hiring plan",
@@ -776,7 +763,7 @@ export function BoardChat() {
                 return (
                   <>
                     <div className="flex flex-col items-start">
-                      <AgentBubbleHeader name={ceoName} icon={ceoAgent.icon} />
+                      <AgentBubbleHeader agent={{ ...ceoAgent, name: ceoName }} />
                       <div
                         className={cn(
                           boardChatBubbleShell,
@@ -796,6 +783,7 @@ export function BoardChat() {
                               setInput(chip.prompt);
                               composerRef.current?.focus();
                             }}
+                            // design-allow(card-pattern): interactive suggestion-pill <button>, not a content card (C5a Run 3)
                             className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
                           >
                             {chip.label}
@@ -832,7 +820,7 @@ export function BoardChat() {
                 const agentIconValue = agent?.icon ?? null;
                 return (
                   <div key={comment.id} className="flex flex-col items-start">
-                    <AgentBubbleHeader name={agentName} icon={agentIconValue} />
+                    <AgentBubbleHeader agent={agent ?? { id: comment.authorAgentId ?? undefined, name: agentName }} />
                     <div
                       className={cn(
                         boardChatBubbleShell,
@@ -882,7 +870,7 @@ export function BoardChat() {
               {streamingText && (
                 <div className="flex flex-col items-start">
                   {ceoAgent && (
-                    <AgentBubbleHeader name={ceoAgent.name} icon={ceoAgent.icon} />
+                    <AgentBubbleHeader agent={ceoAgent} />
                   )}
                   <div
                     className={cn(
@@ -941,6 +929,7 @@ export function BoardChat() {
               type="button"
               onClick={() => scrollToLatest("smooth")}
               aria-label="Jump to latest messages"
+              // design-allow(card-pattern): floating scroll-to-bottom <button>, not a content card (C5a Run 3)
               className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
             >
               <ArrowDown className="h-4 w-4" />
@@ -965,7 +954,7 @@ export function BoardChat() {
               value={input}
               onChange={setInput}
               onSubmit={handleSend}
-              placeholder="Ask anything about your company..."
+              placeholder="Ask anything about your organization..."
               submitKey="enter"
               surface="translucent"
               submitting={sending}
@@ -1010,7 +999,7 @@ export function BoardChat() {
               <Activity className="h-4 w-4" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="bottom" className="h-[70vh] p-0 rounded-t-xl">
+          <SheetContent side="bottom" className="h-(--sz-70vh) p-0 rounded-t-xl">
             <ActivityFeed />
           </SheetContent>
         </Sheet>

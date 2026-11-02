@@ -334,10 +334,15 @@ export function parseCursorStdoutLine(line: string, ts: string): TranscriptEntry
   }
 
   if (type === "text") {
+    // Streamed assistant text arrives as many small `text` events (often a token
+    // or word each). Tag them as deltas — without trimming, so inter-token
+    // whitespace is preserved — and let the render-time coalescer
+    // (appendTranscriptEntry) merge consecutive deltas into one assistant block.
+    // A tool_call/tool_result between deltas correctly breaks the run.
     const part = asRecord(parsed.part);
-    const text = asString(part?.text).trim();
+    const text = asString(part?.text);
     if (!text) return [];
-    return [{ kind: "assistant", ts, text }];
+    return [{ kind: "assistant", ts, text, delta: true }];
   }
 
   if (type === "tool_use") {

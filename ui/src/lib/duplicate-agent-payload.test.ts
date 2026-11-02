@@ -16,7 +16,7 @@ const baseAgent: AgentDetail = {
   capabilities: "Builds product features.",
   adapterType: "codex_local",
   adapterConfig: {
-    model: "gpt-5.3-codex",
+    model: "gpt-5.5",
     instructionsBundleMode: "managed",
     instructionsRootPath: "/tmp/original/instructions",
     instructionsEntryFile: "AGENTS.md",
@@ -32,7 +32,7 @@ const baseAgent: AgentDetail = {
   spentMonthlyCents: 123,
   pauseReason: null,
   pausedAt: null,
-  permissions: { canCreateAgents: true },
+  permissions: { canCreateAgents: true, canCreateSkills: true },
   lastHeartbeatAt: null,
   metadata: { source: "test" },
   createdAt: new Date("2026-05-10T00:00:00.000Z"),
@@ -47,6 +47,11 @@ const baseAgent: AgentDetail = {
 };
 
 describe("duplicate agent payload", () => {
+  it("omits the source persona so central creation makes a fresh assignment", () => {
+    const source = { ...baseAgent, appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "arctic-blue" } } as AgentDetail;
+    expect(buildDuplicateAgentPayload(source)).not.toHaveProperty("appearance");
+  });
+
   it("suffixes duplicate names", () => {
     expect(duplicateAgentName("Senior Product Engineer")).toBe("Senior Product Engineer Copy");
     expect(duplicateAgentName("   ")).toBe("Agent Copy");
@@ -68,11 +73,11 @@ describe("duplicate agent payload", () => {
       reportsTo: "manager-1",
       capabilities: "Builds product features.",
       adapterType: "codex_local",
-      adapterConfig: { model: "gpt-5.3-codex" },
+      adapterConfig: { model: "gpt-5.5" },
       runtimeConfig: { heartbeat: { enabled: true } },
       defaultEnvironmentId: "environment-1",
       budgetMonthlyCents: 500,
-      permissions: { canCreateAgents: true },
+      permissions: { canCreateAgents: true, canCreateSkills: true },
       metadata: { source: "test" },
       instructionsBundle: {
         entryFile: "AGENTS.md",

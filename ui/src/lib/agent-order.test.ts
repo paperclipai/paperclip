@@ -22,7 +22,7 @@ describe("sortAgentsByDefaultSidebarOrder", () => {
     expect(sorted.map((a) => a.id)).toEqual(["ceo", "ada", "board"]);
   });
 
-  it("keeps master's plain alphabetical order by default (Conference Room Chat flag off)", () => {
+  it("keeps plain alphabetical order unless leadership-first is requested", () => {
     const agents = [
       makeAgent({ id: "board", name: "Board", role: "general" }),
       makeAgent({ id: "ceo", name: "CEO", role: "ceo" }),

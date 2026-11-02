@@ -130,7 +130,7 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select a company to view this page.</p>
+        <p className="text-sm text-muted-foreground">Select an organization to view this page.</p>
       </div>
     );
   }
@@ -178,7 +178,7 @@ export function PluginPage() {
       <PluginSlotMount
         slot={pageSlot}
         context={context}
-        className="min-h-[200px]"
+        className="min-h-(--sz-200px)"
         missingBehavior="placeholder"
       />
     </div>

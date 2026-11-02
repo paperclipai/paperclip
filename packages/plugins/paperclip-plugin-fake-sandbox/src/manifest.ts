@@ -23,6 +23,15 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Fake Sandbox Provider",
       description:
         "Runs commands in an isolated local temporary directory while exercising the sandbox provider plugin lifecycle.",
+      supportsInteractiveSetup: true,
+      interactiveSetupConnectionTypes: ["ssh"],
+      supportsTemplateCapture: true,
+      templateRefKind: "snapshot",
+      templateConfigBinding: {
+        field: "snapshot",
+        unsetFields: ["image"],
+      },
+      supportsTemplateDelete: true,
       configSchema: {
         type: "object",
         properties: {

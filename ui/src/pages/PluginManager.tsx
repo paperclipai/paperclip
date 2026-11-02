@@ -13,6 +13,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -99,22 +100,24 @@ export function PluginManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
-  const { data: plugins, isLoading, error } = useQuery({
+  const pluginsQuery = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
+  const { data: plugins, isLoading, error } = pluginsQuery;
+  const pluginsView = useQueryView(pluginsQuery);
 
   const bundledQuery = useQuery({
     queryKey: queryKeys.plugins.examples,
     queryFn: () => pluginsApi.listBundled(),
   });
+  const bundledView = useQueryView(bundledQuery);
 
   const invalidatePluginQueries = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
@@ -173,6 +176,11 @@ export function PluginManager() {
   const bundledPlugins = bundledQuery.data ?? [];
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
   const bundledByPackageName = new Map(bundledPlugins.map((plugin) => [plugin.packageName, plugin]));
+  // Scope the in-section banner to bundled (local-path) installs so an npm-dialog
+  // install failure does not surface its error in the bundled-plugins section.
+  const installErrorMessage = installMutation.variables?.isLocalPath
+    ? installMutation.error?.message ?? null
+    : null;
   const errorSummaryByPluginId = useMemo(
     () =>
       new Map(
@@ -181,11 +189,23 @@ export function PluginManager() {
     [installedPlugins]
   );
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
-  if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
+  if (isLoading || pluginsView.kind === "reconnecting") {
+    return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
+  }
+  if (pluginsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={error}
+        action="load plugins"
+        onRetry={pluginsView.retry}
+        retrying={pluginsView.isFetching}
+      />
+    );
+  }
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
@@ -249,16 +269,28 @@ export function PluginManager() {
           <Badge variant="outline">Bundled</Badge>
         </div>
 
-        {bundledQuery.isLoading ? (
+        {installErrorMessage && (
+          <div className="rounded-md border border-destructive/25 bg-destructive/[0.06] px-4 py-3 text-sm text-destructive whitespace-pre-wrap break-words">
+            {installErrorMessage}
+          </div>
+        )}
+
+        {bundledQuery.isLoading || bundledView.kind === "reconnecting" ? (
           <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
-        ) : bundledQuery.error ? (
-          <div className="text-sm text-destructive">Failed to load bundled plugins.</div>
+        ) : bundledView.kind === "error" ? (
+          <QueryErrorState
+            error={bundledQuery.error}
+            action="load bundled plugins"
+            onRetry={bundledView.retry}
+            retrying={bundledView.isFetching}
+          />
         ) : bundledPlugins.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
             No bundled plugins were found in this checkout.
           </div>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {bundledPlugins.map((bundledPlugin) => {
               const installedPlugin = installedByPackageName.get(bundledPlugin.packageName);
               const installPending =
@@ -293,6 +325,9 @@ export function PluginManager() {
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
+                      {installPending && !bundledPlugin.hasBuiltEntrypoints && (
+                        <p className="mt-2 text-xs text-muted-foreground">Building plugin...</p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {installedPlugin ? (
@@ -333,6 +368,7 @@ export function PluginManager() {
               );
             })}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -353,7 +389,8 @@ export function PluginManager() {
             </CardContent>
           </Card>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {installedPlugins.map((plugin) => (
               <li key={plugin.id}>
                 <div className="flex items-start gap-4 px-4 py-3">
@@ -475,6 +512,7 @@ export function PluginManager() {
               </li>
             ))}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -535,7 +573,7 @@ export function PluginManager() {
             </div>
             <div className="space-y-2">
               <p className="text-sm font-medium">Full error output</p>
-              <pre className="max-h-[50vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
+              <pre className="max-h-(--sz-50vh) overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
                 {errorDetailsPlugin?.lastError ?? "No stored error message."}
               </pre>
             </div>

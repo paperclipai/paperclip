@@ -64,6 +64,17 @@ const GENERIC_BINARY_CONTENT_TYPES = new Set([
   "application/x-binary",
 ]);
 
+const VIDEO_FILENAME_EXTENSIONS = [
+  ".mp4",
+  ".m4v",
+  ".webm",
+  ".mov",
+  ".qt",
+  ".quicktime",
+];
+
+const IMAGE_FILENAME_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".svg", ".ico"];
+
 const BINARY_OUTPUT_APPLICATION_TYPES = new Set([
   "application/wasm",
 ]);
@@ -201,8 +212,32 @@ export function isVideoContentType(contentType: string | null | undefined): bool
   return normalizeOutputContentType(contentType).startsWith("video/");
 }
 
+export function isVideoLikeOutput(
+  contentType: string | null | undefined,
+  originalFilename?: string | null | undefined,
+): boolean {
+  const type = normalizeOutputContentType(contentType);
+  if (type.startsWith("video/")) return true;
+  if (!GENERIC_BINARY_CONTENT_TYPES.has(type)) return false;
+
+  const filename = (originalFilename ?? "").trim().toLowerCase();
+  return VIDEO_FILENAME_EXTENSIONS.some((extension) => filename.endsWith(extension));
+}
+
 export function isImageContentType(contentType: string | null | undefined): boolean {
   return normalizeOutputContentType(contentType).startsWith("image/");
+}
+
+/** Recognize image uploads with missing or generic MIME types by filename. */
+export function isImageLikeOutput(
+  contentType: string | null | undefined,
+  originalFilename?: string | null,
+): boolean {
+  const type = normalizeOutputContentType(contentType);
+  if (isImageContentType(type)) return true;
+  if (type && !GENERIC_BINARY_CONTENT_TYPES.has(type)) return false;
+  const filename = (originalFilename ?? "").trim().toLowerCase();
+  return IMAGE_FILENAME_EXTENSIONS.some((extension) => filename.endsWith(extension));
 }
 
 /**

@@ -54,7 +54,9 @@ export function WorkspaceFileLink({
         path: workspaceFileRef.path,
         line: workspaceFileRef.line ?? null,
         column: workspaceFileRef.column ?? null,
-        workspace: "auto",
+        // Preserve the workspace that passed the availability preflight so the
+        // click resolves against that target instead of rediscovering one.
+        workspace: workspaceFileRef.workspace ?? "auto",
         projectId: workspaceFileRef.projectId ?? null,
         workspaceId: workspaceFileRef.workspaceId ?? null,
       });
@@ -83,7 +85,7 @@ export function WorkspaceFileLink({
       aria-label={ariaLabel}
       title={tooltip}
       className={cn(
-        "paperclip-workspace-file-link inline-flex items-center gap-1 rounded-sm border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-xs leading-tight text-foreground/90 align-baseline no-underline hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+        "paperclip-workspace-file-link inline-flex items-center gap-1 rounded-sm border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-xs leading-tight text-foreground/90 align-middle no-underline hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
         className,
       )}
       onClick={handleClick}

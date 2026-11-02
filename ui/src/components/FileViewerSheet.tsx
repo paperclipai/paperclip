@@ -1,3 +1,5 @@
+import { CsvPreview } from "./CsvPreview";
+import { isCsvFile } from "@/lib/csv-preview";
 import {
   useCallback,
   useEffect,
@@ -16,6 +18,7 @@ import {
   Check,
   Cloud,
   Copy,
+  Download,
   Eye,
   FileCode2,
   FileSearch,
@@ -38,13 +41,18 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
 import { ApiError } from "@/api/client";
+import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   useRequiredFileViewer,
   type FileViewerUrlState,
 } from "@/context/FileViewerContext";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { WorkspaceFileMarkdownBody } from "@/components/WorkspaceFileMarkdownBody";
+import { HtmlArtifactPreview } from "@/components/HtmlArtifactPreview";
+import { FilePreviewModeToggle, type FilePreviewMode } from "@/components/FilePreviewModeToggle";
+import { isHtmlPreview } from "@/lib/html-preview";
 import type {
   ResolvedWorkspaceResource,
   WorkspaceFileContent,
@@ -112,27 +120,6 @@ function isMarkdownResource(resource: ResolvedWorkspaceResource): boolean {
   if (contentType.includes("markdown")) return true;
   const path = (resource.displayPath || resource.title).toLowerCase();
   return /\.(md|markdown|mdown|mkdn|mkd)$/.test(path);
-}
-
-async function copyTextWithFallback(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.select();
-    const success = document.execCommand("copy");
-    if (!success) throw new Error("execCommand copy failed");
-  } finally {
-    document.body.removeChild(textarea);
-  }
 }
 
 export function describeDenial(code: string, fallback: string): { title: string; body: string; icon: ReactNode } {
@@ -222,7 +209,7 @@ export function FileViewerMetadataRow({
   state: FileViewerUrlState | null;
 }) {
   return (
-    <div className="flex min-h-[18px] flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+    <div className="flex min-h-(--sz-18px) flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
       {resolvedResource ? (
         <>
           {resolvedResource.previewKind ? <span className="capitalize">{resolvedResource.previewKind}</span> : null}
@@ -253,14 +240,20 @@ interface FileContentViewerProps {
   content: WorkspaceFileContent;
   highlightedLine: number | null;
   onLoaded?: (summary: string) => void;
+  previewMode?: "raw" | "rendered";
+  htmlMode?: FilePreviewMode;
 }
 
 type MarkdownPreviewMode = "raw" | "rendered";
 
-export function FileContentViewer({ content, highlightedLine, onLoaded }: FileContentViewerProps) {
+export function FileContentViewer({ content, highlightedLine, onLoaded, previewMode, htmlMode = "rendered" }: FileContentViewerProps) {
   const { resource } = content;
   const isMarkdown = resource.previewKind === "text" && content.content.encoding === "utf8" && isMarkdownResource(resource);
-  const [markdownMode, setMarkdownMode] = useState<MarkdownPreviewMode>("rendered");
+  const isCsv = resource.previewKind === "text" && content.content.encoding === "utf8" && isCsvFile(resource.displayPath || resource.title, resource.contentType ?? "");
+  const [localMode, setMarkdownMode] = useState<MarkdownPreviewMode>("rendered");
+  const markdownMode = isMarkdown || isCsv ? (previewMode ?? localMode) : "raw";
+  const isHtml = resource.previewKind === "text" && content.content.encoding === "utf8" && isHtmlPreview(resource.contentType, resource.displayPath || resource.title);
+  const previewLabel = isCsv ? "CSV" : "Markdown";
   const lines = useMemo(() => {
     if (resource.previewKind === "text") {
       return splitContentIntoLines(content.content.data);
@@ -272,8 +265,8 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
   const highlightedLineRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMarkdownMode(isMarkdown ? "rendered" : "raw");
-  }, [isMarkdown, resource.displayPath, resource.title, resource.contentType]);
+    setMarkdownMode(isMarkdown || isCsv ? "rendered" : "raw");
+  }, [isMarkdown, isCsv, resource.displayPath, resource.title, resource.contentType]);
 
   useEffect(() => {
     if (!lines) return;
@@ -284,7 +277,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
     if (markdownMode !== "raw") return;
     if (!highlightedLine || !highlightedLineRef.current) return;
     highlightedLineRef.current.scrollIntoView({ block: "center", behavior: "auto" });
-  }, [highlightedLine, markdownMode]);
+  }, [highlightedLine, markdownMode, htmlMode, previewMode]);
 
   if (resource.previewKind === "image") {
     const dataUrl = content.content.encoding === "base64"
@@ -353,7 +346,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
       role="region"
       aria-label={`${resource.title} source`}
       tabIndex={0}
-      className="paperclip-file-viewer-code flex-1 overflow-auto bg-[var(--paperclip-code-bg,theme(colors.muted.DEFAULT))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="paperclip-file-viewer-code flex-1 overflow-auto bg-(--code-bg-resolved) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <pre className="m-0 font-mono text-xs leading-5">
         {lines.map((lineText, index) => {
@@ -365,17 +358,20 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
               ref={isHighlighted ? highlightedLineRef : undefined}
               data-line-number={lineNumber}
               className={cn(
-                "grid grid-cols-[auto_minmax(0,1fr)]",
-                isHighlighted && "bg-[var(--paperclip-code-highlight-bg,rgba(250,204,21,0.12))]",
+                "grid grid-cols-(--gtc-5)",
+                // Batch 4 resolved the former half-migrated var(--x, fallback)
+                // pattern here into --code-highlight-bg-resolved (see
+                // ui/src/index.css MISC token block + TOKEN-AUDIT.md Batch 4 log).
+                isHighlighted && "bg-(--code-highlight-bg-resolved)",
               )}
             >
               <span
                 aria-hidden="true"
                 className={cn(
-                  "sticky left-0 z-10 shrink-0 select-none pl-3 pr-4 text-right text-[var(--paperclip-code-gutter-fg,theme(colors.muted.foreground))] opacity-70",
-                  "bg-[var(--paperclip-code-bg,theme(colors.muted.DEFAULT))]",
+                  "sticky left-0 z-10 shrink-0 select-none pl-3 pr-4 text-right text-(--code-gutter-fg-resolved) opacity-70",
+                  "bg-(--code-bg-resolved)",
                   isHighlighted &&
-                    "opacity-100 bg-[var(--paperclip-code-highlight-bg,rgba(250,204,21,0.12))] border-l-2 border-[var(--paperclip-code-highlight-border,rgb(234,179,8))]",
+                    "opacity-100 bg-(--code-highlight-bg-resolved) border-l-2 border-(--code-highlight-border-resolved)",
                 )}
                 style={{ width: gutterWidth, minWidth: gutterWidth }}
               >
@@ -389,24 +385,28 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
     </div>
   );
 
-  if (!isMarkdown) {
+  if (isHtml) {
+    return (previewMode ?? htmlMode) === "raw" ? rawSourceView : <HtmlArtifactPreview html={content.content.data} title={resource.title} />;
+  }
+
+  if (!isMarkdown && !isCsv) {
     return rawSourceView;
   }
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div className="absolute right-3 top-3 z-20">
+      {previewMode === undefined && <div className="absolute right-3 top-3 z-20">
         <div
           role="group"
-          aria-label="Markdown preview mode"
+          aria-label={`${previewLabel} preview mode`}
           className="inline-flex rounded-md border border-border bg-background/95 p-0.5 shadow-sm backdrop-blur"
         >
           <Button
             type="button"
             variant={markdownMode === "rendered" ? "secondary" : "ghost"}
             size="icon-sm"
-            aria-label="Show rendered Markdown"
-            title="Rendered Markdown"
+            aria-label={`Show rendered ${previewLabel}`}
+            title={`Rendered ${previewLabel}`}
             aria-pressed={markdownMode === "rendered"}
             onClick={() => setMarkdownMode("rendered")}
             className={cn(
@@ -420,8 +420,8 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
             type="button"
             variant={markdownMode === "raw" ? "secondary" : "ghost"}
             size="icon-sm"
-            aria-label="Show raw Markdown"
-            title="Raw Markdown"
+            aria-label={`Show raw ${previewLabel}`}
+            title={`Raw ${previewLabel}`}
             aria-pressed={markdownMode === "raw"}
             onClick={() => setMarkdownMode("raw")}
             className={cn(
@@ -433,9 +433,10 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
           </Button>
         </div>
       </div>
+      }
       {markdownMode === "raw" ? (
         rawSourceView
-      ) : (
+      ) : isCsv ? <CsvPreview text={content.content.data} title={resource.title} /> : (
         <div
           role="region"
           aria-label={`${resource.title} rendered Markdown`}
@@ -509,6 +510,8 @@ export function FileViewerSheet({
     typeof openProp === "boolean" ? openProp : state !== null || showPromptWhenEmpty || viewer.browse;
 
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [htmlMode, setHtmlMode] = useState<FilePreviewMode>("rendered");
+  useEffect(() => setHtmlMode("rendered"), [state?.path, state?.workspace, state?.workspaceId, state?.projectId]);
   const [copiedField, setCopiedField] = useState<"content" | "link" | null>(null);
   const [copyingField, setCopyingField] = useState<"content" | "link" | null>(null);
   const [copyFeedback, setCopyFeedback] = useState("");
@@ -517,32 +520,20 @@ export function FileViewerSheet({
   const copyFeedbackTimerRef = useRef<number | null>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    if (!state) {
-      setElapsedMs(0);
-      return;
-    }
-    const now = Date.now();
-    setElapsedMs(0);
-    const interval = window.setInterval(() => {
-      setElapsedMs(Date.now() - now);
-    }, 75);
-    return () => window.clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.path, state?.workspace, state?.projectId, state?.workspaceId]);
-
   const resolveQuery = useQuery({
     queryKey: state
       ? queryKeys.issues.fileResource(issueId, state)
       : ["issues", "file-resources", issueId, "resolve", "__closed__"],
     queryFn: () => fileResourcesApi.resolve(issueId, state!),
     enabled: !!state && computedOpen,
-    retry: false,
     staleTime: 30_000,
   });
 
   const resolvedResource: ResolvedWorkspaceResource | undefined = resolveQuery.data;
   const canPreview = resolvedResource?.capabilities.preview ?? false;
+  const downloadUrl = state && resolvedResource?.capabilities.download
+    ? fileResourcesApi.downloadUrl(issueId, state)
+    : null;
 
   const contentQuery = useQuery({
     queryKey: state
@@ -550,9 +541,32 @@ export function FileViewerSheet({
       : ["issues", "file-resources", issueId, "content", "__closed__"],
     queryFn: () => fileResourcesApi.content(issueId, state!),
     enabled: !!state && computedOpen && canPreview,
-    retry: false,
     staleTime: 30_000,
   });
+
+  // `elapsedMs` only drives the progressive loading skeleton (see LoadingView).
+  // Run the 75ms ticker *only* while a preview is still loading — leaving it
+  // running after content arrives would re-render the whole sheet ~13x/second,
+  // which forces the markdown body to re-render and discards scroll position
+  // and text selection, producing visible flashing (PAP-10767).
+  const isLoadingPreview =
+    (resolveQuery.isFetching && !resolveQuery.data) ||
+    (canPreview && contentQuery.isFetching && !contentQuery.data);
+
+  useEffect(() => {
+    if (!state) {
+      setElapsedMs(0);
+      return;
+    }
+    if (!isLoadingPreview) return;
+    const now = Date.now();
+    setElapsedMs(0);
+    const interval = window.setInterval(() => {
+      setElapsedMs(Date.now() - now);
+    }, 75);
+    return () => window.clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.path, state?.workspace, state?.projectId, state?.workspaceId, isLoadingPreview]);
 
   useEffect(() => {
     if (resolveQuery.isError) {
@@ -643,7 +657,7 @@ export function FileViewerSheet({
   const copyToClipboard = useCallback(async (value: string, field: "content" | "link", message: string) => {
     try {
       setCopyingField(field);
-      await copyTextWithFallback(value);
+      await copyTextToClipboard(value);
       showCopyFeedback(field, message);
     } catch {
       showCopyFeedback(null, "Copy failed");
@@ -719,7 +733,7 @@ export function FileViewerSheet({
   return (
     <Dialog open={computedOpen} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="flex h-[min(840px,calc(100dvh-2rem))] w-[calc(100vw-2rem)] max-w-[min(1280px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:w-[94vw] sm:max-w-[1280px]"
+        className="flex h-(--sz-calc-3) w-(--sz-calc-4) max-w-(--sz-calc-5) flex-col gap-0 overflow-hidden p-0 sm:w-(--sz-94vw) sm:max-w-(--sz-1280px)"
         aria-labelledby={FILE_VIEWER_LABELLED_BY_ID}
         aria-describedby={FILE_VIEWER_DESCRIBED_BY_ID}
         showCloseButton={false}
@@ -732,7 +746,7 @@ export function FileViewerSheet({
         }}
       >
         <DialogHeader className="border-b border-border gap-1 p-3">
-          <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
+          <div className="grid min-w-0 grid-cols-(--gtc-6) items-start gap-2">
             {browseMode ? (
               <FolderSearch aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
             ) : (
@@ -769,6 +783,29 @@ export function FileViewerSheet({
                   <ArrowLeft className="h-3.5 w-3.5" />
                   Back to files
                 </Button>
+              ) : null}
+              {contentQuery.data?.resource.previewKind === "text" && contentQuery.data.content.encoding === "utf8"
+                && isHtmlPreview(contentQuery.data.resource.contentType, contentQuery.data.resource.displayPath || contentQuery.data.resource.title) ? (
+                  <FilePreviewModeToggle mode={htmlMode} onChange={setHtmlMode} label="HTML view" />
+                ) : null}
+              {state ? (
+                downloadUrl ? (
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-7 w-7"
+                  >
+                    <a
+                      href={downloadUrl}
+                      download={resolvedResource?.title ?? basename(state.path)}
+                      aria-label="Download file"
+                      title="Download file"
+                    >
+                      <Download className="h-4 w-4" />
+                    </a>
+                  </Button>
+                ) : null
               ) : null}
               {state ? (
                 <Button
@@ -848,6 +885,7 @@ export function FileViewerSheet({
                   selectedPath={state.path}
                   selectedProjectId={state.projectId}
                   selectedWorkspaceId={state.workspaceId}
+                  active={computedOpen}
                   className="min-h-0 flex-1 p-2"
                 />
               </aside>
@@ -870,6 +908,7 @@ export function FileViewerSheet({
                   elapsedMs={elapsedMs}
                   canPreview={canPreview}
                   highlightedLine={state.line ?? null}
+                  htmlMode={htmlMode}
                   onRetry={handleRetry}
                   onSetAnnouncement={setAnnouncement}
                   onFallbackToProject={
@@ -898,6 +937,7 @@ export function FileViewerSheet({
               initialFolderPath={viewer.folderPath}
               initialProjectId={viewer.browseProjectId}
               initialWorkspaceId={viewer.browseWorkspaceId}
+              active={computedOpen}
               className="min-h-0 flex-1 p-4"
             />
           ) : null}
@@ -916,9 +956,11 @@ interface FileViewerBodyProps {
   onRetry: () => void;
   onSetAnnouncement: (message: string) => void;
   onFallbackToProject: null | (() => void);
+  previewMode?: "raw" | "rendered";
+  htmlMode?: FilePreviewMode;
 }
 
-function FileViewerBody({
+export function FileViewerBody({
   resolveQuery,
   contentQuery,
   elapsedMs,
@@ -927,12 +969,17 @@ function FileViewerBody({
   onRetry,
   onSetAnnouncement,
   onFallbackToProject,
+  previewMode,
+  htmlMode,
 }: FileViewerBodyProps) {
-  if (resolveQuery.isFetching && !resolveQuery.data) {
+  // Loaded content stays on screen while a refetch fails; a quiet loading
+  // view covers an outage before anything has loaded.
+  const resolveKind = queryViewKind(resolveQuery);
+  if (!resolveQuery.data && (resolveQuery.isFetching || resolveKind === "reconnecting")) {
     return <LoadingView elapsedMs={elapsedMs} />;
   }
 
-  if (resolveQuery.isError) {
+  if (resolveKind === "error") {
     const normalized = normalizeError(resolveQuery.error);
     if (normalized.status === 404) {
       return (
@@ -997,11 +1044,12 @@ function FileViewerBody({
     return <FileViewerStateView icon={denial.icon} title={denial.title} body={denial.body} />;
   }
 
-  if (contentQuery.isFetching && !contentQuery.data) {
+  const contentKind = queryViewKind(contentQuery);
+  if (!contentQuery.data && (contentQuery.isFetching || contentKind === "reconnecting")) {
     return <LoadingView elapsedMs={elapsedMs} />;
   }
 
-  if (contentQuery.isError) {
+  if (contentKind === "error") {
     const normalized = normalizeError(contentQuery.error);
     const denial = describeDenial(normalized.code, normalized.message);
     return (
@@ -1024,7 +1072,9 @@ function FileViewerBody({
     <FileContentViewer
       content={contentQuery.data}
       highlightedLine={highlightedLine}
+      previewMode={previewMode}
       onLoaded={onSetAnnouncement}
+      htmlMode={htmlMode}
     />
   );
 }

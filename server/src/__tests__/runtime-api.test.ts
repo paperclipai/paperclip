@@ -17,6 +17,17 @@ describe("runtime API discovery", () => {
     ).toBe("https://paperclip.example.com");
   });
 
+  it("prefers the loopback bind host over allowed hostnames for the primary runtime URL", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["192.168.1.50"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({
@@ -143,5 +154,28 @@ describe("runtime API discovery", () => {
       "192.168.6.178",
       "fd7a:115c:a1e0::8a3a:a11d",
     ]);
+  });
+
+  it("ignores a public base URL that has no scheme instead of returning the string \"null\"", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: "runtime-host.example.test:3100",
+        allowedHostnames: ["runtime-host.example.test"],
+        bindHost: "0.0.0.0",
+        port: 3102,
+      }),
+    ).toBe("http://runtime-host.example.test:3102");
+  });
+
+  it("builds candidates without throwing when the public base URL has no scheme", () => {
+    expect(
+      buildRuntimeApiCandidateUrls({
+        authPublicBaseUrl: "runtime-host.example.test:3100",
+        allowedHostnames: ["runtime-host.example.test"],
+        bindHost: "0.0.0.0",
+        port: 3102,
+        networkInterfacesMap: {},
+      }),
+    ).toEqual(["http://runtime-host.example.test:3102"]);
   });
 });

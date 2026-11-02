@@ -364,6 +364,9 @@ describe("E2B sandbox provider plugin", () => {
     expect(fgCall).toBeDefined();
     if (!fgCall) throw new Error("fgCall not found");
     expect(fgCall[0]).toMatch(/\.profile/);
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(fgCall[0]).not.toMatch(/nvm\.sh/);
+    expect(fgCall[0]).not.toMatch(/NVM_DIR/);
     expect(fgCall[0]).toMatch(/exec env FOO='bar' 'printf' 'hello'$/);
     expect(fgCall[1]).toEqual(expect.objectContaining({ cwd: "/workspace", timeoutMs: 1000 }));
     expect(fgCall[1]).not.toHaveProperty("envs");

@@ -180,5 +180,5 @@ describeLiveSsh("live SSH environment smoke", () => {
     expect(result.stdout).toContain(config.remoteWorkspacePath);
     expect(result.stdout).toContain("git");
     expect(result.stdout).toContain("tar");
-  });
+  }, 30_000);
 });

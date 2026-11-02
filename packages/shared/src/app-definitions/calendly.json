@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "slug": "calendly",
+  "name": "Calendly",
+  "description": "Review Calendly event types and availability, and use supported scheduling actions.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/calendly.png"
+  },
+  "urlPatterns": [
+    "https://mcp.calendly.com/*"
+  ],
+  "docsUrl": "https://developer.calendly.com/docs/mcp/calendly-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Calendly",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Connect the provider-hosted Calendly MCP server with browser sign-in.",
+      "defaults": {
+        "serverUrl": "https://mcp.calendly.com",
+        "scopesHint": [
+          "mcp:scheduling:read",
+          "mcp:scheduling:write"
+        ]
+      },
+      "guidanceMd": "Check the connected account, event type, timezone, availability, and attendee details before using a scheduling write. Use a test scheduling artifact only when the discovered tool explicitly supports it.",
+      "warnings": [
+        "Calendly MCP requires DCR and OAuth 2.1 authorization-code with PKCE S256. It does not support personal access tokens or manually provisioned static OAuth clients.",
+        "The provider advertises both scheduling read and write scopes for full access; verify the live tool catalog before enabling booking or link creation."
+      ],
+      "consoleLinks": {
+        "docs": "https://developer.calendly.com/docs/mcp/calendly-mcp-server"
+      },
+      "riskTier": "S3"
+    }
+  ]
+}

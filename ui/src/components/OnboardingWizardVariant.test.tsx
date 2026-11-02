@@ -1,99 +1,68 @@
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingWizardVariant } from "./OnboardingWizardVariant";
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
-}));
-
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
-}));
-
-// The variant wrapper only cares about *which* wizard renders, so both heavy
-// wizard components are stubbed out.
+const state = vi.hoisted(() => ({ onboardingOpen: false, onboardingRouteDismissed: false, pathname: "/PAP/issues/PAP-1" }));
+const mount = vi.hoisted(() => vi.fn());
+const setDismissed = vi.hoisted(() => vi.fn());
+vi.mock("../context/DialogContext", () => ({ useDialogState: () => state, useDialogActions: () => ({ closeOnboarding: vi.fn(), setOnboardingRouteDismissed: setDismissed }) }));
+vi.mock("../lib/router", () => ({ useLocation: () => state }));
 vi.mock("./OnboardingWizard", () => ({
-  OnboardingWizard: () => <div data-testid="wizard-capsule" />,
+  OnboardingWizard: () => { mount(); return <div data-testid="wizard-capsule" />; },
 }));
 
-vi.mock("./OnboardingWizardClassic", () => ({
-  OnboardingWizardClassic: () => <div data-testid="wizard-classic" />,
-}));
-
-async function flushReact() {
-  for (let index = 0; index < 5; index += 1) {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  }
-  flushSync(() => {});
-}
-
-describe("OnboardingWizardVariant (PAP-138)", () => {
+describe("OnboardingWizardVariant", () => {
   let container: HTMLDivElement;
-  let root: Root | null = null;
-
+  let root: Root;
   async function renderVariant() {
-    root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    flushSync(() => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <OnboardingWizardVariant />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
+    await act(async () => { root.render(<OnboardingWizardVariant />); });
   }
-
   beforeEach(() => {
+    state.onboardingOpen = false;
+    state.onboardingRouteDismissed = false;
+    state.pathname = "/PAP/issues/PAP-1";
+    mount.mockClear();
+    setDismissed.mockClear();
     container = document.createElement("div");
     document.body.appendChild(container);
+    root = createRoot(container);
   });
-
-  afterEach(() => {
-    flushSync(() => {
-      root?.unmount();
-    });
-    root = null;
+  afterEach(async () => {
+    await act(async () => root.unmount());
     container.remove();
-    vi.clearAllMocks();
   });
-
-  it("renders the classic wizard when the flag is off (default)", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: false });
+  it("does not mount the onboarding dependency tree when opening a task", async () => {
     await renderVariant();
-
-    expect(container.querySelector('[data-testid="wizard-classic"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="wizard-capsule"]')).toBeNull();
+    expect(container.innerHTML).toBe("");
+    expect(mount).not.toHaveBeenCalled();
   });
-
-  it("renders the capsule wizard when the flag is on", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+  it.each(["/onboarding", "/PAP/onboarding"])("loads the wizard for %s", async (pathname) => {
+    state.pathname = pathname;
     await renderVariant();
-
     expect(container.querySelector('[data-testid="wizard-capsule"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="wizard-classic"]')).toBeNull();
   });
-
-  it("renders the classic wizard when the settings payload omits the flag", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+  it("loads on dialog request and preserves the mounted wizard after closing", async () => {
     await renderVariant();
-
-    expect(container.querySelector('[data-testid="wizard-classic"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="wizard-capsule"]')).toBeNull();
+    state.onboardingOpen = true;
+    await renderVariant();
+    const wizard = container.querySelector('[data-testid="wizard-capsule"]');
+    expect(wizard).not.toBeNull();
+    state.onboardingOpen = false;
+    await renderVariant();
+    expect(container.querySelector('[data-testid="wizard-capsule"]')).toBe(wizard);
   });
-
-  it("renders neither wizard while the flag is still loading (no cross-variant flash)", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+  it("resets route dismissal on navigation without undoing cancellation on the same path", async () => {
+    state.pathname = "/onboarding";
     await renderVariant();
-
-    expect(container.querySelector('[data-testid="wizard-classic"]')).toBeNull();
-    expect(container.querySelector('[data-testid="wizard-capsule"]')).toBeNull();
+    expect(setDismissed).toHaveBeenCalledExactlyOnceWith(false);
+    state.onboardingRouteDismissed = true;
+    await renderVariant();
+    expect(setDismissed).toHaveBeenCalledTimes(1);
+    state.pathname = "/PAP/issues/PAP-1";
+    await renderVariant();
+    expect(setDismissed).toHaveBeenCalledTimes(2);
   });
 });

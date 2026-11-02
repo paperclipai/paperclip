@@ -36,7 +36,6 @@ These almost always get merged quickly when they're clean.
   → Share rough ideas / approach
 - Once there's rough agreement, build it
 - In your PR include:
-  - Before / After screenshots (or short video if UI/behavior change)
   - Clear description of what & why
   - Proof it works (manual testing notes)
   - All tests passing and CI green
@@ -46,6 +45,9 @@ These almost always get merged quickly when they're clean.
 PRs that follow this path are **much** more likely to be accepted, even when they're large.
 
 ## PR Requirements (all PRs)
+
+- Do not submit a PR that moves a code file from less than 1,000 lines of code to more than 1,000 lines of code.
+- Do not submit a PR that includes code comments.
 
 ### Use the PR Template
 
@@ -61,7 +63,47 @@ We do not gate PRs on a pre-existing issue. Two acceptable paths:
    - **Feature:** problem/motivation, proposed solution, alternatives considered, roadmap alignment. See [`feature_request.yml`](.github/ISSUE_TEMPLATE/feature_request.yml).
    - **New adapter:** agent or provider, why it's useful, how it's invoked. See [`adapter_request.yml`](.github/ISSUE_TEMPLATE/adapter_request.yml).
 
-Either way, a reviewer should be able to understand the underlying issue without leaving the PR. Commitperclip may check that one of these two paths is satisfied.
+Either way, a reviewer should be able to understand the underlying issue without leaving the PR. Commitperclip may check that one of these two paths is satisfied. Only link **public** GitHub issues — see [No Internal Issue References](#no-internal-issue-references) for what to leave out.
+
+### No Internal Issue References
+
+Many contributors run their own Paperclip instance to manage their work. Issue ids and links from *your* instance are private — reviewers and other contributors cannot open them, so they show up as clutter or broken links.
+
+In your PR title, description, commits, and comments, **only reference public GitHub issues and PRs** — `#123`, `Fixes #123` / `Closes #123` / `Refs #123`, or full `https://github.com/paperclipai/paperclip/...` URLs.
+
+Do **not** include references to internal/instance-local Paperclip work, such as:
+
+- Internal ticket ids like `PAPA-123`, `PAP-224`, or any `{PREFIX}-{NUMBER}` identifier that isn't a public GitHub issue number.
+- Instance UI links such as `/PAP/issues/...`, `/PAP/agents/...`, `agent://...`, or document deep links.
+- `localhost`, private IP, or tailnet URLs pointing at your own instance.
+
+If an internal issue captured useful context, restate that context in plain English in the PR body instead of linking to it.
+
+### Branch Naming
+
+Tooling (including Paperclip) often names a working branch after an internal issue and task — e.g. `PAPA-42-why-did-this-break`. That name leaks instance-local context, isn't meaningful to reviewers, and ends up as the public branch on your PR.
+
+Before you push, **rename the branch to something descriptive of the change itself**, not of your instance:
+
+- Use short, kebab-case names scoped to the change, optionally with a conventional prefix: `docs/no-internal-issue-references`, `fix/sandbox-secret-resolution`, `feat/adapter-retry-backoff`.
+- Do **not** include internal Paperclip ticket ids (`PAPA-123`, `PAP-224`), instance task slugs, or other instance-derived details in the branch name.
+
+To rename and push under the new name:
+
+```bash
+git branch -m <descriptive-name>
+git push -u origin <descriptive-name>
+# If your tooling already pushed the old branch, delete it from origin:
+git push origin --delete <old-name>
+```
+
+### Keep Screenshots Out of the Repo
+
+Screenshots, screen recordings, and other review evidence belong in the PR description or a PR comment, not in the repository. Do **not** commit them (for example under `docs/pr-screenshots/`). Committed review images land on `master` permanently and make every clone bigger, even though nobody needs them after the PR merges.
+
+To show a visual change, drag the image into the PR description or a comment on GitHub, which hosts the file for you. If your tooling cannot upload to GitHub, leave the images out and describe what you checked under **Verification**.
+
+Images that are part of the product documentation itself, such as a screenshot embedded in a guide under `doc/`, are fine to commit.
 
 ### Model Used (Required)
 
@@ -70,6 +112,12 @@ Every PR must include a **Model Used** section specifying which AI model produce
 ### Tests Must Pass
 
 All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
+
+### Telemetry Changes
+
+This repo has three separate data paths: Telemetry, Observability, and the run log. See rule 7 in `AGENTS.md` for the full definitions and the review level each path needs.
+
+If your change adds, removes, or modifies emitted telemetry events, update the [Telemetry Data Contract](packages/shared/src/telemetry/README.md) in the same PR. Keep clients emitting raw dimension values and avoid documenting or relying on private delivery details. If your change adds, removes, or modifies an OpenTelemetry span or span attribute, keep the change inside the closed span-attribute allowlist in `packages/adapter-utils/src/acpx-engine/startup-timing.ts`. If your change adds or modifies a run-log event, update `doc/run-log-events.md` in the same PR.
 
 ### Paperclip Gates Must Pass
 
@@ -122,6 +170,8 @@ Bugs, docs improvements, and small targeted improvements are still the easiest p
 
 ## Writing a Good PR message
 
+Write all PR text in Simplified Technical English (ASD-STE100): use short sentences, one instruction per sentence, simple approved vocabulary, and the active voice.
+
 Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.md). All sections are required. The "thinking path" at the top explains from the top of the project down to what you fixed. E.g.:
 
 ### Thinking Path Example 1:
@@ -147,8 +197,6 @@ Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.
 Then have the rest of your normal PR message after the Thinking Path.
 
 This should include details about what you did, why you did it, why it matters & the benefits, how we can verify it works, and any risks.
-
-Please include screenshots if possible if you have a visible change. (use something like the [agent-browser skill](https://github.com/vercel-labs/agent-browser/blob/main/skills/agent-browser/SKILL.md) or similar to take screenshots). Ideally, you include before and after screenshots.
 
 Questions? Just ask in #dev — we're happy to help.
 

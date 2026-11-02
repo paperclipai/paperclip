@@ -259,7 +259,7 @@ export function OnboardingChat({
       {/* Messages */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto space-y-3 mb-3 min-h-[180px] max-h-[320px] pr-1"
+        className="flex-1 overflow-y-auto space-y-3 mb-3 min-h-(--sz-180px) max-h-(--sz-320px) pr-1"
       >
         {/* CEO welcome message + chips — delayed reveal */}
         <WelcomeMessage
@@ -290,7 +290,7 @@ export function OnboardingChat({
               <div className="flex items-center gap-1.5 mb-1">
                 <span
                   className={cn(
-                    "text-[10px] font-medium uppercase tracking-wide",
+                    "text-(length:--text-nano) font-medium uppercase tracking-wide",
                     isAgent
                       ? "text-muted-foreground"
                       : "text-foreground/70",
@@ -299,7 +299,7 @@ export function OnboardingChat({
                   {isAgent ? agentName : "You"}
                 </span>
                 {isPlan && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-green-600 dark:text-green-400 font-medium">
+                  <span className="inline-flex items-center gap-0.5 text-(length:--text-nano) text-green-600 dark:text-green-400 font-medium">
                     <CheckCircle2 className="h-3 w-3" />
                     Hiring plan detected
                   </span>
@@ -323,8 +323,8 @@ export function OnboardingChat({
               {hasActiveRun ? (
                 <>
                   <span className="relative flex h-2.5 w-2.5 shrink-0">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
                   </span>
                   {getRunStatusMessage(activeRun.status, agentName, elapsed)}
                 </>
@@ -335,7 +335,7 @@ export function OnboardingChat({
                 </>
               )}
             </div>
-            <span className="text-[11px] text-muted-foreground/60 tabular-nums shrink-0">
+            <span className="text-(length:--text-micro) text-muted-foreground/60 tabular-nums shrink-0">
               {elapsedStr}
             </span>
           </div>
@@ -352,7 +352,7 @@ export function OnboardingChat({
                 <p className="text-sm font-medium">
                   {agentName} has prepared a hiring plan
                 </p>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   Review it, make edits, then approve.
                 </p>
               </div>
@@ -427,7 +427,7 @@ function WelcomeMessage({
       {showMessage && (
         <div className="rounded-md px-3 py-2 text-sm bg-muted/50 border border-border mr-8 animate-in fade-in duration-300">
           <div className="flex items-center gap-1.5 mb-1">
-            <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            <span className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
               {agentName}
             </span>
           </div>
@@ -468,8 +468,8 @@ function WelcomeMessage({
       {!showMessage && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground px-3 py-2">
           <span className="relative flex h-2.5 w-2.5 shrink-0">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500" />
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
           </span>
           {phase === "waking"
             ? `${agentName} is waking up...`

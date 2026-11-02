@@ -1,7 +1,7 @@
 import { redactHomePathUserSegments, redactTranscriptEntryPaths } from "@paperclipai/adapter-utils";
 import type { TranscriptEntry, StdoutLineParser, TranscriptParserSource } from "./types";
 
-export type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
+export type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string; seq?: number };
 type TranscriptBuildOptions = { censorUsernameInLogs?: boolean };
 type RedactionOptions = { enabled: boolean };
 
@@ -19,7 +19,12 @@ function resolveStdoutParser(source: StdoutLineParser | TranscriptParserSource) 
 export function appendTranscriptEntry(entries: TranscriptEntry[], entry: TranscriptEntry) {
   if ((entry.kind === "thinking" || entry.kind === "assistant") && entry.delta) {
     const last = entries[entries.length - 1];
-    if (last && last.kind === entry.kind && last.delta) {
+    if (
+      last &&
+      last.kind === entry.kind &&
+      last.delta &&
+      last.channel === entry.channel
+    ) {
       last.text += entry.text;
       last.ts = entry.ts;
       return;

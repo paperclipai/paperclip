@@ -54,7 +54,7 @@ my-adapter/                   # external plugin
 
 ```ts
 export const type = "my_agent";        // snake_case, globally unique
-export const label = "My Agent (local)";
+export const label = "My Agent";
 export const models = [
   { id: "model-a", label: "Model A" },
 ];

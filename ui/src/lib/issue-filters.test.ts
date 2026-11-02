@@ -1,12 +1,14 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import type { Issue } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
   defaultIssueFilterState,
+  normalizeIssueFilterState,
   resolveIssueFilterWorkspaceId,
+  searchIssueFilterOptions,
   shouldIncludeIssueFilterWorkspaceOption,
 } from "./issue-filters";
 
@@ -22,8 +24,10 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
@@ -51,7 +55,57 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
+function makeExternalObjectSummary(overrides: Partial<ExternalObjectSummary> = {}): ExternalObjectSummary {
+  return {
+    total: 1,
+    byStatusCategory: {},
+    byLiveness: { fresh: 1 },
+    highestSeverity: "neutral",
+    staleCount: 0,
+    authRequiredCount: 0,
+    unreachableCount: 0,
+    objects: [],
+    ...overrides,
+  };
+}
+
 describe("issue filters", () => {
+  it("hides automation by default while an opt-in includes every creation source", () => {
+    const issues = [makeIssue({ id: "human", createdByUserId: "person" }), makeIssue({ id: "agent", createdByAgentId: "agent" }), makeIssue({ id: "routine", originKind: "routine_execution", createdByUserId: "person" }), makeIssue({ id: "system" })];
+    expect(applyIssueFilters(issues, defaultIssueFilterState, null, true).map((issue) => issue.id)).toEqual(["human"]);
+    expect(applyIssueFilters(issues, { ...defaultIssueFilterState, showAgentCreatedTasks: true }, null, true)).toEqual(issues);
+    // Membership and task-detail collections can explicitly bypass creation visibility.
+    expect(applyIssueFilters(issues, defaultIssueFilterState, null, false)).toEqual(issues);
+    expect(countActiveIssueFilters(defaultIssueFilterState, true)).toBe(0);
+    expect(countActiveIssueFilters({ ...defaultIssueFilterState, showAgentCreatedTasks: true }, true)).toBe(1);
+  });
+
+  it("selects only routine executions even when automatic tasks are hidden", () => {
+    const routine = makeIssue({ id: "routine", originKind: "routine_execution", createdByUserId: "person" });
+    const issues = [makeIssue({ id: "manual", createdByUserId: "person" }), routine,
+      makeIssue({ id: "agent", createdByAgentId: "agent" }), makeIssue({ id: "channel", originKind: "chat_channel" })];
+    const filters = { ...defaultIssueFilterState, routineTasksOnly: true };
+    expect(applyIssueFilters(issues, filters, null, true)).toEqual([routine]);
+    expect(applyIssueFilters(issues, { ...filters, statuses: ["done"] })).toEqual([]);
+    expect(countActiveIssueFilters(filters, true)).toBe(1);
+    expect(normalizeIssueFilterState({ routineTasksOnly: true }).routineTasksOnly).toBe(true);
+    expect(normalizeIssueFilterState({ routineTasksOnly: "true" }).routineTasksOnly).toBe(false);
+  });
+
+  it("defaults legacy and invalid preferences to hidden without losing other filters", () => {
+    expect(normalizeIssueFilterState({ hideRoutineExecutions: false, statuses: ["todo"] })).toMatchObject({ showAgentCreatedTasks: false, statuses: ["todo"] });
+    expect(normalizeIssueFilterState({ showAgentCreatedTasks: "true" }).showAgentCreatedTasks).toBe(false);
+    expect(normalizeIssueFilterState({ showAgentCreatedTasks: true }).showAgentCreatedTasks).toBe(true);
+  });
+
+  it("searches filter options case-insensitively without mutating the source", () => {
+    const options = [{ name: "Alpha Agent" }, { name: "Release QA" }];
+    expect(searchIssueFilterOptions(options, "  qa ", (option) => option.name)).toEqual([
+      { name: "Release QA" },
+    ]);
+    expect(options).toHaveLength(2);
+  });
+
   it("filters issues by creator across agents and users", () => {
     const issues = [
       makeIssue({ id: "agent-match", createdByAgentId: "agent-1" }),
@@ -168,5 +222,63 @@ describe("issue filters", () => {
       { id: "execution-isolated", mode: "isolated_workspace", projectWorkspaceId: "workspace-default" },
       new Set(["workspace-default"]),
     )).toBe(true);
+  });
+
+  it.each([
+    ["failed", ["failed-issue", "blocked-issue"]],
+    ["auth_required", ["auth-issue"]],
+    ["stale", ["stale-issue"]],
+    ["none", ["none-issue"]],
+  ])("filters issues by external-object status token %s", (externalObjectStatus, expectedIssueIds) => {
+    const issues = [
+      makeIssue({ id: "failed-issue" }),
+      makeIssue({ id: "blocked-issue" }),
+      makeIssue({ id: "auth-issue" }),
+      makeIssue({ id: "stale-issue" }),
+      makeIssue({ id: "none-issue" }),
+      makeIssue({ id: "fresh-issue" }),
+    ];
+    const summaries = new Map<string, ExternalObjectSummary>([
+      ["failed-issue", makeExternalObjectSummary({ byStatusCategory: { failed: 1 }, highestSeverity: "danger" })],
+      ["blocked-issue", makeExternalObjectSummary({ byStatusCategory: { blocked: 1 }, highestSeverity: "danger" })],
+      ["auth-issue", makeExternalObjectSummary({
+        byLiveness: { auth_required: 1 },
+        highestSeverity: "danger",
+        authRequiredCount: 1,
+      })],
+      ["stale-issue", makeExternalObjectSummary({
+        byLiveness: { stale: 1 },
+        highestSeverity: "warning",
+        staleCount: 1,
+      })],
+      ["fresh-issue", makeExternalObjectSummary({ byStatusCategory: { succeeded: 1 }, highestSeverity: "success" })],
+    ]);
+
+    const filtered = applyIssueFilters(
+      issues,
+      { ...defaultIssueFilterState, externalObjectStatuses: [externalObjectStatus] },
+      null,
+      false,
+      undefined,
+      {
+        externalObjectSummaryByIssueId: summaries,
+        externalObjectSummariesReady: true,
+      },
+    );
+
+    expect(filtered.map((issue) => issue.id)).toEqual(expectedIssueIds);
+  });
+
+  it("does not apply external-object filters before summaries are ready", () => {
+    const filtered = applyIssueFilters(
+      [makeIssue({ id: "issue-1" })],
+      { ...defaultIssueFilterState, externalObjectStatuses: ["none"] },
+      null,
+      false,
+      undefined,
+      { externalObjectSummaryByIssueId: new Map(), externalObjectSummariesReady: false },
+    );
+
+    expect(filtered).toEqual([]);
   });
 });

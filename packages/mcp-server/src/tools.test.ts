@@ -52,6 +52,23 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("lists the company skill library with the default company id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ key: "paperclipai/bundled/product/wireframe", name: "wireframe" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListSkills");
+    const response = await tool.execute({});
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/skills",
+    );
+    expect(response.content[0]?.text).toContain("wireframe");
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),

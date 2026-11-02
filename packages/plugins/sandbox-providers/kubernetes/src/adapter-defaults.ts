@@ -40,12 +40,6 @@ const REGISTRY: Record<string, AdapterDefaults> = {
     allowFqdns: ["api.anthropic.com", "api.openai.com", "openrouter.ai"],
     probeCommand: ["opencode", "--version"],
   },
-  acpx_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-acpx:v1",
-    envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
-    allowFqdns: ["api.anthropic.com", "api.openai.com"],
-    probeCommand: ["acpx", "--version"],
-  },
   pi_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-pi:v1",
     envKeys: ["ANTHROPIC_API_KEY"],

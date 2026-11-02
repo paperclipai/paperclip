@@ -1,7 +1,8 @@
-import type { MouseEvent } from "react";
+import { useMemo, type MouseEvent } from "react";
 import { readFileViewerStateFromSearch, useFileViewer } from "@/context/FileViewerContext";
 import { parseWorkspaceFileRef } from "@/lib/workspace-file-parser";
-import { buildWorkspaceFileHref } from "@/lib/remark-workspace-file-refs";
+import { buildWorkspaceFileHref, type WorkspaceFileRefResolver } from "@/lib/remark-workspace-file-refs";
+import { workspaceFileAvailabilityRef } from "@/lib/workspace-file-availability";
 import { MarkdownBody } from "./MarkdownBody";
 
 type MarkdownBodyProps = Parameters<typeof MarkdownBody>[0];
@@ -25,6 +26,17 @@ export function WorkspaceFileMarkdownBody({
   ...props
 }: MarkdownBodyProps) {
   const viewer = useFileViewer();
+  const availability = viewer?.availability;
+
+  // Identity changes with the registry version, so completed batches re-parse
+  // the markdown and promote the references that came back openable.
+  const resolveWorkspaceFileRef = useMemo<WorkspaceFileRefResolver | undefined>(() => {
+    if (!availability) return undefined;
+    return (ref) => {
+      const result = availability.check(workspaceFileAvailabilityRef(ref));
+      return result.state === "openable" ? result.target : null;
+    };
+  }, [availability]);
 
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
     if (!viewer) return;
@@ -43,7 +55,7 @@ export function WorkspaceFileMarkdownBody({
 
   return (
     <div onClick={handleClick}>
-      <MarkdownBody {...props} linkWorkspaceFileRefs={!!viewer}>{children}</MarkdownBody>
+      <MarkdownBody {...props} resolveWorkspaceFileRef={resolveWorkspaceFileRef}>{children}</MarkdownBody>
     </div>
   );
 }

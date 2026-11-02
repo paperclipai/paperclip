@@ -2,6 +2,10 @@ import { createContext, useContext, useCallback, useMemo, type ReactNode } from 
 import { useLocation, useNavigate, type NavigateOptions } from "@/lib/router";
 import type { WorkspaceFileSelector } from "@paperclipai/shared";
 import type { ParsedWorkspaceFileRef } from "@/lib/workspace-file-parser";
+import {
+  useWorkspaceFileAvailability,
+  type WorkspaceFileAvailabilityRegistry,
+} from "@/hooks/useWorkspaceFileAvailability";
 
 export interface FileViewerUrlState {
   path: string;
@@ -14,6 +18,12 @@ export interface FileViewerUrlState {
 
 export interface FileViewerContextValue {
   issueId: string;
+  /**
+   * Batched preflight registry. Auto-detected markdown file references consult
+   * it so a chip only renders once this issue's session can actually open the
+   * resolved target.
+   */
+  availability: WorkspaceFileAvailabilityRegistry;
   /** Current viewer state derived from the URL, or null if closed. */
   state: FileViewerUrlState | null;
   /** True when the sheet is in browse mode (URL carries `browse=1`). */
@@ -52,6 +62,15 @@ export const FILE_VIEWER_NAVIGATE_OPTIONS = {
   replace: false,
   preventScrollReset: true,
 } satisfies NavigateOptions;
+
+export function getCurrentFileViewerSearch(fallbackSearch: string): string {
+  if (typeof window === "undefined") return fallbackSearch;
+  return window.location.search;
+}
+
+export function shouldNavigateFileViewerSearch(nextSearch: string, fallbackSearch: string): boolean {
+  return nextSearch !== getCurrentFileViewerSearch(fallbackSearch);
+}
 
 export function readFileViewerStateFromSearch(search: string): FileViewerUrlState | null {
   const params = new URLSearchParams(search);
@@ -195,10 +214,11 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
   const navigate = useNavigate();
   const state = useMemo(() => readFileViewerStateFromSearch(location.search), [location.search]);
   const browseState = useMemo(() => readBrowseStateFromSearch(location.search), [location.search]);
+  const availability = useWorkspaceFileAvailability(issueId);
 
   const navigateSearch = useCallback(
     (nextSearch: string, opts?: Partial<NavigateOptions>) => {
-      if (nextSearch === location.search) return;
+      if (!shouldNavigateFileViewerSearch(nextSearch, location.search)) return;
       navigate(
         { pathname: location.pathname, hash: location.hash, search: nextSearch },
         { ...FILE_VIEWER_NAVIGATE_OPTIONS, ...opts, state: location.state },
@@ -285,7 +305,8 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
   }, [location.search, navigateSearch]);
 
   const close = useCallback(() => {
-    const params = new URLSearchParams(writeFileViewerStateToSearch(location.search, null).replace(/^\?/, ""));
+    const currentSearch = getCurrentFileViewerSearch(location.search);
+    const params = new URLSearchParams(writeFileViewerStateToSearch(currentSearch, null).replace(/^\?/, ""));
     params.delete("browse");
     params.delete("q");
     params.delete("folder");
@@ -295,6 +316,7 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
   const value = useMemo<FileViewerContextValue>(
     () => ({
       issueId,
+      availability,
       state,
       browse: browseState !== null,
       query: browseState?.q ?? null,
@@ -308,7 +330,7 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
       backToFiles,
       close,
     }),
-    [issueId, state, browseState, open, openBrowse, updateBrowseState, openFolder, backToFiles, close],
+    [issueId, availability, state, browseState, open, openBrowse, updateBrowseState, openFolder, backToFiles, close],
   );
 
   return <FileViewerContext.Provider value={value}>{children}</FileViewerContext.Provider>;

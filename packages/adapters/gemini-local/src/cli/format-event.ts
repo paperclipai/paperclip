@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { printAcpxStreamEvent } from "@paperclipai/adapter-utils/acpx-engine/cli";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -119,6 +120,11 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
   }
 
   const type = asString(parsed.type);
+
+  if (type.startsWith("acpx.")) {
+    printAcpxStreamEvent(line, _debug);
+    return;
+  }
 
   if (type === "system") {
     const subtype = asString(parsed.subtype);

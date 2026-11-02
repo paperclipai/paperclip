@@ -1,0 +1,138 @@
+{
+  "schema": "paperclip.pi-provider-pack-offline-proof.v1",
+  "recordedAt": "2026-09-28T18:05:21.044Z",
+  "classification": "offline_candidate_admission",
+  "source": {
+    "runnerRevision": "d039e1b7b072862b4c326ba7194dc42617fa5984",
+    "distDigest": "sha256:4a06098b322bb2c92db66c99d51e9eac7009f442d53077982a88ede937fea044",
+    "bridgeDigest": "sha256:d2fb33ed3ca0f42bbc6c33486f4ff34a8e29aa2cebf94c64d1747b1ce4089eb1",
+    "productionLockDigest": "sha256:650e23d20e967bcfbfced888e131199b9a06e66a1ba4f64cfb68383b59def4a8",
+    "note": "Built after the assigned HTTPS gateway repair and the shared failed-turn receipt and credential-provenance fixes. This probe executed the deployed generic installation registry and immutable snapshot. Every capability field below was read and asserted from this actual initialize response. No prompt was sent."
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "nodeVersion": "24.19.0",
+    "execution": "local macOS ARM64; immutable guarded provider snapshot",
+    "packageManager": "pnpm@9.15.4"
+  },
+  "candidate": {
+    "agent": "pi",
+    "qualification": "pending",
+    "agentProfileVersion": 2,
+    "declaredModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "reportedModelId": null,
+    "modelVerification": "not_performed_authentication_missing",
+    "wrapperVersion": "0.0.33",
+    "runtimeVersion": "0.84.2",
+    "profileDigest": "sha256:c577a771778febe24b920388da77f6143971b8eec29e1ba9a433dac5b76de3cd",
+    "closureDigest": "sha256:a26e98fe3f4d3d93c13beffdb4e8b778d438dd1b3bca8a9b1610154342382681",
+    "assetTreeDigest": "sha256:44b058bf5a10b82d355351e8034d82e0a82d8de3236c80ccd586922953a4de4a",
+    "distributionManifestDigest": "sha256:bd46c419b3a9c56332eda72dfc5fbd7621d8f0a271be8fb6202b005a39ee4c7a",
+    "wrapperDigest": "sha256:2eb201c3a931177490a8e18f4a8392f00cbcf21847e9cc171de528da5e253935",
+    "helperDigest": "sha256:4333d284ff06ab1195e49630041f0b03a486a92fc678100525ad107e0982dba1",
+    "extensionDigest": "sha256:0a2ca138d6d87a85498bd982ee64543ea8b14f2ecceded96cfc27b0836cc4254"
+  },
+  "providerPack": {
+    "manifestDigest": "sha256:5a47fc67b886c1e05d0f630ed89c1b9f5324610b649d1db020a3e036e36fc85d",
+    "portableNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "piNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "acpxSidecarDigest": "sha256:9416ff4c0d87ae343b6af4354b7b871ece77d86799f0daaf866915647ae44eb5"
+  },
+  "observed": {
+    "closedSnapshotLaunch": true,
+    "acpInitialize": "passed",
+    "authMethods": [],
+    "capabilities": {
+      "version": 1,
+      "steering": true,
+      "queuedFollowUp": true,
+      "questions": [
+        "select",
+        "confirm",
+        "input",
+        "editor"
+      ],
+      "nativePermissions": true,
+      "promptUsage": true,
+      "nativePlan": false,
+      "pendingRequestRecovery": "live-process-only"
+    },
+    "sessionNew": "rejected_authentication_missing",
+    "expectedError": "Bind the configured OpenRouter API credential to this Paperclip runtime.",
+    "missingCredentialRejected": true,
+    "capabilityProvenance": "Read and asserted in full from this pack launch.",
+    "rpcMethods": [
+      "initialize",
+      "session/new"
+    ]
+  },
+  "usage": {
+    "providerCalls": 0,
+    "promptRequests": 0,
+    "paidProviderCalls": 0,
+    "credentials": "none",
+    "spentUsd": 0
+  },
+  "limitations": [
+    "No provider authentication, model prompt, or reported currentModelId was verified.",
+    "Native tool execution, permissions, questions, and semantic MCP calls were not exercised by this pack-launch probe.",
+    "Linux x64, macOS x64, and Daytona execution were not exercised.",
+    "Production qualification remains pending."
+  ],
+  "verification": {
+    "sourceRevision": "d039e1b7b072862b4c326ba7194dc42617fa5984",
+    "resolvedSourceLockDigest": "sha256:650e23d20e967bcfbfced888e131199b9a06e66a1ba4f64cfb68383b59def4a8",
+    "lockResolution": "clean tracked input, full workspace resolution, matched reviewed Docker pin before frozen filtered install",
+    "typescriptBuild": "passed",
+    "providerPackBuild": "passed",
+    "vitest": {
+      "files": 4,
+      "passed": 31,
+      "failed": 0,
+      "maxWorkers": 1,
+      "hookTimeoutMs": 10000,
+      "actualDistributionInstallation": "enabled; current provider-pack assets",
+      "durationSeconds": 12.22
+    },
+    "verificationHistory": [
+      {
+        "suite": "four Pi Vitest files",
+        "passed": 30,
+        "failed": 1,
+        "failurePhase": "afterEach cleanup",
+        "failure": "Hook timed out in 10000ms while deleting the large immutable snapshot during concurrent pack builds; launch assertions completed",
+        "durationSeconds": 41.63
+      },
+      {
+        "suite": "four Pi Vitest files",
+        "passed": 31,
+        "failed": 0,
+        "hookTimeoutMs": 60000,
+        "durationSeconds": 42.07
+      },
+      {
+        "suite": "four Pi Vitest files",
+        "passed": 31,
+        "failed": 0,
+        "hookTimeoutMs": 10000,
+        "maxWorkers": 1,
+        "durationSeconds": 12.22,
+        "note": "Repeated after pack/probe IO settled, with unchanged source and default cleanup timeout."
+      }
+    ],
+    "nodeTests": {
+      "files": 3,
+      "passed": 17,
+      "failed": 0,
+      "skipped": 0,
+      "actualPackages": "fresh provider-pack assets"
+    },
+    "notRun": [
+      "full repository typecheck, build, and tests for this provider branch",
+      "credentialed model evaluation",
+      "Linux x64 or macOS x64 execution",
+      "Daytona deployment"
+    ]
+  }
+}

@@ -46,6 +46,9 @@ function secret(partial: Partial<CompanySecret>): CompanySecret {
   return {
     id: "secret-1",
     companyId: "company-1",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: "agent_agent-12_anthropic_api_key",
     name: "agent_agent-12_anthropic_api_key",
     provider: "local_encrypted",
@@ -136,6 +139,9 @@ describe("secrets CLI helpers", () => {
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
     delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_SESSION_TOKEN;
   });
 
   afterEach(() => {

@@ -1,11 +1,9 @@
 ---
 name: paperclip-create-plugin
 description: >
-  Create and develop external Paperclip plugins with the CLI-first workflow.
-  Use when scaffolding a new plugin, working on a local plugin against a running
-  Paperclip instance, or updating plugin authoring docs. Covers `paperclipai
-  plugin init`, the local install loop via `paperclipai plugin install <path>`,
-  worker/UI rebuild and reload semantics, and the required success checklist.
+  Create and develop external Paperclip plugins with the CLI-first workflow. Use
+  when scaffolding a plugin, iterating on a local plugin, installing it into
+  Paperclip, or updating plugin authoring docs.
 ---
 
 # Create and develop a Paperclip plugin
