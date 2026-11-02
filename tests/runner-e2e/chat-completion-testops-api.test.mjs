@@ -128,6 +128,22 @@ test('the fenced launcher requests one exact three-case TestOps launch', async (
     launchName: `${planName} · ${operatorEnv.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE}` } }]);
 });
 
+test('completion launch preflight sends the typed UTF-8 name filter required by TestOps', async () => {
+  const f = mutationApi({ assignments: [{ job, testCasesCount: 3 }] });
+  const api = async (route, ...args) => {
+    if (route.startsWith('/api/launch?')) {
+      const wire = new URL(route, 'https://paperclip.testops.cloud').searchParams.get('search');
+      let filters;
+      try { filters = JSON.parse(Buffer.from(wire, 'base64').toString('utf8')); }
+      catch { throw new Error('TestOps HTTP 400: typed launch search required'); }
+      assert.deepEqual(filters, [{ id: 'name', type: 'string', value: `${planName} · ${operatorEnv.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE}` }]);
+    }
+    return f.api(route, ...args);
+  };
+  await launchPilotPlan(api, operatorEnv, context, 999, async () => {});
+  assert.equal(f.calls.filter(row => row.method === 'POST').length, 1);
+});
+
 for (const changed of [{ GITHUB_RUN_NUMBER: '6' }, { CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE: 'not-a-nonce' }, { CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER: '' }]) {
   test(`launcher rejects its invalid fence before requests: ${Object.keys(changed)[0]}`, async () => {
     const f = mutationApi();
