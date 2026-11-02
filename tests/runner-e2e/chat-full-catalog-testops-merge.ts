@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { buildRunnerCampaign } from "./history.js";
 import { readPilotExport, exportPilotAllure } from "./chat-completion-testops-results.mjs";
-import { hash, validateSelection, catalogDefinition } from "./chat-completion-testops-contract.mjs";
+import { hash, validateSelection, catalogDefinition, model } from "./chat-completion-testops-contract.mjs";
 import type { PilotContext, PilotSelection } from "./chat-completion-testops-contract.mjs";
 import type { RunnerE2EResult } from "./types.js";
 import { findSecretLeakInJsonValues } from "./redaction.js";
@@ -132,7 +132,7 @@ export async function prepareRetainedCatalogReport(root: string, output: string,
     await writeFile(path.join(allure, `${uuid}-result.json`), JSON.stringify({ uuid, name: row.name,
       fullName: row.registeredFullName ?? row.fullName,
       testCaseId: hash(`${JSON.stringify(row.registeredFullName ?? row.fullName)}\n`),
-      historyId: hash(JSON.stringify([row.registeredFullName ?? row.fullName, "runner-opencode", "openrouter/deepseek/deepseek-v4.1-flash-1017", "local"])),
+      historyId: hash(JSON.stringify([row.registeredFullName ?? row.fullName, "runner-opencode", model, "local"])),
       status: "broken", stage: "finished", statusDetails: { message: "Reporting gap: retained original unavailable. Original evaluation grade is UNKNOWN. No evaluation was rerun." },
       labels: [{ name: "AS_ID", value: String(row.caseId) }, { name: "parentSuite", value: "Product E2E" },
         { name: "suite", value: "chat-features" }, { name: "framework", value: "Paperclip Evals" }, { name: "tag", value: "reporting-gap" }],

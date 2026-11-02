@@ -32,7 +32,7 @@ test('available original PASS and FAIL publish beside explicit UNKNOWN reporting
  assert.deepEqual(receipt.coverage,{selected:3,gradedOriginals:2,originalPassed:1,originalFailed:1,reportingGaps:1});
  const rows=await Promise.all((await readdir(f.output+'/allure')).filter(n=>n.endsWith('-result.json')).map(async n=>JSON.parse(await readFile(f.output+'/allure/'+n,'utf8'))));
  assert.deepEqual(rows.map(r=>r.status).sort(),['broken','failed','passed']);
- const gap=rows.find(r=>r.status==='broken');assert.deepEqual(gap.steps,[]);assert.equal(gap.start,undefined);assert.equal(gap.labels.find((r:any)=>r.name==='AS_ID').value,'102');
+ const gap=rows.find(r=>r.status==='broken');assert.equal(gap.historyId,hash(JSON.stringify([gap.fullName,'runner-opencode',model,'local'])));assert.deepEqual(gap.steps,[]);assert.equal(gap.start,undefined);assert.equal(gap.labels.find((r:any)=>r.name==='AS_ID').value,'102');
  const data=JSON.parse(await readFile(f.output+'/allure/'+gap.attachments[0].source,'utf8'));
  assert.equal(data.originalStatus,null);assert.equal(data.checks,null);assert.equal(data.nativeRunCount,null);assert.equal(data.cleanup,null);
  assert.equal(data.outcome,'reporting_gap');assert.equal(data.doesNotAttestFeatureOutcome,true);
