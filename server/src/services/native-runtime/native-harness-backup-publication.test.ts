@@ -63,8 +63,8 @@ describe("native harness backup publication", () => {
       await fs.chmod(directory, 0o555);
     }
     let publishing = false;
-    let probeReceived: (response: ServerResponse) => void;
-    const probeReady = new Promise<ServerResponse>(resolve => { probeReceived = resolve; });
+    let probeReceived: (response: ServerResponse | null) => void;
+    const probeReady = new Promise<ServerResponse | null>(resolve => { probeReceived = resolve; });
     const server = createServer((request, response) => {
       if (request.url === "/probe") { probeReceived(response); return; }
       response.end("ok");
@@ -112,6 +112,7 @@ describe("native harness backup publication", () => {
         stamp: async () => {
           client.send({ kind: "probe" });
           const response = await probeReady;
+          if (!response) return;
           setImmediate(() => {
             response.setHeader("x-publication-active", publishing ? "1" : "0");
             response.end("ok");
@@ -124,6 +125,7 @@ describe("native harness backup publication", () => {
       expect(await fs.readdir(backupRoot)).toEqual(["current"]);
       expect(await fs.readFile(path.join(input.current, "manifest.json"), "utf8")).toBe("replacement");
     } finally {
+      probeReceived!(null);
       try { await publication; }
       finally {
         client.kill();
