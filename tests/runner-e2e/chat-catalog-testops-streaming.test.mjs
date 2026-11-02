@@ -9,7 +9,8 @@ import { run } from './chat-completion-testops-cli.mjs';
 import { prepareCaseBundle, readCaseBundle, publishCaseBundle, publicationSet } from './chat-catalog-testops-streaming.mjs';
 const context = { catalog: 'full', runId: '123', attempt: '1', workflowSha: 'a'.repeat(40), targetSha: catalogTargetSha };
 const caseIds = { 'tasks.create-backlog': 388, 'documents-artifacts.write-plan': 26, 'projects.project-defaults': 100 };
-const cases = fullCatalogCases.filter(row => Object.hasOwn(caseIds, row.key)).map(row => ({ ...row, caseId: caseIds[row.key] }));
+const cases = fullCatalogCases.filter(row => Object.hasOwn(caseIds, row.key)).map(row => ({ ...row, caseId: caseIds[row.key],
+  registeredFullName: row.aliases[0] ?? row.fullName }));
 const selection = { schema: 'paperclip.chat-completion-testops-selection/v1', ...context, projectId: 1,
   planId: 102, jobId: 100, launchId: 12, allureJobRunId: '77', cases };
 const digest = hash(JSON.stringify(selection)), current = cases.find(row => row.caseId === 388), runUrl = 'https://github.com/paperclipai/paperclip/actions/runs/123';
@@ -33,8 +34,15 @@ async function fixture(t, failed = false, owned = current, runtimeContext = cont
   const prepared = await prepareCaseBundle(root, output, runtimeContext, selection, owned.executionId, digest);
   return { root, output, prepared };
 }
-function server(prepared, { existing = false, uncertain = false, apply = true } = {}) {
-  let present = existing, posts = 0; const calls = [];
+function server(prepared, { existing = false, uncertain = false, apply = true, scheduled = false, processingReads = 0 } = {}) {
+  let present = existing, posts = 0, pendingReads = processingReads; const calls = [];
+  const resultId = scheduled ? 3347 : 501;
+  const detail = () => {
+    const pending = !present || pendingReads-- > 0;
+    return { id: resultId, testCaseId: 388, projectId: 1, launchId: 12,
+      fullName: current.registeredFullName, jobRun: { id: 77, launchId: 12, url: runUrl }, links: [],
+      ...(!pending ? { status: prepared.exported[0].status } : {}) };
+  };
   const api = async (route, method = 'GET', body) => {
     calls.push({ route, method });
     if (method === 'POST') {
@@ -49,10 +57,11 @@ function server(prepared, { existing = false, uncertain = false, apply = true } 
     }
     if (route === '/api/jobrun/77') return { id: 77, job: { id: 100, type: 'github' }, stage: 'finished', launchId: 12, url: runUrl };
     if (route === '/api/launch/12') return { id: 12, projectId: 1, closed: false };
-    if (route.startsWith('/api/testresult?')) return { content: [...(present ? [{ id: 501, testCaseId: 388 }] : []),
-      { id: 502, testCaseId: 26 }], totalElements: present ? 2 : 1, totalPages: 1, number: 0 };
-    if (route === '/api/testresult/501') return { id: 501, testCaseId: 388, projectId: 1, launchId: 12,
-      fullName: current.fullName, status: prepared.exported[0].status, jobRun: { id: 77, launchId: 12, url: runUrl }, links: [] };
+    if (route.startsWith('/api/testresult?')) return { content: scheduled ? cases.map(row => ({
+      id: row.caseId === 388 ? resultId : row.caseId === 100 ? 3346 : 3345, testCaseId: row.caseId }))
+      : [...(present ? [{ id: resultId, testCaseId: 388 }] : []), { id: 502, testCaseId: 26 }],
+      totalElements: scheduled ? 3 : present ? 2 : 1, totalPages: 1, number: 0 };
+    if (route === `/api/testresult/${resultId}`) return detail();
     if (route.startsWith('/api/testresult/attachment?')) return { content: prepared.exported[0].attachments.map((row, index) => ({
       ...row, id: 700 + index, missed: false, fromTestCase: false })), totalElements: 2, totalPages: 1 };
     throw new Error(`Unexpected test route ${route}`);
@@ -60,8 +69,8 @@ function server(prepared, { existing = false, uncertain = false, apply = true } 
   return { api, calls, get posts() { return posts; } };
 }
 const immediate = { now: () => 0, wait: async () => {} };
-async function publish(f, s, mark = async () => {}) {
-  return publishCaseBundle(s.api, f.root, f.output, f.prepared, context, selection, current.executionId, digest, mark, immediate);
+async function publish(f, s, mark = async () => {}, options = immediate) {
+  return publishCaseBundle(s.api, f.root, f.output, f.prepared, context, selection, current.executionId, digest, mark, options);
 }
 test('one frozen singleton bundle publishes into the bound shared launch beside siblings', async t => {
   const f = await fixture(t), s = server(f.prepared); let markers = 0;
@@ -76,9 +85,38 @@ test('an existing result is verified without another mutation or a regenerated U
   const value = await publish(f, s, async () => assert.fail('must not mark another upload'));
   assert.equal(value.uploadSent, false); assert.equal(s.posts, 0); assert.equal(value.verification, 'VERIFIED');
 });
+test('an existing unknown outcome remains readback-only and never requests another upload', async t => {
+  const f = await fixture(t), s = server(f.prepared, { existing: true }), original = s.api;
+  s.api = async (...args) => { const row = await original(...args); if (args[0] === '/api/testresult/501') row.status = 'unknown'; return row; };
+  await assert.rejects(publish(f, s, async () => assert.fail('must not mark another upload')), /upload_unverified/);
+  assert.equal(s.posts, 0);
+});
+test('three scheduled launch rows permit one initial upload and remain unready until an outcome is processed', async t => {
+  const f = await fixture(t), s = server(f.prepared, { scheduled: true, processingReads: 1 });
+  let markers = 0, waits = 0;
+  const value = await publish(f, s, async () => { markers++; }, { now: () => 0, wait: async () => { waits++; } });
+  assert.equal(value.verification, 'VERIFIED'); assert.equal(value.uploadSent, true);
+  assert.equal(value.exported.status, 'passed'); assert.equal(value.results[0].resultId, 3347);
+  assert.equal(s.posts, 1); assert.equal(markers, 1); assert.equal(waits, 1);
+});
+test('permanently scheduled readback stops at the original poll bound without another upload', async t => {
+  const f = await fixture(t), s = server(f.prepared, { scheduled: true, processingReads: Infinity });
+  let waits = 0;
+  await assert.rejects(publish(f, s, async () => {}, { now: () => 0, wait: async () => { waits++; } }), /upload_unverified/);
+  assert.equal(s.posts, 1); assert.equal(waits, 11);
+});
+test('scheduled details with a foreign jobrun, contradictory source or malformed status refuse before upload', async t => {
+  for (const change of [row => { row.jobRun.id = 78; }, row => { row.jobRun.url = runUrl + '0'; },
+    row => { row.status = null; }]) {
+    const f = await fixture(t), s = server(f.prepared, { scheduled: true }), original = s.api;
+    s.api = async (...args) => { const row = await original(...args); if (args[0] === '/api/testresult/3347') change(row); return row; };
+    await assert.rejects(publish(f, s, async () => assert.fail('must not mark an invalid result')), /result_mismatch/);
+    assert.equal(s.posts, 0);
+  }
+});
 test('an uncertain applied upload reconciles by GET while an absent upload stops without resend', async t => {
   for (const apply of [true, false]) {
-    const f = await fixture(t), s = server(f.prepared, { uncertain: true, apply });
+    const f = await fixture(t), s = server(f.prepared, { uncertain: true, apply, scheduled: true });
     if (apply) {
       const value = await publish(f, s); assert.equal(value.verification, 'VERIFIED');
       assert.equal(value.uncertainUpload.kind, 'transport_or_response_failure');
@@ -253,7 +291,7 @@ test('the final CLI verifies all authenticated mixed-grade publications without 
       const match = u.pathname.match(/^\/api\/testresult\/(\d+)$/);
       if (match) {
         const i = Number(match[1]) - 501; details.push(cases[i].caseId);
-        return Response.json({ id: Number(match[1]), projectId: 1, launchId: 12, testCaseId: cases[i].caseId, fullName: cases[i].fullName,
+        return Response.json({ id: Number(match[1]), projectId: 1, launchId: 12, testCaseId: cases[i].caseId, fullName: cases[i].registeredFullName,
           jobRun: { id: 77, launchId: 12, url: runUrl }, links: [], status: exported[i].status });
       }
       assert.equal(u.pathname, '/api/testresult/attachment');
