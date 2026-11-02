@@ -6,7 +6,7 @@ import { agents, agentApiKeys, agentSessionGoalActions, agentTaskSessions, authU
 import { access, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, it, vi } from "vitest";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { maintenanceDatabaseSupport } from "./helpers/maintenance/environment.js";
@@ -14,19 +14,31 @@ import { CLOUD_RUNTIME_IDENTITY_AUDIENCE, CLOUD_RUNTIME_IDENTITY_ISSUER, CLOUD_R
 import { prepareMaintenanceRuntime } from "./helpers/maintenance/runtime-build.js";
 import { startMaintenanceServer, withMaintenanceProvider } from "./helpers/maintenance/server-harness.js";
 
-let databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_MAINTENANCE_BOOT_TEST_DATABASE_URL");
-let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
-const databaseSupport = await maintenanceDatabaseSupport(databaseUrl);
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_MAINTENANCE_BOOT_TEST_DATABASE_URL");
+const databaseSupport = await maintenanceDatabaseSupport(externalDatabaseUrl);
 const describeDatabase = databaseSupport.supported ? describe : describe.skip;
 if (!databaseSupport.supported) console.warn(`Skipping maintenance PostgreSQL tests: ${databaseSupport.reason ?? "unsupported environment"}`);
-async function clearDatabase() {
-  if (!temporary && !new URL(databaseUrl!).pathname.endsWith("_test")) throw new Error("Maintenance boot requires an owned disposable _test database");
-  const fixture = createDb(databaseUrl!, { maxConnections: 1 });
-  try {
-    const tables = await fixture.$client<{ tablename: string }[]>`select tablename from pg_tables where schemaname='public'`;
-    if (tables.length) await fixture.$client.unsafe(`truncate ${tables.map(table => `"${table.tablename.replaceAll('"', '""')}"`).join(",")} cascade`);
-  } finally { await fixture.$client.end(); }
-}
+// Each case already owns its server process, home, proxy, ports and provider.
+// Give it an owned database too, so the real observation windows can overlap.
+// An explicitly shared external database retains the original serial behavior.
+vi.setConfig({ maxConcurrency: externalDatabaseUrl ? 1 : 2 });
+const maintenanceTest = it.extend<{ databaseUrl: string }>({
+  databaseUrl: async ({}, use) => {
+    const temporary = externalDatabaseUrl ? undefined : await startEmbeddedPostgresTestDatabase("maintenance-server-");
+    const databaseUrl = externalDatabaseUrl ?? temporary!.connectionString;
+    try {
+      if (externalDatabaseUrl) {
+        if (!new URL(databaseUrl).pathname.endsWith("_test")) throw new Error("Maintenance boot requires an owned disposable _test database");
+        const fixture = createDb(databaseUrl, { maxConnections: 1 });
+        try {
+          const tables = await fixture.$client<{ tablename: string }[]>`select tablename from pg_tables where schemaname='public'`;
+          if (tables.length) await fixture.$client.unsafe(`truncate ${tables.map(table => `"${table.tablename.replaceAll('"', '""')}"`).join(",")} cascade`);
+        } finally { await fixture.$client.end(); }
+      }
+      await use(databaseUrl);
+    } finally { await temporary?.cleanup(); }
+  },
+});
 async function settleClock(server: Awaited<ReturnType<typeof startMaintenanceServer>>) {
   for (let step = 0; step < 60; step++) {
     if (server.proxy.pending === 0 && (await server.snapshot()).idle.active === 0) return server.settled(100);
@@ -48,12 +60,9 @@ function receipt(queries: Array<{ protocol: string; sql: string; fingerprint: st
 describeDatabase("assembled maintenance server production wiring", () => {
   beforeAll(async () => {
     await prepareMaintenanceRuntime();
-    if (!databaseUrl) { temporary = await startEmbeddedPostgresTestDatabase("maintenance-server-"); databaseUrl = temporary.connectionString; }
   }, 150_000);
-  afterAll(async () => { await temporary?.cleanup(); });
-  it.each(["empty", "configured terminal history"] as const)("keeps enabled %s quiet for 90 real seconds and two qualified hourly windows", async state => {
-    await clearDatabase();
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent.for(["empty", "configured terminal history"] as const)("keeps enabled %s quiet for 90 real seconds and two qualified hourly windows", { timeout: 240_000 }, async (state, { databaseUrl, expect }) => {
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     if (state !== "empty") {
       const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
       await fixture.insert(companies).values({ id: companyId, name: "Retained idle history", issuePrefix: "MIH" });
@@ -62,7 +71,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
       await fixture.insert(issues).values({ id: issueId, companyId, title: "Retained terminal task", status: "done", assigneeAgentId: agentId });
       await fixture.insert(heartbeatRuns).values({ companyId, agentId, issueId, status: "succeeded", finishedAt: new Date(), contextSnapshot: { issueId } });
     }
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true });
+    const server = await startMaintenanceServer(databaseUrl, { clock: true });
     try {
       if (state !== "empty") await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true, enableStatusCards: true });
       await settleClock(server); await server.freeze();
@@ -107,12 +116,11 @@ describeDatabase("assembled maintenance server production wiring", () => {
         boundary: "actual startServer, real elapsed 90s plus qualified child clock; pool connection housekeeping reported separately; no active provider/native work, Cloud enrollment, installed plugins, telemetry exporter, announcements or database backup; no host or database suspension claim",
       }, null, 2));
     } finally { await server.stop(); await fixture.$client.end(); }
-  }, 240_000);
+  });
 
-  it("releases an ordinary held task Retry into one real process execution", async () => {
-    await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent("releases an ordinary held task Retry into one real process execution", async ({ databaseUrl, expect }) => {
+    const server = await startMaintenanceServer(databaseUrl, { clock: true });
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     try {
       await settleClock(server);
       const company = await server.api<{ id: string }>("POST", "/companies", { name: "Receipt ingress" });
@@ -160,10 +168,9 @@ describeDatabase("assembled maintenance server production wiring", () => {
     } finally { await server.stop(); await fixture.$client.end(); }
   }, 150_000);
 
-  it("reconstructs residual work from a normal scheduler-admission change after suppression", async () => {
-    await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent("reconstructs residual work from a normal scheduler-admission change after suppression", async ({ databaseUrl, expect }) => {
+    const server = await startMaintenanceServer(databaseUrl, { clock: true, suppressed: true });
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     try {
       await server.settled();
       const company = await server.api<{ id: string }>("POST", "/companies", { name: "Admission reconstruction" });
@@ -193,9 +200,8 @@ describeDatabase("assembled maintenance server production wiring", () => {
     } finally { await server.stop(); await fixture.$client.end(); }
   }, 150_000);
 
-  it("isolates a real goal-startup write failure and still registers residual and attention owners", async () => {
-    await clearDatabase();
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent("isolates a real goal-startup write failure and still registers residual and attention owners", async ({ databaseUrl, expect }) => {
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     const companyId = randomUUID(), agentId = randomUUID(), userId = randomUUID(), issueId = randomUUID(), requestId = randomUUID();
     await fixture.insert(authUsers).values({ id: userId, name: "Goal control owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await fixture.insert(companies).values({ id: companyId, name: "Startup failure isolation", issuePrefix: "MFI", defaultResponsibleUserId: userId });
@@ -210,7 +216,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     await fixture.$client.unsafe(`create trigger maintenance_fail_goal_startup before insert on agent_wakeup_requests for each row execute function maintenance_fail_goal_startup()`);
     let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
     try {
-      server = await startMaintenanceServer(databaseUrl!, { clock: true });
+      server = await startMaintenanceServer(databaseUrl, { clock: true });
       await settleClock(server);
       expect((await server.snapshot()).startup.phase).toBe("ready");
       expect(server.output).toContain("maintenance_goal_startup_injected");
@@ -256,9 +262,8 @@ describeDatabase("assembled maintenance server production wiring", () => {
     else await expect(access(server!.directory)).rejects.toMatchObject({ code: "ENOENT" });
   }, 150_000);
 
-  it("exposes readiness while real deferred housekeeping is held and settles its work after release", async () => {
-    await clearDatabase();
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent("exposes readiness while real deferred housekeeping is held and settles its work after release", async ({ databaseUrl, expect }) => {
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     const companyId = randomUUID(), issueId = randomUUID(), interactionId = randomUUID();
     await fixture.insert(companies).values({ id: companyId, name: "Readiness fixture", issuePrefix: "MRD" });
     await fixture.insert(issues).values({ id: issueId, companyId, title: "Historical human decision", status: "todo" });
@@ -272,7 +277,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     await reserved`select pg_advisory_lock(913703)`;
     let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
     try {
-      server = await startMaintenanceServer(databaseUrl!, { suppressed: true });
+      server = await startMaintenanceServer(databaseUrl, { suppressed: true });
       const current = server;
       await expect.poll(() => current.proxy.queries.some(query => /insert into "decision_retention"/.test(query.sql)), { timeout: 10_000 }).toBe(true);
       const snapshot = await server.snapshot();
@@ -296,9 +301,8 @@ describeDatabase("assembled maintenance server production wiring", () => {
     }
   }, 150_000);
 
-  it("does not advance the child clock over an actual driver socket whose startup write is held", async () => {
-    await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
+  maintenanceTest.concurrent("does not advance the child clock over an actual driver socket whose startup write is held", async ({ databaseUrl, expect }) => {
+    const server = await startMaintenanceServer(databaseUrl, { clock: true, suppressed: true });
     const client = createDb(server.proxy.url, { maxConnections: 1, idleTimeoutSeconds: 0, connectTimeoutSeconds: 30 });
     const address = new URL(server.proxy.url);
     const socket = new Socket();
@@ -341,9 +345,8 @@ describeDatabase("assembled maintenance server production wiring", () => {
     }
   }, 150_000);
 
-  it("keeps the disabled-heartbeat boot quiet across two former hourly windows with a qualified child clock", async () => {
-    await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true });
+  maintenanceTest.concurrent("keeps the disabled-heartbeat boot quiet across two former hourly windows with a qualified child clock", async ({ databaseUrl, expect }) => {
+    const server = await startMaintenanceServer(databaseUrl, { enabled: false, clock: true });
     try {
       await server.settled();
       await server.freeze();
@@ -367,7 +370,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
       const history = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, { title: "Retained completed history", status: "done" });
       await server.advance(30_000);
       await server.settled();
-      const persisted = createDb(databaseUrl!, { maxConnections: 1 });
+      const persisted = createDb(databaseUrl, { maxConnections: 1 });
       try {
         const [saved] = await persisted.$client`select company_id, status from issues where id=${history.id}`;
         expect(saved).toMatchObject({ company_id: company.id, status: "done" });
@@ -387,8 +390,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     } finally { await server.stop(); }
   }, 150_000);
 
-  it("settles an in-flight provider claim on shutdown and reconstructs its unfinished object after restart", async () => {
-    await clearDatabase();
+  maintenanceTest.concurrent("settles an in-flight provider claim on shutdown and reconstructs its unfinished object after restart", async ({ databaseUrl, expect }) => {
     let arrived!: () => void, cancelled = false;
     const firstRequest = new Promise<void>(resolve => { arrived = resolve; });
     const providerRequests: string[] = [];
@@ -401,10 +403,10 @@ describeDatabase("assembled maintenance server production wiring", () => {
     });
     await withMaintenanceProvider(provider, async origin => {
       const options = { enabled: false, clock: true, githubOrigin: origin };
-      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      const fixture = createDb(databaseUrl, { maxConnections: 1 });
       let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
-        server = await startMaintenanceServer(databaseUrl!, options);
+        server = await startMaintenanceServer(databaseUrl, options);
         await server.settled();
         const company = await server.api<{ id: string }>("POST", "/companies", { name: "Shutdown recovery" });
         await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true });
@@ -420,7 +422,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
         expect(cancelled).toBe(true);
         const [stopped] = await fixture.$client`select is_terminal, refresh_started_at, refresh_token from external_objects where company_id=${company.id}`;
         expect(stopped).toMatchObject({ is_terminal: false, refresh_started_at: null, refresh_token: null });
-        server = await startMaintenanceServer(databaseUrl!, options);
+        server = await startMaintenanceServer(databaseUrl, options);
         await settleClock(server);
         const [recovered] = await fixture.$client`select is_terminal, status_key from external_objects where company_id=${company.id}`;
         expect(recovered).toMatchObject({ is_terminal: true, status_key: "merged" });
@@ -436,8 +438,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     });
   }, 150_000);
 
-  it("processes the first ordinary external-object producer committed during idle drain and becomes quiet again", async () => {
-    await clearDatabase();
+  maintenanceTest.concurrent("processes the first ordinary external-object producer committed during idle drain and becomes quiet again", async ({ databaseUrl, expect }) => {
     const providerRequests: string[] = [];
     const provider = createServer((req, res) => {
       providerRequests.push(req.url!);
@@ -451,12 +452,12 @@ describeDatabase("assembled maintenance server production wiring", () => {
         title: "Controlled merged pull request", html_url: `https://github.com/maintenance/example/pull/${number}`, user: { login: "fixture" } }));
     });
     await withMaintenanceProvider(provider, async origin => {
-      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      const fixture = createDb(databaseUrl, { maxConnections: 1 });
       let reserved: Awaited<ReturnType<typeof fixture.$client.reserve>> | undefined;
       let pendingIssue: Promise<{ id: string }> | undefined;
       let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
-        const server = runtime = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true,
+        const server = runtime = await startMaintenanceServer(databaseUrl, { enabled: false, clock: true,
         githubOrigin: origin });
         await server.settled();
         const company = await server.api<{ id: string }>("POST", "/companies", { name: "Drain activation" });
@@ -538,8 +539,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     });
   }, 150_000);
 
-  it("discovers and acknowledges a sealed GitHub event after the first ordinary connection activation", async () => {
-    await clearDatabase();
+  maintenanceTest.concurrent("discovers and acknowledges a sealed GitHub event after the first ordinary connection activation", async ({ databaseUrl, expect }) => {
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const requests: string[] = [], acknowledgements: unknown[] = [];
     let event: Record<string, unknown> | undefined, leased = false;
@@ -567,10 +567,10 @@ describeDatabase("assembled maintenance server production wiring", () => {
         purpose: "events", provider: "github", profile: "github.code", epk: epk.toString("base64url"), iv: iv.toString("base64url"), ct: ct.toString("base64url") } }));
     });
     await withMaintenanceProvider(broker, async origin => {
-      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      const fixture = createDb(databaseUrl, { maxConnections: 1 });
       let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
-        const server = runtime = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true,
+        const server = runtime = await startMaintenanceServer(databaseUrl, { enabled: false, clock: true,
         githubOrigin: origin, connector: {
         origin: origin, signPrivateKey: signing.privateKey.export({ format: "jwk" }).d!,
         sealPrivateKey: sealing.privateKey.export({ format: "jwk" }).d!,
@@ -612,10 +612,9 @@ describeDatabase("assembled maintenance server production wiring", () => {
     });
   }, 150_000);
 
-  it("reacts to the first ordinary status-card source write and accepts authorized controlled summarizer output", async () => {
-    await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent("reacts to the first ordinary status-card source write and accepts authorized controlled summarizer output", async ({ databaseUrl, expect }) => {
+    const server = await startMaintenanceServer(databaseUrl, { clock: true, suppressed: true });
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     try {
       await server.settled();
       const company = await server.api<{ id: string }>("POST", "/companies", { name: "Status-card ingress" });
@@ -670,10 +669,9 @@ describeDatabase("assembled maintenance server production wiring", () => {
     } finally { await fixture.$client.end(); await server.stop(); }
   }, 150_000);
 
-  it("expires an ordinarily published backup after its ordinary task close without losing run history", async () => {
-    await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent("expires an ordinarily published backup after its ordinary task close without losing run history", async ({ databaseUrl, expect }) => {
+    const server = await startMaintenanceServer(databaseUrl, { enabled: false, clock: true });
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     try {
       await server.settled();
       const company = await server.api<{ id: string }>("POST", "/companies", { name: "Backup ingress" });
@@ -715,10 +713,9 @@ describeDatabase("assembled maintenance server production wiring", () => {
     }
   }, 150_000);
 
-  it("archives the first ordinary overdue attention source through the assembled retention worker", async () => {
-    await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+  maintenanceTest.concurrent("archives the first ordinary overdue attention source through the assembled retention worker", async ({ databaseUrl, expect }) => {
+    const server = await startMaintenanceServer(databaseUrl, { clock: true, suppressed: true });
+    const fixture = createDb(databaseUrl, { maxConnections: 1 });
     try {
       await server.settled();
       const company = await server.api<{ id: string }>("POST", "/companies", { name: "Attention ingress" });
@@ -753,8 +750,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     }
   }, 150_000);
 
-  it("accepts the first ordinary merge confirmation through the assembled provider worker", async () => {
-    await clearDatabase();
+  maintenanceTest.concurrent("accepts the first ordinary merge confirmation through the assembled provider worker", async ({ databaseUrl, expect }) => {
     const providerRequests: string[] = [];
     const provider = createServer((req, res) => {
       providerRequests.push(req.url!); res.setHeader("Content-Type", "application/json");
@@ -763,10 +759,10 @@ describeDatabase("assembled maintenance server production wiring", () => {
         title: "Controlled merged confirmation", html_url: "https://github.com/maintenance/example/pull/39", user: { login: "fixture" } }));
     });
     await withMaintenanceProvider(provider, async origin => {
-      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      const fixture = createDb(databaseUrl, { maxConnections: 1 });
       let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
-        const server = runtime = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
+        const server = runtime = await startMaintenanceServer(databaseUrl, { clock: true, suppressed: true,
         githubOrigin: origin });
         await server.settled();
         const company = await server.api<{ id: string }>("POST", "/companies", { name: "Merge ingress" });
@@ -794,22 +790,21 @@ describeDatabase("assembled maintenance server production wiring", () => {
     });
   }, 150_000);
 
-  it("projects the first ordinary routine completion in the actual suppressed Cloud runtime", async () => {
-    await clearDatabase();
+  maintenanceTest.concurrent("projects the first ordinary routine completion in the actual suppressed Cloud runtime", async ({ databaseUrl, expect }) => {
     const companyId = randomUUID(), agentId = randomUUID();
     const pair = generateKeyPairSync("ed25519");
     const publicJwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "maintenance-routine-key", use: "sig", alg: "EdDSA" };
     const storageRequests: string[] = [];
     const storage = createServer((req, res) => { storageRequests.push(req.url!); res.statusCode = 500; res.end("Unexpected S3 request in routine fixture"); });
     await withMaintenanceProvider(storage, async origin => {
-      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      const fixture = createDb(databaseUrl, { maxConnections: 1 });
       let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
         await fixture.insert(companies).values({ id: companyId, name: "Routine ingress", issuePrefix: "MRT",
           defaultResponsibleUserId: "maintenance-board", requireBoardApprovalForNewAgents: false });
         await fixture.insert(agents).values({ id: agentId, companyId, name: "Suppressed routine worker", status: "active",
           lifecycleState: "ready", adapterType: "process", adapterConfig: { command: "/usr/bin/false" } });
-        const server = runtime = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
+        const server = runtime = await startMaintenanceServer(databaseUrl, { clock: true, suppressed: true,
         cloud: { jwks: JSON.stringify({ keys: [publicJwk] }), s3Origin: origin, standby: false } });
         await server.settled();
         const routine = await server.api<{ id: string }>("POST", `/companies/${companyId}/routines`, {
@@ -871,8 +866,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     });
   }, 150_000);
 
-  it("keeps an actual Cloud warm standby quiet and activates after a normally signed durable claim", async () => {
-    await clearDatabase();
+  maintenanceTest.concurrent("keeps an actual Cloud warm standby quiet and activates after a normally signed durable claim", async ({ databaseUrl, expect }) => {
     const pair = generateKeyPairSync("ed25519");
     const publicJwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "maintenance-test-key", use: "sig", alg: "EdDSA" };
     const storageRequests: string[] = [];
@@ -880,7 +874,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
     await withMaintenanceProvider(storage, async origin => {
       let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
-        const server = runtime = await startMaintenanceServer(databaseUrl!, { clock: true,
+        const server = runtime = await startMaintenanceServer(databaseUrl, { clock: true,
         cloud: { jwks: JSON.stringify({ keys: [publicJwk] }), s3Origin: origin, standby: true } });
         const standby = await server.settled(500, 1); await server.freeze();
         expect(standby.idle.active).toBe(1);
@@ -904,7 +898,7 @@ describeDatabase("assembled maintenance server production wiring", () => {
         await server.advance(30_000); const afterClaim = await server.settled();
         expect(afterClaim.idle.active).toBe(0);
         expect(server.proxy.queries.length).toBeGreaterThan(before);
-        const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+        const fixture = createDb(databaseUrl, { maxConnections: 1 });
         try {
           const [transfers] = await fixture.$client`select count(*)::integer as count from company_transfer_runs`;
           expect(transfers!.count).toBe(0);

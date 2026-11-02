@@ -355,9 +355,15 @@ supported reruns still use them.
 
 General server shards run at most two test files at a time in separate Vitest
 forks. Each file retains its own home, config and process state, and its test
-cases run serially. An explicit `PAPERCLIP_TEST_DATABASE_URL` keeps those shards
-serial because the database is shared. Unsharded local tests, route/authz lanes,
-and native Runner lanes retain their existing concurrency. Sharded chat jobs run
+cases run serially. An explicit `PAPERCLIP_*_TEST_DATABASE_URL`, including
+`PAPERCLIP_TEST_DATABASE_URL`, keeps those shards serial because the database
+is shared. Native Runner suites also use two isolated file workers. Their long
+lease, preparation, disk-loss and checkpoint tests have separate files so real
+observation windows can overlap. Issue recovery suites split by producer and
+recovery behavior for the same reason. Unsharded local tests and route/authz
+lanes retain their existing file concurrency. Maintenance server cases overlap
+two owned server/database fixtures within their file; an explicit shared
+maintenance database keeps them serial. Sharded chat jobs run
 two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
