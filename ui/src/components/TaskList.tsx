@@ -3,6 +3,7 @@ import type { Issue } from "@paperclipai/shared";
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { buildIssueTree } from "../lib/issue-tree";
 import { issueFilterLabel } from "../lib/issue-filters";
+import { paperclipHumanAvatarUrl } from "../lib/issue-chat-human-author";
 import { allTaskListColumns, defaultTaskListColumns, defaultTaskListSort, sortTaskListItems, type TaskListColumnId, type TaskListSort } from "../lib/task-list";
 import { timeAgo } from "../lib/timeAgo";
 import { IssueRow, type IssueRowDensity } from "./IssueRow";
@@ -100,6 +101,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
     const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
     const branch = issue.currentExecutionWorkspace?.branchName;
     const assigneeName = item.assignee ?? (issue.assigneeAgentId ? "Unknown agent" : issue.assigneeUserId ? "User" : "Unassigned");
+    const assigneeUserAvatarUrl = paperclipHumanAvatarUrl(item.assigneeUserAvatarUrl);
     return (
       <Fragment key={issue.id}>
         <IssueRow
@@ -120,7 +122,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
               <AgentAvatar agent={item.assigneeAgent ?? { id: issue.assigneeAgentId, name: assigneeName }} size={20} />
             ) : issue.assigneeUserId ? (
               <Avatar size="xs" aria-hidden="true">
-                {item.assigneeUserAvatarUrl ? <AvatarImage src={item.assigneeUserAvatarUrl} alt="" /> : null}
+                {assigneeUserAvatarUrl ? <AvatarImage src={assigneeUserAvatarUrl} alt="" /> : null}
                 <AvatarFallback>{deriveInitials(assigneeName)}</AvatarFallback>
               </Avatar>
             ) : null,

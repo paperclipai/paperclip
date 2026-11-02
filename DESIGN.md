@@ -398,7 +398,8 @@ width tokens and configurable column order. Review the complete composition in
 
 - Created by is the recorded creator (human or agent) and shows a name. Assignee
   shows the current agent's avatar or human's profile photo beside their name,
-  with the shared avatar fallback when an image is unavailable. The avatar stays
+  with the shared avatar fallback when an image is unavailable. Human photos load
+  only from Paperclip asset URLs; external profile URLs use initials. The avatar stays
   visible while a long name reveals on hover or focus. Do not infer either
   identity from tree depth or task status.
 - Task combines the status icon and title under one header and one Columns-menu

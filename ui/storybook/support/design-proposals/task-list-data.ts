@@ -1,7 +1,6 @@
 import type { Issue } from "@paperclipai/shared";
 import type { TaskListItem } from "@/components/TaskList";
 import type { TaskListColumnId } from "@/lib/task-list";
-import { connectedUser } from "../../fixtures/publicMcp";
 import { createIssue, storybookAgentMap, storybookExecutionWorkspaces, storybookIssueLabels } from "../../fixtures/paperclipData";
 
 export const longTitle = "Document connector recovery behavior when an expired credential interrupts an active task and requires a human to reconnect the account";
@@ -61,7 +60,8 @@ export function columnData(issue: Issue, owner: string) {
     creator: rowIssue.createdByAgentId ? agent.name : "Scott",
     assignee: rowIssue.assigneeAgentId ? agent.name : rowIssue.assigneeUserId ? "Design" : null,
     assigneeAgent: rowIssue.assigneeAgentId ? agent : null,
-    assigneeUserAvatarUrl: rowIssue.assigneeUserId && issue.id === healthTask.id ? connectedUser.image : null,
+    // Static Storybook fixture served at the same asset path as an uploaded photo.
+    assigneeUserAvatarUrl: rowIssue.assigneeUserId && issue.id === healthTask.id ? "/api/assets/33333333-3333-4333-8333-333333333333/content" : null,
   };
 }
 
