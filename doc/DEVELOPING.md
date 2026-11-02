@@ -1048,6 +1048,11 @@ the development server's unbundled module graph on each navigation. Browser
 assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
 verifying Vite/HMR behavior.
 
+The Board attachment pending-save fixture releases its response hold and waits
+for active route handlers before teardown. Observing the saved comment through
+a separate API request proves persistence, not completion of the intercepted
+POST response. Keep route errors visible instead of ignoring unfinished callbacks.
+
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
 #### Embedded Postgres template cache
