@@ -23,6 +23,7 @@ import { useTaskListCollection } from "@/hooks/useTaskListCollection";
 import { useIssueRowDetails } from "@/hooks/useIssueRowDetails";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
+import { formatUserLabel } from "@/lib/assignees";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
@@ -123,7 +124,7 @@ export function CoordinatorTasks() {
   const items: TaskListItem[] = [...new Map(scopedRecords.map(issue => [issue.id, issue])).values()].map(issue => ({
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
     createdBy: issue.createdByAgentId ? agentById.get(issue.createdByAgentId)?.name ?? "Unknown agent" : users.get(issue.createdByUserId ?? "")?.label ?? "Board",
-    assignee: issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId)?.name ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "")?.label ?? null,
+    assignee: issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId)?.name ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "")?.label ?? formatUserLabel(issue.assigneeUserId),
     assigneeAgent: agentById.get(issue.assigneeAgentId ?? ""),
     assigneeUserAvatarUrl: users.get(issue.assigneeUserId ?? "")?.image,
   }));

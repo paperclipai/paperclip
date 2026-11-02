@@ -16,6 +16,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useTaskListCollection } from "@/hooks/useTaskListCollection";
+import { formatUserLabel } from "@/lib/assignees";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { queryKeys } from "@/lib/queryKeys";
 import { taskListViewStorageKey } from "@/lib/task-list-views";
@@ -73,7 +74,7 @@ export function DesignSandboxTasks() {
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
     unread: unread.data?.has(issue.id) ?? false,
     createdBy: issue.createdByAgentId ? agentById.get(issue.createdByAgentId)?.name ?? "Unknown agent" : users.get(issue.createdByUserId ?? "")?.label ?? (issue.createdByUserId === "local-board" ? "Board" : "Unknown user"),
-    assignee: issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId)?.name ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "")?.label ?? (issue.assigneeUserId === "local-board" ? "Board" : null),
+    assignee: issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId)?.name ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "")?.label ?? formatUserLabel(issue.assigneeUserId),
     assigneeAgent: agentById.get(issue.assigneeAgentId ?? ""),
     assigneeUserAvatarUrl: users.get(issue.assigneeUserId ?? "")?.image,
   }));
