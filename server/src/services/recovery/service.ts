@@ -4091,12 +4091,14 @@ export function recoveryService(
       })
       .from(routineTriggers)
       .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+      .innerJoin(companies, eq(routines.companyId, companies.id))
       .where(
         and(
           eq(routineTriggers.companyId, issue.companyId),
           eq(routineTriggers.routineId, routineId),
           eq(routines.companyId, issue.companyId),
           eq(routines.status, "active"),
+          eq(companies.status, "active"),
           eq(routineTriggers.kind, "schedule"),
           eq(routineTriggers.enabled, true),
           // The scheduler skips archived triggers, so they never replace work.
@@ -4322,8 +4324,8 @@ export function recoveryService(
     const publications: ActivityPublication[] = [];
     const postCommitActions: IssuePostCommitAction[] = [];
     const updated = await db.transaction(async (tx) => {
-      // Lock order for a routine firing: routine row, its project row, then the
-      // issue row.
+      // Lock order for a routine firing: company, routine, project, then issue.
+      // Company pause/archive updates lock the company before cascading to work.
       // `dispatchRoutineRun` holds the routine row while `create` waits for the
       // company `issue-privacy-tree` lock, and `createChild` holds that company
       // lock while waiting for the parent issue row. Taking the issue row here
@@ -4333,6 +4335,11 @@ export function recoveryService(
         ? readNonEmptyString(input.issue.originId)
         : null;
       if (originRoutineId) {
+        // Hold eligibility stable until cancellation commits, and take this lock
+        // before issue rows to match company pause/archive cascades.
+        await tx.select({ id: companies.id }).from(companies).where(
+          eq(companies.id, input.issue.companyId),
+        ).for("share");
         const lockedRoutine = await tx.select({ projectId: routines.projectId }).from(routines).where(and(
           eq(routines.companyId, input.issue.companyId),
           eq(routines.id, originRoutineId),

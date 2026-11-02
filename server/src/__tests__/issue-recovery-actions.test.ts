@@ -1433,6 +1433,39 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
   });
 
+  it("blocks a routine_execution firing whose company is paused instead of cancelling (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    // A valid schedule cannot replace this firing while its company is paused.
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 914,
+      withExecutionRun: true,
+    });
+    await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
+  });
+
   it("blocks a routine_execution firing whose project is paused instead of cancelling (GH #9201)", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     // The trigger is enabled and due, but a paused project makes `tickScheduledTriggers`
