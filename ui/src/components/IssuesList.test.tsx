@@ -1399,8 +1399,8 @@ describe("IssuesList", () => {
     });
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve([backlogIssue]);
-      if (filters?.status === "done") return Promise.resolve([doneIssue]);
+      if (filters?.displayStatus === "backlog") return Promise.resolve([backlogIssue]);
+      if (filters?.displayStatus === "done") return Promise.resolve([doneIssue]);
       return Promise.resolve([]);
     });
 
@@ -1418,13 +1418,13 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        status: "backlog",
+        displayStatus: "backlog",
         limit: 200,
         includeRoutineExecutions: true,
         includeAgentCreatedTasks: false,
       }), { signal: expect.any(AbortSignal) });
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        status: "done",
+        displayStatus: "done",
         limit: 200,
         includeRoutineExecutions: true,
         includeAgentCreatedTasks: false,
@@ -1461,7 +1461,7 @@ describe("IssuesList", () => {
     );
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      if (filters?.displayStatus === "backlog") return Promise.resolve(backlogIssues);
       return Promise.resolve([]);
     });
 
@@ -1565,7 +1565,7 @@ describe("IssuesList", () => {
     );
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve(cappedBacklogIssues);
+      if (filters?.displayStatus === "backlog") return Promise.resolve(cappedBacklogIssues);
       return Promise.resolve([]);
     });
 
@@ -2142,8 +2142,8 @@ describe("IssuesList", () => {
       await act(() => filterButton()!.click());
       await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Board view"]')!.click());
       await waitForAssertion(() => {
-        const columns = mockIssuesApi.list.mock.calls.filter(([, filters]) => filters.status);
-        expect(columns).toHaveLength(7);
+        const columns = mockIssuesApi.list.mock.calls.filter(([, filters]) => filters.displayStatus);
+        expect(columns).toHaveLength(8);
         for (const [, filters] of columns) expect(filters).toMatchObject({
           q: "report", originKind: "routine_execution", includeRoutineExecutions: true, includeAgentCreatedTasks: true,
         });
