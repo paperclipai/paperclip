@@ -1111,6 +1111,19 @@ describe("boundHeartbeatRunResultOutput", () => {
     expect(bounded).toEqual({ stderr: "e".repeat(8), stderrTruncated: true, stderrFullChars: 20 });
   });
 
+  it("does not split a surrogate pair at the cut point", () => {
+    const stdout = "😀" + "a".repeat(7);
+    const bounded = boundHeartbeatRunResultOutput({ stdout }, 8);
+    expect(bounded.stdout).toBe("a".repeat(7));
+    expect(JSON.stringify(bounded)).not.toMatch(/\\ud[89a-f]/i);
+    expect(bounded).toMatchObject({ stdoutTruncated: true, stdoutFullChars: stdout.length });
+  });
+
+  it("keeps a whole surrogate pair that starts at the cut point", () => {
+    const stdout = "x😀" + "a".repeat(6);
+    expect(boundHeartbeatRunResultOutput({ stdout }, 8).stdout).toBe("😀" + "a".repeat(6));
+  });
+
   it("returns the same object when nothing exceeds the cap", () => {
     const resultJson = { stdout: "ok", stderr: 42, usage: { inputTokens: 1 } };
     expect(boundHeartbeatRunResultOutput(resultJson)).toBe(resultJson);

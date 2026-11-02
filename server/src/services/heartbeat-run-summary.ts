@@ -80,7 +80,12 @@ export function boundHeartbeatRunResultOutput(
     const value = resultJson[key];
     if (typeof value !== "string" || value.length <= maxChars) continue;
     bounded ??= { ...resultJson };
-    bounded[key] = value.slice(-maxChars);
+    // Never start on the low half of a surrogate pair: a lone surrogate
+    // serializes as a `\udXXX` escape, which a jsonb column rejects.
+    let start = value.length - maxChars;
+    const firstUnit = value.charCodeAt(start);
+    if (firstUnit >= 0xdc00 && firstUnit <= 0xdfff) start += 1;
+    bounded[key] = value.slice(start);
     bounded[`${key}Truncated`] = true;
     bounded[`${key}FullChars`] = value.length;
   }
