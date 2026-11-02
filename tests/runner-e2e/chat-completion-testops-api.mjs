@@ -215,9 +215,22 @@ export async function launchPilotPlan(api, env, context, workflowId, markOnce) {
     launchUrl: `${endpoint}/launch/${launched.id}`, status: 'REQUESTED', actualResult: null };
 }
 
-export async function verifyPilotUpload(api, selection, context, exported, { now = Date.now, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+async function uploadBinding(get, selection, context) {
+  const run = await get(`/api/jobrun/${selection.allureJobRunId}`);
+  const runUrl = `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`;
+  if (run.id !== Number(selection.allureJobRunId) || run.job?.id !== selection.jobId || run.job?.type !== 'github'
+    || !['in_progress', 'finished'].includes(run.stage)
+    || run.launchId !== selection.launchId || run.url !== runUrl) reject('jobrun_mismatch');
+  const launch = await get(`/api/launch/${selection.launchId}`);
+  if (launch.id !== selection.launchId || launch.projectId !== 1) reject('launch_mismatch');
+  return { run, launch, runUrl };
+}
+
+async function verifyUploadScope(api, selection, context, exported, executionId, { now = Date.now, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const { cases, targetSha, planName } = catalogDefinition(context);
-  const selected = validateSelection(selection, context, selection.allureJobRunId);
+  const authorized = validateSelection(selection, context, selection.allureJobRunId);
+  const selected = executionId === undefined ? authorized : authorized.filter(row => row.executionId === executionId);
+  if (executionId !== undefined && (context.catalog !== 'full' || selected.length !== 1)) reject('stream_scope');
   if (!Array.isArray(exported) || exported.length !== selected.length || new Set(exported.map(row => row.caseId)).size !== selected.length) reject('export_mismatch');
   for (const row of exported) {
     const found = selected.find(value => value.caseId === row.caseId);
@@ -230,8 +243,8 @@ export async function verifyPilotUpload(api, selection, context, exported, { now
         || !Number.isSafeInteger(value.contentLength) || value.contentLength <= 0 || value.contentLength > 12 * 1024 * 1024
         || value.contentType !== 'application/json')) reject('export_mismatch');
   }
-  const metadataReadAllowance = context.catalog === 'full' && selected.length > 3
-    ? (2 + Math.ceil(selected.length / 100) + 2 * Math.ceil(selected.length / 4)) * 2000 : 0;
+  const metadataReadAllowance = context.catalog === 'full' && authorized.length > 3
+    ? (2 + Math.ceil(authorized.length / 100) + 2 * Math.ceil(authorized.length / 4)) * 2000 : 0;
   const deadline = now() + 120_000 + metadataReadAllowance;
   const get = route => {
     const remaining = deadline - now(); if (remaining < 1) reject('upload_unverified');
@@ -239,21 +252,17 @@ export async function verifyPilotUpload(api, selection, context, exported, { now
   };
   const signature = rows => rows.map(row => JSON.stringify([row.name, row.contentType, row.contentLength])).sort();
   for (let poll = 0; poll < 12 && now() < deadline; poll++) {
-    const run = await get(`/api/jobrun/${selection.allureJobRunId}`);
-    const runUrl = `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`;
-    if (run.id !== Number(selection.allureJobRunId) || run.job?.id !== selection.jobId || run.job?.type !== 'github'
-      || !['in_progress', 'finished'].includes(run.stage)
-      || run.launchId !== selection.launchId || run.url !== runUrl) reject('jobrun_mismatch');
-    const launch = await get(`/api/launch/${selection.launchId}`);
-    if (launch.id !== selection.launchId || launch.projectId !== 1) reject('launch_mismatch');
-    const listed = await resultRows(get, selection.launchId, selected.length, context.catalog === 'full');
+    const { runUrl } = await uploadBinding(get, selection, context);
+    const listed = await resultRows(get, selection.launchId, authorized.length, context.catalog === 'full');
     if (listed === null) {
       if (poll < 11 && now() + 5000 < deadline) await wait(5000);
       continue;
     }
-    if (listed.length > selected.length
+    if (listed.length > authorized.length
       || new Set(listed.map(row => row.id)).size !== listed.length || new Set(listed.map(row => row.testCaseId)).size !== listed.length) reject('result_page');
-    let ready = listed.length === selected.length; const verified = [];
+    if (listed.some(row => !authorized.some(expected => expected.caseId === row.testCaseId))) reject('foreign_result');
+    const matching = executionId === undefined ? listed : listed.filter(row => row.testCaseId === selected[0].caseId);
+    let ready = matching.length === selected.length; const verified = [];
     const verifyResult = async listedRow => {
       const expected = selected.find(value => value.caseId === listedRow.testCaseId);
       if (!expected || !positive(listedRow.id)) reject('foreign_result');
@@ -280,13 +289,50 @@ export async function verifyPilotUpload(api, selection, context, exported, { now
       return { executionId: expected.executionId, caseId: expected.caseId, resultId: result.id,
         status: result.status, cleanup: wanted.cleanup, attachmentsVerified: complete, resultUrl: `${endpoint}/testresult/${result.id}` };
     };
-    for (let offset = 0; offset < listed.length; offset += context.catalog === 'full' ? 4 : 1) {
-      const batch = await Promise.all(listed.slice(offset, offset + (context.catalog === 'full' ? 4 : 1)).map(verifyResult));
+    for (let offset = 0; offset < matching.length; offset += context.catalog === 'full' ? 4 : 1) {
+      const batch = await Promise.all(matching.slice(offset, offset + (context.catalog === 'full' ? 4 : 1)).map(verifyResult));
       ready &&= batch.every(row => row.attachmentsVerified); verified.push(...batch);
     }
     if (ready && now() < deadline) return { schema: 'paperclip.chat-completion-testops-verification/v1', ...context,
       projectId: 1, planId: selection.planId, jobId: selection.jobId, launchId: selection.launchId,
       allureJobRunId: selection.allureJobRunId, verification: 'VERIFIED', results: verified, launchUrl: `${endpoint}/launch/${selection.launchId}` };
+    if (poll < 11 && now() + 5000 < deadline) await wait(5000);
+  }
+  reject('upload_unverified');
+}
+
+export async function verifyPilotUpload(api, selection, context, exported, options) {
+  return verifyUploadScope(api, selection, context, exported, undefined, options);
+}
+
+export async function verifyPilotCaseUpload(api, selection, context, executionId, exported, options) {
+  if (context.catalog !== 'full' || typeof executionId !== 'string') reject('stream_scope');
+  return verifyUploadScope(api, selection, context, exported, executionId, options);
+}
+
+// Inspect a stable current launch snapshot before the one allowed upload. Any
+// existing row for this case requires readback, never another blind POST.
+export async function inspectPilotCaseUpload(api, selection, context, executionId, { now = Date.now, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  if (context.catalog !== 'full') reject('stream_scope');
+  const authorized = validateSelection(selection, context, selection.allureJobRunId);
+  const row = authorized.find(value => value.executionId === executionId);
+  if (!row) reject('stream_scope');
+  const deadline = now() + 120_000 + (authorized.length > 3
+    ? (2 + Math.ceil(authorized.length / 100) + 2 * Math.ceil(authorized.length / 4)) * 2000 : 0);
+  const get = route => {
+    const remaining = deadline - now(); if (remaining < 1) reject('upload_unverified');
+    return api(route, 'GET', undefined, Math.min(30_000, remaining));
+  };
+  for (let poll = 0; poll < 12 && now() < deadline; poll++) {
+    const { run, launch } = await uploadBinding(get, selection, context);
+    if (launch.closed === true) reject('launch_mismatch');
+    const rows = await resultRows(get, selection.launchId, authorized.length, true);
+    if (rows !== null) {
+      if (new Set(rows.map(value => value.id)).size !== rows.length
+        || new Set(rows.map(value => value.testCaseId)).size !== rows.length) reject('result_page');
+      if (rows.some(value => !positive(value.id) || !authorized.some(expected => expected.caseId === value.testCaseId))) reject('foreign_result');
+      return { present: rows.some(value => value.testCaseId === row.caseId), jobRunStage: run.stage };
+    }
     if (poll < 11 && now() + 5000 < deadline) await wait(5000);
   }
   reject('upload_unverified');
