@@ -410,6 +410,7 @@ describe("AgentActionButtons", () => {
 
     expect(document.body.textContent).toContain("Terminate Alpha Agent?");
     expect(document.body.textContent).toContain("archives the agent");
+    expect(document.body.textContent).toContain("reporting chain is repaired");
 
     const confirmButton = Array.from(document.body.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Terminate agent");

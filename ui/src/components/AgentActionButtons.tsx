@@ -404,7 +404,7 @@ export function AgentActionButtons({
         <AlertDialogHeader>
           <AlertDialogTitle>Terminate {agent.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This archives the agent and removes it from active agent lists. Its run history and configuration are preserved, but it will no longer execute tasks.
+            This archives the agent and removes it from active agent lists. This cannot be undone from the board. Its run history and configuration are preserved, but it will no longer execute tasks, and any agents reporting to it will pause work until their reporting chain is repaired.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
