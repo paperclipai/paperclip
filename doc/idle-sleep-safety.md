@@ -81,6 +81,56 @@ Independent SQL writers and additional processes need an explicit wake protocol;
 process-local notifications do not provide cross-replica delivery. Worker quiet
 alone is not evidence that the host or database actually suspended.
 
+## Retained completion history
+
+The retained chat, tool-review, browser, decision, transfer, public-MCP and
+external-agent families use their owning domain's completion receipts. Inspection
+does not delete history, expire credentials, cancel work or shorten retention.
+A terminal label alone is insufficient. Missing, contradictory, malformed or
+foreign company/task/run/binding references keep the instance awake.
+
+Chat input can remain work after processing because its exact wake still owns
+the conversation head. Publications retain provider ambiguity, endpoint leases
+and file-transfer obligations. Tool reviews retain invocation completion,
+interaction projection and continuation delivery. Browser runs require drained
+events and settled/released accounting; a stopped browser must belong to the
+same closed session. Decision success requires the selected option's full effect
+manifest, matching ordinal/type/target receipts and audit records. The owning
+dismissal, explicit recovery stop and reviewed archive paths have separate proofs.
+Their continuation and archive-notification outboxes remain independent barriers.
+Failed company transfers remain resumable. Completed/cancelled transfers still
+block while their registered local spool contains cleanup work.
+
+Waiting agent conversations can be passive containers under both ordinary and
+scheduled inspection. The same narrow proof requires the exact conversation
+agent/company/user, waiting state, no checkout, active run, accounting, monitor
+or pending delivery, and a finished wake for every accepted user-comment outbox
+entry. An idle presentation state does not exempt an ordinary runnable task.
+
+Workspace runtime inspection also reads the owner's process-local resource
+state. Startup reconstruction must succeed before that probe becomes quiet.
+Adopted/live services, provisioning/control/replacement work, live allocation
+claims and quarantined exposure ports remain barriers alongside durable rows.
+Reset, failed reconstruction and unresolved desired-state restart cannot reuse an
+earlier quiet proof. The probe performs no SQL, network request or cleanup and
+adds no timer. A stopped row cannot hide a surviving registered process.
+
+MCP completion receipts do not exempt their downstream task, subscription or
+upload cleanup. Active grants/subscriptions and Dot/Muse bindings/credentials
+retain their transport/deadline blockers. Revoked or expired credential history
+does not grant authority on the next request. A fenced external assignment is
+not worker termination proof, and Muse transport notification is not input
+consumption. Released Muse holds require their actual settlement/attestation
+path. Dot stop holds remain unsupported because that owner has no completed
+worker-stop receipt. Grok Bot shares Dot tables but has independent routine and
+dispatch/recovery obligations; even revoked Grok bindings retain their blocker.
+
+Action/provider variants without an established receipt proof remain blocked.
+This includes Photon notice lineage and unqualified legacy action results,
+adapter-managed runtime resources, and active persistent transports. These
+limits are not evidence of deployed wake support. Existing hosting admission,
+generation, accounting, finalization and resource-cleanup checks still apply.
+
 ## Native reply recovery
 
 Committed native replies use the shared delivery coordinator and its persisted

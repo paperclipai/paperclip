@@ -46,6 +46,7 @@ import {
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict, unprocessable } from "../errors.js";
+import { registerIdleLocalWorkProbe, type IdleLocalWork } from "./idle-local-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
@@ -283,6 +284,22 @@ const quarantinedRuntimeExposurePorts = new Set<number>();
  * companion together or not at all.
  */
 const exposurePortPairClaims = new ExposurePortPairClaims();
+let runtimeReconstructionComplete = false;
+let runtimeReconstructionEpoch = 0;
+let runtimeReconciliation: ReturnType<typeof reconstructRuntimeServices> | null = null;
+
+/** Read owner memory only. Durable stopped rows do not describe a surviving
+ * registry process, an allocation being published, or unfinished exposure cleanup. */
+export function readWorkspaceRuntimeIdleWork(): IdleLocalWork {
+  if (!runtimeReconstructionComplete || runtimeReconciliation !== null) return "unknown";
+  return runtimeServicesById.size || runtimeProvisionByWorkspace.size || runtimeControlStartByOwner.size
+    || runtimeReplacementClaimsByReuseKey.size || quarantinedRuntimeExposurePorts.size
+    || exposurePortPairClaims.activePorts().size
+    || [...inFlightAllocatedPorts.values()].some(until => until > Date.now()) ? "present" : "none";
+}
+// This registry and its probe share the application process lifetime, like the
+// native-session owner. Stopping one resource must not unregister its siblings.
+registerIdleLocalWorkProbe(readWorkspaceRuntimeIdleWork);
 /**
  * Execution-workspace statuses that still hold an exclusive lease. `archived`
  * is the only terminal state; everything else — including `idle` — is a lane an
@@ -525,6 +542,8 @@ type ProcessOutputAccumulator = {
 export async function resetRuntimeServicesForTests(
   opts: { terminateProcesses?: boolean; simulateSupervisorExit?: boolean } = {},
 ) {
+  runtimeReconstructionComplete = false;
+  runtimeReconstructionEpoch += 1;
   if (opts.terminateProcesses) {
     for (const serviceId of [...runtimeServicesById.keys()]) {
       await stopRuntimeService(serviceId).catch(() => undefined);
@@ -8577,6 +8596,19 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
 }
 
 export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
+  if (runtimeReconciliation) return runtimeReconciliation;
+  runtimeReconstructionComplete = false;
+  const epoch = ++runtimeReconstructionEpoch;
+  runtimeReconciliation = reconstructRuntimeServices(db).then(result => {
+    if (epoch === runtimeReconstructionEpoch) {
+      runtimeReconstructionComplete = result.restartFailed === 0 && result.exposureReservationDrift.length === 0;
+    }
+    return result;
+  }).finally(() => { runtimeReconciliation = null; });
+  return runtimeReconciliation;
+}
+
+async function reconstructRuntimeServices(db: Db) {
   const rows = await db
     .select()
     .from(workspaceRuntimeServices)
