@@ -20,6 +20,7 @@ import {
   chmod,
   cp,
   lstat,
+  link,
   mkdir,
   mkdtemp,
   open,
@@ -418,6 +419,7 @@ import {
   semanticProviderPlanMarkdown,
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
+  stageRemoteRunnerFile,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
@@ -3461,6 +3463,70 @@ describe("remote provider checkpoint snapshots", () => {
 });
 
 describe("remote provider checkpoint restores", () => {
+  it.each(["auth.json", "config.toml"].flatMap(name => ["hard", "symbolic"].map(kind => ({ name, kind }))))("atomically stages an SSH launch file without following a retained $kind link ($name)", async ({ name, kind }) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-"));
+    try {
+      const sourcePath = join(root, "selected"), outside = join(root, "outside");
+      const targetPath = join(root, `target with 'quotes'`, name);
+      await mkdir(dirname(targetPath));
+      await writeFile(sourcePath, "selected launch file");
+      await writeFile(outside, "untouched");
+      if (kind === "hard") await link(outside, targetPath);
+      else await symlink(outside, targetPath);
+      const execute = vi.fn(async (command: { command: string; args: string[]; stdin?: string }) => {
+        const result = spawnSync(command.command, command.args, { input: command.stdin, encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 });
+      expect(await readFile(outside, "utf8")).toBe("untouched");
+      expect(await readFile(targetPath, "utf8")).toBe("selected launch file");
+      expect((await lstat(targetPath)).isSymbolicLink()).toBe(false);
+      expect((await lstat(targetPath)).nlink).toBe(1);
+      expect((await lstat(targetPath)).mode & 0o777).toBe(0o600);
+      expect(await readdir(dirname(targetPath))).toEqual([name]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves the prior SSH launch file and clears temporary data after a failed transfer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-failure-"));
+    try {
+      const sourcePath = join(root, "selected"), targetPath = join(root, "target", "auth.json");
+      await mkdir(dirname(targetPath));
+      await writeFile(sourcePath, "selected launch file");
+      await writeFile(targetPath, "prior launch file");
+      const execute = vi.fn(async (command: { command: string; args: string[] }) => {
+        const result = spawnSync(command.command, command.args, { input: "%%%%", encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await expect(stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 })).rejects.toThrow("runner_remote_staging_failed");
+      expect(await readFile(targetPath, "utf8")).toBe("prior launch file");
+      expect(await readdir(dirname(targetPath))).toEqual(["auth.json"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])("rejects an SSH file destination that resolves to a directory (linked: %s)", async linked => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-directory-"));
+    try {
+      const sourcePath = join(root, "selected"), outside = join(root, "outside");
+      const targetPath = linked ? join(root, "directory-link") : outside;
+      await writeFile(sourcePath, "selected launch file");
+      await mkdir(outside);
+      await writeFile(join(outside, "keep"), "untouched");
+      if (linked) await symlink(outside, targetPath);
+      const execute = vi.fn(async (command: { command: string; args: string[]; stdin?: string }) => {
+        const result = spawnSync(command.command, command.args, { input: command.stdin, encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await expect(stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 })).rejects.toThrow("runner_remote_staging_failed");
+      expect(await readdir(outside)).toEqual(["keep"]);
+      expect(await readFile(join(outside, "keep"), "utf8")).toBe("untouched");
+      expect((await readdir(root)).filter(name => name.startsWith(".paperclip-runner-file."))).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("stages and verifies read-only context with non-contiguous archive entries", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-readonly-restore-"));
     const sourcePath = join(root, "source");
@@ -5305,7 +5371,10 @@ describe("retained native cleanup activation", () => {
       }
       const outcome = await pendingOutcome;
       if (mode === "legacy_busy_copy") {
-        expect(maintenanceReleased).toHaveBeenCalledExactlyOnceWith({ companyId: run.companyId, runId: run.id });
+        expect(maintenanceReleased).toHaveBeenCalledExactlyOnceWith(
+          { companyId: run.companyId, runId: run.id },
+          { companyId: run.companyId, runId: run.id },
+        );
         unsubscribeMaintenance?.();
       }
       if (canonicalSource) {
@@ -6681,6 +6750,30 @@ describe("native startup cancellation fence", () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(submit).not.toHaveBeenCalled();
   });
+  it.each(["current", "stale"] as const)("reattaches a %s remote recovery claim only to deliver an existing Stop", async mode => {
+    const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+    const controller = await currentNativeControllerIdentity();
+    const resultJson = { nativeCancellation: { schema: "paperclip.native-cancellation.v1", scope: "run",
+      companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId,
+      dispatchState: "pending", intentId: "native-cancellation:recovered-stop", effects: ["release_run_resources"] } };
+    const cancel = vi.fn(() => ({ cleanup: Promise.resolve() })), submit = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      try { await options.onSession({ cancel }); submit(); }
+      finally { await options.onSession(null); }
+      throw new Error("a stopped recovery must not submit a turn");
+    });
+    const db = leaseDb(execution, { leaseOwner: "stop-recovery", controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerGeneration: 2, attempt: 1 }, resultJson);
+    await expect(executePaperclipNativeSession({ db, execution, runnerInstanceId: "recovered-stop",
+      leaseOwner: "stop-recovery", restartRecovery: { kind: "reattach_remote_runner", runId: execution.binding.runId,
+        leaseOwner: "stop-recovery", controllerGeneration: mode === "current" ? 2 : 1, providerAttempt: 1,
+        restartKind: "graceful", recoveryRequestId: null, remote: { providerLeaseId: "fixture", remoteCwd: "/workspace" } },
+    })).rejects.toThrow(mode === "current" ? "native_cancellation_pending_recovery" : "native_restart_recovery_claim_changed");
+    expect(submit).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(mode === "current" ? 1 : 0);
+    expect(state.execute).toHaveBeenCalledTimes(mode === "current" ? 1 : 0);
+  });
+
   it.each(["startupCancellation", "nativeCancellation"])("does not submit a turn when %s arrives during session opening", async (marker) => {
     const resultJson: Record<string, unknown> = {};
     const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
@@ -6707,7 +6800,10 @@ describe("native startup cancellation fence", () => {
       })).rejects.toThrow("native_cancellation_pending_recovery");
       expect(cancel).toHaveBeenCalledOnce();
       expect(submit).not.toHaveBeenCalled();
-      expect(released).toHaveBeenCalledWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
+      expect(released).toHaveBeenCalledWith(
+        { companyId: execution.binding.companyId, agentId: execution.binding.agentId },
+        { companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId },
+      );
     } finally { unsubscribe(); }
   });
 });
@@ -7920,6 +8016,24 @@ describe("native session cancellation", () => {
     await expect(
       cancelNativeSession(execution.binding.runId, "late cancel"),
     ).resolves.toBe(false);
+  });
+
+  it("keeps duplicate Stop callers waiting for the same provider cleanup", async () => {
+    let releaseCleanup!: () => void;
+    state.cancel.mockReturnValue({ cleanup: new Promise<void>(resolve => { releaseCleanup = resolve; }) });
+    const running = executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner" });
+    await vi.waitFor(() => expect(state.release).toBeTypeOf("function"));
+    const first = cancelNativeSession(execution.binding.runId, "operator Stop");
+    await vi.waitFor(() => expect(state.cancel).toHaveBeenCalledOnce());
+    let acknowledged = false;
+    const duplicate = cancelNativeSession(execution.binding.runId, "duplicate Stop").then(result => { acknowledged = true; return result; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(acknowledged).toBe(false);
+      releaseCleanup();
+      expect(await Promise.all([first, duplicate])).toEqual([true, true]);
+      expect(state.cancel).toHaveBeenCalledOnce();
+    } finally { releaseCleanup(); state.release?.(); await running; }
   });
 
   it("allows cancellation to be retried when the session dispatch fails", async () => {
@@ -10345,9 +10459,10 @@ describe("native warm session supervision", () => {
       );
       expect(released).not.toHaveBeenCalled();
       releaseClose();
-      await vi.waitFor(() => expect(released).toHaveBeenCalledExactlyOnceWith({
-        companyId: base.binding.companyId, agentId: base.binding.agentId,
-      }));
+      await vi.waitFor(() => expect(released).toHaveBeenCalledExactlyOnceWith(
+        { companyId: base.binding.companyId, agentId: base.binding.agentId },
+        { companyId: base.binding.companyId, runId: base.binding.runId, issueId: base.binding.issueId },
+      ));
     } finally { releaseClose(); unsubscribe(); }
   });
 
@@ -13046,7 +13161,10 @@ describe("runnerd provider runtime wiring", () => {
       releaseEnvironment();
       releaseAssigned();
       const result = await preparation;
-      expect(released).toHaveBeenCalledExactlyOnceWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
+      expect(released).toHaveBeenCalledExactlyOnceWith(
+        { companyId: execution.binding.companyId, agentId: execution.binding.agentId },
+        { companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId },
+      );
       if (failure !== "success") {
         expect(result).toMatchObject({ error: { message: failure === "assigned" ? "assigned failed" : "environment failed" } });
         expect(state.createBackend).not.toHaveBeenCalled();
@@ -16502,7 +16620,7 @@ describe("HTTP Stop during remote runner staging", () => {
     const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
     const temporary = externalUrl
       ? { connectionString: externalUrl, cleanup: () => dbModule.closeRegisteredClients(externalUrl) }
-      : await dbModule.startEmbeddedPostgresTestDatabase("remote-staging-http-");
+      : await (await import("../../__tests__/helpers/embedded-postgres.js")).startEmbeddedPostgresTestDatabase("remote-staging-http-");
     const httpDb = dbModule.createDb(temporary.connectionString);
     const localExecution = { ...execution, binding: { ...execution.binding,
       companyId: randomUUID(), agentId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), executionWorkspaceId: randomUUID() },

@@ -928,13 +928,16 @@ describe("Inbox toolbar", () => {
     act(() => root.unmount());
   });
 
-  it("can select a company after a cold inbox mount", async () => {
+  it.each([true, false])("can select a company after a cold inbox mount (Streamlined UI=%s)", async streamlined => {
     companyState.selectedCompanyId = null;
+    const settings = { enableStreamlinedUi: streamlined, enableIsolatedWorkspaces: false };
+    apiMocks.experimentalSettings.mockResolvedValue(settings);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, settings);
     const root = createRoot(container);
     const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
     await act(render);
-    await vi.waitFor(() => expect(container.textContent).toContain("Select an organization"));
+    await vi.waitFor(() => expect(container.textContent).toContain(streamlined ? "Select an organization" : "Select a company"));
     companyState.selectedCompanyId = "company-1";
     apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Cold company task" })]);
     await act(render);

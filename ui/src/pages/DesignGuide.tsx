@@ -179,6 +179,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
 import { Identity } from "@/components/Identity";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
@@ -1900,6 +1901,16 @@ export function DesignGuide() {
         <SubSection title="Page Skeleton (detail)">
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="detail" />
+          </div>
+        </SubSection>
+        <SubSection title="Task conversation loading">
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="relative h-96 overflow-hidden rounded-md border border-border">
+              <TaskChatLoadingShell mobile={false} streamlined coordinator={false} />
+            </div>
+            <div className="coordinator-workspace relative h-96 overflow-hidden rounded-md border border-border">
+              <TaskChatLoadingShell mobile streamlined coordinator />
+            </div>
           </div>
         </SubSection>
       </Section>

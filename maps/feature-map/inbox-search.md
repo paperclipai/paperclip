@@ -98,6 +98,11 @@ owns a compact complete task-ID index. Navigation reuses either page response. C
 the instance Streamlined UI setting is off. The loopback browser checks in
 [collection startup](../../tests/perf/collections/startup.spec.ts) exercise these
 reads and the initial task row budget. They do not establish deployed latency.
+Collection startup selects the addressed active organization before starting
+company reads. Shared controls load separately from task detail. A painted
+collection or task-link intent starts a low-priority code fetch; direct task URLs keep
+early module preload. The collection
+browser cases cover a remembered different organization and failed speculation.
 The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
 barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.

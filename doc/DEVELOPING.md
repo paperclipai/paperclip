@@ -110,8 +110,9 @@ and the [agent case reference](../skills/paperclip/references/cases.md).
 Task detail, heartbeat context, and closed-workspace admission guards read stored
 workspace metadata. They do not inspect Git or refresh live runtime health.
 Task context includes persisted runtime service state; delivery state is unknown
-until an explicit workspace read or lifecycle inspection computes it. Use the
-workspace detail and close-readiness APIs for current Git safety checks.
+until an explicit close-readiness or lifecycle inspection computes it. Workspace
+detail reads also return unknown delivery state without running Git or contacting
+a storage provider. Use close-readiness for current Git safety checks.
 
 ## Deployment Modes
 
@@ -354,9 +355,15 @@ supported reruns still use them.
 
 General server shards run at most two test files at a time in separate Vitest
 forks. Each file retains its own home, config and process state, and its test
-cases run serially. An explicit `PAPERCLIP_TEST_DATABASE_URL` keeps those shards
-serial because the database is shared. Unsharded local tests, route/authz lanes,
-and native Runner lanes retain their existing concurrency. Sharded chat jobs run
+cases run serially. An explicit `PAPERCLIP_*_TEST_DATABASE_URL`, including
+`PAPERCLIP_TEST_DATABASE_URL`, keeps those shards serial because the database
+is shared. Native Runner suites also use two isolated file workers. Their long
+lease, preparation, disk-loss and checkpoint tests have separate files so real
+observation windows can overlap. Issue recovery suites split by producer and
+recovery behavior for the same reason. Unsharded local tests and route/authz
+lanes retain their existing file concurrency. Maintenance server cases overlap
+two owned server/database fixtures within their file; an explicit shared
+maintenance database keeps them serial. Sharded chat jobs run
 two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
@@ -1627,6 +1634,92 @@ These are prerequisites for shared storage and secrets. They do not establish
 that the whole web server is disposable or that all execution and recovery paths
 survive web-server replacement. Run-log/trace storage and producer retention are
 separate changes.
+
+### Experimental native remote workspace storage
+
+`experimental.remoteWorkspaceStorageEnabled` is a managed feature, on by default
+for Cloud and self-hosted instances. New Paperclip Runner sandbox workspaces
+enroll automatically when durable storage is configured and the fresh source is
+supported. Existing host workspaces and configured local folders retain their
+legacy behavior until explicitly imported; the default does not convert them.
+The local, SSH, and plugin environment drivers, legacy adapters, and Dot keep
+their existing paths.
+An explicit stored `false` disables new enrollment, and a managed setting takes
+precedence over the stored choice. Enrolled workspaces retain remote authority
+when enrollment is disabled; losing a storage prerequisite fails their admission
+instead of falling back to a controller checkout.
+
+After enrollment, roll back only to binaries that understand the same remote
+workspace authority and saved-version format. Older local-only binaries are
+unsupported rollback targets.
+
+This mode requires an external PostgreSQL `DATABASE_URL`, configured S3 storage,
+and the same encryption master key on every replacement server. The managed
+profile requires `PAPERCLIP_SECRETS_MASTER_KEY` as described above. Self-hosted
+instances may instead preserve their existing configured
+`PAPERCLIP_SECRETS_MASTER_KEY_FILE` across replacements. An embedded database,
+local-disk object storage, or a newly generated replacement key cannot provide
+this durability contract. New workspaces continue through the legacy path when
+these prerequisites are absent. Validate S3 put/read/delete and database access
+with the deployment credentials before enrollment.
+Snapshot expiry also needs `s3:ListBucketVersions` on the bucket and
+`s3:DeleteObjectVersion` on the snapshot object prefix. S3-compatible endpoints
+must support version listing. Retention verifies that every version and delete
+marker is gone. Denied permissions and object locks keep a retry obligation.
+
+The sandbox holds current working files. PostgreSQL records its location,
+writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.
+Preparation creates a saved baseline, and native finalization saves the stopped
+writer's files before releasing its persistence obligation. Replacing a
+webserver reconnects to the recorded allocation without copying files back to
+a controller checkout. Saved versions restore in a new sandbox without the old
+host, sandbox, or Git remote. Files changed since the last save still depend on
+the live sandbox: losing that allocation can lose those edits. There is no
+periodic workspace backup in this release.
+
+Existing local task workspaces require an explicit import. Run from a source
+checkout with the deployment's database, S3, and key configuration loaded:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --dry-run
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --apply
+```
+
+Dry-run is the default and reports eligibility and blocking reasons without
+importing. Apply retains the source folder, uploads an encrypted snapshot,
+independently restores it for verification, rechecks source/writer state, and
+atomically activates remote authority. Active execution, unresolved operations
+or recovery, unsafe paths, and explicitly concurrent shared writers block
+import. An interrupted apply retains its journal and admission hold; retry the
+same command to reconcile it before starting another writer.
+
+Supported sources include empty task folders, repository URLs, and managed
+mutable repositories from the same project. Configured local folders use the
+legacy path until imported. V1 rejects read-only cross-project referenced folders
+and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
+and runtime commands are also rejected before any local directory access; run
+those commands through an agent task. One writer owns each logical
+workspace; separate workspaces can run concurrently. The Files panel identifies
+**Live workspace** and **Saved copy** with its save time. An unavailable dirty
+allocation is not silently replaced with an older saved copy.
+
+A child or follow-up task can use a remote workspace inherited through its
+persisted task binding, including an isolated workspace or operator branch.
+Reservation checks current task/run access and all retained workspace sources.
+The original `sourceIssueId` remains provenance; it does not prevent authorized
+bound tasks from continuing saved work. Explicitly selected roots follow the
+same binding contract and the filesystem access boundary below. Task-assignment
+grants are not filesystem permissions. The single-writer fence still applies.
+
+Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
+for storage, import, retention, and lifecycle regression checks. These checks do
+not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
+the existing persistent volume until the other instance data paths and deploy
+handoff are separately qualified. See the
+[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
+and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 
@@ -3601,31 +3694,63 @@ Every delivery and request still checks current permissions. Grant revocation,
 deleted tasks, missing runs, and cross-company run IDs remain fail-closed.
 The developer-server health poll also stops in hidden tabs.
 
-Workspace detail responses share concurrent Git inspections and reuse their
-results for up to thirty seconds after completion. Workspace identity and metadata
-changes invalidate the cached result. The cache holds at most 256
-entries. Close-readiness checks and final cleanup validation request separate
-Git scans that cannot join an older in-flight scan. A display result never
-authorizes worktree removal.
+Workspace detail responses return stored metadata and runtime service information
+without inspecting Git, resolving delivery PRs, or reconciling remote storage.
+This also keeps operation-history reads, login handoffs, runtime controls and
+metadata updates from inspecting storage through their common workspace lookup.
+Delivery state stays `unknown` on these reads. Explicit close-readiness and final
+cleanup validation still inspect current Git state; neither uses a display result
+to authorize removal.
 
 The terminal-workspace reaper uses the database work coordinator. Startup scans
-recover existing workspace rows in bounded pages. Issue status and tree changes,
-workspace lifecycle writes, and pull-request work-product writes signal work on
+recover existing workspace rows in bounded pages. The first readiness sweep
+defers the new remote delivery-proof checks while preserving candidate deadlines;
+later scheduled work performs them. GitHub latency does not block readiness
+through this path. Issue status and tree changes,
+workspace lifecycle writes, finalization receipts, and pull-request work-product writes signal work on
 their transaction before writing. The coordinator wakes after the outer
 transaction settles and holds idle admission while writes or cleanup are active.
 Empty and nonterminal-only lanes have no recurring timer or query. Terminal trees
 schedule their actual cooldown deadline; unresolved delivery or cleanup eligibility
-is checked again after five minutes. Nonterminal trees, cooldowns, and active runs
-are checked before Git. The worker shares Git readiness across compatible rows
-that point at one directory within a bounded page. Company, branch, base ref,
-and runtime ownership must match. Each row keeps its own task and delivery
-assessment, which reuses the task tree read by the early gate. Unchanged terminal
-candidates also back off for five minutes during unrelated commit wakes. Scoped
-task/workspace hints invalidate
-affected candidates; changed tree or workspace revisions invalidate them too.
-Deadline selection reuses task trees read by those pages and performs no separate
-full-inventory query. Commits during a paged rotation request another bounded
-rotation so changes behind its cursor are recovered.
+is checked again after five minutes. Providers that explicitly declare
+`supportsMergeAncestry: false` use the latest successful finalization receipt as a
+candidate HEAD. Core checks GitHub before inspecting storage: the exact HEAD must
+be an ancestor of the intended destination tip, or an associated merged PR must
+have that exact final HEAD and destination, with its integration commit still
+reachable from the destination. Recorded PR work products are optional lookup
+hints. This supports squash merges without equating the squash commit with the
+original workspace commit.
+
+Preparation captures the resolved destination branch when the provider supports
+it. Cleanup never silently adopts a changed project source or today's default
+branch for an ambiguous old workspace. Missing receipts or destinations park the
+workspace; finalization, workspace, issue, provider and work-product changes and
+startup reconsider it. A known commit awaiting delivery, or an unavailable remote
+lookup, keeps a five-minute remote-only retry. GitHub merges have no guaranteed
+local ingress for this lane, so this concrete unresolved delivery obligation can
+keep the worker scheduled until delivery is proved. There is no new polling loop.
+Background GitHub delivery checks use the source project's explicit GitHub
+authorization, with the same consent checks as provider inspection and removal.
+The stored source must still match the workspace repository. Each proof, including
+the final removal check, revalidates the selected grant, project access and trust.
+Public sources use anonymous access; missing or revoked private-source consent
+retains storage without falling back to another identity. No task identity is borrowed.
+
+Only positive delivery evidence triggers a fresh storage inspection. The actual
+HEAD and branch must match the receipt. Cleanup revalidates delivery after its
+last inspection before recording removal intent. A provider can opt into
+`recoveryPullRequestVersion: 1` to receive one specific PR number and original
+HEAD for recovery checks. A merged PR alone does not prove that the original
+commit remains recoverable after source-branch deletion. The provider must
+independently prove recovery of that exact commit and reject any local data.
+Missing capability declarations preserve existing provider protocols.
+Nonterminal trees, cooldowns, and active runs are checked before Git. The worker
+shares readiness across compatible rows within a bounded page. Each row retains
+its own task and delivery assessment. Scoped task/workspace hints invalidate
+backoff; changed tree or workspace revisions invalidate it too. Deadline selection
+reuses task trees read by those pages without a separate full-inventory query.
+Commits during a paged rotation request another bounded rotation so changes behind
+its cursor are recovered.
 The backoff retains at most 256 candidates and only applies to the background
 worker. Final cleanup still checks the current task tree,
 delivery evidence, ownership, lifecycle generation, and Git state under the
@@ -4087,6 +4212,23 @@ remain local. See [run evidence storage](run-evidence-storage.md) for required p
 capabilities, stable keys, operating limits, automatic history migration and qualification.
 Do not remove a web volume until its complete retained evidence inventory and
 the independent disposable-server requirements are satisfied.
+
+## Volume-free execution admission
+
+With `PAPERCLIP_EPHEMERAL_SERVER=true`, workspace preparation requires Paperclip
+Runner and remote workspace storage. A fresh run still has its initial `legacy`
+label at this phase; that label is not the selected execution mode. The runtime
+selector checks the resolved native warm lifecycle before admission and rejects
+legacy or per-turn execution. External conversation providers keep their existing
+exemption because they own no task filesystem. Source resolution checks this
+contract again before a configured host folder can fall back to local storage.
+
+A replacement controller reconstructs an active remote agent-directory cache
+from the registered sandbox, including unsaved files. The remote directory,
+lease and save baseline remain unchanged; current canonical files are never
+uploaded over the retained execution. Remote collection and cleanup serialize
+through Postgres across controller homes. A missing remote collector retains a
+pending save instead of treating an empty local cache as the agent's files.
 
 ## Cloud startup configuration
 

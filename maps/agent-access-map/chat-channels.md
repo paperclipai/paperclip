@@ -1034,3 +1034,12 @@ never-started evidence, current source authority, unchanged board comments and
 no prior delivery or allocation. The server records the restoration in activity;
 failed runs and original skipped receipts remain history. This grants no new
 agent retry capability and does not weaken execution-time source validation.
+
+GitHub finding category contract (2026-10-31): manual and automatic review
+instructions list the repository policy categories. `begin_review` returns the
+assessment snapshot's `findingCategories`; later settings do not change that
+snapshot. Submit an unknown category and confirm rejection before publication,
+then submit a listed custom category and inspect the saved assessment and
+processed publication. The channel integration fixture covers real PostgreSQL
+and the service path with simulated GitHub HTTP; live model behavior remains
+unverified.

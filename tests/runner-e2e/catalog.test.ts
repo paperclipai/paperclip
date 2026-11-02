@@ -33,6 +33,14 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("keeps verified artifact transfer a single explicit Daytona run", () => {
+    const id = "api-artifact-transfer.runner-codex.daytona.verified-artifact-copy";
+    const cells = selectRunnerExecutions(parseRunnerSelectors(["--id", id]));
+    expect(cells.map(cell => cell.id)).toEqual([id]);
+    expect(cells[0]!.task.expectedRunCount).toBe(1);
+    expect(cells[0]!.task.automaticRetryPolicy).toBe("single_attempt");
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(cell => cell.id === id)).toBe(false);
+  });
   it("keeps the Daytona controller outage on a reusable warm sandbox inside its idle lifetime", () => {
     const suite = runnerSuites.find(candidate => candidate.id === "daytona-restart-continuity")!;
     const secretRefs = {
@@ -118,7 +126,7 @@ describe("runner E2E catalog", () => {
   });
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
-    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "cloud-onboarding"]);
+    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "hire-delegate-reuse", "cloud-onboarding"]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
     expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
@@ -278,10 +286,11 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+      1, 1, 2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 1, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(795);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(795);
+    expect(validateRunnerCatalog()).toHaveLength(798);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(798);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);

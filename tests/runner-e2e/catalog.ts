@@ -1,3 +1,4 @@
+import { ROLLING_WEB_DEPLOYMENT_SUITE } from "./controller-rolling-deployment.js";
 import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
@@ -26,6 +27,7 @@ import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDig
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
+import { apiArtifactTransferTask } from "./api-artifact-transfer.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
 import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
@@ -37,6 +39,7 @@ import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-l
 import { publicMcpTasks, publicMcpExpandedDigest, publicMcpSetupDigest, publicMcpWorkflowDigest, publicMcpWorkerInstructions, publicMcpWorkerSkillDigest } from "./public-mcp-cases.js";
 import { graderVersion as publicMcpGraderVersion } from "./public-mcp-grading.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
+import { REMOTE_WORKSPACE_STORAGE_SUITE, remoteWorkspaceStoragePrompt } from "./remote-workspace-storage.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
@@ -1158,20 +1161,58 @@ const repositoryModelProfiles = [
   },
 ];
 
+const daytonaControllerOutageEnvironment: EnvironmentFixture = {
+  ...daytonaWarmEnvironment,
+  configurationKey: "warm-controller-outage-v1",
+  buildEnvironment(input: EnvironmentFixtureBuildInput) {
+    const payload = daytonaWarmEnvironment.buildEnvironment(input);
+    // Keep provider idle stop beyond the outage and replacement budget.
+    return { ...payload, config: { ...(payload.config as Record<string, unknown>), autoStopInterval: 15 } };
+  },
+};
+
+const remoteWorkspaceStorageSuite: RunnerSuiteFixture = {
+    id: REMOTE_WORKSPACE_STORAGE_SUITE, label: "Remote workspace storage and controller replacement", manualOnly: true,
+    description: "Keep synthetic files and local Git work in the sandbox, commit saved versions to object storage, and preserve the original active execution through controller replacement.",
+    groups: [], profiles: [(() => {
+      const profile = productionStoryProfile(repositoryModelProfiles[0]!.native);
+      return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
+        const agent = profile.buildAgent(input);
+        const adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>) };
+        delete adapterConfig.cwd;
+        return { ...agent, adapterConfig };
+      } };
+    })()], environments: [daytonaControllerOutageEnvironment],
+    tasks: everydayTasks.filter(task => task.id === "recover-controller").map(task => ({ ...task,
+      label: "Recover sandbox-owned files after controller replacement", expectedRunCount: task.expectedRunCount + 1,
+      automaticRetryPolicy: "single_attempt" as const,
+      buildPrompt: (nonce: string) => remoteWorkspaceStoragePrompt(task.buildPrompt(nonce)),
+    })), expectedMatrixSize: 1,
+    definitionMetadata: { version: 5, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
+      retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
+      maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", remoteWorkspaceStorage: true,
+      upgradeReadiness: "active-remote-workspace-recoverable-before-sigkill",
+      savedRunReadback: "public-runId-summary-then-bound-native-detail",
+      fileViewerSetup: "ordinary-setting-enabled-with-storage-default-preserved",
+      postControllerReplyFormat: "one-plain-text-line-marker-space-actual-command-output",
+      grading: "same-active-execution-committed-snapshots-browser-files-and-post-controller-native-continuation",
+      source: "projectless-synthetic-files-and-model-created-git", authentication: "api-key", stagingQualification: false },
+  };
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  remoteWorkspaceStorageSuite,
+  { ...remoteWorkspaceStorageSuite, id: ROLLING_WEB_DEPLOYMENT_SUITE, label: "Rolling control-plane web deployment",
+    description: "Overlap independent ephemeral web servers while a remote execution stays active; keep ordinary reads, saves, files and a later native continuation working.",
+    definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 1, controllerDowntimeMs: 0,
+      replacement: "ready-before-traffic-switch-sigterm-delete-entire-home",
+      upgradeReadiness: "active-remote-workspace-recoverable-before-handoff",
+      grading: "same-active-execution-ordinary-reads-saves-and-second-empty-home-continuation" },
+  },
   {
     id: "daytona-restart-continuity", label: "Daytona warm controller outage continuity", manualOnly: true,
     description: "Keep the original active native runner, reusable warm sandbox, task tools and saved files through five minutes without a controller, then continue the completed session after another replacement.",
     groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionStoryProfile(native)),
-    environments: [{
-      ...daytonaWarmEnvironment,
-      configurationKey: "warm-controller-outage-v1",
-      buildEnvironment(input: EnvironmentFixtureBuildInput) {
-        const payload = daytonaWarmEnvironment.buildEnvironment(input);
-        // Keep provider idle stop beyond the outage and replacement budget.
-        return { ...payload, config: { ...(payload.config as Record<string, unknown>), autoStopInterval: 15 } };
-      },
-    }],
+    environments: [daytonaControllerOutageEnvironment],
     tasks: everydayTasks.filter(task => task.id === "recover-controller")
       .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
     definitionMetadata: { version: 7, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
@@ -1487,6 +1528,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
     tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
     definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
+    id: "api-artifact-transfer", label: "Verified API artifact transfer", manualOnly: true,
+    description: "Install an authorized complete API artifact in Daytona and independently verify the delivered bytes.",
+    groups: [], environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [apiArtifactTransferTask], expectedMatrixSize: 1,
+    definitionMetadata: { version: 3, grading: "server-capture-provenance-redacted-receipt-source-and-delivery-digest", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
   },
   {
     id: "task-titles", label: "Automatic task titles", manualOnly: true,

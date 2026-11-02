@@ -1,3 +1,5 @@
+import { isRollingWebDeployment, validControllerRollingDeploymentReceipt } from "./controller-rolling-deployment.js";
+import type { ControllerReplacementReceipt } from "./controller-replacement.js";
 import { kimiCandidateAdmissionForExecution } from "./server-restart-request.js";
 import { runPlanRevisionAcceptance, isPendingPlanConfirmation, normalizePlanMarkdown, expectPlanStageVisible } from "./plan-revision-flow.js";
 import { createWorkerTiming } from "./worker-timing.js";
@@ -40,6 +42,7 @@ import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAsser
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
+import { artifactTransferDescription, gradeApiArtifactTransfer, readArtifactTransferSource, usesApiResponseProof } from "./api-artifact-transfer.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
@@ -273,8 +276,9 @@ async function restartIsolatedPaperclipServer(input: {
   crashAfterResult?: FinalizationCrashBinding;
   controllerDowntimeMs?: number;
   controllerOutage?: ControllerOutage;
+  rollingDeployment?: true;
   recoveryBinding?: import("./controller-recovery-observer.js").RecoveryBinding;
-  onControllerOutage?: (receipt: ControllerOutageReceipt) => Promise<void>;
+  onControllerOutage?: (receipt: ControllerReplacementReceipt) => Promise<void>;
 }): Promise<void> {
   const {
     controlDirectory,
@@ -287,6 +291,7 @@ async function restartIsolatedPaperclipServer(input: {
     temporaryRequestPath,
     JSON.stringify({ requestId: input.requestId, ...(input.kimiCandidateAdmission ? { kimiCandidateAdmission: input.kimiCandidateAdmission } : {}), ...(input.controllerDowntimeMs !== undefined && !input.controllerOutage ? { controllerDowntimeMs: input.controllerDowntimeMs } : {}), discardControllerCache: input.discardControllerCache === true,
       ...(input.controllerOutage ? { controllerOutage: input.controllerOutage } : {}),
+      ...(input.rollingDeployment ? { rollingDeployment: true } : {}),
       ...(input.recoveryBinding ? { recoveryBinding: input.recoveryBinding } : {}),
       ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}),
       ...(input.crashAfterResult ? { crashAfterResult: input.crashAfterResult } : {}) }),
@@ -312,6 +317,7 @@ async function restartIsolatedPaperclipServer(input: {
       acknowledgement.requestId === input.requestId &&
       acknowledgement.status === "ready" &&
       (!input.discardControllerCache || acknowledgement.controllerCacheDiscarded === true) &&
+      (!input.rollingDeployment || validControllerRollingDeploymentReceipt(acknowledgement.rollingDeployment, input.requestId)) &&
       (!input.controllerOutage || validControllerOutageReceipt(acknowledgement.controllerOutage, input.controllerOutage, input.requestId)),
     reject: (acknowledgement) =>
       acknowledgement.requestId === input.requestId &&
@@ -327,7 +333,7 @@ async function restartIsolatedPaperclipServer(input: {
     load: () => input.api.get<Record<string, unknown>>("/api/health"),
     accept: (health) => Boolean(health),
   });
-  if (input.controllerOutage) await input.onControllerOutage?.(acknowledgement.controllerOutage as ControllerOutageReceipt);
+  if (input.controllerOutage || input.rollingDeployment) await input.onControllerOutage?.((input.rollingDeployment ? acknowledgement.rollingDeployment : acknowledgement.controllerOutage) as ControllerReplacementReceipt);
 }
 
 const executionIds = (() => {
@@ -998,10 +1004,10 @@ for (const execution of executions) {
 
       }
 
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         const source = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
           title: `Synthetic diagnostic evidence ${nonce}`,
-          description: responseEvidenceDescription(nonce), status: "backlog",
+          description: execution.suite.id === "api-artifact-transfer" ? artifactTransferDescription(nonce) : responseEvidenceDescription(nonce), status: "backlog",
         });
         apiResponseSourceId = source.id;
         prompt = prompt.replaceAll("{{API_RESPONSE_SOURCE_ID}}", source.id);
@@ -1256,13 +1262,14 @@ for (const execution of executions) {
           restartCount: upgradeManifest ? upgradeManifest.sequence.length -
             (execution.suite.definitionMetadata?.retainedControllerContinuation === true ? 2 : 1) : 1,
           restart: async (recoveryBinding, controllerDowntimeMs) => {
-            let receipt: ControllerOutageReceipt | undefined;
+            let receipt: ControllerReplacementReceipt | undefined;
             restartIndex += 1;
             await restartIsolatedPaperclipServer({ api, requestId: `story-${nonce}-${restartIndex}`, deadlineAt: startedAtMs + deadlineMs,
-              discardControllerCache: controllerOutage !== undefined,
+              discardControllerCache: controllerOutage !== undefined || isRollingWebDeployment(execution),
+              ...(isRollingWebDeployment(execution) ? { rollingDeployment: true as const } : {}),
               controllerOutage: controllerOutage && !recoveryBinding ? { ...controllerOutage, holdMs: 1000 } : controllerOutage,
-              controllerDowntimeMs,
-              ...(controllerOutage ? { recoveryBinding } : {}),
+              ...(!isRollingWebDeployment(execution) ? { controllerDowntimeMs } : {}),
+              ...((controllerOutage || isRollingWebDeployment(execution)) ? { recoveryBinding } : {}),
               onControllerOutage: async value => {
                 receipt = value;
                 await writeSanitizedJson(snapshotsDir, `controller-outage-${restartIndex}.json`, value, secrets);
@@ -2332,10 +2339,23 @@ for (const execution of executions) {
             ]),
         ),
       );
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         downloadedResponseProof = await readResponseProof(api, issue.id, run.id);
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
-        await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+        if (execution.suite.id === "api-artifact-transfer") {
+          const transferIdentity = { companyId: fixtures.company.id, runId: run.id, agentId: fixtures.agent.id };
+          const transfer = gradeApiArtifactTransfer(runEventsByRun.flatMap(captured => captured.events),
+            apiResponseSourceId ?? "", downloadedResponseProof, artifactTransferDescription(nonce),
+            await readArtifactTransferSource(api, runEventsByRun.flatMap(captured => captured.events), transferIdentity), transferIdentity);
+          await writeSanitizedJson(snapshotsDir, "api-artifact-transfer.json", transfer, secrets);
+          if (!transfer.passed) invariantFailures.push(`Verified artifact transfer was not proven: ${transfer.failure}`);
+          await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", {
+            attachmentId: downloadedResponseProof.attachmentId, sha256: downloadedResponseProof.sha256,
+            byteSize: Buffer.byteLength(downloadedResponseProof.content),
+          }, secrets);
+        } else {
+          await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+        }
       }
       const registeredArtifacts = await readRegisteredArtifacts(api, issue.id, run.id,
         taskMatchers.filter(matcher => matcher.kind === "artifact_exact").map(matcher => matcher.name));
@@ -2817,7 +2837,7 @@ for (const execution of executions) {
       if (execution.suite.id === "task-titles") {
         await expect(page.getByRole("heading", { name: issue.title.trim(), exact: true })).toBeVisible();
       }
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         // File delivery renders a card instead of an exact summary bubble.
         // Prove the visible link points to the same independently checked bytes.
         const proofLink = page.getByRole("link", { name: "Open api-response-proof.txt", exact: true }).first();

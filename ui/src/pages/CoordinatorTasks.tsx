@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useRef } from "react";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListChecks, SearchX } from "lucide-react";
 import { accessApi } from "@/api/access";
@@ -180,6 +181,7 @@ export function CoordinatorTasks() {
     ?? (collection.filters.liveOnly ? liveRuns.error : null);
   const pending = (needsAttention ? attention.isPending || attentionTasks.some(task => task.isPending) : tasks.isPending)
     || (collection.filters.liveOnly && liveRuns.isPending);
+  useWarmTaskDetailCode(!pending && !error && items.length > 0);
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
     companyId, listRef,
     `${collection.visibleItems.map(item => item.issue.id).join(",")}:${[...collection.collapsedIds].join(",")}:${collection.layout}`,

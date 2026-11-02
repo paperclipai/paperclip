@@ -24,6 +24,7 @@ export async function notifyTaskRetrySettlement(tx: object, scope: DeferredExecu
 }
 
 export async function notifyDeferredExecutionEligibility(tx: object, scope?: { companyId: string }) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.nativeProcessSessions, scope ? JSON.stringify({ companyId: scope.companyId }) : "*");
   if (scope) {
     await notifyDeferredExecutionWork(tx, scope);
     await notifyNativeStatusWakeWork(tx, scope);

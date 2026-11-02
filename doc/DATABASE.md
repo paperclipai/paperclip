@@ -946,6 +946,44 @@ and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
 
+## Experimental remote workspace snapshots
+
+Migration [0421_bright_skaar.sql](../packages/db/src/migrations/0421_bright_skaar.sql)
+adds the company-scoped `execution_workspace_snapshots` ledger. It records the
+workspace, source operation/run, parent, generation, writer epoch, encrypted
+object receipt, hashes, manifest digest, and retention state. Integrity and key
+fields remain nullable while an upload is pending. Upload attempts record their
+candidate object keys before I/O so a lost reply can be reconciled and abandoned
+objects can be reclaimed. Object existence alone is not a committed save.
+
+`execution_workspaces.metadata.remoteWorkspace`, schema
+`paperclip.remote-workspace.v1`, holds the source, epoch, committed snapshot ID,
+remote allocation/path, writer run, and dirty flag. Paths in this record belong
+to the remote allocation. Save publication checks the current writer/epoch and
+atomically commits the ledger row, authority pointer, and operation receipt.
+`workspace_operations` journals preparation, save, restore, and local import;
+large file bodies stay outside the database. Ledger identities deliberately
+survive source-record deletion so object cleanup can finish.
+
+Snapshots stream through authenticated encryption into S3. Portable archives
+preserve supported files, modes, empty directories, confined symlinks, and Git
+checkout/index/object state, including unpushed history. Linked worktrees and
+object alternates are normalized into standalone Git storage. The versioned
+exclusion policy omits runtime transport material and proven rebuildable
+dependencies; unsupported entries fail the save.
+
+The current snapshot and active run/restore/recovery/unfinished-operation
+references pin saved data. Unreferenced superseded versions receive a seven-day
+grace. Retention uses committed producer notifications and actual deadlines;
+pinned history and an empty queue do not cause recurring scans. Deletion fences
+new adoption, rechecks references, and removes every recorded upload candidate
+and winning object within the company/workspace prefix.
+
+Database backups contain snapshot receipts, not S3 payloads or encryption keys.
+Disaster recovery requires the database, object store, and original master key.
+Unsaved live sandbox edits remain outside that saved-version guarantee. See
+[setup and explicit local import](DEVELOPING.md#experimental-native-remote-workspace-storage).
+
 ## Chat communication snapshots
 
 Chat communication guidance uses two additive columns: endpoint

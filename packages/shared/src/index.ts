@@ -999,6 +999,7 @@ export type {
   WorkspaceFileAvailabilityResult,
   WorkspaceFileContent,
   WorkspaceFileContentEncoding,
+  WorkspaceFileSource,
   WorkspaceFileListDirectoryItem,
   WorkspaceFileListFileItem,
   WorkspaceFileListItem,
@@ -2868,3 +2869,13 @@ export * from "./workspace-provider.js";
 export * from "./workflows.js";
 export { updateWorkspacePreferenceSchema, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
 export * from "./agent-configuration.js";
+export {
+  remoteWorkspaceSourceSchema,
+  remoteWorkspaceAuthoritySchema,
+  remoteWorkspaceRunReferenceSchema,
+  readRemoteWorkspaceAuthority,
+  readRemoteWorkspaceRunReference,
+  type RemoteWorkspaceSource,
+  type RemoteWorkspaceAuthority,
+  type RemoteWorkspaceRunReference,
+} from "./remote-workspace.js";

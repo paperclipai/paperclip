@@ -181,6 +181,142 @@ backlog is 5/5 and delegation is 5/6. The local
 `results/chat-feature-recheck/verification.md` records the follow-up evidence;
 its standard dashboard is explicitly scoped to the latest campaign.
 
+## TestOps completion pilot
+
+The separate `Chat completion TestOps` workflow connects only these preserved
+catalog cases to the private Paperclip Evals project:
+
+- `projects.project-work`
+- `projects.project-defaults`
+- `instance-operations.restart-service`
+
+It evaluates the immutable catalog source in
+`chat-completion-testops-contract.mjs`. This keeps the broader catalog on its
+integration branch. The source includes the bounded TestOps host prerequisite
+from #18515. Changing the pin requires source review. The original DeepSeek
+1017 model, case clocks, independent checks, and zero retries remain fixed.
+Source registration does not establish a new live result.
+
+Run the named plan **Chat completion pilot — OpenCode 1017** in TestOps. The
+adapter validates the actual project, plan, job, launch and selected cases before
+build or provider access. A selected subset runs only those cases. The AWS matrix
+has concurrency one and does not cancel sibling cases after a failure.
+
+The main-only reporter uses the existing protected `ALLURE_TOKEN`; the evaluated
+app and worker never receive it. Original evidence stays in the existing private
+AWS storage with the unchanged validators, scanners, byte bounds and exact-key
+policies. A separate trusted projection carries verdicts, checks, accounting and
+private-evidence receipts. The final PNGs are verified in protected storage;
+only their checksums and availability are recorded in TestOps. GitHub artifacts
+contain metadata only. Raw logs, screenshots, hidden
+reasoning, API snapshots, credentials and provider sessions are not attachments.
+Original failed grades and cleanup failures remain failed. Same-run readback
+requires matching results and complete result-owned attachment metadata within
+the existing bounded processing window; it does not claim remote byte hashes.
+
+Initial setup uses the existing workflow operations:
+
+1. Dispatch reviewed `master` once with `operation=bootstrap`. This creates or
+   reconciles only the three exact automated cases and the dedicated plan. It
+   registers the GitHub job with an empty Allure results directory. It reuses
+   only the existing enabled GitHub integration from
+   `CHAT_TESTOPS_INTEGRATION_ID`. No model or fabricated result is created.
+   The observation receipt captures a closed parameter-shape inspection before
+   binding. Only the observed single `Branch/defaultValue` definition for
+   `refs/heads/master` is accepted. Bootstrap enables the job and assigns cases
+   while preserving that definition; the plan uses its default branch.
+   Assignment inspection records unassigned and existing-job counts before
+   binding. A single unassigned bucket must cover the exact selected cases;
+   foreign jobs and unknown or incomplete buckets stop before writes.
+2. Read the closed registration receipt. Store its observed `binding` JSON as
+   `CHAT_COMPLETION_TESTOPS_BINDING` in `runner-e2e-testops-reporting`.
+3. Use TestOps **Run**. For the initial operator launch, set an exact next
+   workflow run number in `CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER`, set a new
+   32-hex `CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE`, then dispatch `launch-plan`
+   once. Its request produces the TestOps-owned `evaluate` dispatch. Do not
+   manually dispatch an additional evaluation after an uncertain launch.
+4. Verify the fresh TestOps launch, all selected case results, source links,
+   independent checks, private-evidence receipts and cleanup. Inspect screenshots
+   through authenticated private-history retrieval. Retain earlier failed attempts.
+
+The runtime accepts only `operation`, `ALLURE_JOB_RUN_ID` and reserved username
+metadata. It rejects arbitrary source/model/budget selectors, branch workflows,
+replays and foreign cases. All secret-bearing jobs recheck actual GitHub run and
+actor identities. The existing one-case backlog plan remains independent.
+
+## Full catalog in TestOps
+
+The [Chat catalog TestOps workflow](../../.github/workflows/chat-catalog-testops.yml)
+registers all 244 scenarios from the 35 YAML areas in a separate
+**Chat feature catalog — OpenCode 1017 (candidate)** plan. Its source-derived
+manifest is `chat-full-catalog-testops-manifest.json`. The existing backlog plan
+and three-case completion pilot keep their own jobs, selections and history.
+Legacy aliases reuse existing TestOps case identities without renaming them.
+
+The catalog contains 236 Agent Chat routes, five browser boundaries, one external
+assistant route and two Slack routes. An execution mapping is not a passing
+measurement. Five implementations declare incomplete coverage. Six routes do not
+produce the generic final PNG required by the unchanged evidence owner. Eighteen
+declare additional credentials and 37 declare external inputs. These groups
+overlap. Exact requirements and limitations appear in each case's preconditions.
+A declared credential does not establish whether its runtime reference exists.
+
+This lane runs the app and fixtures from candidate
+`3b66c3c144360ddf32714a0742fd774b8ceafb16`. Its app and domain definitions are
+unchanged from `de0941835cc8f0d01c982574ee258e110babdbeb`; the successor adds only
+finite TestOps host admission. Trusted selection, evidence transfer and publishing
+use the workflow's immutable master revision. Each result records both revisions.
+A pass qualifies that candidate measurement, not the current master app. Other
+lanes sharing a case retain their own sources. This integration does not merge
+the broad catalog branch or its core fixes, reset earlier campaign ordinals, or
+change the previous 196-of-244 acceptance gate.
+
+Native execution uses OpenCode and
+`openrouter/deepseek/deepseek-v4.1-flash-1017` on the existing AWS fleet. Each case
+keeps its original query, oracle, run counts, clocks, budgets and zero automatic
+retries. Browser boundaries and the external assistant retain their original
+surfaces and may have zero native work runs. The external companion keeps its own
+declared provider requirement. Setup inference and unpriced usage are not free.
+
+Initial setup uses the existing reporting environment:
+
+1. Dispatch reviewed master with `operation=bootstrap`. It reconciles the exact
+   244 cases and the dedicated plan, then registers and binds its own GitHub job.
+   Missing cases use one marked POST each. Existing cases retain their identities
+   and history. Alias conflicts, foreign selections and uncertain writes stop
+   setup. It makes no model call or synthetic test result.
+2. Read the registration receipt. Store its compact `binding` JSON as
+   `CHAT_FULL_CATALOG_TESTOPS_BINDING`. It contains observed plan, job, integration
+   and case IDs plus registered full names, and fits one GitHub environment
+   variable. The job must retain its observed single `Branch/defaultValue`
+   definition for `refs/heads/master`.
+3. Use normal TestOps **Run** for the full plan or a selected subset. The service's
+   actual expected case list controls execution. Do not manually dispatch another
+   evaluation after an uncertain request. Initial route verification uses a small
+   selection and does not qualify all 244 cases.
+
+Each worker executes one case. Selections of up to three cases run serially.
+Larger selections allow eight independent cases and one external-input case at
+once. External-input cases remain serial because they can share QA resources.
+A full run can take hours. Its elapsed time depends on setup and fleet capacity;
+the declared case clocks are not a completion-time guarantee. Each worker and
+report reader has a singleton private-evidence approval and exact-key AWS
+session; the existing eight-cell
+authority limit is unchanged. Reports wait for all selected workers. A
+credential-free job then validates and merges their metadata projections. The
+protected reporter uploads original outcomes and verifies every selected result,
+including paginated selections over 100 cases. Failed originals and failed
+cleanup remain failed beside passed results. Missing originals cannot become
+fabricated measurements or a full-selection pass.
+
+Raw evidence and final PNGs remain in protected storage. Public GitHub artifacts
+and TestOps attachments contain only allowlisted provenance, checks, accounting
+and private-evidence receipts. Raw conversations, screenshots, provider sessions
+and credentials do not enter the public artifact path. Additional credentials
+reach only cases that declare them. External inputs use the existing selected-case
+private-input owner, disposable-resource checks and oracle commitments.
+Unconfigured inputs remain setup blockers.
+
 ## TestOps-backed AWS backlog cell
 
 The dedicated `Chat feature TestOps` workflow accepts only the shipped default

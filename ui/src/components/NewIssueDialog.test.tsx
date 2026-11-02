@@ -1366,7 +1366,7 @@ describe("NewIssueDialog", () => {
     await flush();
     expect(container.querySelector("#new-task-success-criteria")).toBeNull();
     expect(container.querySelectorAll("textarea")).toHaveLength(1);
-    if (enabled) expect(container.textContent).toContain("New Task");
+    expect(container.textContent).not.toContain("New Task");
     const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
     expect(submit.disabled).toBe(true);
     await typeTextareaValue(container.querySelector('textarea[aria-label="Describe a task…"]')!, "Write the launch post");

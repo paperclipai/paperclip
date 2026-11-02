@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -183,6 +184,12 @@ export async function retireSupersededTaskRetry(db: Db, input: {
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`),
   )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   if (latest?.id === input.sourceRunId) return false;
+  const [wake] = await db.select({ agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.requestId),
+    inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
+  )).for("update");
+  if (!wake) return false;
+  await notifyStrandedAgentStatus(db, { companyId: input.companyId, agentId: wake.agentId });
   await notifyExternalConversationSettlement(db, input);
   const retired = await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
     finishedAt: new Date(), updatedAt: new Date() }).where(and(
@@ -375,6 +382,7 @@ export async function reconcileTaskChatRetryReceipts(db: Db, scope: { companyId?
       updatedAt: new Date(),
     }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
     if (receipt?.runId || failed) await db.transaction(async tx => {
+      await notifyStrandedAgentStatus(tx, { companyId: wake.companyId, agentId: wake.agentId });
       await notifyExternalConversationSettlement(tx, { companyId: wake.companyId,
         issueId: typeof wake.payload?.issueId === "string" ? wake.payload.issueId : undefined });
       await write(tx);

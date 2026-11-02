@@ -12,6 +12,7 @@ type StageAsset = {
 };
 
 type LaunchAssetsInput = {
+  scope?: "launch" | "recovery";
   root: string;
   transport: "ssh" | "sandbox";
   runner: CommandManagedRuntimeRunner;
@@ -54,7 +55,7 @@ async function assertSelectedSkillsTree(root: string, names: string[]): Promise<
 // Launch preparation owns this isolated directory and runs only after the old
 // provider has stopped. Never follow a retained symlink while removing stale
 // assignments; auth, config and provider conversation history are not touched.
-const clearRemoteCodexSkills = `
+const validateRemoteCodexHome = `
 const fs = require("node:fs"), path = require("node:path");
 const home = path.resolve(process.argv[1]), workspace = path.resolve(process.argv[2]);
 const relative = path.relative(workspace, home);
@@ -69,6 +70,13 @@ for (const segment of relative.split(path.sep)) {
   const stat = fs.lstatSync(current);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("unsafe_codex_home");
 }
+for (const name of ["auth.json", "config.toml"]) {
+  const file = fs.lstatSync(path.join(current, name), { throwIfNoEntry: false });
+  if (file && (!file.isFile() || file.isSymbolicLink() || file.nlink > 1)) throw Error("unsafe_codex_launch_file");
+}
+`;
+
+const clearRemoteCodexSkills = `${validateRemoteCodexHome}
 const skills = path.join(current, "skills");
 function unseal(directory) {
   const stat = fs.lstatSync(directory);
@@ -87,6 +95,10 @@ if (fs.lstatSync(skills, { throwIfNoEntry: false })) {
 // mode. Create the private discovery root before their mkdir/extract step.
 fs.mkdirSync(skills, { mode: 0o700 });
 fs.chmodSync(skills, 0o700);
+`;
+
+const prepareRemoteCodexRecoveryHome = `${validateRemoteCodexHome}
+if (process.argv[3] === "remove-auth") fs.rmSync(path.join(current, "auth.json"), { force: true });
 `;
 
 export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise<void> {
@@ -109,13 +121,28 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
       }
       if (directory.name !== "codex-home") continue;
       const localDirectory = resolve(input.root, directory.name);
-      for (const name of ["auth.json", "config.toml"] as const) {
+      for (const name of input.scope === "recovery" ? ["config.toml", "auth.json"] : ["auth.json", "config.toml"]) {
         const sourcePath = resolve(localDirectory, name);
+        if (input.scope === "recovery" && name === "config.toml" && !existsSync(sourcePath)) throw new Error("runner_remote_codex_recovery_config_missing");
         if (!existsSync(sourcePath)) continue;
         await input.stageFile({ sourcePath, targetPath: posix.join(targetPath, name), mode: 0o600 });
       }
     }
   });
+  if (input.scope === "recovery") {
+    const home = input.persistenceDirectories.find(directory => directory.name === "codex-home" && directory.location === "filesystem");
+    if (!home?.targetPath || !input.isolatedCodexSkills) throw new Error("runner_remote_codex_credentials_path_invalid");
+    const validated = await input.runner.execute({
+      command: "node",
+      args: ["-e", prepareRemoteCodexRecoveryHome, home.targetPath, input.isolatedCodexSkills.workspaceRoot,
+        existsSync(resolve(input.root, "codex-home", "auth.json")) ? "keep-auth" : "remove-auth"],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (validated.exitCode !== 0 || validated.timedOut) throw new Error("runner_remote_codex_credentials_path_invalid");
+    await materializeLaunchState();
+    return;
+  }
   const stageRuntimeContext = async () => {
     const context = input.runtimeContext;
     if (!context) return;

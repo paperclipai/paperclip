@@ -1,3 +1,4 @@
+import { makeDirectoryTreeRemovable } from "./directory-cleanup.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from "./upgrade-artifacts.js";
 import { recoverWorkerTiming } from "./worker-timing.js";
 import { openEvalOperations, type EvalOperations } from "./operations.js";
@@ -118,17 +119,6 @@ function secret(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 
-async function makeDirectoryTreeRemovable(directory: string): Promise<void> {
-  await chmod(directory, 0o700);
-  const entries = await readdir(directory, { withFileTypes: true });
-  await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-      .map((entry) =>
-        makeDirectoryTreeRemovable(path.join(directory, entry.name)),
-      ),
-  );
-}
 
 function stopProcessGroup(pid: number, signal: NodeJS.Signals = "SIGTERM") {
   try {

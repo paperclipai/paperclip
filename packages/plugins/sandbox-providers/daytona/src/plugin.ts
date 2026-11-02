@@ -427,6 +427,16 @@ function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** The pinned SDK stores response statusCode as data; never read messages or headers. */
+function creationHttpStatus(error: unknown): number | undefined {
+  try {
+    if (!error || typeof error !== "object") return undefined;
+    const status = Object.getOwnPropertyDescriptor(error, "statusCode")?.value;
+    return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+      ? status : undefined;
+  } catch { return undefined; }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1039,8 +1049,9 @@ async function createSandbox(
       // error so cleanup can be reconciled rather than declaring success.
       await destroyFailedCreation(config, cleanup, params.driverKey);
     } catch (cleanupError) {
+      const status = creationHttpStatus(createError);
       throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
-        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
+        `Daytona sandbox creation failed${status === undefined ? "" : ` (HTTP ${status})`}; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
   }
@@ -2780,6 +2791,12 @@ const plugin = definePlugin(trackDaytonaHooks({
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
+    const requestedCwd = params.requestedCwd;
+    if (requestedCwd !== undefined && (typeof requestedCwd !== "string" || requestedCwd.includes("\0")
+      || !path.posix.isAbsolute(requestedCwd) || path.posix.normalize(requestedCwd) !== requestedCwd
+      || params.leaseMetadata?.remoteCwd !== requestedCwd)) {
+      throw new Error("The requested directory does not match the recorded Daytona workspace directory.");
+    }
     if (params.leaseMetadata?.reuseLease === false) {
       const sentinel = isRecord(params.leaseMetadata.workspaceSentinel) ? params.leaseMetadata.workspaceSentinel : null;
       const intent = isRecord(params.leaseMetadata.nativeWorkspaceExportResume) ? params.leaseMetadata.nativeWorkspaceExportResume : null;
@@ -2877,7 +2894,7 @@ const plugin = definePlugin(trackDaytonaHooks({
               config,
               sandbox,
               shellCommand,
-              remoteCwd,
+              remoteCwd: requestedCwd ?? remoteCwd,
               resumedLease: true,
               resumedFromState,
               sandboxState: "started",

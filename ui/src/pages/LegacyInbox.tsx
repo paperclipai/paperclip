@@ -1,4 +1,5 @@
 import { describeError } from "../api/errors";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -2209,6 +2210,16 @@ export function Inbox() {
     if (row) row.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
 
+  const allLoaded =
+    !isJoinRequestsLoading &&
+    !isApprovalsLoading &&
+    !isDashboardLoading &&
+    !isIssuesLoading &&
+    !isMineIssuesLoading &&
+    !isTouchedIssuesLoading &&
+    !isRunsLoading;
+  useWarmTaskDetailCode(Boolean(selectedCompanyId) && allLoaded && tab !== "blocked" && totalVisibleWorkItems > 0);
+
   if (!selectedCompanyId) {
     return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
   }
@@ -2242,15 +2253,6 @@ export function Inbox() {
     showAlertsSection ? "alerts" : null,
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
-
-  const allLoaded =
-    !isJoinRequestsLoading &&
-    !isApprovalsLoading &&
-    !isDashboardLoading &&
-    !isIssuesLoading &&
-    !isMineIssuesLoading &&
-    !isTouchedIssuesLoading &&
-    !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)

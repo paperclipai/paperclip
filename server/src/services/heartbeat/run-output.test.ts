@@ -46,6 +46,7 @@ function createMemoryProvider() {
 // way the run row would carry it into a later attempt.
 function createRunRowDb(row: Partial<Run>) {
   return {
+    async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> { return write(this as unknown as Db); },
     update: () => ({
       set: (values: Partial<Run>) => ({
         where: async () => {
@@ -215,6 +216,7 @@ describe("object-backed diagnostic recording", () => {
     const row = { ...newRunRow };
     const writes: Array<Partial<Run>> = [];
     const db = {
+      async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> { return write(this as unknown as Db); },
       update: () => ({
         set: (values: Partial<Run>) => ({
           where: async () => {

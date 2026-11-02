@@ -2384,11 +2384,7 @@ export function recoveryService(
     });
   }
 
-  async function scanSilentActiveRuns(opts?: {
-    now?: Date;
-    companyId?: string;
-    issueCreatedAtGte?: Date | null;
-  }) {
+  async function scanSilentActiveRuns(opts?: Parameters<typeof watchdog.scanSilentActiveRuns>[0]) {
     return watchdog.scanSilentActiveRuns(opts);
   }
 
@@ -6568,6 +6564,7 @@ export function recoveryService(
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    registerActiveRunSilenceWork: watchdog.registerSilenceWork,
     reconcileStrandedAssignedIssues,
     reconcileUnassignedBlockingIssues,
     reconcileActiveRecoveryActions,

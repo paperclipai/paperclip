@@ -1,5 +1,7 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
+import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
@@ -559,11 +561,17 @@ export async function claimNativeRestartRecoveries(input: {
       await tx.execute(
         sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
       );
-      await tx
+      const busy = () => ({ kind: "awaiting_evidence" as const, runId: candidate.runId,
+        reason: "recovery_rows_busy", retryAt: new Date(now.getTime() + 1_000) });
+      // During overlap the serving controller can be committing this run.
+      // Defer that concrete recovery obligation instead of failing startup
+      // or waiting while holding a lock the serving controller needs.
+      const [issue] = await tx
         .select({ id: issues.id })
         .from(issues)
         .where(eq(issues.id, candidate.issueId))
-        .for("update");
+        .for("update", { skipLocked: true });
+      if (!issue) return busy();
       const row = await tx
         .select({
           run: heartbeatRuns,
@@ -585,15 +593,11 @@ export async function claimNativeRestartRecoveries(input: {
           ),
         )
         .where(eq(heartbeatRuns.id, candidate.runId))
-        .for("update")
+        .for("update", { skipLocked: true })
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (!row) {
-        return {
-          kind: "blocked",
-          runId: candidate.runId,
-          reason: "recovery_rows_missing",
-        } as const;
+        return busy();
       }
       if (isNativeRunnerOwnershipHeld(row.run)) {
         return {
@@ -629,7 +633,9 @@ export async function claimNativeRestartRecoveries(input: {
       }
 
       const profile = row.run.runnerProfileJson ?? {};
-      const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync);
+      const storedRemoteWorkspace = remoteWorkspaceRunReferenceSchema.safeParse(profile.remoteWorkspace);
+      const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync)
+        ?? (storedRemoteWorkspace.success ? storedRemoteWorkspace.data : null);
       const [pluginTask] = await tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
         eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.heartbeatRunId, row.run.id),
         sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
@@ -643,7 +649,7 @@ export async function claimNativeRestartRecoveries(input: {
           leaseOwner: row.coordinator.leaseOwner, requiresPreparationStop: true, leaseId: pluginTask!.id }, { publish: false });
         return { kind: "blocked", runId: row.run.id, reason: "native_startup_cleanup_pending" } as const;
       }
-      const remoteSandbox = profile.nativeWorkspaceSync != null;
+      const remoteSandbox = profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null;
       const remoteProcess = remoteSandbox || !!pluginTask;
       const durableAuthority = (remoteWorkspace || pluginTask) && await hasNativeRunnerCheckpoint(tx, {
         companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
@@ -671,6 +677,7 @@ export async function claimNativeRestartRecoveries(input: {
           hasProviderEvidence: false,
           stderrTail: row.run.stderrExcerpt,
         });
+        await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
         await tx
           .update(nativeRunFinalizations)
           .set({
@@ -1055,6 +1062,7 @@ export async function claimNativeRestartRecoveries(input: {
         recycledProviderPids: providerProcesses.recycledPids,
         stderrTail: row.run.stderrExcerpt,
       });
+      await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const claimed = await tx
         .update(nativeRunFinalizations)
         .set({

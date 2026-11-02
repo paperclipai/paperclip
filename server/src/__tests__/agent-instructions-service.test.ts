@@ -91,13 +91,16 @@ describe("agent instructions service", () => {
     await fs.mkdir(path.join(externalRoot, "docs"), { recursive: true });
     await fs.writeFile(path.join(externalRoot, "docs", "TOOLS.md"), "## Tools\n", "utf8");
 
-    const svc = agentInstructionsService({ select: () => ({ from: () => ({ where: async () => [] }) }) } as never);
     const agent = makeAgent({
       instructionsBundleMode: "external",
       instructionsRootPath: externalRoot,
       instructionsEntryFile: "AGENTS.md",
       instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
     });
+    const select = () => ({ from: () => ({ where: () => Object.assign(Promise.resolve([]), { for: async () => [agent] }) }) });
+    const svc = agentInstructionsService({ select,
+      transaction: async (run: (tx: { select: typeof select }) => Promise<unknown>) => run({ select }),
+    } as never);
 
     const result = await svc.updateBundle(agent, { mode: "managed" });
 
@@ -117,6 +120,38 @@ describe("agent instructions service", () => {
     expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "docs/TOOLS.md"]);
     await expect(fs.readFile(path.join(result.bundle.managedRootPath, "AGENTS.md"), "utf8")).resolves.toBe("# External Agent\n");
     await expect(fs.readFile(path.join(result.bundle.managedRootPath, "docs", "TOOLS.md"), "utf8")).resolves.toBe("## Tools\n");
+  });
+
+  it("refuses an external root without the entry file when the entry must already exist", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-home-");
+    const managedRoot = path.join(paperclipHome, "instances", "test-instance", "companies", "company-1", "agents", "agent-1", "instructions");
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-existing-external-");
+    cleanupDirs.add(paperclipHome);
+    cleanupDirs.add(externalRoot);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# Managed Agent\n", "utf8");
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+    });
+    const missingRoot = path.join(externalRoot, "missing");
+
+    await expect(svc.updateBundle(agent, { mode: "external", rootPath: missingRoot, entryFile: "AGENTS.md", requireExistingEntry: true }))
+      .rejects.toThrow(`No directory exists at ${missingRoot}`);
+    await expect(fs.stat(missingRoot)).rejects.toThrow();
+    await expect(svc.updateBundle(agent, { mode: "external", rootPath: externalRoot, entryFile: "AGENTS", requireExistingEntry: true }))
+      .rejects.toThrow(`AGENTS was not found in ${externalRoot}`);
+    expect(await fs.readdir(externalRoot)).toEqual([]);
+
+    await fs.writeFile(path.join(externalRoot, "AGENTS"), "# External Agent\n", "utf8");
+    const result = await svc.updateBundle(agent, { mode: "external", rootPath: externalRoot, entryFile: "AGENTS", requireExistingEntry: true });
+    expect(result.bundle).toMatchObject({ mode: "external", rootPath: externalRoot, entryFile: "AGENTS" });
+    await expect(fs.readFile(path.join(externalRoot, "AGENTS"), "utf8")).resolves.toBe("# External Agent\n");
   });
 
   it("creates the target entry file when switching to a new external root", async () => {

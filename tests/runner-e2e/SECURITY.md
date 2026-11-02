@@ -1,5 +1,22 @@
 # Runner E2E security for a public repository
 
+The explicit `remote-workspace-storage` cell snapshots only its synthetic
+projectless task folder in an owned disposable sandbox. Its prompt creates a
+small Python project, local Git history without a remote, and an untracked random
+reference. Provider credentials and agent homes remain outside that folder.
+The ordinary settings read must report remote storage enabled by default; the
+workflow does not opt itself in. Its five-minute active outage and later completed-session
+replacement retain the existing native identity and no-replay checks.
+The server's S3 override is admitted only for this suite and the explicit
+`rolling-web-deployment` suite, and only from explicit
+`PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_*` configuration, with a unique instance
+prefix. Ambient storage settings remain stripped and rejected for other suites.
+Snapshot objects, databases, raw provider IDs, and execution workspaces remain
+private. Public checkpoint evidence contains only fixture IDs, saved-version
+references, file digests, and allowlisted state. Screenshot and report sanitizers
+remain the existing Product E2E pipeline. Discovery and local oracle calibration
+do not establish provider permissions or a live acceptance result.
+
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
 and either a privately supplied Codex subscription login through the existing
 isolated company staging helper or the OpenCode profile's encrypted OpenRouter
@@ -602,3 +619,9 @@ Slack qualification, and they do not publish trusted archives or credentials.
 Report identities preserve legacy chat tasks and exact `area.case` chat catalog
 tasks. Additional task segments, path separators and dotted nonchat tasks remain
 invalid. This parsing does not qualify a result or grant a new execution.
+
+The explicit rolling web deployment cell shares only its disposable PostgreSQL,
+S3 prefix, and generated secrets between controllers. It removes the entire old
+home after graceful handoff. Its read-only observer does not create recovery
+authority. Provider credentials still enter through encrypted fixture secrets.
+Local rolling smoke receipts explicitly exclude active-agent and hosted proof.
