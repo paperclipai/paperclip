@@ -4,6 +4,7 @@ import { selectWorkspaceAction } from "./select-workspace.js";
 import { prepareRepositoryAction } from "./prepare-repository.js";
 import { setTaskMonitorAction } from "./set-task-monitor.js";
 import { setTaskTitleAction } from "./set-task-title.js";
+import { sendChatMessageAction } from "./send-chat-message.js";
 import { submitComplaintAction, submitSuggestionAction } from "./submit-agent-commentary.js";
 import { readAgentInstructionsAction } from "./read-agent-instructions.js";
 import { updateAgentInstructionsAction } from "./update-agent-instructions.js";
@@ -70,6 +71,7 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   prepareRepositoryAction,
 
   setTaskTitleAction,
+  sendChatMessageAction,
   setTaskMonitorAction,
   submitComplaintAction,
   submitSuggestionAction,

@@ -1,7 +1,10 @@
+import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  applyPendingMigrations,
   agents,
   companySecretBindings,
   companySecrets,
@@ -28,7 +31,8 @@ import { accessService } from "../services/access.js";
 import { grantsForHumanRole } from "../services/company-member-roles.js";
 import { backfillPrincipalAccessCompatibility } from "../services/principal-access-compatibility.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ACCESS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 async function createCompanyWithOwner(db: ReturnType<typeof createDb>) {
@@ -61,8 +65,9 @@ describeEmbeddedPostgres("access service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-service-");
-    db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-service-");
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -85,6 +90,7 @@ describeEmbeddedPostgres("access service", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -342,6 +348,7 @@ describeEmbeddedPostgres("access service", () => {
       credentialPolicy: "per_user",
       status: "active",
       enabled: true,
+      healthCheckedAt: new Date(),
     }).returning().then((rows) => rows[0]!);
     const definition = await db.insert(userSecretDefinitions).values({
       companyId: company.id,
@@ -372,9 +379,15 @@ describeEmbeddedPostgres("access service", () => {
       agentId: agent.id,
       createdByUserId: member.principalId,
     });
-    await accessService(db).archiveMember(company.id, member.id, {
-      reassignment: { assigneeUserId: owner.principalId },
-    });
+    const health = await startToolHealthWorker(db, company.id);
+    try {
+      await health.expectDeadline(connection.healthCheckedAt!.getTime() + 900_000);
+      await accessService(db).archiveMember(company.id, member.id, {
+        reassignment: { assigneeUserId: owner.principalId },
+      });
+      await health.expectDeadline(null);
+      await health.expectQuiet();
+    } finally { await health.stop(); }
 
     expect(await db.select().from(connectionGrantDelegations)).toHaveLength(0);
     expect(await db.select().from(connectionGrantMembers)).toHaveLength(0);

@@ -1,8 +1,9 @@
 import type { Db } from "@paperclipai/db";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, vi, type Mock } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { runningProcesses } from "../../../adapters/index.js";
 import { terminateLocalService } from "../../local-service-supervisor.js";
 import { createHeartbeatRunState } from "../run-state.js";
@@ -13,6 +14,7 @@ import type { HeartbeatRunControlDependencies } from "../run-control.js";
 type TestCallbacks = HeartbeatRunControlDependencies & ReturnType<typeof createHeartbeatLifecycle> & {
   getRun: Mock<HeartbeatRunControlDependencies["getRun"]>;
   getAgent: Mock<HeartbeatRunControlDependencies["getAgent"]>;
+  getRunCleanupState: Mock<HeartbeatRunControlDependencies["getRunCleanupState"]>;
   setRunStatusFromLive: Mock<HeartbeatRunControlDependencies["setRunStatusFromLive"]>;
   getSchedulingSuppression: Mock<HeartbeatRunControlDependencies["getSchedulingSuppression"]>;
   options: { closeWarmNativeSessionsForRun: Mock<NonNullable<HeartbeatRunControlDependencies["options"]["closeWarmNativeSessionsForRun"]>> };
@@ -43,6 +45,7 @@ export function callbacks(db: Db): TestCallbacks {
     ...state,
     ...lifecycle,
     getRun: vi.fn(state.getRun),
+    getRunCleanupState: vi.fn(state.getRunCleanupState),
     getAgent: vi.fn(state.getAgent),
     setRunStatusFromLive: vi.fn(lifecycle.setRunStatusFromLive),
     setRunStatus: vi.fn(lifecycle.setRunStatus),
@@ -63,15 +66,17 @@ export function callbacks(db: Db): TestCallbacks {
     failedProcessRunCancellations: new Map<string, { settled: Promise<void>; failed: boolean; error?: unknown }>(),
   } satisfies HeartbeatRunControlDependencies;
 }
-export const runControlPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_CONTROL_TEST_DATABASE_URL");
+export const runControlPostgresSupport = externalTestDatabaseUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!runControlPostgresSupport.supported) console.warn(`Skipping run-control database tests: ${runControlPostgresSupport.reason}`);
 
 export function setupRunControlDatabase(name: string, ready: (db: Db) => void) {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase(name);
-    db = createDb(database.connectionString);
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    else database = await startEmbeddedPostgresTestDatabase(name);
+    db = createDb(externalTestDatabaseUrl ?? database!.connectionString);
     ready(db);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {

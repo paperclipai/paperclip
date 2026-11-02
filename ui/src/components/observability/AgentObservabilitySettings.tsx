@@ -94,7 +94,7 @@ export function AgentObservabilitySettingsView(props: AgentObservabilitySettings
   return <section aria-labelledby="agent-observability-heading" className="max-w-2xl space-y-4">
     <div className="space-y-1">
       <h2 id="agent-observability-heading" className="text-lg font-medium">Agent observability</h2>
-      <p className="text-sm text-muted-foreground">Send Codex and Claude Code logs and traces to your observability service.</p>
+      <p className="text-sm text-muted-foreground">Send Codex, Claude Code and native OpenCode execution data to your observability service.</p>
     </div>
     {!canManage ? <p className="text-sm text-muted-foreground">Manage connections permission is required to configure agent observability.</p> : <>
       <fieldset disabled={busy} className="space-y-4">

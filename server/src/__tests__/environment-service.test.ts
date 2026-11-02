@@ -11,6 +11,7 @@ import {
   companySecretBindings,
   companySecrets,
   createDb,
+  closeRegisteredClients,
   environmentCustomImageSetupSessions,
   environmentLeases,
   environments,
@@ -26,7 +27,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+if (externalTestDatabaseUrl && !new URL(externalTestDatabaseUrl).pathname.endsWith("_test")) {
+  throw new Error("Environment service tests require an isolated database ending in _test");
+}
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -41,9 +46,14 @@ describeEmbeddedPostgres("environmentService leases", () => {
   let svc!: ReturnType<typeof environmentService>;
 
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("environment-service");
-    stopDb = started.stop;
-    db = createDb(started.connectionString);
+    if (externalTestDatabaseUrl) {
+      db = createDb(externalTestDatabaseUrl);
+      stopDb = () => closeRegisteredClients(externalTestDatabaseUrl);
+    } else {
+      const started = await startEmbeddedPostgresTestDatabase("environment-service");
+      stopDb = started.stop;
+      db = createDb(started.connectionString);
+    }
     svc = environmentService(db);
   });
 

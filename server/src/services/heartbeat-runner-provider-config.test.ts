@@ -7,6 +7,14 @@ import {
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 
+describe("native Codex hosted search policy", () => {
+  it.each([undefined, true, false])("preserves the saved search=%s choice", search => {
+    const input = resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: { provider: "codex", model: "gpt-5.4-mini", ...(search === undefined ? {} : { search }) } });
+    if (search === false) expect(input).toHaveProperty("codexWebSearch", "disabled");
+    else expect(input).not.toHaveProperty("codexWebSearch");
+  });
+});
+
 describe("Paperclip Runner native provider configuration", () => {
   it.each([
     ["gpt-6.1-sol", "0.158.0", "gpt-6-sol"],
@@ -140,7 +148,24 @@ describe("Paperclip Runner native provider configuration", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: projected })).toMatchObject({ provider: "acpx", acpxAgent: "claude", claudeEffort: "xhigh", acpxPermissionMode: "deny-all" });
     const changedModel = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { model: "claude-sonnet-5" });
     expect(changedModel).not.toHaveProperty("modelReasoningEffort");
-    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, chrome: true } })).toThrow("Legacy runner");
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, chrome: true, maxTurnsPerRun: 1000 } }))
+      .toEqual(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: base }));
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, networkScope: "unrestricted" } })).toThrow("Legacy runner");
+  });
+
+  it("projects Grok task model and effort while retaining the search policy and account", () => {
+    const base = { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true, aiConnection: "saved" };
+    const projected = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { model: "grok-next", effort: "medium", provider: "codex", disableWebSearch: false, aiConnection: "other" });
+    expect(projected).toEqual({ ...base, model: "grok-next", reasoningEffort: "medium" });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: projected }))
+      .toMatchObject({ acpxAgent: "grok", model: "grok-next", grokEffort: "medium", grokDisableWebSearch: true });
+  });
+
+  it("resolves the Grok task default marker before native model admission", () => {
+    const base = { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true };
+    const config = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { model: "grok-build", reasoningEffort: "high" });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config }))
+      .toMatchObject({ model: "grok-4.7", grokEffort: "high", grokDisableWebSearch: true });
   });
 
   it("uses an OpenCode task model without changing the Runner provider", () => {

@@ -47,6 +47,17 @@ Automated: [activity service](../../server/src/__tests__/activity-service.test.t
 
 Manual: Find a known mutation by actor/resource and a known run by status. Change filters, load more, and follow the source links. Reload the chosen view and verify no company leakage or duplicate events. Inspect a routine run from its audit entry.
 
+On a native workspace export failure's run page, choose **Inspect recovery**,
+then **Inspect current source** on the matching action. Compare the recorded
+failure with the current recorded-source identity. Inspection is read-only and
+does not confirm provider termination or file preservation. Resolved retained
+actions remain inspectable. The control makes no inspection request until used.
+[Source/HTTP regressions](../../server/src/services/workspace-recovery-source.test.ts)
+cover current identity, rejected policy, foreign/reused allocation, bounded
+lookup, redaction and unchanged recovery state; [component regressions](../../ui/src/components/RunWorkspaceRecoverySurface.test.tsx)
+cover explicit selection, loading, failure and identity-only success. These
+checks do not establish recovery of a deployed task.
+
 Case detail's **View in Audit** opens `/activity?entityType=case&entityId=<case UUID>`.
 The Activity filters include **Cases** actions and **Case** entities; the Case
 search accepts a UUID or human identifier such as `CAS-C1` (Enter or blur applies

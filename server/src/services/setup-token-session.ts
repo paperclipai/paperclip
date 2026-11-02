@@ -1,5 +1,6 @@
 import { writeLoginCleanup } from "./login-cleanup-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 // The Claude setup-token login session service. It owns a company-scoped,
 // owner-bound login session that holds one live setup-token process and one
 // sandbox lease for the whole login. The login is a two-way round-trip: the
@@ -111,6 +112,7 @@ export const SETUP_TOKEN_CANCELLABLE_STATES: readonly SetupTokenSessionState[] =
  * per environment.
  */
 export interface SetupTokenSessionScope {
+  managementContext?: ConnectionManagementContext;
   aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   companyId: string;
   ownerUserId: string;

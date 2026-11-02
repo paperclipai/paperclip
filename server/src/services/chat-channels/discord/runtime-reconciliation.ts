@@ -7,11 +7,9 @@ import type { Db } from "@paperclipai/db";
 import type { EndpointRow, EndpointRecord, RuntimeContext } from "../runtime-types.js";
 import type { ChatRuntime } from "../../chat-runtime.js";
 import type { ChatEndpointRuntime } from "../../voice/voice-runtime.js";
-import type { createDiscordCommands } from "./commands.js";
 import type { createChatMessageLifecycle } from "../inbound/lifecycle.js";
 import type { ToolCredentialSecretRef } from "@paperclipai/shared";
 type ReconciliationOptions = {
-  reconcileDiscordCommands: ReturnType<typeof createDiscordCommands>["reconcileDiscordCommands"];
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;
   runtimeContexts: WeakMap<object, RuntimeContext>;
   invalidateRuntime: (endpointId: string) => Promise<boolean>;
@@ -22,9 +20,8 @@ type ReconciliationOptions = {
   discordGatewayRuntimeIsCurrent: (endpointId: string, context: RuntimeContext) => boolean;
 };
 export function createDiscordRuntimeReconciliation(db: Db, options: ReconciliationOptions) {
-  const { reconcileDiscordCommands, endpointRecord, runtimeContexts, invalidateRuntime, runtimeFor, runtime, runtimeCallbackEndpoint, credentialFingerprint, discordGatewayRuntimeIsCurrent } = options;
+  const { endpointRecord, runtimeContexts, invalidateRuntime, runtimeFor, runtime, runtimeCallbackEndpoint, credentialFingerprint, discordGatewayRuntimeIsCurrent } = options;
   async function reconcileDiscordRuntime(endpointId: string, instance: ChatEndpointRuntime) {
-    await reconcileDiscordCommands(endpointId);
     const afterCommands = await endpointRecord(endpointId);
     const desiredCommands =
       afterCommands?.endpoint.capabilities.slashCommands &&

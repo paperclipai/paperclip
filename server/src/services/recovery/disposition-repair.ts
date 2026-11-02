@@ -30,6 +30,17 @@ type DispositionRepairIssue = Pick<
   | "monitorNextCheckAt"
 >;
 
+export const dispositionRepairIssueFields = {
+  id: issues.id,
+  companyId: issues.companyId,
+  status: issues.status,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  executionPolicy: issues.executionPolicy,
+  executionState: issues.executionState,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+};
+
 export type DispositionRepairSourceState = {
   fingerprint: string;
   dependencyIssueIds: string[];

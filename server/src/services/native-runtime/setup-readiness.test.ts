@@ -432,6 +432,20 @@ describe("Codex selected native account verification", () => {
     expect(nativeProbe).toHaveBeenCalledOnce();
     expect(execute).not.toHaveBeenCalled();
   });
+  it("names the ChatGPT retirement when the backend rejects a retired model", async () => {
+    nativeProbe.mockRejectedValue(new Error(JSON.stringify({ type: "error", status: 400,
+      error: { type: "invalid_request_error", message: "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account." } })));
+    const result = await testNativeRunnerAuthentication(context, "codex", "gpt-5.5");
+    expect(result.status).toBe("fail");
+    expect(result.checks[0]).toMatchObject({ code: "codex_hello_probe_failed", level: "error" });
+    expect(result.checks[0].hint).toContain("OpenAI retired gpt-5.5 from Codex with ChatGPT sign-in on 2026-10-14");
+    expect(result.checks[0].hint).toContain("gpt-6.1-sol");
+  });
+  it("keeps the generic hint when the backend rejects a model that is not retired", async () => {
+    nativeProbe.mockRejectedValue(new Error("The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."));
+    const result = await testNativeRunnerAuthentication(context, "codex", "gpt-6.1-sol");
+    expect(result.checks[0].hint).toBe("Check the selected account, model access, and native runtime prerequisites, then retry. Legacy runner is available explicitly in Advanced.");
+  });
   it.each([
     ["authentication required: selected-account", true],
     ["Model is unavailable", false],

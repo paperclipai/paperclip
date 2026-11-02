@@ -81,6 +81,17 @@ Independent SQL writers and additional processes need an explicit wake protocol;
 process-local notifications do not provide cross-replica delivery. Worker quiet
 alone is not evidence that the host or database actually suspended.
 
+## Native reply recovery
+
+Committed native replies use the shared delivery coordinator and its persisted
+retry deadlines. One pass checks at most four independent tasks at a time.
+Checks for the same company and task run in candidate order within the batch.
+Other scoped deadline workers remain serial unless their owner enables concurrency.
+Drain retains unstarted checks, and shutdown waits for every admitted check before
+releasing tracked work. Completed history creates no recurring discovery reads;
+new committed work reactivates the existing notification path. Pending reply
+obligations keep their existing sleep blockers.
+
 ## Scheduled routine wake protocol
 
 Historical failed ephemeral leases and terminal custom-image setup sessions can
@@ -101,6 +112,17 @@ The manager permits at most two outstanding inspection RPCs across workers.
 Caller timeouts retain their slots until the actual worker reply or exit;
 timeouts cannot accumulate additional provider reads in later sweeps.
 
+If a failed ephemeral lease has no usable local inspection path, a managed
+Daytona instance can ask Cloud for a cleanup-only absence receipt. Cloud checks
+the stack's historical credential organization and reads the exact allocation
+with its manager credential. Only confirmed absence can produce a signed receipt
+bound to the stack, company, environment, lease, provider handle and nullable run.
+The separate cleanup type and audience cannot authorize run recovery. Older
+Cloud servers, unsupported providers, invalid signatures, changed organizations
+and failed reads leave the lease unresolved. Existing bounded cleanup batches
+and retry deadlines own these reads; no new idle polling is added. An explicit
+local provider observation is retained rather than replaced by this fallback.
+
 Host-owned verification metadata binds the company, environment, resource,
 provider handle, optional run, and exact row version. Concurrent resume,
 replacement, cleanup, or configuration changes invalidate verification.
@@ -110,6 +132,17 @@ Normal setup cancellation and timeout preserve the host's recorded config
 fingerprint and RPC company scope for later read-only verification.
 Retained allocations, unfinished runs/accounting/retries, export intents and
 live setup credentials continue to block sleep.
+
+For a reused remote allocation, a completed predecessor can resolve termination
+through the final owner's destruction receipt only when the full host-recorded
+lease handoff chain matches. Company, agent, task, workspace, environment, provider
+and allocation identities must agree. A stopped successor, broken handoff or
+unrelated owner grants no cleanup authority. This resolution does not rewrite
+historical leases, execute remotely or claim that uncollected files were saved.
+The normal agent-file recovery worker retains the no-save outcome and completes
+cleanup after confirmed destruction. A completed cleanup receipt with a stale
+retry deadline is reconciled once through the existing deadline worker. Clearing
+that deadline compares the receipt so a concurrent cleanup obligation is kept.
 
 Pending human-only connection setup can wait asleep when no active enabled
 connection of the requested purpose exists. Available access reblocks sleep so
@@ -445,3 +478,14 @@ timer remains; an empty buffer performs no database work. Existing Muse durable
 sleep blockers, external worker stop evidence, and ingress requirements remain
 unchanged. This change establishes database quiet for inactive Muse, not host
 sleep eligibility for a configured Muse connection.
+
+## Skill package maintenance
+
+The package delivery worker automatically converts legacy snapshots and versions.
+Legacy contents remain authoritative until conversion is verified. Unfinished or
+failed conversions, including rows retained while package storage is disabled,
+may wait for the next ingress wake and do not block idle sleep. Their persisted
+retry dates and package/object/native-asset retention timestamps are earliest
+maintenance eligibility, not promised delivery deadlines. Workers reconstruct persisted rows and filesystem
+access leases on startup, and use the existing coordinator's drain/standby/shutdown
+controls. No external Cloud alarm or provider suspension is established by these tests.

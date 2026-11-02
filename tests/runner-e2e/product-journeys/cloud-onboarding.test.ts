@@ -1,18 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
 import { cloudOnboarding, type CloudOnboardingInput } from "./cloud-onboarding.js";
 import { onboardingFirstTask } from "./onboarding-first-task.js";
+import { retainOnboardingArtifact } from "./artifact-evidence.js";
+import { JourneyError } from "./types.js";
+import type { OnboardingPreAcceptanceEvidence } from "./onboarding-pre-acceptance.js";
 
 vi.mock("@playwright/test", () => ({ expect: (locator: { isVisible(): Promise<boolean> }) => ({
   toBeVisible: async () => { expect(await locator.isVisible()).toBe(true); },
   not: { toBeVisible: async () => { expect(await locator.isVisible()).toBe(false); } },
 }) }));
-vi.mock("./onboarding-first-task.js", () => ({ onboardingFirstTask: vi.fn(async () => ({ artifact: { originatingRunId: "artifact-run" } })) }));
+vi.mock("./onboarding-first-task.js", async () => {
+  const { retainOnboardingArtifact } = await import("./artifact-evidence.js");
+  return { onboardingFirstTask: vi.fn(async ({ proof, onArtifact }) => {
+    const artifact = retainOnboardingArtifact({ id: "artifact", originatingRunId: "artifact-run", bytes: Buffer.from(JSON.stringify(proof.expected)), proof });
+    onArtifact?.(artifact);
+    return { artifact };
+  }) };
+});
 
 type Entry = "first-run" | "portfolio" | "create-form";
 type Control = { role: string; name: string; scope?: string; fill?(value: string): void; click?(): void; select?(value: string): void };
 
 /** Visible control contracts only; no browser, Cloud API, or provider is started. */
-function fixture(entry: Entry, options: { intentFailure?: boolean; qualificationFailure?: boolean } = {}) {
+function fixture(entry: Entry, options: { intentFailure?: boolean; qualificationFailure?: boolean; traceFailure?: boolean } = {}) {
   let stage: string = entry, name = "", apiMode = false, source = false, advanced = false, runnerOpen = false;
   let modelsOpen = false, model = "", runner = "", saved = false, hired = false;
   const fields: Record<string, string> = {}, events: string[] = [];
@@ -78,6 +88,8 @@ function fixture(entry: Entry, options: { intentFailure?: boolean; qualification
     },
   });
   const page = {
+    on() { return this; },
+    off() { return this; },
     getByLabel(label: string) { return locator(() => controls().filter(control => control.name === label && control.role === "textbox")); },
     getByRole(role: string, { name: label }: { name: string | RegExp }) {
       return locator(() => controls().filter(control => control.role === role && match(control.name, label)));
@@ -85,6 +97,7 @@ function fixture(entry: Entry, options: { intentFailure?: boolean; qualification
     locator(selector: string) { expect(selector).toBe("summary"); return locator(() => controls().filter(control => control.role === "summary")); },
   };
   const context = { page, company: { id: "company" }, identity: { kind: "cloud" }, startingState: "recipe", api: {
+    origin: "https://tenant.example.test",
     async get(route: string) {
       if (route.endsWith("/ai-connections")) return { connections: saved ? [connection] : [] };
       if (route.endsWith("/agents")) return hired ? [{ id: "agent", name, adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: gateway.model } }] : [];
@@ -97,12 +110,30 @@ function fixture(entry: Entry, options: { intentFailure?: boolean; qualification
     async own(resource: { kind: string }) { events.push(`intent:${resource.kind}`); },
     async phase() {}, async observeRun() {},
     async qualify() { if (options.qualificationFailure) throw new Error("admission denied"); events.push("qualified"); },
-    async verifyExecution(_context: unknown, runIds: string[]) { expect(runIds).toEqual(["artifact-run"]); events.push("native:verified"); },
+    async verifyExecution(_context: unknown, runIds: string[]) {
+      expect(runIds).toEqual(["artifact-run"]);
+      if (options.traceFailure) throw new Error("trace verification failed");
+      events.push("native:verified");
+    },
   } as unknown as CloudOnboardingInput;
   return { input, events };
 }
 
 describe("Cloud onboarding visible controls", () => {
+  it("retains pre-acceptance evidence while preserving the failed error and withholding completion markers", async () => {
+    const f = fixture("portfolio");
+    const receipt: OnboardingPreAcceptanceEvidence = { version: 1, checkpoint: "awaiting-proposal", violations: ["attachment_present"],
+      taskCount: 1, attachmentCount: 1, documentCount: 0, nonPlanningDocumentCount: 0,
+      firstTaskMatchesCanonicalParent: true, firstTaskStatus: "in_review", canonicalParentStatus: "in_review" };
+    vi.mocked(onboardingFirstTask).mockImplementationOnce(async input => {
+      input.onPreAcceptanceFailure?.(receipt);
+      throw new JourneyError("failed", "onboarding_work_before_acceptance");
+    });
+    await expect(cloudOnboarding(f.input)).rejects.toMatchObject({ outcome: "failed", code: "onboarding_work_before_acceptance" });
+    expect(JSON.parse(JSON.stringify(f.input.evidence)).onboardingPreAcceptance).toEqual(receipt);
+    expect(f.input.evidence.checks.map(check => check.id)).toEqual(["fresh-workspace", "ui-connection-and-native-agent"]);
+    expect(f.events).not.toContain("native:verified");
+  });
   it.each(["first-run", "portfolio", "create-form"] as const)("creates from %s with intent before dispatch and qualification before paid Connect", async entry => {
     const f = fixture(entry);
     const result = await cloudOnboarding(f.input);
@@ -123,5 +154,25 @@ describe("Cloud onboarding visible controls", () => {
     await expect(cloudOnboarding(f.input)).rejects.toThrow("admission denied");
     expect(f.events).not.toContain("paid:connect");
     expect(vi.mocked(onboardingFirstTask).mock.calls).toHaveLength(previous);
+  });
+  it("keeps verified artifact bytes and the independent oracle when later trace verification fails", async () => {
+    const f = fixture("portfolio", { traceFailure: true });
+    await expect(cloudOnboarding(f.input)).rejects.toThrow("trace verification failed");
+    const retained = JSON.parse(JSON.stringify(f.input.evidence)).artifact;
+    expect(JSON.parse(Buffer.from(retained.contentBase64, "base64").toString("utf8"))).toEqual(retained.expected);
+    expect(retained.originatingRunId).toBe("artifact-run");
+    expect(f.input.evidence.checks).not.toContainEqual({ id: "native-trace-verified", passed: true });
+  });
+  it("retains the artifact but fails the journey without pass markers when first-task readback fails", async () => {
+    const f = fixture("portfolio");
+    vi.mocked(onboardingFirstTask).mockImplementationOnce(async ({ proof, onArtifact }) => {
+      onArtifact?.(retainOnboardingArtifact({ id: "artifact", originatingRunId: "artifact-run", bytes: Buffer.from(JSON.stringify(proof.expected)), proof }));
+      throw new Error("first-task readback failed");
+    });
+    await expect(cloudOnboarding(f.input)).rejects.toThrow("first-task readback failed");
+    const retained = JSON.parse(JSON.stringify(f.input.evidence)).artifact;
+    expect(JSON.parse(Buffer.from(retained.contentBase64, "base64").toString("utf8"))).toEqual(retained.expected);
+    expect(f.input.evidence.checks.map(check => check.id)).toEqual(["fresh-workspace", "ui-connection-and-native-agent"]);
+    expect(f.events).not.toContain("native:verified");
   });
 });

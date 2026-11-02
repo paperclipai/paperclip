@@ -579,6 +579,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     readWorkflow("runner-full-stack-e2e.yml"),
     readWorkflow("e2e.yml"),
     readWorkflow("runner-protocol-live-evals.yml"),
+    readWorkflow("chat-catalog-testops.yml"),
   ];
 
   for (const workflow of actionPinWorkflows) {
@@ -618,6 +619,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "runner-full-stack-e2e.yml",
     "runner-live-evals.yml",
     "runner-protocol-live-evals.yml",
+    "chat-catalog-testops.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
@@ -650,8 +652,62 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       (block) => [...block.matchAll(providerSecretReference)].length > 0,
     );
     assert.ok(providerJobs.length > 0, `${name} needs a provider-secret job`);
+    if (name === "chat-completion-testops.yml" || name === "chat-catalog-testops.yml") {
+      assert.equal(providerJobs.length, 1);
+      const expectedKeys = name === "chat-catalog-testops.yml" ? 2 : 1;
+      const assertBoundary = (block) => {
+        assert.match(block, /^  chat:\n/);
+        assert.match(block, /\n    needs: \[authorize, select, build\]\n/);
+        if (expectedKeys === 2) assert.ok(block.includes("if: needs.authorize.outputs.operation == 'evaluate' && needs.select.outputs.native_count != '0'"));
+        else assert.match(block, /\n    if: needs\.authorize\.outputs\.operation == 'evaluate'\n/);
+        assert.match(block, /\n    environment: runner-e2e-private-paid\n/);
+        assert.match(block, /\n      - \*checkout\n      - \*node\n      - \*guard\n/);
+        assert.match(block, /chat-completion-testops-cli\.mjs verify-selection/);
+        assert.match(block, /OPENROUTER_API_KEY: \$\{\{ secrets\.OPENROUTER_API_KEY \}\}/);
+        assert.match(block, /--id "\$\{\{ matrix\.executionId \}\}" --max-parallel 1 --max-automatic-retries 0/);
+        assert.match(block, /PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1/);
+        if (expectedKeys === 2) assert.ok(block.includes('max-parallel: ${{ fromJSON(needs.select.outputs.parallelism) }}'));
+        else assert.match(block, /max-parallel: 1/);
+        assert.doesNotMatch(block, /ALLURE_TOKEN/);
+        assert.equal([...block.matchAll(providerSecretReference)].length, expectedKeys);
+        if (expectedKeys === 2) assert.ok(block.includes("ANTHROPIC_API_KEY: ${{ contains(matrix.required_credentials, 'ANTHROPIC_API_KEY') && secrets.ANTHROPIC_API_KEY || '' }}"));
+        assert.ok(block.indexOf("      - *guard") < block.search(providerSecretReference));
+        assert.ok(block.indexOf("chat-completion-testops-cli.mjs verify-selection") < block.search(providerSecretReference));
+      };
+      const block = providerJobs[0]; assertBoundary(block);
+      assert.equal([...workflow.matchAll(providerSecretReference)].length, expectedKeys);
+      for (const mutant of [
+        block.replace("needs: [authorize, select, build]", "needs: [authorize, build]"),
+        block.replace("environment: runner-e2e-private-paid", "environment: unprotected"),
+        block.replace("      - *guard\n", ""),
+        block.replace("chat-completion-testops-cli.mjs verify-selection", "chat-completion-testops-cli.mjs unverified-selection"),
+        block.replace('--id "${{ matrix.executionId }}"', "--all"),
+        block.replace("PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1", "PAPERCLIP_CHAT_COMPLETION_TESTOPS: unknown"),
+      ]) assert.throws(() => assertBoundary(mutant));
+      if (expectedKeys === 2) assert.throws(() => assertBoundary(block.replace("contains(matrix.required_credentials, 'ANTHROPIC_API_KEY')", "true")));
+      if (expectedKeys === 2) {
+        const external = jobBlocks.find(value => value.startsWith('  chat_external:\n'));
+        const assertExternal = value => {
+          assert.match(value, /needs: \[authorize, select, build\]/);
+          assert.ok(value.includes("if: needs.authorize.outputs.operation == 'evaluate' && needs.select.outputs.external_count != '0'"));
+          assert.match(value, /environment: runner-e2e-private-paid/);
+          assert.match(value, /max-parallel: 1/);
+          assert.ok(value.includes('matrix: ${{ fromJSON(needs.select.outputs.external_matrix) }}'));
+          assert.match(value, /env: \*retention/);
+          assert.match(value, /steps: \*catalog_worker_steps/);
+        };
+        assertExternal(external);
+        for (const mutant of [external.replace('*catalog_worker_steps', '*unguarded'), external.replace('max-parallel: 1', 'max-parallel: 8'), external.replace('environment: runner-e2e-private-paid', 'environment: unprotected')]) assert.throws(() => assertExternal(mutant));
+      }
+      continue;
+    }
+
     for (const block of providerJobs) {
-      assert.match(block, /\n    environment:\n      name: runner-e2e-paid\n/);
+      if (name === "runner-protocol-live-evals.yml") {
+        assert.ok(block.includes("name: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-paid' || 'runner-e2e-paid' }}"));
+        assert.ok(block.includes("test '${{ needs.authorize.outputs.target_sha }}' = \"$GITHUB_SHA\""));
+        assert.ok(block.includes('test "$GITHUB_RUN_ATTEMPT" = 1'));
+      } else assert.match(block, /\n    environment:\n      name: runner-e2e-paid\n/);
       assert.match(
         block,
         /\n    steps:(?: &[A-Za-z0-9_-]+)?\n(?:\s*\n)*      - name: Reauthorize[^\n]*\n/,
@@ -698,8 +754,22 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(
       (match) => match[1],
     );
-    assert.equal(crons.length, 1, `${name} must have one schedule`);
-    assert.match(crons[0], /^\d{1,2} \d{1,2} \* \* 0$/);
+    if (name === "runner-full-stack-e2e.yml") {
+      assert.deepEqual(crons, ["47 8 * * *", "47 9 * * 0"]);
+      assert.ok(workflow.includes("vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true'"));
+      assert.ok(workflow.includes("Prepare bounded campaign before credentials"));
+      assert.ok(workflow.includes("--max-parallel 1 --max-automatic-retries 0"));
+      const catalog = workflow.slice(workflow.indexOf("  catalog:"), workflow.indexOf("  daytona_image:"));
+      assert.ok(catalog.includes("EVAL_OPERATING_OVERHEAD_JSON: ${{ vars.RUNNER_E2E_OPERATING_OVERHEAD_JSON }}"));
+      assert.ok(catalog.includes("operating_overhead: ${{ steps.catalog.outputs.operating_overhead }}"));
+      const prepare = workflow.slice(workflow.indexOf("      - name: Prepare bounded campaign before credentials"), workflow.indexOf("      - name: Run bounded campaign and retain feedback review"));
+      assert.ok(prepare.includes("EVAL_OPERATING_OVERHEAD_JSON: ${{ needs.catalog.outputs.operating_overhead }}"));
+      assert.ok(prepare.includes("EVAL_TEST_RUNNER: ${{ needs.authorize.outputs.test_runner }}"));
+      assert.ok(!prepare.includes("vars.RUNNER_E2E_OPERATING_OVERHEAD_JSON"));
+    } else {
+      assert.equal(crons.length, 1, `${name} must have one schedule`);
+      assert.match(crons[0], /^\d{1,2} \d{1,2} \* \* 0$/);
+    }
   }
 
   const chaosWorkflow = actionPinWorkflows[2];

@@ -91,6 +91,17 @@ Core calls `check_project_auth` after preparation and before credential transfer
 The request names the configuration ID, provider, and authorized project IDs.
 It contains no credential.
 
+A trusted provider can instead return `projectAuthCheckAtSubmit: true` in its
+`prepared` result. Core then skips the separate check. This flag delegates the
+check to submission; it does not claim that preparation checked authentication.
+The provider must validate the effective configuration and current project grants
+inside `submit`, before it installs credentials on the execution host or starts
+the task. It must reject conflicts and changed preparation before those effects.
+Core pins the configuration, provider, and project set on the lease and checks
+them again at dispatch. A new preparation invalidates that scope. Providers that
+omit the flag keep the separate check. The flag requires a Core version that
+supports it; older strict result schemas reject it.
+
 The plugin must check the effective configuration for that prepared launch.
 Reject project settings, parent settings, helper commands, or environment routing
 that can replace the selected account or redirect its credential.
@@ -128,7 +139,9 @@ the environment configuration cannot redirect cleanup to a new provider.
 Before preparation or submission, Core checks the active lease, run, issue, and every project
 in the company. It checks the submitting run ID separately from a retained PRP
 identity. Session reuse requires the same agent, environment, workspace, and
-provider. It also requires a retained source task and proof of termination.
+provider. Checkpoint resumption also requires a retained source task and proof of termination.
+Opt-in Codex warm reuse instead hands off the same retained process through an
+atomic lease transition and an exact, authorized `priorIdentity` preparation.
 
 An internal setup probe can use a private, time-limited lease without a run row.
 Core checks the saved probe identity, rejects project mounts, and limits the

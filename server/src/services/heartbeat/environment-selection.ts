@@ -17,7 +17,9 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "../execution-workspace-policy.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
-import { shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
+import { isBoundFreshPluginTaskDirectory } from "../provider-fresh-workspace.js";
 import {
   findNativeChatWorkspaceScope,
   nativeChatWorkspaceCwd,
@@ -31,7 +33,7 @@ import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { WorkspaceBusyDeferral, type createHeartbeatRetries } from "./retries.js";
 import { ConfigurationIncompleteFailure } from "./run-preparation.js";
-import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
+import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue, WorkspaceValidationFailure } from "./workspaces.js";
 
 type Issue = typeof issues.$inferSelect;
 
@@ -116,7 +118,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   if (existingExecutionWorkspace && issueId && !isDotRun && !fresh
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")
-    && readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved) {
+    && (readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
+      || readTaskDirectoryRetention(existingExecutionWorkspace) !== null)) {
     const [boundIssue] = await db.select({ id: issues.id, companyId: issues.companyId, projectId: issues.projectId })
       .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)));
     if (!boundIssue) throw new Error("Execution workspace issue is unavailable");
@@ -135,6 +138,13 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       });
     }
     existingExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, existingExecutionWorkspace.id);
+  }
+  const retainedDirectory = input.task.freshWorkspace?.mode === "reuse_current_workspace" ? input.task.freshWorkspace : null;
+  if (retainedDirectory && (issueRef?.executionWorkspaceId !== retainedDirectory.workspaceId ||
+      existingExecutionWorkspace?.id !== retainedDirectory.workspaceId || existingExecutionWorkspace.cwd !== retainedDirectory.cwd)) {
+    throw new WorkspaceValidationFailure("The saved Retry workspace binding changed.", {
+      workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
+    });
   }
   const nativeRecoveryExecutionWorkspaceId =
     resolveNativeRecoveryExecutionWorkspaceBinding({
@@ -469,7 +479,31 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       preserveImplicitDefaultSettings: ["project", "task_default"].includes(taskWorkspaceIntent.source) });
   }
   const explicitTaskDirectory = !isDotRun && taskWorkspaceIntent?.selection.kind === "task_directory";
-  const useIsolatedTaskDirectory = !isDotRun && issueRef !== null && ((fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
+  const explicitDirectoryStrategies = [
+    ...(reusableExistingExecutionWorkspace?.providerType === "adapter_managed" ? [config.workspaceStrategy] : []),
+    issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
+    projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy];
+  const boundTaskDirectory = !isDotRun && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
+    requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
+    !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId &&
+    taskWorkspaceIntent?.selection.kind !== "configured_source" &&
+    (taskWorkspaceIntent?.selection.kind !== "existing" || taskWorkspaceIntent.selection.workspaceId === issueRef.executionWorkspaceId) &&
+    (await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
+      workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace }) ||
+      (selectedEnvironmentForConfig?.driver === "plugin" && agent.adapterType === "paperclip_runner" &&
+        isBoundFreshPluginTaskDirectory({ companyId: agent.companyId, issueId,
+          workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace,
+          owner: { agentId: agent.id, environmentId: selectedEnvironmentForConfig.id,
+            pluginKey: parseObject(selectedEnvironmentForConfig.config).pluginKey ?? null,
+            driverKey: parseObject(selectedEnvironmentForConfig.config).driverKey ?? null } })));
+  const reuseTaskDirectory = boundTaskDirectory && explicitDirectoryStrategies.every(value => {
+    const strategy = parseObject(value);
+    return Object.keys(strategy).length === 0 || (Object.keys(strategy).length === 1 && strategy.type === "project_primary");
+  });
+  if (retainedDirectory && !boundTaskDirectory) throw new WorkspaceValidationFailure("The saved Retry task directory is unavailable.", {
+    workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
+  });
+  const useIsolatedTaskDirectory = !isDotRun && issueRef !== null && (reuseTaskDirectory || (fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
     trustPreset: trustPreset.kind,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
     mode: requestedExecutionWorkspaceMode,

@@ -1084,6 +1084,21 @@ describe("Routines page", () => {
     });
   });
 
+  it("links View all tasks to the routine-filtered task list", async () => {
+    routinesListMock.mockResolvedValue([]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>);
+      await flush();
+    });
+    const link = Array.from(container.querySelectorAll("a")).find(anchor => anchor.textContent === "View all tasks");
+    expect(link?.getAttribute("href")).toBe("/issues?view=all&originKind=routine_execution");
+    expect(container.textContent).not.toContain("View all runs");
+    await act(() => root.unmount());
+    queryClient.clear();
+  });
+
   it("keeps the list focused on routines and links run history to Audit", async () => {
     currentSearch = "tab=runs";
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1" })]);

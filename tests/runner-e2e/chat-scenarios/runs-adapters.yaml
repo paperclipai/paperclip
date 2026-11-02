@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: runs-adapters
+status: planned
+scenarios:
+  - id: runs-adapters.list-model-options
+    capabilities:
+      - runs-adapters/availability
+      - runs-adapters/model-accounts
+    context: >-
+      The company has admitted model discovery and configured coding accounts; some adapter
+      inventories remain board-only.
+    query: >-
+      What coding models can Morgan use with our current accounts?
+    expected_outcome: >-
+      The agent presents options supported by current authorized discovery and states any
+      account or environment restriction. It separates model availability from a valid account
+      binding. It does not promise every public vendor model is installed or ready, nor expose
+      hidden account credentials.
+  - id: runs-adapters.validate-hire
+    capabilities:
+      - runs-adapters/validation
+      - agents/hire
+    context: >-
+      Morgan was created with an eligible account, but the target runtime returns an
+      authentication failure during validation.
+    query: >-
+      Check that Morgan can actually start before I give them work.
+    expected_outcome: >-
+      The allowed validation runs against Morgan's selected configuration and reports the
+      specific failure with a repair path. Chat distinguishes a saved profile from a working
+      execution. It does not repeatedly start paid work or silently switch accounts to make the
+      check look successful.
+  - id: runs-adapters.inspect-failed-run
+    capabilities:
+      - runs-adapters/runs
+      - activity/runs
+    context: >-
+      The website task has one failed run and one later successful run; the caller can read run
+      diagnostics.
+    query: >-
+      What happened on the failed website attempt?
+    expected_outcome: >-
+      The answer identifies the failed run, its observed error and available output or cost
+      evidence, with source links. It distinguishes observed failure from a suspected cause and
+      preserves the original failure despite the later success. Missing logs or cost data are
+      described as unavailable rather than zero.
+  - id: runs-adapters.reset-session
+    capabilities:
+      - runs-adapters/session
+    context: >-
+      Morgan has an existing session; resetting it requires the person's board control.
+    query: >-
+      Give Morgan a fresh session without losing the task history.
+    expected_outcome: >-
+      The agent directs the person to the supported session reset control and explains the
+      difference between runtime context and durable task history. After the human action,
+      future execution starts with the intended fresh context while prior comments and artifacts
+      remain readable. The agent does not erase work to simulate a reset.
+  - id: runs-adapters.upgrade-runner
+    capabilities:
+      - runs-adapters/validation
+      - runs-adapters/session
+      - agents/instructions
+    context: >-
+      Morgan is an existing legacy Claude agent on a qualified target with compatible saved
+      settings; conversion is a supported human configuration action.
+    query: >-
+      Move Morgan to Paperclip Runner and keep the same model and instructions.
+    expected_outcome: >-
+      The person reaches the supported upgrade action, which preserves compatible harness,
+      model, bindings, instructions and history. Unsupported settings produce an actionable
+      error without partial saved conversion. Future runs use a fresh supported session; chat
+      does not equate conversion with a successful live run.

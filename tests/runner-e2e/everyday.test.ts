@@ -9,6 +9,8 @@ import {
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
+  storyAgentReplyMatches,
+  retainedControllerReplyMatcher,
   storyHasPendingAgentReview,
   storyHasPendingAgentWake,
   storyHasPendingAgentWork,
@@ -385,6 +387,49 @@ describe("lifecycle oracle calibrated failures", () => {
 });
 
 describe("reply completion boundary", () => {
+  it("accepts an explicit reply matcher for continuation output on a new line", () => {
+    const issue = { id: "parent", companyId: "company", title: "Continue", status: "done",
+      comments: [{ authorAgentId: "lead", body: "CONTINUED_nonce\nqueue_r" }] };
+    const expected = (body: string) => body === "CONTINUED_nonce\nqueue_r";
+    expect(storyHasAgentReply(issue, "lead", expected)).toBe(true);
+  });
+
+  it.each([" ", "\n", "\r\n", "\t", "  \n"])("accepts continuation output separated by %j", separator => {
+    const expected = retainedControllerReplyMatcher("CONTINUED_nonce.1");
+    const comment = { authorAgentId: "lead", body: `CONTINUED_nonce.1${separator}queue_r` };
+    expect(storyHasAgentReply({ id: "task", companyId: "company", title: "Continue", status: "done", comments: [comment] }, "lead", expected)).toBe(true);
+    expect(storyAgentReplyMatches(comment, "lead", expected)).toBe(true);
+  });
+
+  it.each(["\nI used the saved project.", " I used the saved project.", "\r\nqueue_ready"])("accepts explanation after the exact continuation token %j", suffix => {
+    const expected = retainedControllerReplyMatcher("CONTINUED_nonce.1");
+    const comment = { authorAgentId: "lead", body: `CONTINUED_nonce.1\nqueue_r${suffix}` };
+    expect(storyHasAgentReply({ id: "task", companyId: "company", title: "Continue", status: "done", comments: [comment] }, "lead", expected)).toBe(true);
+    expect(storyAgentReplyMatches(comment, "lead", expected)).toBe(true);
+  });
+
+  it.each([
+    "CONTINUED_nonce.1 queue_ready", "CONTINUED_nonce.1 queue_r_extra", "CONTINUED_nonce.1 wrong",
+    "CONTINUED_other queue_r", "CONTINUED_nonceX1 queue_r", "queue_r", "CONTINUED_nonce.1queue_r",
+    "OTHER_CONTINUED_nonce.1 queue_r", "CONTINUED_nonce.1 queue_r-extra", "CONTINUED_nonce.1 queue_r.",
+  ])("rejects an incorrect continuation reply %j", body => {
+    const expected = retainedControllerReplyMatcher("CONTINUED_nonce.1");
+    const comment = { authorAgentId: "lead", body };
+    expect(storyHasAgentReply({ id: "task", companyId: "company", title: "Continue", status: "done", comments: [comment] }, "lead", expected)).toBe(false);
+    expect(storyAgentReplyMatches(comment, "lead", expected)).toBe(false);
+  });
+
+  it("preserves literal string expectations and continuation author checks", () => {
+    const expected = retainedControllerReplyMatcher("CONTINUED_nonce");
+    const comment = { authorAgentId: "other", body: "CONTINUED_nonce\nqueue_r" };
+    expect(storyAgentReplyMatches(comment, "lead", expected)).toBe(false);
+    const issue = { id: "task", companyId: "company", title: "Continue", status: "done", comments: [comment] };
+    expect(storyHasAgentReply(issue, "lead", expected)).toBe(false);
+    expect(storyAgentReplyMatches({ ...comment, authorAgentId: "lead" }, "lead", "CONTINUED_nonce queue_r")).toBe(false);
+    expect(storyAgentReplyMatches({ authorAgentId: "lead", body: "a.b" }, "lead", "a.b")).toBe(true);
+    expect(storyAgentReplyMatches({ authorAgentId: "lead", body: "axb" }, "lead", "a.b")).toBe(false);
+  });
+
   const run: StoryRun = {
     id: "old",
     companyId: "company",

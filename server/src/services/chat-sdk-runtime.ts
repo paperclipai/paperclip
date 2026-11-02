@@ -1,3 +1,4 @@
+import { isPassiveSlackAction, normalizeSlackSelectionAction, slackSelectionValues } from "./chat-channels/slack/cards.js";
 import { PhotonChatAdapter, parsePhotonThreadId } from "./photon/adapter.js";
 import { PhotonLineAuthentication } from "./photon/cloud.js";
 import { PhotonState } from "./photon/state.js";
@@ -407,6 +408,8 @@ export interface ChatSdkMessageUpdatedCallbackEvent {
 export interface ChatSdkCallbackEvent<T> {
   endpointId: string;
   event: T;
+  /** Provider-normalized selected opaque values from an explicit message submit. */
+  selectionValues?: string[];
   provider: ChatSdkProvider;
   /** Runtime-assigned ingress context; never read from provider payloads. */
   transport?: "discord_gateway";
@@ -1917,7 +1920,10 @@ function registerCallbacks(
     });
   }
   if (callbacks.onAction) {
-    chat.onAction(async (event) => {
+    chat.onAction(async (sourceEvent) => {
+      if (provider === "slack" && isPassiveSlackAction(sourceEvent)) return;
+      const event = provider === "slack" ? normalizeSlackSelectionAction(sourceEvent) : sourceEvent;
+      const selectionValues = provider === "slack" ? slackSelectionValues(sourceEvent) : undefined;
       const transport = actionTransport();
       if (!acceptsProviderScope(event.raw)) {
         if (transport === "discord_gateway") {
@@ -1937,6 +1943,7 @@ function registerCallbacks(
             provider,
             event,
             ...(transport ? { transport } : {}),
+            ...(selectionValues ? { selectionValues } : {}),
             ...(telegramCallback(event.raw)
               ? { telegramCallback: telegramCallback(event.raw) }
               : {}),

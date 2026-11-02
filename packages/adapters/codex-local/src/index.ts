@@ -129,6 +129,31 @@ export function minimumCodexCliVersionForModel(model: string | null | undefined)
   return CODEX_LOCAL_MODEL_MINIMUM_CLI_VERSIONS[normalizeCodexModel(model)] ?? null;
 }
 
+export interface CodexChatGptRetirement {
+  retiredOn: string;
+  replacement: string;
+}
+
+// Models OpenAI retired from Codex with ChatGPT sign-in (https://learn.chatgpt.com/docs/models).
+// The OpenAI API and API-key Codex sessions still serve them, so they stay in the picker; the
+// Test names the retirement instead of suggesting a stale CLI or a plan restriction.
+const CODEX_LOCAL_CHATGPT_RETIRED_MODELS: Readonly<Record<string, CodexChatGptRetirement>> = {
+  "gpt-5.5": { retiredOn: "2026-10-14", replacement: "gpt-6.1-sol (gpt-6-luna on Free and Go plans)" },
+  "gpt-5.4": { retiredOn: "2026-08-31", replacement: "gpt-6-sol" },
+  "gpt-5.4-mini": { retiredOn: "2026-08-31", replacement: "gpt-6-luna" },
+};
+
+export function codexChatGptRetirementForModel(model: string | null | undefined): CodexChatGptRetirement | null {
+  return CODEX_LOCAL_CHATGPT_RETIRED_MODELS[normalizeCodexModel(model)] ?? null;
+}
+
+/** Test hint for a ChatGPT-account rejection of a retired model; shared by the legacy and native Tests. */
+export function codexChatGptRetirementHint(model: string | null | undefined): string | null {
+  const retirement = codexChatGptRetirementForModel(model);
+  if (!retirement) return null;
+  return `OpenAI retired ${normalizeCodexModel(model)} from Codex with ChatGPT sign-in on ${retirement.retiredOn}. Choose ${retirement.replacement}, or use an OpenAI API key; API-key sessions are not affected.`;
+}
+
 const STABLE_CODEX_CLI_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function stableCodexCliVersionParts(version: string): number[] | null {
@@ -257,6 +282,7 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
+- OpenAI retired gpt-5.5 (October 14, 2026), gpt-5.4 and gpt-5.4-mini (August 31, 2026) from Codex with ChatGPT sign-in. They remain selectable for OpenAI API-key sessions; with ChatGPT sign-in the Test names the retirement and its replacement.
 - With ChatGPT sign-in, model availability depends on the installed Codex capabilities. Legacy setup reports known model/version mismatches. Native setup tests the actual app-server and selected model; a version number alone does not reject or replace an installed CLI. If the provider rejects the model, select an available model or update Codex in the execution environment.
 - Fast mode is supported on GPT-6 (astra/sol/luna), GPT-6.1 Sol, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.

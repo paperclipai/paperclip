@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -348,6 +349,7 @@ export async function requestNativeQuestionRunCancellation(
     ...cause,
     requestedAt: new Date().toISOString(),
   });
+  await notifyLiveRunRecovery(db, { companyId: interaction.companyId, runId: run.id });
   return db.update(heartbeatRuns).set({
     contextSnapshot: sql`jsonb_set(
       case

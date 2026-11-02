@@ -1,4 +1,5 @@
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
+import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -60,6 +61,7 @@ export function createConnectionTokenBroker(db: Db, { now, secrets, policySvc, a
       );
       const nativeProvider = nativeProviderCatalogFor(connection);
       if (nativeProvider) throw forbidden(`${nativeProvider.name} credentials stay in the governed tool gateway and cannot be exported.`);
+      if (restConnectorFor(connection)) throw forbidden("Deployment connection credentials stay in the governed tool gateway and cannot be exported.");
       if (isBrowserUseConnection(connection)) throw forbidden("Browser Use credentials stay in the governed tool gateway and cannot be exported.");
       if (connection.connectionPurpose === "ai") throw unprocessable("AI credentials are available only through the runtime resolver");
       const application = await getConnectionApplication(connection);

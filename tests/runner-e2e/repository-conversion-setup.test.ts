@@ -8,7 +8,7 @@ function fixtures(driver = "sandbox"): Parameters<typeof convertRepositoryProofA
 }
 
 describe("real legacy conversion prerequisites", () => {
-  it("constructs compatible legacy settings before recording a retention baseline", () => {
+  it("retains the legacy Claude turn limit in the conversion fixture", () => {
     const suite = runnerSuites.find(suite => suite.id === "legacy-conversion")!;
     for (const profile of suite.profiles) {
       const agent = profile.buildAgent({ environmentId: "environment", environmentFixtureId: "local", workspacePath: "/owned/workspace",
@@ -18,7 +18,7 @@ describe("real legacy conversion prerequisites", () => {
       expect(agent.adapterType).toBe(profile.provider === "codex" ? "codex_local" : "claude_local");
       expect(agent.adapterConfig).toMatchObject({ model: profile.model, timeoutSec: 360, cwd: "/owned/workspace" });
       expect(agent.adapterConfig).not.toHaveProperty("extraArgs");
-      expect(agent.adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+      if (profile.provider !== "codex") expect(agent.adapterConfig).toHaveProperty("maxTurnsPerRun", 1000);
       expect((agent.adapterConfig as Record<string, any>).env).toMatchObject(profile.provider === "codex"
         ? { OPENAI_API_KEY: { type: "secret_ref", secretId: "codex-reference", version: "latest" } }
         : { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "claude-reference", version: "latest" } });

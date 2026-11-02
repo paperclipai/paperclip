@@ -28,7 +28,7 @@ import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -695,6 +695,27 @@ export function pluginRoutes(
       throw forbidden("Agent authentication required");
     }
     await issuesSvc.assertCheckoutOwner(issueId, req.actor.agentId, runId);
+  }
+
+  /**
+   * Company ids that bound tenant-attributed plugin reads.
+   *
+   * `plugin_logs`, `plugin_job_runs` and `plugin_webhook_deliveries` carry a
+   * `company_id` attribution (NULL for instance-scope rows). Instance
+   * administrators (and the local implicit board) keep the instance-wide view;
+   * every other board actor is restricted to its own companies, so a member of
+   * one company cannot read another company's operational rows.
+   *
+   * Returns `null` for the unscoped instance-wide view.
+   */
+  function pluginOperationalReadCompanyIds(req: Request): string[] | null {
+    if (req.actor.type !== "board") {
+      return [];
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return null;
+    }
+    return req.actor.companyIds ?? [];
   }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
@@ -2220,7 +2241,16 @@ export function pluginRoutes(
     const level = req.query.level as string | undefined;
     const since = req.query.since as string | undefined;
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+    if (companyIds && companyIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
     const conditions = [eq(pluginLogs.pluginId, plugin.id)];
+    if (companyIds) {
+      conditions.push(inArray(pluginLogs.companyId, companyIds));
+    }
     if (level) {
       conditions.push(eq(pluginLogs.level, level));
     }
@@ -2649,7 +2679,11 @@ export function pluginRoutes(
     }
 
     try {
-      const runs = await jobDeps.jobStore.listRunsByJob(jobId, limit);
+      const runs = await jobDeps.jobStore.listRunsByJob(
+        jobId,
+        limit,
+        pluginOperationalReadCompanyIds(req),
+      );
       res.json(runs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3033,6 +3067,8 @@ export function pluginRoutes(
       return;
     }
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+
     // --- Worker diagnostics ---
     let worker: {
       status: string;
@@ -3080,7 +3116,7 @@ export function pluginRoutes(
 
     if (jobDeps) {
       try {
-        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10);
+        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10, companyIds);
         // Also fetch job definitions so we can include jobKey
         const jobs = await jobDeps.jobStore.listJobs(plugin.id);
         const jobKeyMap = new Map(jobs.map((j) => [j.id, j.jobKey]));
@@ -3117,6 +3153,10 @@ export function pluginRoutes(
     }> = [];
 
     try {
+      const deliveryConditions = [eq(pluginWebhookDeliveries.pluginId, plugin.id)];
+      if (companyIds) {
+        deliveryConditions.push(inArray(pluginWebhookDeliveries.companyId, companyIds));
+      }
       const deliveries = await db
         .select({
           id: pluginWebhookDeliveries.id,
@@ -3129,7 +3169,7 @@ export function pluginRoutes(
           createdAt: pluginWebhookDeliveries.createdAt,
         })
         .from(pluginWebhookDeliveries)
-        .where(eq(pluginWebhookDeliveries.pluginId, plugin.id))
+        .where(and(...deliveryConditions))
         .orderBy(desc(pluginWebhookDeliveries.createdAt))
         .limit(10);
 

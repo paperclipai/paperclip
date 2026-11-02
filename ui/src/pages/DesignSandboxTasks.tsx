@@ -92,6 +92,7 @@ export function DesignSandboxTasks() {
     <TaskListToolbar view={collection.view} onViewChange={collection.setView} query={collection.query} onQueryChange={collection.setQuery}
       layout={collection.layout} onLayoutChange={collection.setLayout} allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded}
       onNewTask={() => openNewIssue()} filters={{ state: collection.filters, onChange: collection.updateFilters, activeFilterCount: collection.activeFilterCount,
+        enableLiveRunsFilter: false,
         agents: agents.data ?? [], projects: projects.data ?? [], labels: labels.data ?? [], currentUserId: userId, creators: collection.creators }} />
     {error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><span>{error instanceof Error ? error.message : "Could not load tasks"}</span><Button variant="outline" size="sm" onClick={() => { update.reset(); void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) }); void agents.refetch(); void projects.refetch(); void directory.refetch(); void labels.refetch(); }}>Retry</Button></div> : null}
     {tasks.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : <>

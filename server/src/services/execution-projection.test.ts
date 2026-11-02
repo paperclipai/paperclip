@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectExecution } from "./execution-projection.js";
+import { startTaskDrain, stopTaskDrain } from "./task-admission.js";
 
 type Run = Parameters<typeof projectExecution>[0];
 type Coordinator = NonNullable<Parameters<typeof projectExecution>[1]>;
@@ -37,6 +38,49 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it("shows maintenance only for admission that has not started", () => {
+    startTaskDrain();
+    try {
+      expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+        .toMatchObject({ phase: "queued", label: "Waiting for maintenance", cause: "task_drain" });
+      expect(project().phase).toBe("working");
+    } finally { stopTaskDrain(); }
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+      .toMatchObject({ phase: "queued", label: "Queued", cause: null });
+  });
+  it.each(["queued", "recovering", "blocked", "recovered"] as const)("shows the exact saved workspace recovery state instead of stale repair instructions: %s", status => {
+    const sourceRunId = "ec036e06-90a3-4b69-81db-a8eab7dbfbac";
+    const source = run({ id: sourceRunId, status: "failed", errorCode: "native_continuation_requires_reconciliation" });
+    const action = {
+      status: "resolved" as const,
+      cause: "native_continuation_requires_reconciliation",
+      nextAction: "The original sandbox is retained for workspace repair.",
+      evidence: {
+        runId: sourceRunId,
+        automaticRecovery: { policy: "preserve_without_replay_v1", actionOutcome: "unknown", replay: "blocked" },
+        continuationDelivery: "invalidated",
+        workspaceRecovery: {
+          schema: "paperclip.workspace-recovery.v1", runId: sourceRunId, status,
+          stage: "saving_receipts", attempt: 1, requestIds: [],
+          ...(status === "blocked" ? { message: "The saved source cannot be read safely." } : {}),
+        },
+      },
+    };
+    const projected = projectExecution(source, coordinator({ phase: "terminal_failure" }), [], action, now);
+    expect(projected).toMatchObject({
+      phase: "recovery_needed", label: "Stopped", cause: action.cause,
+      nextAction: status === "recovered" ? "Saved work recovered. Send a message to continue."
+        : status === "blocked" ? "The saved source cannot be read safely." : "Recovering saved work…",
+      permittedActions: ["inspect_run"], successorRunId: null,
+    });
+    expect(source.status).toBe("failed");
+    expect(action.evidence.automaticRecovery.replay).toBe("blocked");
+    expect(projectExecution(source, undefined, [], { ...action,
+      evidence: { ...action.evidence, workspaceRecovery: { ...action.evidence.workspaceRecovery,
+        runId: "5f227d75-b314-4511-bf23-9c615277e69b" } },
+    }, now).nextAction).toBe(action.nextAction);
+  });
+
   it("keeps cleanup quarantine visible without a coordinator or recovery row", () => {
     const stopped = run({ id: "stopped", status: "failed", errorCode: "native_session_cleanup_quarantined" });
     expect(projectExecution(stopped, undefined, [], undefined, now)).toMatchObject({

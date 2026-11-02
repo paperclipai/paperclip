@@ -45,7 +45,9 @@ export interface RunnerToolBridgeOptions {
   handler(call: RunnerToolCall): Promise<unknown>;
   /** Copilot-only opt-in; capture the active invocation scope before dispatch. */
   captureSemanticReceipt?: () => ((receipt: SemanticToolReceipt) => void) | undefined;
-  timeoutMs?: number;
+  /** Null delegates the wait to an owning durable runtime's lease and close.
+   * Ordinary callers retain the bounded request timeout. */
+  timeoutMs?: number | null;
   privateToolTimeoutMs?: number;
   maxBodyBytes?: number;
   /** Internal test seam; production bounds headers and body reads to 30 seconds. */
@@ -143,7 +145,7 @@ export async function startRunnerToolBridge(
     controllers,
     handler: options.handler,
     captureSemanticReceipt: options.captureSemanticReceipt,
-    timeoutMs: positiveBoundedInteger(
+    timeoutMs: options.timeoutMs === null ? null : positiveBoundedInteger(
       options.timeoutMs,
       DEFAULT_TIMEOUT_MS,
       1,
@@ -214,7 +216,7 @@ async function handleRequest(
     controllers: Map<string, AbortController>;
     handler: RunnerToolBridgeOptions["handler"];
     captureSemanticReceipt: RunnerToolBridgeOptions["captureSemanticReceipt"];
-    timeoutMs: number;
+    timeoutMs: number | null;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
@@ -599,24 +601,24 @@ function closeServer(server: Server): Promise<void> {
 function withCancellationAndTimeout<T>(
   promise: Promise<T>,
   controller: AbortController,
-  timeoutMs: number,
+  timeoutMs: number | null,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       controller.signal.removeEventListener("abort", onAbort);
       callback();
     };
     const onAbort = () =>
       finish(() => reject(new Error("Paperclip tool call cancelled")));
-    const timer = setTimeout(() => {
+    const timer = timeoutMs === null ? undefined : setTimeout(() => {
       finish(() => reject(new Error("Paperclip tool call timed out")));
       controller.abort();
     }, timeoutMs);
-    timer.unref();
+    timer?.unref();
     controller.signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => finish(() => resolve(value)),

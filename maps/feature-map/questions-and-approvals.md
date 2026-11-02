@@ -79,6 +79,8 @@ Channel-specific forms and identity linking require separate provider evidence.
 
 ## Driving it
 
+The explicit `plan-revise-accept` and `protected-actions` [Product journeys](../../tests/runner-e2e/PRODUCT-JOURNEYS.md) cover `questions-and-approvals/plan-review` and `questions-and-approvals/tool-review`. They share the classic browser actions and saved-state checks. Cloud qualification remains separate; source registration is not a passing result.
+
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
 Use separate disposable requests for accept, decline, and revision paths. Record
 the actor and request revision. Prepare a waiting question through a test agent;
@@ -187,9 +189,26 @@ Automated: [chat question forms](../../server/src/services/chat-question-forms.t
 and [interaction publications](../../server/src/__tests__/chat-interaction-publications.test.ts)
 cover serialization and delivery logic with fixtures.
 
-Free-text and multi-question cards must show their title, question prompts, help
-text, and relevant context beside Respond. Settled cards must not expose saved
-free-text answers. The interaction publication database suite covers both states.
+Free-text and multi-question cards show their title, prompts, help, and context.
+Slack modals retain instructions and editable starting text. Closed single-choice
+questions use buttons for up to five options and an inline searchable selector
+for six to 100. Multiple choices use checkboxes (up to ten) or a multiple selector,
+then explicit Submit. Custom choices combine direct buttons with an Other modal;
+pattern errors appear beside the native input. Ordinary confirmations use buttons;
+checklists preserve defaults and bounds; item verdicts use radio choices and reasons;
+suggested tasks use Create, selection, and Dismiss. Connection requests offer
+Review connection and native Not now, without granting access from Slack.
+
+Governed approvals, unsupported mixed forms, attachments, and oversized requests
+retain the full Paperclip review path. Link clicks navigate without attempting an
+answer. Terminal edits preserve the submitted response in the same authorized
+conversation and remove stale controls. Inspect the saved interaction, exactly
+one continuation, and useful reply independently. See the
+[continuation regressions](../../server/src/services/chat-interaction-continuation.test.ts)
+and [Slack card tests](../../server/src/services/chat-channels/slack/cards.test.ts).
+Local real-Slack proof for eleven formats, including native validation and public
+link navigation, is recorded with PR #17255. It uses a deterministic protocol
+fixture and does not establish deployed staging or model reliability.
 
 Manual: use a disposable provider conversation, answer as the linked sender,
 and check the task's persisted result and one continuation. Repeat from an
@@ -198,6 +217,8 @@ qualify Slack, Discord, Telegram, email, or iMessage; record each as not run
 unless its actual provider journey was driven.
 
 ## Gotchas
+
+- Canonical question forms show field validation only after Next/Submit (including the keyboard submit shortcut) is attempted. Invalid answers remain unsent and the form stays on the relevant question; correction clears the field warning. Pagination arrows still browse without validation, drafts remain preserved, and uploads/requests in flight still disable submission.
 
 - Dismissing a question does not answer it. Dismissing an app review neither
   grants permission nor resumes the agent. Ordinary comments cannot approve it.

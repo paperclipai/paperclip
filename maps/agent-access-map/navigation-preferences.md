@@ -50,6 +50,8 @@ API: `present` — representative operation IDs:
 
 - `GET /api/sidebar-preferences/me`.
 - `PUT /api/sidebar-preferences/me`.
+- `GET /api/workspace-preferences/me`.
+- `PUT /api/companies/{companyId}/workspace-preferences/me`.
 
 Agent access: `restricted` — Board-user preference API; browser section collapse.
 
@@ -66,6 +68,23 @@ own policy and access review.
 
 Gaps: Catalog metadata says board_or_agent, but requireBoardUserId rejects agents.
 Collapse is in-memory; global collapse is disabled.
+
+Personal workspace addition: the [workspace preference route](../../server/src/routes/workspace-preferences.ts)
+is board-only and selects the owner from the actor, never the body. Active viewers
+may update their own choice with validated company audit context; local-trusted
+uses `local-board`. The setting is instance-personal, not an execution capability.
+The UI explains the separate Agent Chat prerequisite; the preference endpoint
+does not enable it or grant access to instance settings.
+[Route tests](../../server/src/__tests__/workspace-preferences-routes.test.ts) cover
+agent/anonymous denial and foreign/inactive company rejection. Database and browser
+checks remain separate from route authorization; no agent delegation path exists.
+
+Coordinator navigation pins are a separate browser-local presentation preference
+owned by [usePinnedNavigation](../../ui/src/hooks/usePinnedNavigation.ts). They store
+allowlisted route names by user, across companies, and have no API or agent delegation
+path. Pinning does not grant access to the destination; existing route permissions
+still apply. Component tests cover identity scoping and cross-tab updates, separately
+from live authenticated-user verification.
 
 ## `profile`
 

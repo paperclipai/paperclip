@@ -28,6 +28,10 @@ import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "./status-arbiter.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { persistHeartbeatRunProcessMetadata } from "../heartbeat/run-lifecycle.js";
+import { readNativeLocalProcessStop, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
+
+const EXITED_PID = 4_194_304;
 
 describe("native completed failure diagnostics", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -273,6 +277,7 @@ describe("native completed failure diagnostics", () => {
       } else if (scenario === "unknown-error" || opencode) {
         // A lookalike diagnostic flag does not alter unknown failed-result policy.
         await db.update(heartbeatRuns).set({ resultJson: { nativeProviderFailure: NATIVE_MODEL_REJECTION_DIAGNOSTIC } }).where(eq(heartbeatRuns.id, runId));
+        await persistHeartbeatRunProcessMetadata(db, runId, { pid: EXITED_PID, processGroupId: EXITED_PID, startedAt: new Date().toISOString(), targetKind: "local" });
         await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
         const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
         expect(decision.reasonCode).toBe("run_failed_partial_evidence_preserved");
@@ -282,6 +287,18 @@ describe("native completed failure diagnostics", () => {
         expect(finalRun.resultJson?.nativeTurnFailure).toEqual(turnFailure);
         const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
         expect(wakes.filter(wake => wake.payload?.issueId === issueId)).toHaveLength(1);
+        if (scenario === "unknown-error") {
+          await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+          const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+          expect(coordinator.phase).toBe("committed");
+          expect(settled).toMatchObject({ status: "failed", processPid: EXITED_PID, processGroupId: EXITED_PID });
+          await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1_000, eventType: "harness.ready" });
+          expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
+          const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          expect(released).toMatchObject({ status: "failed", processPid: null, processGroupId: null, processStartedAt: null });
+          expect(await readNativeLocalProcessStop(db, companyId, runId)).toMatchObject({ processPid: EXITED_PID, processGroupId: EXITED_PID });
+        }
       }
     },
   );

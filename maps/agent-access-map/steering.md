@@ -33,6 +33,10 @@ Compact task run reads retain `wakeupRequestId` and `queuedCommentSourceWakeIds`
 to identify consumed input queues, including coalesced requests. These receipt
 fields follow the existing task/run read checks and grant no queue mutation authority.
 
+The UI can place a queued turn's starting input in history without recording
+consumption. Drain release and expiry only reconsider existing queued runs under
+normal admission authority. They grant no new agent control or replay authority.
+
 Accepted deferred requests remain pending while their recipient agent is paused.
 Resume uses the normal admission checks. This grants no new pause, resume, queue
 mutation, or execution authority to an agent.
@@ -115,7 +119,7 @@ API: `present` — representative operation IDs:
 Agent access: `restricted` — Board-user interruption/cancel API.
 
 Policy: Queue inspection follows task visibility; queued user-message mutation and run
-cancellation require a board actor/user.
+cancellation require a board actor/user. The same queue endpoint accepts an explicit **Send** for a stopped native queue. It records fresh board intent, retains original comment authors, and keeps execution cleanup and admission gates. Agent Chat `/new` also retains native process, controller, workspace and lease checks before subsequent messages execute. It does not grant agents the ability to send saved user messages or interrupt live native turns.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L16166) at
 the reviewed commit above.

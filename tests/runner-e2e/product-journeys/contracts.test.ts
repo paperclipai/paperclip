@@ -11,6 +11,10 @@ import { discoverReportCatalog } from "../report-catalog.js";
 import { isIncompleteFirstTaskResult, renderCaseOutcome } from "../case-outcome.js";
 import type { RunnerE2EResult } from "../types.js";
 import type { JourneyContext, JourneyEvidence, TargetSession } from "./types.js";
+import { createConnectionProof } from "../connection-evidence.js";
+import { retainOnboardingArtifact } from "./artifact-evidence.js";
+import { journeyRequiredChecks } from "./success-contract.js";
+import type { OnboardingConnectEvidence } from "./onboarding-connect.js";
 vi.mock("@playwright/test", () => ({
   expect: Object.assign(
     (locator: { textContent(): Promise<string> }) => ({ async toContainText(value: string) { expect(await locator.textContent()).toContain(value); } }),
@@ -27,7 +31,75 @@ function result(): RunnerE2EResult {
   return { schema: "paperclip.runner-e2e.result/v2", suiteId: "product-journeys", suiteDefinitionHash: "test", executionId: "product-journeys.local-qa.local.task-properties", profileId: "local-qa", environmentId: "local", caseId: "task-properties", provider: null, model: null, runtimeMode: "none", status: "passed", cleanup: "passed", attempt: 1, startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z", durationMs: 1000,
     productJourney: { outcome: "passed", startingState: "recipe", phases: [{phase: "journey", outcome: "passed"}], checks: [{id:"assignment-persisted", passed:true},{id:"no-agent-work",passed:true}], privacy: "private", resourceDisposition: "released", deployment: { kind: "self-hosted", targetId: "local-qa", origin: "http://127.0.0.1:3100", commit: "a".repeat(40), cloudRelease: null, runtimeImage: null, configurationHash: "test" } } };
 }
+function connectReceipt(): OnboardingConnectEvidence {
+  return {
+    version: 1, checkpoint: "hire",
+    validation: { state: "json", httpStatus: 200, requestedAdapter: "paperclip_runner", adapter: "paperclip_runner", outcome: "fail", serverCode: null, checks: [{ code: "adapter_auth_missing", level: "error" }], truncatedChecks: false },
+    hire: { state: "json", httpStatus: 422, requestedAdapter: null, adapter: null, outcome: null, serverCode: "agent_runner_unavailable", checks: [], truncatedChecks: false },
+  };
+}
 describe("deployment journey contracts", () => {
+  it("accepts historical results without Connect diagnostics and optional closed receipts", () => {
+    const retained = result();
+    retained.caseId = "cloud-onboarding";
+    retained.status = "failed";
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    expect(renderCaseOutcome(retained, true, [])).not.toContain("Onboarding Connect diagnostics");
+    retained.productJourney!.onboardingConnect = connectReceipt();
+    expect(() => validateRetainedRunnerResult(JSON.parse(JSON.stringify(retained)))).not.toThrow();
+    retained.productJourney!.onboardingConnect.validation = { state: "pending", httpStatus: 200, requestedAdapter: "codex_local", adapter: null, outcome: null, serverCode: null, checks: [], truncatedChecks: false };
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+  });
+  it.each([
+    ["request headers", () => ({ ...connectReceipt(), requestHeaders: { authorization: "must-not-retain" } })],
+    ["response bodies", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, body: "must-not-retain" } })],
+    ["check messages", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: [{ code: "adapter_auth_missing", level: "error", message: "must-not-retain" }] } })],
+    ["unknown server codes", () => ({ ...connectReceipt(), hire: { ...connectReceipt().hire, serverCode: "raw-provider-error" } })],
+    ["unknown check codes", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: [{ code: "raw-provider-error", level: "error" }] } })],
+    ["unknown adapters", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, adapter: "raw-provider-name" } })],
+    ["unknown requested adapters", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, requestedAdapter: "raw-provider-name" } })],
+    ["unknown outcomes", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, outcome: "raw-provider-message" } })],
+    ["unknown response states", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, state: "raw-provider-message" } })],
+    ["unknown check levels", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: [{ code: "adapter_auth_missing", level: "fatal" }] } })],
+    ["oversized check arrays", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: Array.from({ length: 33 }, () => ({ code: "adapter_auth_missing", level: "error" })) } })],
+    ["invalid HTTP statuses", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, httpStatus: 600 } })],
+    ["non-boolean truncation", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, truncatedChecks: "true" } })],
+    ["missing response fields", () => ({ ...connectReceipt(), hire: { state: "missing" } })],
+    ["unsupported receipt versions", () => ({ ...connectReceipt(), version: 2 })],
+    ["unknown checkpoints", () => ({ ...connectReceipt(), checkpoint: "raw-browser-text" })],
+  ] as const)("rejects Connect receipts containing %s", (_label, makeReceipt) => {
+    const retained = result();
+    retained.productJourney!.onboardingConnect = makeReceipt() as OnboardingConnectEvidence;
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.onboardingConnect");
+  });
+  it("renders only validated Connect fields and marks missing or truncated evidence", () => {
+    const retained = result();
+    retained.productJourney!.onboardingConnect = connectReceipt();
+    const output = renderCaseOutcome(retained, true, []);
+    for (const text of ["Onboarding Connect diagnostics", "Last checkpoint", "Native validation", "Agent hire", "HTTP status", "Test endpoint adapter", "Returned adapter", "200", "422", "paperclip_runner", "adapter_auth_missing", "agent_runner_unavailable", "error", "Unavailable"]) expect(output).toContain(text);
+    retained.productJourney!.onboardingConnect.validation.truncatedChecks = true;
+    expect(renderCaseOutcome(retained, true, [])).toContain("Only the first 32 validation checks were retained");
+    Object.assign(retained.productJourney!.onboardingConnect.validation, { body: "<script>must-not-render</script>" });
+    const invalid = renderCaseOutcome(retained, false, []);
+    expect(invalid).toContain("Onboarding Connect diagnostics unavailable: invalid receipt");
+    expect(invalid).not.toContain("must-not-render");
+    expect(invalid).not.toContain("adapter_auth_missing");
+  });
+  it("validates optional historical artifact evidence without trusting extra fields or a different run", () => {
+    const retained = result();
+    retained.caseId = "cloud-onboarding";
+    retained.status = "failed";
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    const proof = createConnectionProof();
+    retained.productJourney!.artifact = retainOnboardingArtifact({ id: "artifact", originatingRunId: "artifact-run", bytes: Buffer.from(JSON.stringify(proof.expected)), proof });
+    retained.runIds = ["artifact-run"];
+    expect(() => validateRetainedRunnerResult(JSON.parse(JSON.stringify(retained)))).not.toThrow();
+    retained.runIds = ["other-run"];
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.artifact");
+    retained.runIds = ["artifact-run"];
+    Object.assign(retained.productJourney!.artifact, { requestHeaders: {} });
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.artifact");
+  });
   it("resolves only requested prerequisites, once, and unwinds on failure", async () => {
     const calls: string[] = [];
     const registry = new FixtureRegistry().register({id:"a", async setup(){calls.push("a"); return 1;}, async teardown(){calls.push("-a");}})
@@ -143,16 +215,23 @@ describe("deployment journey contracts", () => {
     onboarding.runIds=["run-1"]; onboarding.usage={runs:[{runId:"run-1",usage:{costUsd:0.5,inputTokens:10,outputTokens:10}}]};
     onboarding.productJourney!.operations={campaignId:"campaign",attemptId:"attempt",modelCostUsd:0.7,setupCostUsd:0.2,requestCount:2,feedback:{collection:"complete",complaints:0,suggestions:1},traceIds:[]};
     expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeCloseTo(0.7);
+    onboarding.usage={runs:[{runId:"run-1",usage:{costUsdExact:"0.5",costStatus:"estimated",inputTokens:10,outputTokens:10}}]};
+    expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeCloseTo(0.7);
     expect(()=>validateJourneyCollection({journeyId:"cloud-onboarding",runIds:["run"],usage:{runs:[{runId:"run",usage:{apiKey:"not-retainable"} as any}]}})).toThrow("invalid_collection_receipt");
     onboarding.productJourney!.operations.modelCostUsd=null;
     expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeNull();
   });
-  it("requires real pass evidence and forbids model work in browser-only passes", () => {
-    expect(()=>validateRetainedRunnerResult(result())).not.toThrow();
-    const missing = result(); missing.productJourney!.checks=[];
+  it.each(["task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
+    const browser = result();
+    browser.caseId = caseId;
+    browser.executionId = `product-journeys.local-qa.local.${caseId}`;
+    browser.productJourney!.checks = journeyRequiredChecks[caseId]!.map(id => ({ id, passed: true }));
+    expect(()=>validateRetainedRunnerResult(browser)).not.toThrow();
+    const missing = structuredClone(browser); missing.productJourney!.checks=[];
     expect(()=>validateRetainedRunnerResult(missing)).toThrow();
-    const paid = result(); paid.runIds=["unexpected"];
-    expect(()=>validateRetainedRunnerResult(paid)).toThrow();
+    const forbidden: Array<Partial<RunnerE2EResult>> = [{ runIds: ["unexpected"] }, { provider: "openai" }, { model: "unexpected" },
+      { runtimeMode: "native" }, { runtimeMode: "legacy" }];
+    for (const work of forbidden) expect(()=>validateRetainedRunnerResult({ ...browser, ...work })).toThrow("result.browserOnly");
   });
   it("keeps browser-only reporting free of invented model calls and rejects public publication", () => {
     const value=result();
