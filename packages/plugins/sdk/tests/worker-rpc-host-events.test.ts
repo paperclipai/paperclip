@@ -5,9 +5,11 @@ import { describe, expect, it } from "vitest";
 
 import { definePlugin } from "../src/define-plugin.js";
 import {
+  createErrorResponse,
   createRequest,
   createSuccessResponse,
   isJsonRpcRequest,
+  JSONRPC_ERROR_CODES,
   isJsonRpcResponse,
   parseMessage,
   serializeMessage,
@@ -45,6 +47,7 @@ async function withWorker(
     call: (method: string, params: unknown) => Promise<JsonRpcResponse>;
     hostCalls: Array<{ method: string; params: unknown }>;
   }) => Promise<void>,
+  denySubscribe?: (params: unknown) => string | undefined,
 ) {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -65,7 +68,12 @@ async function withWorker(
       pending.delete(String(message.id));
     } else if (isJsonRpcRequest(message)) {
       hostCalls.push({ method: message.method, params: message.params });
-      input.write(serializeMessage(createSuccessResponse(message.id, null)));
+      const denied = denySubscribe?.(message.params);
+      input.write(serializeMessage(
+        denied
+          ? createErrorResponse(message.id, JSONRPC_ERROR_CODES.INTERNAL_ERROR, denied)
+          : createSuccessResponse(message.id, null),
+      ));
     }
   });
   const call = (method: string, params: unknown) =>
@@ -129,6 +137,45 @@ describe("worker event subscription fan-out", () => {
         await call("onEvent", { event });
         await call("onEvent", { event });
         expect(runs.sort()).toEqual(["acme", "all"]);
+      },
+    );
+  });
+
+  it("sends a companyId filter to the host once per name and company", async () => {
+    const runs: string[] = [];
+    await withWorker(
+      (ctx) => {
+        ctx.events.on("issue.created", { companyId: "company-a" }, async () => { runs.push("a1"); });
+        ctx.events.on("issue.created", { companyId: "company-a", projectId: "project-a" }, async () => { runs.push("a2"); });
+        ctx.events.on("issue.created", async () => { runs.push("all"); });
+      },
+      async ({ call, hostCalls }) => {
+        await call("onEvent", { event: makeEvent({ payload: { projectId: "project-a" } }) });
+        expect(hostCalls.filter((c) => c.method === "events.subscribe")).toEqual([
+          { method: "events.subscribe", params: { eventPattern: "issue.created", filter: { companyId: "company-a" } } },
+          { method: "events.subscribe", params: { eventPattern: "issue.created", filter: null } },
+        ]);
+        expect(runs.sort()).toEqual(["a1", "a2", "all"]);
+      },
+    );
+  });
+
+  it("drops a filtered handler when the host rejects its company filter", async () => {
+    const runs: string[] = [];
+    await withWorker(
+      (ctx) => {
+        ctx.events.on("issue.created", { companyId: "company-b" }, async () => { runs.push("b"); });
+        ctx.events.on("issue.created", { companyId: "company-a" }, async () => { runs.push("a"); });
+      },
+      async ({ call }) => {
+        await call("onEvent", { event: makeEvent({ companyId: "company-b", payload: { companyId: "company-b" } }) });
+        expect(runs).toEqual([]);
+        await call("onEvent", { event: makeEvent({ eventId: "event-2", payload: { companyId: "company-a" } }) });
+        expect(runs).toEqual(["a"]);
+      },
+      (params) => {
+        const filter = (params as { filter?: { companyId?: string } | null }).filter;
+        return filter?.companyId === "company-b" ? "company scope denied" : undefined;
       },
     );
   });

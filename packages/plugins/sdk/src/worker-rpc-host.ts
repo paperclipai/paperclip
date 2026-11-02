@@ -563,11 +563,25 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             registration = { name, filter: filterOrFn, fn: maybeFn };
           }
           eventHandlers.push(registration);
-          if (!subscribedEventNames.has(name)) {
-            subscribedEventNames.add(name);
+          const filterCompanyId =
+            typeof registration.filter?.companyId === "string" && registration.filter.companyId
+              ? registration.filter.companyId
+              : null;
+          const subscriptionKey = `${name}\0${filterCompanyId ?? ""}`;
+          if (!subscribedEventNames.has(subscriptionKey)) {
+            subscribedEventNames.add(subscriptionKey);
             // Register subscription on the host so events are forwarded to this worker
-            void callHost("events.subscribe", { eventPattern: name, filter: null }).catch((err) => {
-              subscribedEventNames.delete(name);
+            void callHost("events.subscribe", {
+              eventPattern: name,
+              filter: filterCompanyId ? { companyId: filterCompanyId } : null,
+            }).catch((err) => {
+              subscribedEventNames.delete(subscriptionKey);
+              if (filterCompanyId) {
+                for (let i = eventHandlers.length - 1; i >= 0; i--) {
+                  const r = eventHandlers[i];
+                  if (r.name === name && r.filter?.companyId === filterCompanyId) eventHandlers.splice(i, 1);
+                }
+              }
               notifyHost("log", {
                 level: "warn",
                 message: `Failed to subscribe to event "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
