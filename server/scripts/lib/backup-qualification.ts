@@ -31,7 +31,7 @@ export async function assertDistinctEmptyRestore(pair: QualificationPair) {
     const [result] = await target`SELECT pg_try_advisory_lock(${a}, ${b}) AS acquired`;
     targetLocked = result!.acquired === true;
     if (!targetLocked) throw new Error("Backup source and restore resolve to the same actual database");
-    const rows = await target`SELECT 1 FROM pg_namespace WHERE nspname NOT IN ('public', 'information_schema') AND nspname NOT LIKE 'pg_%'
+    const rows = await target`SELECT 1 FROM pg_namespace WHERE nspname NOT IN ('public', 'information_schema') AND nspname !~ '^pg_'
       UNION ALL SELECT 1 FROM pg_depend
       WHERE refclassid = 'pg_namespace'::regclass AND refobjid = 'public'::regnamespace LIMIT 1`;
     if (rows.length) throw new Error("Backup restore target must be empty before restore");

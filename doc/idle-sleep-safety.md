@@ -360,7 +360,7 @@ workflow after closing their clients.
 
 The integration suite is
 `server/src/__tests__/database-backup-checkpoint-qualification.integration.ts`. Local
-runs use `pnpm test:backup-checkpoint`, require the same explicit URL pair, and use
+runs use `pnpm --filter @paperclipai/server exec vitest run --config vitest.backup-qualification.config.ts`, require the same explicit URL pair, and use
 bounded clients. The dedicated Backup checkpoint qualification CI job provisions
 both fixtures and matching PostgreSQL clients. Missing URLs or clients fail this
 required integration invocation; it is separate from the default unit suite. The suite

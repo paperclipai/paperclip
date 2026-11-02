@@ -70,7 +70,7 @@ jobs:
           DATABASE_URL: ${{ env.PAPERCLIP_BACKUP_CHECKPOINT_SOURCE_TEST_DATABASE_URL }}
         run: pnpm --filter @paperclipai/db exec tsx src/migrate.ts
       - name: Run required real checkpoint and restore proof
-        run: pnpm test:backup-checkpoint
+        run: pnpm --filter @paperclipai/server exec vitest run --config vitest.backup-qualification.config.ts
       - name: Attach qualification receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

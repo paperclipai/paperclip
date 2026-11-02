@@ -19,6 +19,7 @@ const pair = configuredPair;
 describe("real automatic backup checkpoint qualification", () => {
   let directory: string;
   let source: ReturnType<typeof createDb>;
+  let ownsRestoreFixture = false;
   const logger = { info() {}, warn() {}, error() {} };
   const receipts: unknown[] = [];
   const owner = () => createDatabaseBackupOwner({ connectionString: pair.sourceUrl, backupDir: directory, getRetention: async () => retention, logger });
@@ -29,6 +30,7 @@ describe("real automatic backup checkpoint qualification", () => {
     directory = await mkdtemp(path.join(parent, "backup-checkpoint-qualification-"));
     source = createDb(pair.sourceUrl, { maxConnections: 1 });
     await assertDistinctEmptyRestore(pair);
+    ownsRestoreFixture = true;
     await seedBackupQualificationFixture(pair.sourceUrl);
   }, 120_000);
   afterAll(async () => {
@@ -37,7 +39,8 @@ describe("real automatic backup checkpoint qualification", () => {
       if (receiptFile) await writeFile(receiptFile, JSON.stringify({ version: 1, cases: receipts, directory,
         sourceDatabase: new URL(pair.sourceUrl).pathname.slice(1), restoreDatabase: new URL(pair.restoreUrl).pathname.slice(1) }, null, 2));
     } finally {
-      await source?.$client.end({ timeout: 5 });
+      try { if (ownsRestoreFixture) await emptyRestore(); }
+      finally { await source?.$client.end({ timeout: 5 }); }
       if (directory && !process.env.PAPERCLIP_BACKUP_QUALIFICATION_RECEIPT) await rm(directory, { recursive: true, force: true });
     }
   });
@@ -45,9 +48,9 @@ describe("real automatic backup checkpoint qualification", () => {
     const target = createDb(pair.restoreUrl, { maxConnections: 1 }).$client;
     try {
       const tables = await target`SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE c.relkind IN ('r', 'p') AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg_%'`;
+        WHERE c.relkind IN ('r', 'p') AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'`;
       for (const { nspname, relname } of tables) await target`DROP TABLE IF EXISTS ${target(nspname)}.${target(relname)} CASCADE`;
-      const schemas = await target`SELECT nspname FROM pg_namespace WHERE nspname NOT IN ('information_schema') AND nspname NOT LIKE 'pg_%'`;
+      const schemas = await target`SELECT nspname FROM pg_namespace WHERE nspname NOT IN ('information_schema') AND nspname !~ '^pg_'`;
       for (const { nspname } of schemas) await target`DROP SCHEMA ${target(nspname)} CASCADE`;
       await target`CREATE SCHEMA public`;
     } finally { await target.end({ timeout: 5 }); }
