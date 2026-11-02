@@ -1,4 +1,4 @@
-import { readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
+import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
@@ -2331,6 +2331,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       nativeControllerLeaseExpiresAt,
       nativeWorkspaceFinalizationPending,
     } of activeRuns) {
+      if (run.runtimeMode === "native" && readNativeStartupCleanup(run)) continue;
       if (parseObject(run.contextSnapshot).nativeQuestionCancellation) continue;
       // Native recovery owns these dispositions. Its writes happened after this
       // inventory was read; do not reap or overwrite them using the old row.

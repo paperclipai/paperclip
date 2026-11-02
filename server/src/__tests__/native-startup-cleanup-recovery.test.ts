@@ -25,6 +25,7 @@ import { NativeExecutionContext } from "../services/native-runtime/native-execut
 import type { NativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { callbacks } from "../services/heartbeat/__tests__/run-control-fixtures.js";
 import { createHeartbeatRunControl } from "../services/heartbeat/run-control.js";
+import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import { executionControlSchedule } from "../services/execution-control-work.js";
 import { claimNativeRestartRecoveries } from "../services/native-runtime/native-restart-recovery.js";
 import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
@@ -108,7 +109,7 @@ describePostgres("durable cleanup after a native startup timeout", () => {
     return context;
   }
 
-  it("keeps ownership until a replacement queued after the first teardown snapshot is verified stopped", async () => {
+  it.each(["pending", "needs_reconciliation"])("keeps ownership until a %s replacement queued after the first teardown snapshot is verified stopped", async state => {
     const f = await fixture(true), original = await f.lease();
     let reply!: (result: { providerLeaseId: string }) => void, creating!: () => void;
     const entered = new Promise<void>(resolve => { creating = resolve; });
@@ -119,21 +120,72 @@ describePostgres("durable cleanup after a native startup timeout", () => {
     await requestNativeStartupCleanup(db, f.request);
     await f.stopReceipt({}, true);
     await expect(verifyNativeStartupCleanup(db, await f.reload(), async () => {})).rejects.toThrow("cleanup is still pending");
+    const [pending] = await db.select().from(sandboxCreationOperations).where(and(
+      eq(sandboxCreationOperations.runId, f.request.runId), eq(sandboxCreationOperations.requestKey, original.providerLeaseId!)));
+    if (state === "needs_reconciliation") {
+      await db.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(0) }).where(eq(sandboxCreationOperations.id, pending.id));
+      await recoverSandboxCreations(db, async () => null);
+      expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, pending.id)))[0].state).toBe(state);
+      const inspect = vi.fn(async () => null);
+      await recoverSandboxCreations(db, inspect);
+      expect(inspect).not.toHaveBeenCalled();
+      await expect(queueSandboxCreationCleanup(db, { id: pending.id, companyId, environmentId: original.environmentId!,
+        providerLeaseId: "unproven-task" })).rejects.toThrow("ownership changed");
+    }
     reply({ providerLeaseId: "late-replacement" });
     const fresh = await acquiring;
     await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId,
       environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId, providerMetadata: { binding: "actual" } });
-    await db.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(0) }).where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId)));
-    await recoverSandboxCreations(db, async () => { throw new Error("A recorded task identity needs no new provider inspection"); });
+    if (state === "pending") await db.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(0) })
+      .where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId)));
+    expect(await nextEnvironmentCleanupAt(db)).not.toBeNull();
+    const restarted = createDb(temporary.connectionString);
+    try { await recoverSandboxCreations(restarted, async () => { throw new Error("A recorded task identity needs no new provider inspection"); }); }
+    finally { await restarted.$client.end(); }
     const [creation] = await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId)));
     await expect(verifyNativeStartupCleanup(db, await f.reload(), async () => {})).rejects.toThrow("cleanup is still pending");
     const replacement = (await environmentService(db).getLeaseById(creation.leaseId!))!;
+    await queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId });
+    expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, creation.id)))[0].leaseId).toBe(replacement.id);
+    await expect(queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: "foreign-task" })).rejects.toThrow("ownership changed");
     await environmentService(db).releaseLease(replacement.id, "released", { cleanupStatus: "success",
       remoteExecutionTermination: remoteTerminationReceipt(replacement, { providerLeaseId: replacement.providerLeaseId, state: "stopped" }) });
     expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, creation.id)))[0].state).toBe("resolved");
+    await queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId });
+    expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, creation.id)))[0])
+      .toMatchObject({ state: "resolved", leaseId: replacement.id });
     await verifyNativeStartupCleanup(db, await f.reload(), async () => {});
     await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.request.runId));
     await acknowledgeNativeStartupCleanup(db, f.request);
+    expect((await f.owner()).leaseOwner).toBeNull();
+  });
+
+  it.each(["before_inventory", "before_write", "complete_before_write", "ordinary"])("preserves startup cleanup through orphan recovery: %s", async phase => {
+    const f = await fixture(), deps = callbacks(db);
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseExpiresAt: new Date(0) })
+      .where(eq(nativeRunFinalizations.runId, f.request.runId));
+    if (phase === "before_inventory") await requestNativeStartupCleanup(db, f.request);
+    const write = deps.setRunStatusFromLive.getMockImplementation()!;
+    deps.setRunStatusFromLive.mockImplementation(async (...args) => {
+      if (phase === "before_write" || phase === "complete_before_write") {
+        await requestNativeStartupCleanup(db, f.request);
+        if (phase === "complete_before_write") await verifyNativeStartupCleanup(db, await f.reload(), () => f.stopReceipt());
+      }
+      return write(...args);
+    });
+    const recovery = createHeartbeatRecovery(db, { ...deps, environmentRuntime: environmentRuntimeService(db),
+      environmentsSvc: environmentService(db), runtimeEnv: {}, activeRunExecutionPromises: new Set<Promise<void>>(),
+      mergeRunStopMetadataForAgent: (_agent: unknown, _status: unknown, options: { resultJson?: object }) => options?.resultJson,
+      classifyAndPersistRunLiveness: async (run: unknown) => run, releaseEnvironmentLeasesForRun: vi.fn(),
+      releaseIssueExecutionAndPromote: vi.fn(), scheduleInteractionContinuationInfrastructureRetryIfEligible: async () => null,
+    } as unknown as HeartbeatRecoveryDependencies);
+    await recovery.recoverActiveExecutions({ runId: f.request.runId }, { staleThresholdMs: 0 });
+    expect((await f.reload()).status).toBe(phase === "ordinary" ? "failed" : "running");
+    if (phase === "ordinary") return;
+    expect((await f.owner()).leaseOwner).toBe(f.request.leaseOwner);
+    deps.verifyStartupCleanup = run => verifyNativeStartupCleanup(db, run, () => f.stopReceipt());
+    expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(f.request.runId, "Startup cleanup retry"))
+      .toMatchObject({ status: "cancelled" });
     expect((await f.owner()).leaseOwner).toBeNull();
   });
 
