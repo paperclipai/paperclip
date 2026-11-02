@@ -2562,12 +2562,13 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
 }
 
 /** An issue's own operation takes precedence over the legacy NULL fallback.
- * Only a strictly later successful finalize clears either barrier. */
+ * A later successful finalize clears either barrier. A successful operation
+ * enclosed by its owning finalize is also saved, although it started later. */
 function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
   return sql`${workspaceId} is not null and exists (
     select 1 from (values (1)) seed(value)
     left join lateral (
-      select phase, status, started_at from workspace_operations blocker_operation
+      select phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
       where blocker_operation.company_id = ${companyId}::uuid
         and blocker_operation.execution_workspace_id = ${workspaceId}
         and blocker_operation.issue_id = ${issueId}
@@ -2578,6 +2579,20 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
         and coalesce(latest_blocker_operation.status, blocker_workspace_facts.status) = 'succeeded')
       and (blocker_workspace_facts.finalized_at is null
         or blocker_workspace_facts.finalized_at <= coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at))
+      and not (
+        latest_blocker_operation.status = 'succeeded'
+        and latest_blocker_operation.finished_at is not null
+        and exists (
+          select 1 from workspace_operations owning_finalize
+          where owning_finalize.company_id = ${companyId}::uuid
+            and owning_finalize.execution_workspace_id = ${workspaceId}
+            and owning_finalize.issue_id = ${issueId}
+            and owning_finalize.heartbeat_run_id = latest_blocker_operation.heartbeat_run_id
+            and owning_finalize.phase = 'workspace_finalize' and owning_finalize.status = 'succeeded'
+            and owning_finalize.started_at <= latest_blocker_operation.started_at
+            and owning_finalize.finished_at >= latest_blocker_operation.finished_at
+        )
+      )
   )`;
 }
 
