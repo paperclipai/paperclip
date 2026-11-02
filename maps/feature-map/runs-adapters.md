@@ -146,6 +146,18 @@ must still reset the session and preserve the stored workspace owner. The
 checks this with PostgreSQL and synthetic provider execution; it is not live
 warm-process or latency evidence.
 
+After an isolated remote Retry, send a follow-up with unchanged workspace policy.
+Verify the same workspace remains bound and no strategy-replacement operation is
+recorded. Change the strategy or base ref and confirm that the normal replacement
+guard still applies. The
+[remote preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+checks persisted configuration across both admissions; it does not prove a live
+provider conversation resumed.
+
+For a workspace carrying an older temporary fingerprint, verify that ordinary
+reuse retains the strategy warning. Use the normal fresh recovery flow after
+preserving its work, then repeat the unchanged follow-up check on the new workspace.
+
 For `runs-adapters/session`, complete a task in a disposable warm sandbox and
 retain its saved workspace file. Let the warm session close normally and verify
 that the retained lease has a complete, lease-bound harness backup before
@@ -273,6 +285,10 @@ For native OpenCode with assigned connections, inspect the provider tool surface
 on both local and sandbox execution. It should contain bounded assigned-tool
 search/call schemas. Confirm the search description states the 1–20 page limit
 and default of 5. Follow `nextOffset` to inspect later pages.
+Repeat discovery with empty and whitespace-only `schemaTool` values, including
+`schemaOffset: 0`, and confirm it still returns searchable tools. An unknown
+schema reference or a positive schema offset without a reference must explain
+how to correct the call.
 Discover an allowed tool, call its returned alias, revoke
 its grant, and confirm discovery and execution enforce that revocation. Repeat
 in planning/ask mode with a write tool and confirm denial. The controller must

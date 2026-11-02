@@ -275,6 +275,7 @@ export function applyOptimisticIssueCommentUpdate(
 
   if (params.reopen === true && !issue.executionBlocker && (issue.status === "done" || issue.status === "cancelled" || issue.status === "blocked")) {
     nextIssue.status = "todo";
+    nextIssue.displayStatus = "todo";
   }
 
   if (params.reassignment) {
@@ -303,6 +304,7 @@ export function applyOptimisticIssueFieldUpdate(
   };
 
   assign("status");
+  if (hasOwn("status")) nextIssue.displayStatus = nextIssue.status;
   assign("priority");
   assign("assigneeAgentId");
   assign("assigneeUserId");

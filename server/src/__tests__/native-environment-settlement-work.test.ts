@@ -11,7 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { environmentRuntimeService, type EnvironmentDriver } from "../services/environment-runtime.js";
@@ -180,7 +180,7 @@ describe("native environment release scheduling", () => {
     }
     const events: Record<string, unknown>[] = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { nativeRunFinalizations, heartbeatRuns, environmentLeases }, capture);
     const settle = vi.fn(async () => {});
     const work = nativeEnvironmentSettlementWork(db, settle);

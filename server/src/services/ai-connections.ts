@@ -36,6 +36,7 @@ import {
   type AiConnectionAttribution,
   type AiConnectionMetadata,
   type AiManagedConnectionSummary,
+  type AiConnectionAccountIdentity,
   type AiConnectionUsage,
   type CreateAiConnection,
   type AiConnectionLoginIntent,
@@ -49,6 +50,7 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
+import { probeAiAccountIdentity } from "./ai-account-identity.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -225,28 +227,46 @@ export function aiConnectionService(db: Db) {
         });
     });
   }
-  /** On-demand account observation for either runner; never probes ambient CLI auth. */
-  async function probeUsage(companyId: string, userId: string, connectionId: string, grantId?: string): Promise<AiConnectionUsage> {
+  async function readableAccount(companyId: string, userId: string, connectionId: string, grantId?: string) {
     if (!(await membership(companyId, userId))) throw forbidden("An active company member is required");
     const candidates = (await rows(companyId)).filter((row) => row.connection.id === connectionId && (!grantId || row.grant.id === grantId));
     const audience = await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.companyId, companyId));
     const visible = candidates.filter(({ grant }) => canUseCredential(grant, userId, audience.filter((member) => member.grantId === grant.id)));
     if (!visible.length) throw notFound("AI connection not found");
-    if (visible.length > 1) throw unprocessable("Choose a credential grant for this usage check");
+    if (visible.length > 1) throw unprocessable("Choose a credential grant for this account check");
     const row = visible[0]!;
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
     if (!metadata.success) throw notFound("AI connection not found");
-    const identity = { connectionId: row.connection.id, grantId: row.grant.id, ...metadata.data };
+    return { row, metadata: metadata.data };
+  }
+  /** On-demand account observation for either runner; never probes ambient CLI auth. */
+  async function probeUsage(companyId: string, userId: string, connectionId: string, grantId?: string): Promise<AiConnectionUsage> {
+    const { row, metadata } = await readableAccount(companyId, userId, connectionId, grantId);
+    const identity = { connectionId: row.connection.id, grantId: row.grant.id, ...metadata };
     const empty = { ...identity, checkedAt: new Date().toISOString(), source: null, planType: null, limits: [], overage: null };
     if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" ||
       row.connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(row.connection.config)) {
       return { ...empty, status: "unavailable", errorCode: "connection_unavailable", message: "Reconnect or enable this AI connection before checking usage." };
     }
-    if (!supportsAiConnectionUsage(metadata.data.provider, metadata.data.method)) {
-      return { ...identity, ...await probeAiConnectionUsage(metadata.data, "") };
+    if (!supportsAiConnectionUsage(metadata.provider, metadata.method)) {
+      return { ...identity, ...await probeAiConnectionUsage(metadata, "") };
     }
     const value = await credential(row);
-    return { ...identity, ...await probeAiConnectionUsage(metadata.data, value) };
+    return { ...identity, ...await probeAiConnectionUsage(metadata, value) };
+  }
+  async function accountIdentity(companyId: string, userId: string, connectionId: string, grantId?: string,
+    audit?: { actorType: "user" | "agent" | "system"; actorId: string; heartbeatRunId?: string | null }): Promise<AiConnectionAccountIdentity> {
+    const { row, metadata } = await readableAccount(companyId, userId, connectionId, grantId);
+    const identity = { connectionId: row.connection.id, grantId: row.grant.id };
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" ||
+      row.connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(row.connection.config)) {
+      return { ...identity, status: "unavailable", checkedAt: new Date().toISOString(), accountLabel: null, organizationLabel: null,
+        errorCode: "connection_unavailable", message: "Reconnect or enable this connection to check its account details." };
+    }
+    // Unsupported methods must not open their credentials just to report this limit.
+    const value = metadata.provider === "anthropic" && metadata.method === "subscription" && !metadata.routing
+      ? await credential(row, 0, { actorType: "user", actorId: userId, ...audit, responsibleUserId: userId }) : "";
+    return { ...identity, ...await probeAiAccountIdentity(metadata, value) };
   }
   async function select(input: {
     companyId: string;
@@ -1218,5 +1238,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
 }

@@ -1,7 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import {
   agents,
   companies,
@@ -63,11 +63,11 @@ describe("P6-11..13 / P6-17 canonical event allocator", () => {
           protocolSchemaVersion: 1, canonicalPayload: { sourceSeq } },
       });
       const events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(db, { heartbeatRunEvents }, capture);
       try { expect((await append(5002)).highestContiguousSourceSeq).toBe(5000); }
       finally { capture.flush(); }
-      const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
         && event.table === "heartbeat_run_events" && (event.operation === "select" || event.operation === "execute"));
       expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
       expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(16);

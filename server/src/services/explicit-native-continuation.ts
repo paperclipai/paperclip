@@ -52,7 +52,7 @@ const preflightProfile = sql<Run["runnerProfileJson"]>`case
       then jsonb_build_object('adapterType', field.value->'adapterType') else field.value end), '{}'::jsonb)
     from jsonb_each(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
       then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) as field(key, value)
-    where field.key in ('adapterDispatch', 'nativeWorkspaceSync')
+    where field.key in ('adapterDispatch', 'nativeWorkspaceSync', 'remoteWorkspace')
   ) end`;
 const continuationRunFields = {
   id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
