@@ -93,3 +93,9 @@ typecheck could not open the tsx IPC socket; the escalated rerun passed. Greptil
 identified an invalid resolved-request fixture label (`denied`); it was corrected
 to the declared `rejected` status. This preserves the non-pending exclusion that
 the differential test verifies.
+
+The first final-head CI run flagged the new explicit resource company assertion
+because the route lacked a local `hasCompanyAccess` existence gate. Management
+admission already rejects foreign resources with 404, but the route now also
+follows the repository's two-step gate pattern. The static existence-oracle guard
+and actual authenticated HTTP negative cases verify that pattern together.
