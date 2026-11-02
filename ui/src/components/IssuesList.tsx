@@ -1,3 +1,4 @@
+import type { IssueSort, IssueSortField } from "../lib/issue-sort";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { IssueRowDetailsNotice } from "./IssueRowDetailsNotice";
@@ -160,7 +161,7 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 
 /* ── View state ── */
 
-export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type { IssueSortField } from "../lib/issue-sort";
 export type BoardCardDensity = "auto" | "compact" | "comfortable";
 export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
 export type BoardColumnPageSize = KanbanColumnPageSize;
@@ -491,6 +492,9 @@ interface IssuesListProps {
   initialStatuses?: string[];
   routineTasksOnly?: boolean;
   onRoutineTasksOnlyChange?: (checked: boolean) => void;
+  /** URL sorting overrides the saved collection preference when supplied. */
+  sort?: IssueSort;
+  onSortChange?: (sort: IssueSort) => void;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   searchWithinLoadedIssues?: boolean;
@@ -738,6 +742,8 @@ function StreamlinedIssuesList({
   initialStatuses,
   routineTasksOnly,
   onRoutineTasksOnlyChange,
+  sort,
+  onSortChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -834,7 +840,11 @@ function StreamlinedIssuesList({
     ),
   );
   // The Tasks URL owns this filter; other collections keep their saved state.
-  const viewState = useMemo(() => routineTasksOnly === undefined ? savedViewState : { ...savedViewState, routineTasksOnly }, [savedViewState, routineTasksOnly]);
+  const viewState = useMemo(() => ({
+    ...savedViewState,
+    ...sort,
+    ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
+  }), [savedViewState, sort, routineTasksOnly]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
@@ -891,8 +901,14 @@ function StreamlinedIssuesList({
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     if (patch.routineTasksOnly !== undefined) onRoutineTasksOnlyChange?.(patch.routineTasksOnly);
+    if (patch.sortField !== undefined || patch.sortDir !== undefined) {
+      onSortChange?.({
+        sortField: patch.sortField ?? viewState.sortField,
+        sortDir: patch.sortDir ?? viewState.sortDir,
+      });
+    }
     setViewState((prev) => {
-      const next = { ...prev, ...patch };
+      const next = { ...prev, ...sort, ...patch };
       saveTaskCollectionPreferences(preferenceLocation, {
         viewState: next,
         columns: visibleIssueColumns,
@@ -906,6 +922,10 @@ function StreamlinedIssuesList({
     preferenceLocation.legacyViewStorageKey,
     visibleIssueColumns,
     onRoutineTasksOnlyChange,
+    onSortChange,
+    sort,
+    viewState.sortField,
+    viewState.sortDir,
   ]);
 
   useEffect(() => {

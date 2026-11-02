@@ -9,6 +9,7 @@ import { MemoryRouter } from "@/lib/router";
 import { useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
 import { queryKeys } from "@/lib/queryKeys";
+import type { TaskListSort } from "@/lib/task-list";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn() }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
@@ -33,8 +34,8 @@ vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, on
 </> }));
 vi.mock("@/components/TaskList", async importOriginal => ({
   ...await importOriginal<typeof import("@/components/TaskList")>(),
-  TaskList: ({ items, emptyState }: { items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
-    <div>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id}>{item.issue.title}</p>) : emptyState}</div>,
+  TaskList: ({ items, emptyState, onSortChange }: { onSortChange?: (sort: TaskListSort) => void; items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
+    <div><button onClick={() => onSortChange?.({ column: "taskId", direction: "descending" })}>Sort by task ID</button><output>{useLocation().search}</output>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id}>{item.issue.title}</p>) : emptyState}</div>,
 }));
 
 describe("Coordinator tasks using the proposed table", () => {
@@ -72,6 +73,17 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(mocks.list.mock.lastCall?.[1].originKind).toBeUndefined();
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Routine tasks")!.click());
     await vi.waitFor(() => expect(host.querySelector('[data-task-id="manual-task"]')).toBeNull());
+  });
+
+  it("reads newest-first sorting and puts column sort clicks in the URL", async () => {
+    mocks.list.mockResolvedValue([createIssue({ companyId: "company", parentId: null, originKind: "routine_execution" })]);
+    await mount("/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ sortField: "created", sortDir: "desc", originKind: "routine_execution", offset: 0 }), expect.anything());
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Sort by task ID")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("sortField=taskId"));
+    expect(Object.fromEntries(new URLSearchParams(host.querySelector("output")!.textContent!))).toMatchObject({
+      view: "all", originKind: "routine_execution", sortField: "taskId", sortDir: "desc",
+    });
   });
 
   it("filters pending-decision batches by routine origin without treating excluded IDs as missing", async () => {

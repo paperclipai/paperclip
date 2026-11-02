@@ -1,3 +1,4 @@
+import { readTaskListSortParams, type TaskListSort } from "@/lib/task-list";
 import { useDeferredValue, useEffect, useRef } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -50,6 +51,20 @@ export function CoordinatorTasks() {
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
   const urlStatuses = JSON.stringify(params.getAll("status"));
   const urlView = params.get("view");
+  const sort = readTaskListSortParams(params);
+  const serverSortField = sort?.column === "created" ? "created" : "updated";
+  const serverSortDir = (sort?.column === "created" || sort?.column === "lastUpdated") && sort.direction === "ascending" ? "asc" : "desc";
+  const setSort = (nextSort: TaskListSort | undefined) => setParams(current => {
+    const next = new URLSearchParams(current);
+    if (nextSort) {
+      next.set("sortField", nextSort.column === "lastUpdated" ? "updated" : nextSort.column === "task" ? "title" : nextSort.column);
+      next.set("sortDir", nextSort.direction === "ascending" ? "asc" : "desc");
+    } else {
+      next.delete("sortField");
+      next.delete("sortDir");
+    }
+    return next;
+  }, { replace: true });
   const routineTasksOnly = params.get("originKind") === "routine_execution";
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
   const normalizedView = normalizeTaskViewKey(urlView);
@@ -75,11 +90,11 @@ export function CoordinatorTasks() {
   useEffect(() => { setBreadcrumbs([{ label: "Tasks" }]); }, [setBreadcrumbs]);
 
   const tasks = useInfiniteQuery({
-    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-table", "index", userId, deferredQuery, participantAgentId, workspaceIds, originKind],
+    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-table", "index", userId, deferredQuery, participantAgentId, workspaceIds, originKind, serverSortField, serverSortDir],
     queryFn: async ({ pageParam, signal }) => {
       const pages = await Promise.all((workspaceIds.length ? workspaceIds : [undefined]).map(workspaceId => issuesApi.listCompact(companyId!, {
       projection: "index", limit: pageSize, offset: pageParam, includeAgentCreatedTasks: true, includeRoutineExecutions: true,
-      sortField: "updated", sortDir: "desc", q: deferredQuery || undefined, participantAgentId, workspaceId, originKind,
+      sortField: serverSortField, sortDir: serverSortDir, q: deferredQuery || undefined, participantAgentId, workspaceId, originKind,
       }, { signal })));
       return { items: pages.flat(), hasNextPage: pages.some(page => page.length === pageSize) };
     },
@@ -215,6 +230,7 @@ export function CoordinatorTasks() {
       <div hidden={collection.layout !== "list"} className="design-task-list-panel">{collection.matchingItems.length ? <TaskList key={companyId}
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
+        sort={sort} onSortChange={setSort}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}

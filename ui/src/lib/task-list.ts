@@ -12,7 +12,8 @@ export const taskListColumns = [
 ] as const;
 
 export type TaskListColumnId = (typeof taskListColumns)[number]["id"];
-export type TaskListSort = { column: TaskListColumnId; direction: "ascending" | "descending" };
+export type TaskListSort<Column extends string = TaskListColumnId> = { column: Column; direction: "ascending" | "descending" };
+export type TaskListOrder = TaskListSort | TaskListSort<"created">;
 export type TaskListSortValue = string | number | null | undefined;
 export const allTaskListColumns: readonly TaskListColumnId[] = taskListColumns.map(column => column.id);
 export const defaultTaskListColumns: readonly TaskListColumnId[] = ["task", "taskId", "lastUpdated"];
@@ -40,7 +41,7 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
  * Callers supply timestamps, task titles, names and sorted tag names,
  * never formatted relative dates or rendered React nodes.
  */
-export function sortTaskListItems<T>(items: readonly T[], sort: TaskListSort, value: (item: T, column: TaskListColumnId) => TaskListSortValue): T[] {
+export function sortTaskListItems<T, Column extends TaskListOrder["column"]>(items: readonly T[], sort: TaskListSort<Column>, value: (item: T, column: Column) => TaskListSortValue): T[] {
   return [...items].sort((a, b) => {
     const left = value(a, sort.column);
     const right = value(b, sort.column);
@@ -52,4 +53,15 @@ export function sortTaskListItems<T>(items: readonly T[], sort: TaskListSort, va
       : collator.compare(String(left), String(right));
     return sort.direction === "ascending" ? result : -result;
   });
+}
+
+/** Match the task table's column sorts to the addressable collection sort. */
+export function readTaskListSortParams(params: URLSearchParams): TaskListOrder | undefined {
+  const field = params.get("sortField");
+  const column = field === "updated" ? "lastUpdated" : field === "title" ? "task" : field;
+  if (column !== "created" && !allTaskListColumns.includes(column as TaskListColumnId)) return undefined;
+  return {
+    column: column as TaskListOrder["column"],
+    direction: params.get("sortDir") === "asc" ? "ascending" : "descending",
+  };
 }

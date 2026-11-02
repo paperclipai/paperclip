@@ -406,6 +406,31 @@ describe("IssuesList", () => {
     queryClient.clear();
   });
 
+  it.each([true, false])("URL sorting overrides saved sorting and handles direction clicks (streamlined=%s)", async (enableStreamlinedUi) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi, enableExternalObjects: false });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ sortField: "title", sortDir: "asc" }));
+    const issues = [
+      createIssue({ id: "older", title: "Alpha older task", createdAt: new Date("2026-01-01") }),
+      createIssue({ id: "newer", title: "Zulu newer task", createdAt: new Date("2026-02-01") }),
+    ];
+    const onSortChange = vi.fn();
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={issues} agents={[]} projects={[]}
+      viewStateKey="paperclip:test-issues" sort={{ sortField: "created", sortDir: "desc" }}
+      onSortChange={onSortChange} onUpdateIssue={() => undefined} />, container);
+    const titles = () => [...container.querySelectorAll('[data-testid="issue-row"]')].map(row => row.textContent);
+    await waitForAssertion(() => expect(titles()[0]).toContain("Zulu newer task"));
+    await act(() => container.querySelector<HTMLButtonElement>('button[title="Sort"]')!.click());
+    await waitForAssertion(() => expect([...document.querySelectorAll("button")].some(button => button.textContent?.startsWith("Created"))).toBe(true));
+    await act(() => [...document.querySelectorAll("button")].find(button => button.textContent?.startsWith("Created"))!.click());
+    expect(onSortChange).toHaveBeenLastCalledWith({ sortField: "created", sortDir: "asc" });
+    await act(() => root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
+      <IssuesList issues={issues} agents={[]} projects={[]} viewStateKey="paperclip:test-issues"
+        sort={{ sortField: "created", sortDir: "asc" }} onSortChange={onSortChange} onUpdateIssue={() => undefined} />
+    </TooltipProvider></QueryClientProvider>));
+    await waitForAssertion(() => expect(titles()[0]).toContain("Alpha older task"));
+    await act(() => root.unmount()); queryClient.clear();
+  });
+
   it("uses the master list and legacy persistence when Streamlined UI is off", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,

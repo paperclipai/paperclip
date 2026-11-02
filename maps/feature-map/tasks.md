@@ -55,7 +55,8 @@ Use New task from the global launcher, task list, or project task view.
 
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 Filters → **Routine tasks** selects tasks created by routine runs. The
-`/issues?view=all&originKind=routine_execution` link opens that selection.
+`/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` link opens that selection with newest-created tasks first. Sort controls update
+`sortField` and `sortDir` in the URL. Reloads and task return links keep that order.
 
 ### `task-detail`
 

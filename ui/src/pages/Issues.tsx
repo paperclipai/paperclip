@@ -19,6 +19,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
+import { readIssueSortParams, type IssueSort } from "../lib/issue-sort";
 import { TaskViewsMenu } from "../components/TaskViewsMenu";
 import { Button } from "@/components/ui/button";
 import { CircleDot, Plus } from "lucide-react";
@@ -198,6 +199,19 @@ function OrganizationIssues({
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, "paperclip:issues-view");
+  const sort = useMemo(() => readIssueSortParams(searchParams), [searchParams]);
+  const serverSortField = sort?.sortField === "created" ? "created" : "updated";
+  const serverSortDir = sort?.sortField === "created" || sort?.sortField === "updated" ? sort.sortDir : "desc";
+  const handleSortChange = useCallback((nextSort: IssueSort) => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current);
+      if (syncedSearch) next.set("q", syncedSearch);
+      else next.delete("q");
+      next.set("sortField", nextSort.sortField);
+      next.set("sortDir", nextSort.sortDir);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams, syncedSearch]);
   const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
   const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
@@ -290,6 +304,8 @@ function OrganizationIssues({
       originKind,
       "infinite",
       issuePageSize,
+      serverSortField,
+      serverSortDir,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       projection: streamlinedUiEnabled ? "index" : undefined,
@@ -300,8 +316,8 @@ function OrganizationIssues({
       originKind,
       limit: issuePageSize,
       offset: pageParam,
-      sortField: "updated",
-      sortDir: "desc",
+      sortField: serverSortField,
+      sortDir: serverSortDir,
     }, { signal }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
@@ -358,10 +374,12 @@ function OrganizationIssues({
       enableAgentCreatedVisibilityFilter
       routineTasksOnly={routineTasksOnly}
       onRoutineTasksOnlyChange={handleRoutineTasksOnlyChange}
+      sort={sort}
+      onSortChange={handleSortChange}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter || originKind ? { participantAgentId, workspaceId: workspaceIdFilter, originKind } : undefined}
+      searchFilters={{ participantAgentId, workspaceId: workspaceIdFilter, originKind, sortField: serverSortField, sortDir: serverSortDir }}
     />
   );
 }
