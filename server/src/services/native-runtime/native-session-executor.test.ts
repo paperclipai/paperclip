@@ -39,6 +39,7 @@ import { inspect } from "node:util";
 import { dirname, join } from "node:path";
 import {
   activityLog,
+  budgetReservations,
   heartbeatRuns,
   environmentLeases,
   heartbeatRunEvents,
@@ -591,7 +592,7 @@ describe("remote controller restart adoption", () => {
     ).rejects.toThrow("runner_remote_recovery_identity_mismatch");
     expect(execute).toHaveBeenCalledTimes(1);
   });
-  it("wires remote adoption when only controller state survived on the host", async () => {
+  it.each(["execution", "stop_cleanup", "invalid_cleanup"] as const)("wires remote adoption when only controller state survived on the host (%s)", async purpose => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-remote-reattach-"),
     );
@@ -619,14 +620,33 @@ describe("remote controller restart adoption", () => {
         join(root, "control-plane", "control-plane-state.json"),
         JSON.stringify(durableControlPlaneState(identity)),
       );
-      await createRunnerdBackend({
-        db: leaseDb(current),
+      const stopIntent = { startupCancellation: { beforeNativeSelection: false }, nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", scope: "run", reasonCode: "cancellation_run_only", ...current.binding,
+        intentId: `native-cancellation:${randomUUID()}`, intentAuditId: randomUUID(), dispatchState: "pending", dispatched: false,
+        effects: ["release_run_resources"],
+      } };
+      const stopDb = leaseDb(current, { leaseOwner: purpose === "invalid_cleanup" ? "another-owner" : claim.leaseOwner,
+        leaseExpiresAt: new Date(Date.now() + 60_000), controllerGeneration: 2, attempt: 1,
+        recoveryState: "awaiting_runner_reattach", recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }],
+      }, stopIntent);
+      state.createTransport.mockClear();
+      const adopted = createRunnerdBackend({
+        db: purpose === "execution" ? leaseDb(current) : stopDb,
         execution: current,
         runnerInstanceId: "runner",
         runnerExecutionTarget: target as never,
         restartRecovery: claim,
+        ...(purpose === "execution" ? {} : { recoveryPurpose: "stop_cleanup" as const }),
       });
+      if (purpose === "invalid_cleanup") {
+        await expect(adopted).rejects.toThrow("native_cancellation_pending_recovery");
+        expect(state.createTransport).not.toHaveBeenCalled();
+        return;
+      }
+      await adopted;
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      if (purpose === "stop_cleanup") expect(state.createTransport.mock.calls.at(-1)![0]).toHaveProperty("recoveryPurpose", "stop_cleanup");
+      else expect(state.createTransport.mock.calls.at(-1)![0]).not.toHaveProperty("recoveryPurpose");
       expect(
         state.createTransport.mock.calls.at(-1)![0].adoptExistingRunner?.pid,
       ).toBe(123);
@@ -6519,6 +6539,8 @@ function leaseDb(
                     checkoutRunId: null,
                   },
                 ]
+              : table === budgetReservations
+                ? [{ id: "original-held-reservation" }]
               : table === activityLog
                 ? [{ id: (runResultJson.nativeCancellation as Record<string, unknown> | undefined)?.intentAuditId }]
               : table === heartbeatRunEvents
@@ -9706,6 +9728,66 @@ describe("native warm session supervision", () => {
       expect(close).not.toHaveBeenCalled();
       expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
       expect(state.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([false, true])("keeps warm owners and attachment staging untouched during exact Stop cleanup (invalidated=%s)", async invalidated => {
+      const { base, next, run } = fixture("identity-native-stop-cleanup");
+      const close = vi.fn<() => Promise<void>>(async () => { throw new Error("Stop cleanup must not retire another warm owner"); });
+      const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
+      const originalStaging = state.stageNativeRunnerWakeAttachments.getMockImplementation()!;
+      state.execute.mockReset().mockImplementationOnce(async options => { await options.onSession?.({ close }); return result; });
+      await run(base);
+      await createRunnerdBackend({ db: leaseDb(next), execution: next, runnerInstanceId: "stop-cleanup" });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+      const remoteIdentity = { runId: next.binding.runId, normalizedSessionId: next.session.normalizedSessionId!,
+        runnerInstanceId: "stop-cleanup", environmentLeaseId: next.binding.executionWorkspaceId, turnId: "stop-turn", itemId: "stop-item" };
+      const authority = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: remoteIdentity,
+        expectedRunnerVersion: "stop-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      await authority.flushCheckpoint();
+      await authority.stop();
+      const controller = await import("./native-restart-recovery.js").then(module => module.currentNativeControllerIdentity());
+      const owner = "exact-stop-cleanup";
+      const resultJson = { cancelledByActorType: "user", cancelledByUserId: "test-board",
+        startupCancellation: { beforeNativeSelection: false }, nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", scope: "run", reasonCode: "cancellation_run_only", ...next.binding,
+          intentId: `native-cancellation:${randomUUID()}`, intentAuditId: randomUUID(), dispatchState: "pending", dispatched: false,
+          effects: ["release_run_resources"],
+        } };
+      const db = leaseDb(next, { leaseOwner: owner, leaseExpiresAt: new Date(Date.now() + 60_000),
+        controllerBootId: controller.bootId, controllerPid: controller.pid, controllerGeneration: 2, attempt: 1,
+        recoveryState: "awaiting_runner_reattach", recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }],
+      }, resultJson);
+      state.stageNativeRunnerWakeAttachments.mockClear().mockImplementation(async () => { throw new Error("Stop cleanup must not stage attachments"); });
+      const submit = vi.fn(() => { throw new Error("Stop cleanup cannot submit a turn"); });
+      state.execute.mockImplementationOnce(async options => {
+        if (invalidated) {
+          Reflect.deleteProperty(resultJson, "startupCancellation");
+          Reflect.deleteProperty(resultJson, "nativeCancellation");
+        }
+        try { await options.onSession?.({ cancel }); submit(); throw new Error("Stop cleanup cannot return to execution"); }
+        finally { await options.onSession?.(null); }
+      });
+      try {
+        await expect(executePaperclipNativeSession({ db, execution: next, runnerInstanceId: "stop-cleanup", useRunnerd: true,
+          backend: {} as never, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+            sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "existing-sandbox" }, runner: { execute: async request => ({
+              exitCode: 0, signal: null, pid: 123, startedAt: new Date().toISOString(), timedOut: false, stderr: "", stdout: request.args?.[1]?.includes("base64")
+                ? Buffer.from(JSON.stringify({ ...remoteIdentity, lifecycle: "running" })).toString("base64")
+                : request.args?.[1]?.includes("cat --") ? "nonce\n123\n2026-09-19T10:00:00.000Z\nstop-cleanup\nlinux:abcd-1234:100\n" : "",
+            }) } }, leaseOwner: owner, restartRecovery: { kind: "reattach_remote_runner", runId: next.binding.runId, leaseOwner: owner,
+            controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+            remote: { providerLeaseId: "existing-sandbox", remoteCwd: "/workspace" } },
+        })).rejects.toThrow("native_cancellation_pending_recovery");
+        expect(close).not.toHaveBeenCalled();
+        expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
+        expect(cancel).toHaveBeenCalledTimes(invalidated ? 0 : 1);
+        expect(submit).not.toHaveBeenCalled();
+      } finally {
+        state.stageNativeRunnerWakeAttachments.mockReset().mockImplementation(originalStaging);
+        close.mockImplementation(async () => undefined);
+        await closeIdleWarmNativeSessionsForRestart();
+      }
     });
 
     it("does not retire an active turn when a new session identity arrives", async () => {

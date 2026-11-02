@@ -8785,6 +8785,7 @@ async function verifyLiveRunnerAdoption(
   adoptionAuthorization: "allow" | "deny" | "legacy" | "legacy-missing" | "missing-binding" = "allow",
   toolHandlerOrder?: "before" | "after" | "completion-before" | "completion-after",
   uncertainAtClose = false,
+  semanticRecoveryMode?: "denied-before-cancel" | "cleanup-only",
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const pendingCompletion = toolHandlerOrder?.startsWith("completion-") === true;
@@ -8857,7 +8858,19 @@ async function verifyLiveRunnerAdoption(
   const first = createCapabilityRunnerdCodexTransport(options);
   const pendingTool = vi.fn(() => new Promise<Record<string, unknown>>(() => undefined));
   if (toolHandlerOrder) first.transport.setServerRequestHandler(pendingTool);
-  const recoveredTool = vi.fn(async () => ({ result: { receipt: "known-outcome" }, isError: false }));
+  let releaseRecovery!: () => void;
+  const recoveryGate = new Promise<void>(resolve => { releaseRecovery = resolve; });
+  const recoveryDenied = new Error("execution authority revoked after Stop");
+  const recoveredTool = vi.fn(async () => {
+    if (semanticRecoveryMode) {
+      // Model server authority denying replay after Stop cleared the task lock.
+      // The gate holds that denial until reattachment has returned its session,
+      // before the caller invokes the eventual onSession cancellation callback.
+      await recoveryGate;
+      throw recoveryDenied;
+    }
+    return { result: { receipt: "known-outcome" }, isError: false };
+  });
   const redispatchedTool = vi.fn(async () => ({ success: true, contentItems: [] }));
   let runnerPid: number | null = null;
   let runnerStartedAt: string | null = null;
@@ -8959,6 +8972,7 @@ async function verifyLiveRunnerAdoption(
       ...options,
       ...(preparedTask && !adoptionAuthorization.startsWith("legacy") ? { authorizeRunnerAdoption } : {}),
       ...(uncertainAtClose ? { closeGraceMs: 2_000 } : {}),
+      ...(semanticRecoveryMode === "cleanup-only" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
       // Hash different stable bytes without replacing the real runner artifact
       // used by concurrent tests. Adoption must never execute this path.
       ...(mismatchedArtifact
@@ -9055,6 +9069,38 @@ async function verifyLiveRunnerAdoption(
       }),
     );
     if (toolHandlerOrder?.endsWith("after")) adopted.transport.setServerRequestHandler(redispatchedTool);
+    if (semanticRecoveryMode) {
+      const retained = authority as DurablePrpControlPlane | null;
+      expect(retained).not.toBeNull();
+      expect(retained!.store.state.committedEvents.some(event => event.eventType === "semantic_tool.input")).toBe(true);
+      expect(retained!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+      expect(retained!.store.state.commands.some(command => command.type === "turn.interrupt")).toBe(false);
+      if (semanticRecoveryMode === "denied-before-cancel") {
+        await vi.waitFor(() => expect(recoveredTool).toHaveBeenCalledOnce());
+        // This is a real Core replay callback, not an artificial transport error.
+        // Deliver its denial before giving the caller its cancellation turn.
+        releaseRecovery();
+        await vi.waitFor(async () => {
+          await expect(adopted!.transport.request("thread/read", {})).rejects.toBe(recoveryDenied);
+        });
+        await expect(adopted.transport.request("turn/interrupt", {})).rejects.toBe(recoveryDenied);
+        expect(retained!.store.state.commands.some(command => command.type === "turn.interrupt")).toBe(false);
+      } else {
+        // Let all startup/handler microtasks and a real reconciliation read run.
+        // Cleanup must not enter replay even while its authority would deny it.
+        await adopted.transport.request("thread/read", {});
+        expect(recoveredTool).not.toHaveBeenCalled();
+        expect(redispatchedTool).not.toHaveBeenCalled();
+        releaseRecovery();
+        await expect(adopted.transport.request("turn/interrupt", {})).resolves.toEqual({});
+        expect(retained!.store.state.commands.filter(command => command.type === "turn.interrupt")).toMatchObject([{ status: "completed" }]);
+      }
+      expect(redispatchedTool).not.toHaveBeenCalled();
+      expect(retained!.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(false);
+      expect(retained!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+      expect(duplicateLauncher).not.toHaveBeenCalled();
+      return;
+    }
     if (toolHandlerOrder) {
       await vi.waitFor(() => {
         expect(pendingCompletion ? redispatchedTool : recoveredTool).toHaveBeenCalledOnce();
@@ -9143,6 +9189,7 @@ async function verifyLiveRunnerAdoption(
       expect(commandTypes).not.toContain("runner.suspend");
     }
   } finally {
+    releaseRecovery();
     await adopted?.transport.close().catch(() => undefined);
     if (uncertainAtClose) {
       const providerPid = adopted?.evidence().codexPid;
@@ -9871,3 +9918,9 @@ it.each(["before", "after"] as const)("settles a saved tool outcome with the han
 
 it.each(["completion-before", "completion-after"] as const)("recovers a pending finish without an ordinary-tool lookup (%s)", order =>
   verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", order), 30_000);
+
+it("exposes semantic recovery before cancellation when the authority has been revoked", () =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", "before", false, "denied-before-cancel"), 30_000);
+
+it.each(["before", "after", "completion-before", "completion-after"] as const)("allows cleanup-only adoption to cancel without replaying a pending semantic input (%s)", order =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", order, false, "cleanup-only"), 30_000);

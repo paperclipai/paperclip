@@ -129,7 +129,9 @@ Pending run-only Stop cleanup uses the server's exact audited intent and unfinis
 coordinator. It grants no agent retry or new provider-turn authority. An existing
 remote-session claim can reuse its original held reservation during budget pause;
 fresh startup, dead-runner resume, foreign owners and missing audit proof remain
-fenced. Local PostgreSQL tests exercise the cancellation producer and late usage
+fenced. Cleanup transport retains pending semantic input without a tool dispatch
+or reply, and grants no attachment staging or warm-owner retirement authority.
+Local PostgreSQL tests exercise the cancellation producer and late usage
 settlement. They do not prove hosted provider termination or deployed recovery.
 
 ### `observe-automatic-attempt`

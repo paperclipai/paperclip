@@ -1,6 +1,6 @@
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { activityLog, budgetReservations, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { badRequest, conflict } from "../../errors.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -12,7 +12,7 @@ export function cancellationRequestId(value: unknown): string | undefined {
 }
 export const cancellationIntentId = (requestId: string) => `native-cancellation:${requestId}`;
 
-type StopRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "nativeIssueId" | "runtimeMode" | "status" | "resultJson">;
+type StopRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "nativeIssueId" | "runtimeMode" | "status" | "resultJson">;
 type StopRecoveryOwner = Pick<typeof nativeRunFinalizations.$inferSelect,
   "runId" | "companyId" | "issueId" | "phase" | "resultId" | "leaseOwner" | "leaseExpiresAt" | "controllerGeneration" | "attempt" | "recoveryState" | "recoveryHistory">;
 
@@ -55,7 +55,12 @@ export async function readClaimedNativeStopRecovery(db: Db, run: StopRun, leaseO
     eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
     eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
   )).limit(1);
-  return isClaimedNativeStopRecovery(run, owner, leaseOwner);
+  if (!isClaimedNativeStopRecovery(run, owner, leaseOwner)) return false;
+  const [hold] = await db.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+    eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id),
+    eq(budgetReservations.agentId, run.agentId), eq(budgetReservations.state, "held"),
+  )).limit(1);
+  return !!hold;
 }
 
 /** Run only while holding this company's run row lock. An earlier uncorrelated

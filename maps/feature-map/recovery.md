@@ -31,6 +31,8 @@ Agent access: [companion](../agent-access-map/recovery.md).
   [Stop accounting](../../server/src/services/native-runtime/native-stop-accounting.integration.test.ts)
   and [restart selection](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts)
   tests cover cleanup acknowledgement, fenced alternatives, and receipt debt.
+  Cleanup does not stage new attachments, retire another warm owner, or replay
+  pending semantic work. Authenticated Core intake retains that input unanswered.
   Hosted provider settlement remains separate acceptance.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.

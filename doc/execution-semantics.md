@@ -281,8 +281,12 @@ reuses the run's original held budget reservation, including during a budget
 pause. It cannot create a reservation, bootstrap a runner, or submit a provider
 turn. The recovered session sends the existing Stop through the audited
 cancellation producer. Only its acknowledgement closes the execution owner.
-Missing usage remains pending accounting debt; a complete receipt settles the
-original reservation and charge once.
+Cleanup skips attachment staging and warm-owner retirement. Its transport
+retains authenticated pending semantic inputs without dispatch, recovery, or a
+semantic reply. The server derives this purpose from current audited Stop,
+lease, and held-reservation authority. Ordinary execution retains its existing
+semantic dispatcher requirement. Missing usage remains pending accounting debt;
+a complete receipt settles the original reservation and charge once.
 
 ## 4. Agent-Owned vs User-Owned Execution
 

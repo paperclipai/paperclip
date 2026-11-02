@@ -1245,6 +1245,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   onRecoveryAccountingEvent?: (event: PrpEvent, sourceIdentity: DurableRecoveryIdentity) => Promise<void>;
   recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
+  recoveryPurpose?: "execution" | "stop_cleanup";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
@@ -4111,7 +4112,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #recoverPendingSemanticInputsWhenReady(): void {
-    if (this.#startupComplete && this.#handlerInstalled && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
+    if (this.options.recoveryPurpose !== "stop_cleanup" && this.#startupComplete && this.#handlerInstalled && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
       void Promise.resolve().then(() => this.#core?.recoverPendingSemanticInputs())
         .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))));
     }
@@ -5282,8 +5283,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
-      onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
-      recoverSemanticToolInput: call => this.#recoverSemanticToolInput(call),
+      semanticInputMode: this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         if (this.#sourceRecoveryIdentity && event.runId === this.#sourceRecoveryIdentity.runId) {
           if (!this.options.onRecoveryAccountingEvent && this.options.onAccountingEvent) throw new Error("native_runner_source_accounting_unavailable");
@@ -5775,8 +5777,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
-      onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
-      recoverSemanticToolInput: call => this.#recoverSemanticToolInput(call),
+      semanticInputMode: this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         if (this.#sourceRecoveryIdentity && event.runId === this.#sourceRecoveryIdentity.runId) {
           if (!this.options.onRecoveryAccountingEvent && this.options.onAccountingEvent) throw new Error("native_runner_source_accounting_unavailable");
