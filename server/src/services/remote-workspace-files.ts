@@ -64,6 +64,7 @@ export interface SavedWorkspaceFiles {
 
 export interface RemoteWorkspaceFileOptions {
   environmentRuntime?: Pick<EnvironmentRuntimeService, "execute" | "syncOut">;
+  /** Verify the exact company-owned, committed snapshot before exposing files. */
   loadSavedWorkspace?(input: {
     companyId: string;
     workspaceId: string;
@@ -290,7 +291,11 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
           ...(input.signal ? { signal: input.signal } : {}) });
         return { root: saved.root, source: { kind: "saved", savedAt: saved.savedAt, snapshotId: authority.snapshotId } as WorkspaceFileSource };
       };
-      if (authority.location) {
+      // A final save clears dirty state and writer authority. Its accepted
+      // bytes do not depend on an allocation that can already be closing.
+      if (authority.snapshotId && !authority.dirty && !authority.writerRunId && options.loadSavedWorkspace) {
+        ({ root, source } = await loadSaved());
+      } else if (authority.location) {
         const [leaseRow] = await db.select().from(environmentLeases).where(and(
           eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, authority.location.leaseId),
         )).limit(1);

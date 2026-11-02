@@ -202,6 +202,14 @@ and review run. The server reads these records from saved review state; it does
 not depend on the parent session remembering a separate review session. These
 records are evidence and do not grant permission to resolve another review.
 
+An automatic chat-completion wake retains its exact delivery receipt when
+admission waits on a dependency, budget, or pause. It does not merge into a
+replaceable dependency signal. The same gates still prevent execution.
+Workspace readiness accepts a completed operation enclosed by a successful
+finalize from the same company, workspace, issue, and run. A nested snapshot
+that finishes before that finalize finishes does not leave a permanent wait.
+Unfinished operations and work after the finalize still require a later save.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed
@@ -725,6 +733,20 @@ A workspace-coherent adapter path means:
 - the adapter will receive the same effective workspace/cwd that Paperclip resolved for the run, including the same workspace ids and `PAPERCLIP_WORKSPACE_*` environment values
 - the effective cwd exists or is provider-reachable, according to the workspace provider
 - when the adapter or workspace strategy relies on git state, the cwd is git-valid for the selected workspace: it resolves to the expected repository root, required base refs or branch metadata can be resolved, and runtime-created worktrees are still registered or explicitly recoverable
+
+Fresh remote-workspace recovery fingerprints the admitted remote strategy. A
+temporary strategy used to seed a controller directory must not become the saved
+remote configuration. An unchanged follow-up reuses that configuration without
+reporting strategy drift. Real strategy, source, mode and environment changes
+retain their existing replacement checks.
+
+Older remote Git workspaces can retain the temporary `project_primary`
+fingerprint. That fingerprint alone cannot distinguish the old preparation bug
+from a genuinely configured `project_primary` strategy; the remote workspace row
+uses `git_worktree` for either Git source. Do not rewrite those fingerprints in
+place or suppress their replacement checks. After saving and inspecting the
+retained work, an explicitly admitted fresh recovery creates a workspace with the
+correct fingerprint. Ordinary reuse of the old workspace does not migrate it.
 
 Adapter-backed liveness also requires control-plane reachability from the agent's actual mutation surface, not just from the host adapter process. If the agent is expected to use Bash, shell tools, runtime helpers, or in-sandbox command execution to update issues, create comments, upload artifacts, or submit review decisions, the `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` visible to that surface must route to Paperclip successfully.
 
@@ -1716,6 +1738,20 @@ sources without this proof remain ineligible. The preservation owner still
 requires an independently stopped, exclusively bound allocation and no host writer;
 it saves files and resumes the existing finalizer without another provider turn.
 
+Both the legacy native copyback descriptor and the remote-workspace descriptor
+keep an unfinished export under the execution hold. Task Retry saves its intent
+behind that hold; an accepted successful result resumes its existing finalizer
+after verified preservation instead of admitting another task run. Pending human
+review remains effective when the result commits.
+
+If a later failure supersedes the original recovery action, an explicit board
+`recover-workspace` request can still preserve that exact historical export.
+The cancelled action remains historical and the current action retains attention
+ownership. Preservation checks current writers and source identity, records a
+durable snapshot, and leaves the task's newer workspace binding unchanged. It
+does not apply an older accepted result over a newer run or authorize continuation.
+Cancelled history without a saved explicit recovery request remains ineligible.
+
 Startup and the retained-workspace sweep reconstruct these obligations through
 the retained workspace index. Committed Retry, recovery admission, and recovery
 progress writes wake a separate preservation worker. It follows the persisted
@@ -1990,8 +2026,10 @@ results. The existing warm-identity update records only a run ID, context ID and
 deadline before the plugin receives a preparation request. The
 plugin uses the existing Core-selected Runner requirements, verifies its actual
 guest resources, and does not repeat Core's eligibility decision. Generic plugin
-runtime reads remain fresh. Older plugins use their existing path without this
-projection or the new startup deadline.
+runtime reads remain fresh. Older plugins receive no transport projection. Their initial capability lookup
+is still bounded by the Core startup context; after unsupported capability is
+detected and the matching context is cleared, subsequent startup uses the
+existing path and budgets.
 
 Cancellation aborts compatible plugin startup I/O and prevents later provider
 dispatch. The initial capability lookup retains its legacy read path and can
@@ -2547,6 +2585,13 @@ references and fabricated or cross-task delivery receipts. Text answers and
 accessible repository work products do not require an attachment. Publication
 failure calls for continued work or a concrete blocker, not a human confirmation
 that the task is complete.
+
+Native completion reports can cite the relative task-document links returned by
+the server. Each link must resolve to this company's current task and an attached
+document whose current revision has a matching native publication receipt.
+The same server-owned link projection supplies completion guidance and evidence
+validation. A published document link can accompany a requested file, but it
+does not replace that file's verified delivery evidence.
 
 For an explicit file output in the current request, an empty report, a
 verification-only reference, or an unregistered URL cannot satisfy delivery.

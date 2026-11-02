@@ -689,14 +689,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(interactionWake).not.toBeNull();
 
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, interactionWake!.id))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
+    // This checks dependency interaction semantics, not provider startup speed.
+    // Join the admitted execution before inspecting its persisted outcome.
+    await heartbeat.drainActiveRunExecutions();
 
     const interactionRun = await db
       .select({

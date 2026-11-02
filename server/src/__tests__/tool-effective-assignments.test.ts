@@ -76,6 +76,20 @@ describeDatabase("effective tool assignments", () => {
     expect(full.allowedTools[0].annotations).toEqual(f.read.annotations);
   });
 
+  it("keeps exclusions local to each profile when effective profiles grant the same tool", async () => {
+    const f = await fixture();
+    await db.update(toolProfiles).set({ defaultAction: "allow" }).where(eq(toolProfiles.id, f.profile.id));
+    await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: f.profile.id,
+      selectorType: "catalog_entry", effect: "exclude", catalogEntryId: f.read.id });
+    const [second] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: "second", name: "Second", defaultAction: "deny" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: second.id, targetType: "agent", targetId: f.agent.id });
+    const [include] = await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: second.id,
+      selectorType: "catalog_entry", effect: "include", catalogEntryId: f.read.id }).returning();
+    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.read.id, f.write.id]);
+    await db.delete(toolProfileEntries).where(eq(toolProfileEntries.id, include.id));
+    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.write.id]);
+  });
+
   it("keeps unresolved exact names and observes changed catalog, profile and binding state", async () => {
     const f = await fixture();
     await db.insert(toolProfileEntries).values([

@@ -296,6 +296,9 @@ workspace metadata, and operation logs retain their app-data privacy.
 For enrolled remote workspaces the same board file-resource endpoints read the
 authorized live allocation or a verified committed saved version. Returned
 `source.kind` is `live` or `saved`, with `savedAt` for a saved copy. An unavailable
+clean allocation does not prevent reads of its current committed save once
+writer authority is clear; saved reads validate the exact company, workspace,
+and snapshot even while a remote location remains recorded. An unavailable
 dirty allocation cannot silently fall back to stale saved bytes. Remote paths
 never become controller filesystem authority. Confined path/symlink checks,
 bounded search/preview, download streaming, and cancellation remain enforced by
