@@ -98,13 +98,15 @@ test('the executable guard binds the actual original GitHub run before service o
 
 test('target checkout cannot populate or overwrite the trusted helper path', async () => {
   const definition = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8'));
+  const called = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8'));
+  const jobs = [definition.jobs.build, called.jobs.chat];
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'testops-checkout-boundary-')));
   try {
     const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
     git('init'); await writeFile(path.join(root, 'fixture.txt'), 'normal target'); git('add', '.');
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'normal target');
-    for (const job of [definition.jobs.build, definition.jobs.chat]) {
-      const target = job.steps.findIndex(step => step.with?.ref === '${{ needs.authorize.outputs.target_sha }}');
+    for (const job of jobs) {
+      const target = job.steps.findIndex(step => ['${{ needs.authorize.outputs.target_sha }}', '${{ inputs.target_sha }}'].includes(step.with?.ref));
       const boundary = job.steps.findIndex(step => step.id === 'target_boundary');
       const trusted = job.steps.findIndex(step => step.with?.path === '.testops-trusted');
       assert.ok(target >= 0 && boundary > target && trusted > boundary, 'Reject reserved target paths, then check out trusted main last');
@@ -114,7 +116,7 @@ test('target checkout cannot populate or overwrite the trusted helper path', asy
     await mkdir(path.join(root, '.testops-trusted'));
     await writeFile(path.join(root, '.testops-trusted', 'helper.js'), 'candidate-controlled helper'); git('add', '.testops-trusted');
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'reserved path in target');
-    for (const job of [definition.jobs.build, definition.jobs.chat]) {
+    for (const job of jobs) {
       const guard = job.steps.find(step => step.id === 'target_boundary');
       assert.throws(() => execFileSync('bash', ['-euo', 'pipefail', '-c', guard.run], { cwd: root, stdio: 'pipe' }));
     }
