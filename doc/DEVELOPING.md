@@ -1099,7 +1099,8 @@ published after immediate shutdown or a crash. Cancellation also waits for
 owned cluster-directory cleanup after the test processes and PostgreSQL exit.
 Stopped cluster directories are removed asynchronously, and cleanup awaits their
 removal. Large suites can leave many relation files; deleting them must not block
-the worker's event loop.
+the worker's event loop. The idle-sleep suite uses the existing 90-second fixture
+budget for its final directory cleanup after hundreds of table truncations.
 
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
 without an administrative URL get their own embedded Postgres cluster. The first such suite on a host builds
