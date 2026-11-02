@@ -78,10 +78,6 @@ function registerClient(key: string, client: RegisteredPostgresClient): void {
  * its teardown cannot close another fixture's clients on that host.
  */
 export async function closeRegisteredClients(url: string, options?: { scope: "database" }): Promise<void> {
-  // `createDb` skips registration for a URL `new URL()` rejects (see
-  // `hostPortKeyOrNull`), so no client can be registered under one: there is
-  // nothing to close, and throwing here would crash teardown for a URL the
-  // driver itself accepted.
   const key = hostPortKeyOrNull(url);
   if (key === null) return;
   const database = options?.scope === "database" ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined;
