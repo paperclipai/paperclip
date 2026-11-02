@@ -635,3 +635,4 @@ authority. Provider credentials still enter through encrypted fixture secrets.
 Local rolling smoke receipts explicitly exclude active-agent and hosted proof.
 
 The personal inbox journey creates one campaign-owned, non-executing author agent to supply genuine external unread activity. Its scoped API key stays in process memory and is revoked immediately after the synthetic comment. Owned-agent termination remains the recovery path after a lost key response. No provider or native run is allowed for this browser-only journey.
+The `routine-scheduled-run` journey uses one campaign-owned routine, project, and scheduled task. It enables a minute schedule only for the bounded observation. Cleanup must pause the routine, disable its triggers, and reconcile scheduler-created tasks before stopping agent work. Private recovery repeats these checks after a lost response. Retain task and routine history; never leave a recurring trigger enabled after an attempt.

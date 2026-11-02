@@ -17,6 +17,7 @@ import { projectTaskContext } from "./project-context-flow.js";
 import { runAgentJourney } from "./agent-flows.js";
 import { runActiveFollowup } from "./active-followup-flow.js";
 import { runClarificationJourney } from "./clarification-flow.js";
+import { runScheduledRoutine } from "./routine-schedule-flow.js";
 import { runInputFile } from "./input-file-flow.js";
 import { inboxTriage } from "./inbox-triage-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
@@ -206,7 +207,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             result.provider = ready.agent.provider;
             result.model = ready.agent.model;
             result.runtimeMode = ready.agent.runtimeMode;
-            if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
+            if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "ask-question") await askQuestion(ready, session!, campaignId, evidence);
             else if (id === "followup-while-running") await runActiveFollowup(ready, session!, campaignId, evidence,
