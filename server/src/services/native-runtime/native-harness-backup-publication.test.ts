@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -32,7 +32,17 @@ describe("native harness backup publication", () => {
   });
   it("publishes the completed replacement once and removes its predecessor", async () => {
     const input = await fixture(); const changes: unknown[] = [];
-    unsubscribe = onNativeHarnessBackupChange(input.db, change => changes.push(change));
+    const previous = path.join(backupRoot, "previous");
+    for (const root of [input.current, previous]) {
+      const skill = path.join(root, "skills", "immutable");
+      await fs.mkdir(skill, { recursive: true });
+      await fs.writeFile(path.join(skill, "SKILL.md"), "saved instructions", { mode: 0o444 });
+      await fs.chmod(skill, 0o555);
+    }
+    unsubscribe = onNativeHarnessBackupChange(input.db, change => {
+      expect(existsSync(previous)).toBe(false);
+      changes.push(change);
+    });
     await publishNativeHarnessBackup({ ...input, stamp: async current => {
       expect(changes).toEqual([]);
       expect(await fs.readFile(path.join(current, "manifest.json"), "utf8")).toBe("replacement");

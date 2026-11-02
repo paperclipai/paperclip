@@ -13728,7 +13728,7 @@ async function createRunnerdBackendWithinSessionClaim(
                   } : undefined,
                 });
               } finally {
-                removeNativeHarnessBackup(pendingRoot);
+                await removeNativeHarnessBackup(pendingRoot);
               }
             },
             {
