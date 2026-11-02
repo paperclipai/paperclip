@@ -14708,10 +14708,12 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForTerminalization = goalStopAction
-          ? await resolveActiveIssueRun(existing)
-          : null;
-        if (goalStopAction && runToStopForTerminalization) {
+        const runToStopForTerminalization = await resolveActiveIssueRun(existing);
+        // Closing a native task revokes its tool binding. Retire the board's
+        // active executor before releasing that binding, even without a goal.
+        const mustStopNativeRun = req.actor.type === "board" &&
+          runToStopForTerminalization?.runtimeMode === "native";
+        if (runToStopForTerminalization && (goalStopAction || mustStopNativeRun)) {
           const cancelled = await heartbeat.cancelRun(
             runToStopForTerminalization.id,
             "Cancelled before issue terminalization",
