@@ -12,7 +12,7 @@ type StageAsset = {
 };
 
 type LaunchAssetsInput = {
-  scope?: "launch" | "credentials";
+  scope?: "launch" | "recovery";
   root: string;
   transport: "ssh" | "sandbox";
   runner: CommandManagedRuntimeRunner;
@@ -70,8 +70,10 @@ for (const segment of relative.split(path.sep)) {
   const stat = fs.lstatSync(current);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("unsafe_codex_home");
 }
-const auth = fs.lstatSync(path.join(current, "auth.json"), { throwIfNoEntry: false });
-if (auth && (!auth.isFile() || auth.isSymbolicLink())) throw Error("unsafe_codex_auth");
+for (const name of ["auth.json", "config.toml"]) {
+  const file = fs.lstatSync(path.join(current, name), { throwIfNoEntry: false });
+  if (file && (!file.isFile() || file.isSymbolicLink())) throw Error("unsafe_codex_launch_file");
+}
 `;
 
 const clearRemoteCodexSkills = `${validateRemoteCodexHome}
@@ -115,14 +117,15 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
       }
       if (directory.name !== "codex-home") continue;
       const localDirectory = resolve(input.root, directory.name);
-      for (const name of input.scope === "credentials" ? ["auth.json"] : ["auth.json", "config.toml"]) {
+      for (const name of input.scope === "recovery" ? ["config.toml", "auth.json"] : ["auth.json", "config.toml"]) {
         const sourcePath = resolve(localDirectory, name);
+        if (input.scope === "recovery" && name === "config.toml" && !existsSync(sourcePath)) throw new Error("runner_remote_codex_recovery_config_missing");
         if (!existsSync(sourcePath)) continue;
         await input.stageFile({ sourcePath, targetPath: posix.join(targetPath, name), mode: 0o600 });
       }
     }
   });
-  if (input.scope === "credentials") {
+  if (input.scope === "recovery") {
     const home = input.persistenceDirectories.find(directory => directory.name === "codex-home" && directory.location === "filesystem");
     if (!home?.targetPath || !input.isolatedCodexSkills) throw new Error("runner_remote_codex_credentials_path_invalid");
     const validated = await input.runner.execute({

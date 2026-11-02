@@ -2819,9 +2819,11 @@ identity stays on every old event. Receipt persistence precedes acknowledgement;
 unknown semantic work holds the handoff and never reaches the target's tool
 authority. The provider's settled-session attachment guard remains mandatory.
 
-Restoring that stopped source also restores disposable Codex authentication from
-the currently admitted account. Local and remote launches preserve the source's
-configuration, skills and tool context until its retained work is reconciled.
+Restoring that stopped source rebuilds disposable Codex authentication and safe
+provider configuration from the currently admitted account. Retained provider
+endpoints and MCP settings cannot select where the new credential is sent. Local
+and remote launches preserve the source's skills and authenticated PRP authority
+until its retained work is reconciled.
 Live process adoption and preconfigured homes do not rewrite credentials. A
 missing selected credential never enables ambient account fallback.
 

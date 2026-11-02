@@ -13344,7 +13344,7 @@ async function createRunnerdBackendWithinSessionClaim(
     return backup;
   };
 
-  const ensureRemoteRunner = async (launchScope: "launch" | "credentials" | "none" = "launch") => {
+  const ensureRemoteRunner = async (launchScope: "launch" | "recovery" | "none" = "launch") => {
     await measureNativeRunnerSpan(
       input.trace,
       "stage.sync",
@@ -13829,7 +13829,7 @@ async function createRunnerdBackendWithinSessionClaim(
             const sourceRun = spec.nativeRunner && spec.nativeRunner.identity.runId !== input.execution.binding.runId;
             const isolatedCodex = input.execution.provider.kind === "codex"
               && !("homeMode" in input.execution && input.execution.homeMode === "preconfigured");
-            return ensureRemoteRunner(sourceRun ? isolatedCodex ? "credentials" : "none" : "launch");
+            return ensureRemoteRunner(sourceRun ? isolatedCodex ? "recovery" : "none" : "launch");
           },
           onSpawn: input.onSpawn,
           onLog: input.onLog,
