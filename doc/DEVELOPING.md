@@ -1062,14 +1062,15 @@ To run the suite with one owned PostgreSQL server and a separate disposable
 database for each fixture, use:
 
 ```sh
-pnpm test:postgres
-pnpm test:postgres -- pnpm exec vitest run --project @paperclipai/db
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts -- pnpm exec vitest run --project @paperclipai/db
 ```
 
 The command starts an embedded server, prepares a migrated database template,
 passes it to the child command, and waits for server shutdown before returning.
-It preserves the child command's exit status. Database, server, and CLI fixtures
-all use the common implementation. Tests of embedded startup itself continue to
+It preserves the child command's exit status. On cancellation it stops and waits
+for the test process group before shutting down PostgreSQL. Database, server,
+and CLI fixtures all use the common implementation. Tests of embedded startup itself continue to
 start dedicated clusters.
 
 To reuse a disposable server that you already manage, set

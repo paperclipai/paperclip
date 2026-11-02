@@ -4,13 +4,22 @@ import path from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
+import { getEmbeddedPostgresTestSupport } from "./test-embedded-postgres.js";
+
+const configuredAdmin = process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL;
+delete process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL;
+let embeddedSupported = false;
+try { embeddedSupported = process.platform !== "win32" && (await getEmbeddedPostgresTestSupport()).supported; }
+finally {
+  if (configuredAdmin !== undefined) process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = configuredAdmin;
+}
 
 function exists(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
-it.skipIf(process.platform === "win32").each(["exit", "SIGTERM"])("stops the owned PostgreSQL process when its worker receives %s", async (mode) => {
+it.skipIf(!embeddedSupported).each(["exit", "SIGTERM"])("stops the owned PostgreSQL process when its worker receives %s", async (mode) => {
   const child = fork(fileURLToPath(new URL("./__fixtures__/test-postgres-exit.mjs", import.meta.url)), [mode], {
     execArgv: ["--import", fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url))],
     stdio: ["ignore", "pipe", "pipe", "ipc"],

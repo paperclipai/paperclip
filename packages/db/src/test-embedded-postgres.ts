@@ -638,6 +638,7 @@ async function startEmbeddedPostgresClusterForSuite(
       const started = await startEmbeddedPostgresFromTemplateWithRetry(templateDir, tempDirPrefix);
       return { ...started, mode: "template" };
     } catch (error) {
+      if (error instanceof TestPostgresShutdownError) throw error;
       // The next caller in this process re-resolves the template: if it was
       // pruned it is rebuilt, instead of retrying a path that is gone.
       resetTemplateDirCache();

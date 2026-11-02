@@ -4,6 +4,7 @@ import path from "node:path";
 import postgres from "postgres";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { inspectMigrations } from "./client.js";
+import { drainTestPostgresOwners, TestPostgresShutdownError } from "./test-postgres-owner.js";
 import {
   __embeddedPostgresStartMaxAttemptsForTests as MAX_ATTEMPTS,
   __embeddedPostgresTemplateRootDirForTests as templateRootDir,
@@ -270,6 +271,29 @@ describeWithPostgres("startEmbeddedPostgresTestDatabase template path", () => {
   afterEach(() => {
     if (originalTemplateSetting === undefined) delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
     else process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = originalTemplateSetting;
+  });
+
+  it("does not start a replacement when a copied cluster cannot stop", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {
+    delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+    const ready = await startEmbeddedPostgresTestDatabase("paperclip-template-stop-ready-");
+    await ready.cleanup();
+    const { ctor, constructed } = makeFakeCtor(Number.POSITIVE_INFINITY);
+    let stops = 0;
+    class FailedStopPostgres extends ctor {
+      async stop(): Promise<void> {
+        if (++stops === 1) throw new Error("owned stop failed");
+      }
+    }
+    __setEmbeddedPostgresCtorProviderForTests(async () => FailedStopPostgres);
+    try {
+      await expect(startEmbeddedPostgresTestDatabase("paperclip-template-stop-fail-")).rejects.toBeInstanceOf(TestPostgresShutdownError);
+      expect(constructed).toHaveLength(1);
+      expect(fs.existsSync(constructed[0].databaseDir)).toBe(true);
+    } finally {
+      await drainTestPostgresOwners();
+      __setEmbeddedPostgresCtorProviderForTests(null);
+      for (const options of constructed) fs.rmSync(path.dirname(options.databaseDir), { recursive: true, force: true });
+    }
   });
 
   it("publishes a complete template and starts suites from a copy of it", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {

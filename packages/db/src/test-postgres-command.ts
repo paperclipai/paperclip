@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
 import path from "node:path";
-import { constants } from "node:os";
 import { createDb } from "./client.js";
 import { computeEmbeddedPostgresTemplateKey, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 import { checkTestPostgresAdmin, testPostgresAdminUrl } from "./test-postgres-admin.js";
+import { beforeTestPostgresShutdown } from "./test-postgres-owner.js";
+import { startTestProcessTree } from "./test-process-tree.js";
 
 const args = process.argv.slice(2);
 if (args[0] === "--") args.shift();
@@ -30,19 +30,13 @@ try {
   }
   env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = adminUrl;
   console.log("[test:postgres] Each suite gets a disposable database on one test PostgreSQL server");
-  const child = spawn(command, args, { stdio: "inherit", env });
-  const interrupt = () => { child.kill("SIGINT"); };
-  const terminate = () => { child.kill("SIGTERM"); };
-  process.on("SIGINT", interrupt);
-  process.on("SIGTERM", terminate);
+  const child = startTestProcessTree(command, args, env);
+  const removeShutdownTask = beforeTestPostgresShutdown(child);
   try {
-    process.exitCode = await new Promise<number>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", (code, signal) => resolve(code ?? (signal ? 128 + constants.signals[signal] : 1)));
-    });
+    process.exitCode = await child.wait();
   } finally {
-    process.removeListener("SIGINT", interrupt);
-    process.removeListener("SIGTERM", terminate);
+    try { await child.stop(); }
+    finally { removeShutdownTask(); }
   }
 } finally {
   await server?.cleanup();

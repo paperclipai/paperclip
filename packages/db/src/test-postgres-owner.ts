@@ -10,20 +10,37 @@ export type TestPostgresInstance = {
 type Owner = { stop(): Promise<void>; interrupt(): void };
 export class TestPostgresShutdownError extends Error {}
 const owners = new Set<Owner>();
+type ShutdownTask = { stop(signal: NodeJS.Signals): Promise<void>; interrupt(): void };
+const shutdownTasks = new Set<ShutdownTask>();
 let shuttingDown = false;
 let hooksInstalled = false;
 
 function interruptOwnedServers(): void {
+  for (const task of shutdownTasks) task.interrupt();
   for (const owner of owners) owner.interrupt();
+}
+
+export function beforeTestPostgresShutdown(task: ShutdownTask): () => void {
+  shutdownTasks.add(task);
+  updateHooks();
+  return () => { shutdownTasks.delete(task); updateHooks(); };
+}
+
+export async function drainTestPostgresOwners(): Promise<void> {
+  const results = await Promise.allSettled([...owners].map((owner) => owner.stop()));
+  const failures = results.filter((result) => result.status === "rejected");
+  if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Test PostgreSQL shutdown failed");
 }
 
 async function shutdown(signal: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> {
   if (shuttingDown) { interruptOwnedServers(); return; }
   shuttingDown = true;
-  const results = await Promise.allSettled([...owners].map((owner) => owner.stop()));
-  for (const result of results) {
+  const tasks = await Promise.allSettled([...shutdownTasks].map((task) => task.stop(signal)));
+  for (const result of tasks) {
     if (result.status === "rejected") console.error(result.reason);
   }
+  try { await drainTestPostgresOwners(); }
+  catch (error) { console.error(error); }
   process.exit(128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[signal]);
 }
 
@@ -32,13 +49,13 @@ const onTerminate = () => { void shutdown("SIGTERM"); };
 const onHangup = () => { void shutdown("SIGHUP"); };
 
 function updateHooks(): void {
-  if (owners.size > 0 && !hooksInstalled) {
+  if ((owners.size > 0 || shutdownTasks.size > 0) && !hooksInstalled) {
     hooksInstalled = true;
     process.on("exit", interruptOwnedServers);
     process.on("SIGINT", onInterrupt);
     process.on("SIGTERM", onTerminate);
     process.on("SIGHUP", onHangup);
-  } else if (owners.size === 0) {
+  } else if (owners.size === 0 && shutdownTasks.size === 0) {
     hooksInstalled = false;
     process.removeListener("exit", interruptOwnedServers);
     process.removeListener("SIGINT", onInterrupt);
