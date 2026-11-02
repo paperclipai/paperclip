@@ -1140,4 +1140,33 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
   });
+
+  it("parses Hermes cache token counts into UsageSummary", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "completed",
+        payload: {
+          status: "completed",
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            cache_read_tokens: 40,
+            cache_write_tokens: 20,
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cachedInputTokens: 40,
+      cacheWriteTokens: 20,
+    });
+  });
 });

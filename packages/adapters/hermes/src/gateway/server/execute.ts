@@ -705,12 +705,23 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   const source = asRecord(record.usage) ?? record;
   const inputTokens = asNumber(source.input_tokens ?? source.inputTokens ?? source.input, 0);
   const outputTokens = asNumber(source.output_tokens ?? source.outputTokens ?? source.output, 0);
-  const cachedInputTokens = asNumber(source.cached_input_tokens ?? source.cachedInputTokens, 0);
-  if (inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0) return undefined;
+  const cachedInputTokens = asNumber(
+    source.cached_input_tokens ??
+      source.cachedInputTokens ??
+      source.cache_read_tokens ??
+      source.cacheReadTokens,
+    0,
+  );
+  const cacheWriteTokens = asNumber(
+    source.cache_write_tokens ?? source.cacheWriteTokens,
+    0,
+  );
+  if (inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0 && cacheWriteTokens <= 0) return undefined;
   return {
     inputTokens,
     outputTokens,
     ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+    ...(cacheWriteTokens > 0 ? { cacheWriteTokens } : {}),
   };
 }
 
