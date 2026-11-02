@@ -32,6 +32,18 @@ describe("real automatic backup checkpoint qualification", () => {
     await assertDistinctEmptyRestore(pair);
     ownsRestoreFixture = true;
     await seedBackupQualificationFixture(pair.sourceUrl);
+    const [column] = await source.$client`SELECT data_type, udt_name FROM information_schema.columns
+      WHERE table_schema = 'backup_qualification' AND table_name = 'binary_arrays' AND column_name = 'payloads'`;
+    expect(column).toEqual({ data_type: "ARRAY", udt_name: "_bytea" });
+    const [driver] = await source.$client`SELECT payloads FROM backup_qualification.binary_arrays WHERE id = 4`;
+    expect(Array.isArray(driver!.payloads[0])).toBe(true);
+    expect(Buffer.isBuffer(driver!.payloads[0][0])).toBe(true);
+    const [sqlNull] = await source.$client`SELECT payloads[1][2] IS NULL AS is_null
+      FROM backup_qualification.binary_arrays WHERE id = 4`;
+    expect(sqlNull?.is_null).toBe(true);
+    receipts.push({ case: "binary-array-driver-representation", column, nestedBuffers: true,
+      sqlNullElement: true, parsedNullElement: driver!.payloads[0][1] === null ? "null"
+        : Buffer.isBuffer(driver!.payloads[0][1]) ? "Buffer" : typeof driver!.payloads[0][1] });
   }, 120_000);
   afterAll(async () => {
     try {
@@ -77,7 +89,7 @@ describe("real automatic backup checkpoint qualification", () => {
     const versions = Object.fromEntries([process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump", process.env.PAPERCLIP_PSQL_PATH || "psql"]
       .map(binary => [binary, execFileSync(binary, ["--version"], { encoding: "utf8" }).trim()]));
     const result = await qualifyBackupRestore(pair, directory, engine);
-    expect(result.restored).toEqual({ relational: true, unicode: true, binary: true, emptyBinary: true, nullBinary: true, nullable: true, nextIdentity: "2", foreignKeyEnforced: true });
+    expect(result.restored).toEqual({ relational: true, unicode: true, binary: true, emptyBinary: true, nullBinary: true, binaryArrays: true, nestedBinaryArrays: true, binaryArrayBounds: true, nullable: true, nextIdentity: "2", foreignKeyEnforced: true });
     expect(gunzipSync(await readFile(result.archive)).length).toBeGreaterThan(0);
     receipts.push({ ...result, versions });
   }, 120_000);
