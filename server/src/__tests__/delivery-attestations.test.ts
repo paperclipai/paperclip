@@ -64,7 +64,6 @@ const support = await getEmbeddedPostgresTestSupport();
   it("does not let a stale attestation satisfy a reconfigured workspace", async () => {
     const { issueId, companyId, runId, workspaceId } = await fixture("https://example.com/org/repo.git");
     await recordDeliveryAttestation(db, { companyId, runId, outcome: "succeeded" });
-    // Workspace repo changes after the attestation was recorded.
     await db.update(projectWorkspaces).set({ repoUrl: "https://example.com/org/other-repo.git" }).where(
       eq(projectWorkspaces.id, workspaceId),
     );

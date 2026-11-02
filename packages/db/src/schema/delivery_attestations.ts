@@ -3,15 +3,6 @@ import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 
-// Evidence that a run actually delivered the issue's workspace_delivery
-// target, recorded by the run itself. Append-only: a retry produces a new
-// row rather than rewriting earlier evidence. See
-// doc/execution-semantics.md, "Terminal transition contract".
-//
-// targetFingerprint scopes an attestation to the exact delivery target it
-// was generated against (e.g. a hash of the resolved repoUrl + repoRef), so
-// a stale attestation from before a workspace was reconfigured can never
-// satisfy a later run against a different target.
 export const deliveryAttestations = pgTable(
   "delivery_attestations",
   {
