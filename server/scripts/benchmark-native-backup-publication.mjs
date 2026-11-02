@@ -118,6 +118,7 @@ if (process.argv.includes("--worker")) {
   const run = async variant => {
     const fixture = await makeFixture(variant);
     const worker = fork(filename, ["--worker", "--module", modules[variant]], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
+    const exited = new Promise(resolve => worker.once("exit", resolve));
     const nextMessage = kind => new Promise((resolve, reject) => {
       const onMessage = message => {
         if (message.kind !== kind && message.kind !== "error") return;
@@ -174,7 +175,6 @@ if (process.argv.includes("--worker")) {
       return result;
     } finally {
       clearTimeout(ticker); agent.destroy();
-      const exited = new Promise(resolve => worker.once("exit", resolve));
       if (worker.connected) worker.send({ kind: "close" });
       await exited;
       await fs.chmod(fixture.liveRoot, 0o700);
@@ -187,7 +187,7 @@ if (process.argv.includes("--worker")) {
   }
   const report = { baselineRef: execFileSync("git", ["rev-parse", baselineRef], { cwd: checkout, encoding: "utf8" }).trim(),
     treatmentHead: execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim(),
-    treatmentDiff: execFileSync("git", ["diff", "--", "server/src/services/native-runtime/native-harness-backup-cleanup.ts", "server/src/services/native-runtime/native-harness-backup-publication.ts"], { cwd: checkout, encoding: "utf8" }),
+    treatmentDiff: execFileSync("git", ["diff", "HEAD", "--", "server/src/services/native-runtime/native-harness-backup-cleanup.ts", "server/src/services/native-runtime/native-harness-backup-publication.ts"], { cwd: checkout, encoding: "utf8" }),
     node: process.version, platform: `${process.platform}/${process.arch}`, pairs, directories, filesPerDirectory,
     filesRemovedPerPublication: 2 * directories * filesPerDirectory, intervalMs, evidence, measurements };
   const output = arg("output", path.join(evidence, "result.json"));
