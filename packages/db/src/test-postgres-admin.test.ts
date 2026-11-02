@@ -16,7 +16,6 @@ const support = await getEmbeddedPostgresTestSupport();
 
 describe.skipIf(!support.supported)("shared PostgreSQL fixtures", () => {
   beforeAll(async () => {
-    delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
     server = await startEmbeddedPostgresTestDatabase("paperclip-admin-regression-");
     process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = server.connectionString;
   }, 90_000);
@@ -24,7 +23,8 @@ describe.skipIf(!support.supported)("shared PostgreSQL fixtures", () => {
   afterEach(async () => {
     __setEmbeddedPostgresCtorProviderForTests(null);
     process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = server.connectionString;
-    delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+    if (previousTemplate === undefined) delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+    else process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = previousTemplate;
     while (databases.length) await databases.pop()!.cleanup();
   });
 

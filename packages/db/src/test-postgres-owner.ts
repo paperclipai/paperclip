@@ -1,4 +1,9 @@
 import type { ChildProcess } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import path from "node:path";
+import { promisify } from "node:util";
+
+const execute = promisify(execFile);
 
 export type TestPostgresInstance = {
   initialise(): Promise<void>;
@@ -10,7 +15,7 @@ export type TestPostgresInstance = {
 type Owner = { stop(clean?: boolean): Promise<void>; interrupt(): void };
 export class TestPostgresShutdownError extends Error {}
 const owners = new Set<Owner>();
-type ShutdownTask = { stop(signal: NodeJS.Signals): Promise<void>; interrupt(): void };
+type ShutdownTask = { stop(signal: NodeJS.Signals): Promise<void>; interrupt(): void; afterStop?(): Promise<void> };
 const shutdownTasks = new Set<ShutdownTask>();
 let shuttingDown = false;
 let hooksInstalled = false;
@@ -35,12 +40,17 @@ export async function drainTestPostgresOwners(): Promise<void> {
 async function shutdown(signal: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> {
   if (shuttingDown) { interruptOwnedServers(); return; }
   shuttingDown = true;
-  const tasks = await Promise.allSettled([...shutdownTasks].map((task) => task.stop(signal)));
+  const registered = [...shutdownTasks];
+  const tasks = await Promise.allSettled(registered.map((task) => task.stop(signal)));
   for (const result of tasks) {
     if (result.status === "rejected") console.error(result.reason);
   }
   try { await drainTestPostgresOwners(); }
   catch (error) { console.error(error); }
+  const cleanups = await Promise.allSettled(registered.map((task) => task.afterStop?.()));
+  for (const result of cleanups) {
+    if (result.status === "rejected") console.error(result.reason);
+  }
   process.exit(128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[signal]);
 }
 
@@ -76,7 +86,7 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   }
 }
 
-export function ownTestPostgres(instance: TestPostgresInstance): Pick<TestPostgresInstance, "initialise" | "start" | "stop"> & {
+export function ownTestPostgres(instance: TestPostgresInstance, dataDir?: string): Pick<TestPostgresInstance, "initialise" | "start" | "stop"> & {
   stopGracefully(): Promise<void>;
 } {
   let pending: Promise<void> | null = null;
@@ -84,6 +94,24 @@ export function ownTestPostgres(instance: TestPostgresInstance): Pick<TestPostgr
   let stopped = false;
   let usedImmediateShutdown = false;
   let stoppedCleanly = false;
+
+  function controlPath(child: ChildProcess): string | undefined {
+    if (!dataDir || !child.spawnfile) return undefined;
+    return path.join(path.dirname(child.spawnfile), `pg_ctl${path.extname(child.spawnfile) === ".exe" ? ".exe" : ""}`);
+  }
+
+  async function requestStop(child: ChildProcess, mode: "fast" | "immediate", clean: boolean): Promise<void> {
+    const control = controlPath(child);
+    if (control && (clean || process.platform === "win32")) {
+      try {
+        await execute(control, ["-D", dataDir!, "stop", "-m", mode, "-W"], {
+          timeout: 2000, maxBuffer: 64 * 1024, windowsHide: true,
+        });
+      } catch (error) {
+        if (child.exitCode === null && child.signalCode === null) throw error;
+      }
+    } else child.kill(mode === "fast" ? "SIGINT" : "SIGQUIT");
+  }
 
   async function run(operation: () => Promise<void>): Promise<void> {
     if (stopped || stopPromise) throw new Error("Test PostgreSQL is shutting down");
@@ -96,9 +124,14 @@ export function ownTestPostgres(instance: TestPostgresInstance): Pick<TestPostgr
   const owner: Owner = {
     interrupt() {
       const child = instance.process;
-      if (process.platform !== "win32" && child && child.exitCode === null && child.signalCode === null) {
+      if (child && child.exitCode === null && child.signalCode === null) {
         usedImmediateShutdown = true;
-        try { child.kill("SIGQUIT"); } catch {}
+        const control = controlPath(child);
+        if (process.platform === "win32" && control) {
+          spawnSync(control, ["-D", dataDir!, "stop", "-m", "immediate", "-W"], { timeout: 2000, windowsHide: true });
+        } else {
+          try { child.kill("SIGQUIT"); } catch {}
+        }
       }
     },
     stop(clean = false) {
@@ -109,7 +142,7 @@ export function ownTestPostgres(instance: TestPostgresInstance): Pick<TestPostgr
           throw new TestPostgresShutdownError("Test PostgreSQL startup did not settle before shutdown; its data directory is retained");
         }
         const child = instance.process;
-        if (!child || (process.platform === "win32" && child.exitCode === null && child.signalCode === null)) {
+        if (!child) {
           if (!await settlesWithin(instance.stop(), 10_000)) {
             throw new TestPostgresShutdownError("Test PostgreSQL shutdown timed out; its data directory is retained");
           }
@@ -117,11 +150,11 @@ export function ownTestPostgres(instance: TestPostgresInstance): Pick<TestPostgr
           let onExit: () => void;
           const exited = new Promise<void>((resolve) => { onExit = resolve; child.once("exit", onExit); });
           try {
-            child.kill("SIGINT");
+            await requestStop(child, "fast", clean);
             if (!await settlesWithin(exited, clean ? 30_000 : 5_000)) {
               if (clean) throw new TestPostgresShutdownError("Test PostgreSQL did not complete clean shutdown; the template cannot be published");
               usedImmediateShutdown = true;
-              child.kill("SIGQUIT");
+              await requestStop(child, "immediate", false);
               if (!await settlesWithin(exited, 5_000)) {
                 throw new TestPostgresShutdownError("Test PostgreSQL did not exit after fast and immediate shutdown; its data directory is retained");
               }

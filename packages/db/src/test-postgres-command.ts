@@ -31,7 +31,10 @@ try {
   env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = adminUrl;
   console.log("[test:postgres] Each suite gets a disposable database on one test PostgreSQL server");
   const child = startTestProcessTree(command, args, env);
-  const removeShutdownTask = beforeTestPostgresShutdown(child);
+  const removeShutdownTask = beforeTestPostgresShutdown({
+    ...child,
+    afterStop: async () => { await server?.cleanup(); },
+  });
   try {
     process.exitCode = await child.wait();
   } finally {

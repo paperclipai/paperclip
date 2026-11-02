@@ -149,7 +149,7 @@ async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
     initdbFlags: EMBEDDED_POSTGRES_INITDB_FLAGS,
     onLog: (message) => logBuffer.append(message),
     onError: (message) => logBuffer.append(message),
-  }));
+  }), dataDir);
 
   return { dataDir, port, instance, getRecentLogs: () => logBuffer.getRecentLogs() };
 }
