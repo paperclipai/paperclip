@@ -7,6 +7,26 @@ import path from 'node:path';
 import { parse } from 'yaml';
 import { admitDispatch, cases, targetSha, validateSelection, evidencePolicy } from './chat-completion-testops-contract.mjs';
 import { actualContext } from './chat-completion-testops-cli.mjs';
+import { paidWorker } from './chat-completion-testops-host-control.mjs';
+
+test('reusable workers bind named environment secrets without inherited or extra credentials', async () => {
+  const definition = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8'));
+  const called = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8'));
+  const named = { OPENROUTER_API_KEY: '${{ secrets.OPENROUTER_API_KEY }}',
+    ANTHROPIC_API_KEY: '${{ secrets.ANTHROPIC_API_KEY }}', ALLURE_TOKEN: '${{ secrets.ALLURE_TOKEN }}' };
+  const supported = structuredClone(definition);
+  for (const id of ['chat', 'chat_external']) supported.jobs[id].secrets = { ...named };
+  assert.equal(paidWorker(supported, called), called.jobs.chat);
+  assert.equal(paidWorker(definition, called), called.jobs.chat);
+  for (const id of ['chat', 'chat_external']) {
+    assert.deepEqual(definition.jobs[id].secrets, named);
+    for (const secrets of [{ ...named, OPENROUTER_API_KEY: '' }, { ...named, EXTRA: '${{ secrets.EXTRA }}' },
+      { ...named, ALLURE_TOKEN: '${{ secrets.OTHER_TOKEN }}' }, 'inherit']) {
+      const mutant = structuredClone(supported); mutant.jobs[id].secrets = secrets;
+      assert.throws(() => paidWorker(mutant, called), /Workflow caller boundary mismatch/);
+    }
+  }
+});
 
 function fixture() {
   const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REPOSITORY: 'paperclipai/paperclip',

@@ -218,9 +218,9 @@ jobs:
       build_artifact_id: ${{ needs.build.outputs.artifact_id }}
       ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
     secrets:
-      OPENROUTER_API_KEY: ''
-      ANTHROPIC_API_KEY: ''
-      ALLURE_TOKEN: ''
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
 
   chat_external:
     name: ${{ matrix.executionId }}
@@ -245,9 +245,9 @@ jobs:
       build_artifact_id: ${{ needs.build.outputs.artifact_id }}
       ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
     secrets:
-      OPENROUTER_API_KEY: ''
-      ANTHROPIC_API_KEY: ''
-      ALLURE_TOKEN: ''
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
 
   aggregate:
     name: Validate and merge every selected metadata-only projection
