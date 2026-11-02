@@ -105,8 +105,10 @@ describe("native harness backup publication", () => {
       await message("ready");
       const response = message("result");
       publishing = true;
-      client.send({ kind: "probe" });
-      publication = publishNativeHarnessBackup(input).finally(() => { publishing = false; });
+      publication = publishNativeHarnessBackup({
+        ...input,
+        stamp: async () => { client.send({ kind: "probe" }); },
+      }).finally(() => { publishing = false; });
       const result = await response;
       await publication;
       expect(result.active).toBe("1");
