@@ -517,6 +517,7 @@ impl AcpxSidecarTransport {
                         ));
                     }
                     let error = response.error.expect("failed response has validated error");
+                    let provider_failure = error.provider_failure.clone();
                     return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
@@ -524,7 +525,7 @@ impl AcpxSidecarTransport {
                             error.retryable,
                             response_error_classification(&error),
                         ),
-                    )));
+                    ).with_provider_failure(provider_failure)));
                 }
             }
         }
@@ -724,11 +725,13 @@ struct ResponseFrame {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResponseError {
     code: String,
     message: String,
     retryable: bool,
+    #[serde(default)]
+    provider_failure: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -1176,6 +1179,7 @@ mod tests {
                     "private-token-canary COPILOT_AUTH_REQUIRED https://user:secret@example.invalid"
                         .to_owned(),
                 retryable: false,
+                provider_failure: None,
             };
             let classification = response_error_classification(&error);
             assert_eq!(classification, expected);
@@ -1190,6 +1194,7 @@ mod tests {
             code: code.to_owned(),
             message: message.to_owned(),
             retryable: false,
+            provider_failure: None,
         };
         for (code, expected) in [
             ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),

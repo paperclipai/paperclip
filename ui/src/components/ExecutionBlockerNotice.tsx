@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { useSecondTick } from "../hooks/useSecondTick";
 import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
+import { ProviderFailureNotice } from "./ProviderFailureNotice";
 
 /** One ordinary interruption surface. Technical records remain in diagnostics. */
 export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName }: {
@@ -24,6 +25,12 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
   if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{error.message}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  if (!optimistic && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
+    return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
+      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
+      {presentation.state === "retry_scheduled" && <p>Paperclip will retry automatically.</p>}
+    </ProviderFailureNotice>;
+  }
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
   const seconds = Math.max(0, Math.ceil((Date.parse(presentation.nextRetryAt ?? "") - Date.now()) / 1000));

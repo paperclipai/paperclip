@@ -8078,7 +8078,8 @@ export async function waitForRunnerCommand(input: {
     const command = input.command();
     if (command?.status === "completed") return;
     if (command !== undefined && command.status !== "pending") {
-      const error = new Error(`PRP command ${input.type} ${command.status}: ${JSON.stringify(command.result)}`) as RunnerCommandFailure;
+      const error = new Error(`PRP command ${input.type} ${command.status}: ${JSON.stringify(command.result,
+        (key, value) => key === "providerFailure" ? undefined : value)}`) as RunnerCommandFailure;
       Object.defineProperty(error, "runnerCommandResult", { value: structuredClone(command.result), enumerable: false });
       throw error;
     }

@@ -1389,7 +1389,7 @@ export async function finalizeNativeRun(input: {
         (!planWait || nativeSha256(planWait.result) !== nativeSha256(result))) {
       throw new Error("native_plan_wait_authority_lost");
     }
-    const { providerFailure, turnFailure } = await readPersistedNativeFailureEvidence(
+    const { providerFailure, turnFailure, providerExplanation } = await readPersistedNativeFailureEvidence(
       input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState,
     );
     const ownsProviderFailureDecision =
@@ -1580,6 +1580,7 @@ export async function finalizeNativeRun(input: {
       );
       const clearExecutionFailure = input.projectRunStatus && finalizationPhase === "committed" && terminalState === "succeeded";
       const finalizationMetadata = {
+        ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
         ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
         ...(turnFailure ? { nativeTurnFailure: turnFailure } : {}),
         finalizationPhase,
@@ -1619,7 +1620,8 @@ export async function finalizeNativeRun(input: {
       const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? recoveredExecutionFailureMetadata() : sql`'{}'::jsonb`}`;
-      const projectedError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+      const projectedError = providerExplanation ? sql`coalesce(${heartbeatRuns.error}, ${providerExplanation.message})`
+        : providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
         : clearExecutionFailure ? sql`null` : heartbeatRuns.error;
       const projectedErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
         : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode;

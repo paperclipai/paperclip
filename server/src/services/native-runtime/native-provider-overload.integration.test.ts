@@ -25,6 +25,7 @@ import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapter
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { projectTaskInterruption } from "../task-interruption-presentation.js";
 
 describe("durable native provider capacity retry", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -60,10 +61,12 @@ describe("durable native provider capacity retry", () => {
       interactionResponses: [], credentialBindings: [],
     };
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+      category: "overloaded", message: NATIVE_PROVIDER_OVERLOADED_MESSAGE, retryability: "transient" };
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1", runId, normalizedSessionId: native.normalizedSessionId, turnId: native.turnId,
       sourceInstanceId: native.runnerInstanceId, sourceEventId: "overload", sourceSeq: 1, sourceKind: "runner", eventType: "turn.failed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
-      payload: { status: "failed", error: { codexErrorInfo: "serverOverloaded", message: NATIVE_PROVIDER_OVERLOADED_MESSAGE } },
+      payload: { status: "failed", error: { codexErrorInfo: "serverOverloaded", message: NATIVE_PROVIDER_OVERLOADED_MESSAGE, providerFailure } },
     };
     const terminal: PrpTerminalState = { schema: "paperclip.prp.terminal.v1", turnTerminalState: "failed", runTerminalState: "failed", reportedWorkDisposition: "needs_review" };
     const result = { ...CONTROL_PLANE_CONFORMANCE_RESULT, reportedWorkDisposition: "needs_review" as const,
@@ -86,6 +89,10 @@ describe("durable native provider capacity retry", () => {
     for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     expect(provider.execute).toHaveBeenCalledTimes(1);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "failed", error: NATIVE_PROVIDER_OVERLOADED_MESSAGE, errorCode: "native_provider_overloaded" });
+    const [recoveredRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(recoveredRun.resultJson).toMatchObject({ providerFailure });
+    expect(projectTaskInterruption(issue, { run: recoveredRun, paused: false, approval: false }))
+      .toMatchObject({ providerFailure });
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toHaveLength(1);
   }
 

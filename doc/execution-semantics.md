@@ -1447,6 +1447,16 @@ does not prove that the provider stopped or that a retry is safe; it remains
 non-recoverable until the existing ownership and recovery checks establish the
 next permitted action.
 
+Provider rejections additionally use the versioned `ProviderFailure` cause.
+The provider adapter extracts and redacts the original explanation before the
+process boundary. Startup command receipts and failed turns retain the same
+contract through Runner, persistence, and restart finalization. The task's current
+interruption and the historical run detail show this explanation, including when
+its category is unknown. Later cleanup errors do not erase the saved cause.
+The category and retryability describe provider evidence; they do not grant
+retry authority, prove stopped execution, or change the existing recovery budget.
+An HTTP 429 alone does not establish a quota reset time or a safe retry.
+
 Local Codex crash replacement can use a complete interrupted-turn inventory,
 authenticated process-stop evidence, and unchanged retained-state fingerprints.
 Only text and an exactly receipted task-completion call qualify for this path;

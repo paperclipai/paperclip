@@ -1,4 +1,5 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
@@ -1071,8 +1072,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // A process adapter may throw while its owned Stop is joining the
     // child. Let the cancellation write settle before attempting failure.
     await processRunCancellationSettlements.get(run.id)?.settled;
+    const providerFailure = providerFailureFromError(err);
     const message = redactCurrentUserText(
-      identityRedactor.redact(err instanceof Error ? err.message : "Unknown adapter failure"),
+      identityRedactor.redact(providerFailure?.message ?? (err instanceof Error ? err.message : "Unknown adapter failure")),
       await getCurrentUserRedactionOptions(),
     );
     const workspaceValidationFailure = isWorkspaceValidationFailure(err)
@@ -1155,6 +1157,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         errorMessage: message,
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
+          ...(providerFailure ? { providerFailure: { ...providerFailure, message } } : {}),
           ...requiredWorkspaceRestoreEvidence,
           ...(workspaceValidationFailure?.resultJson ??
             configurationIncompleteFailure?.resultJson ??
@@ -1308,10 +1311,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       signal.reason instanceof LegacyControllerLeaseLostError;
     // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
     // The inner catch did not fire, so we must record the failure here.
+    const providerFailure = providerFailureFromError(outerErr);
     const message = redactCurrentUserText(
-      identityRedactor.redact(outerErr instanceof Error
+      identityRedactor.redact(providerFailure?.message ?? (outerErr instanceof Error
         ? outerErr.message
-        : "Unknown setup failure"),
+        : "Unknown setup failure")),
       await getCurrentUserRedactionOptions(),
     );
     // A missing secret/env binding is a known pre-dispatch configuration gap,
@@ -1390,6 +1394,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const connectionFailure = readGitConnectionFailure(outerErr);
     const setupFailureResultJson = {
       ...setupFailureDetails,
+      ...(providerFailure ? { providerFailure: { ...providerFailure, message } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
       // A lease lost during setup surfaces as the thrown abort reason, or as
       // the signal's reason when a setup step threw a different error after it.

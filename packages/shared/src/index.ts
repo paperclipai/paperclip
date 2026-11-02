@@ -2879,3 +2879,5 @@ export {
   type RemoteWorkspaceAuthority,
   type RemoteWorkspaceRunReference,
 } from "./remote-workspace.js";
+
+export { readProviderFailure, type ProviderFailure } from "./provider-failure.generated.js";

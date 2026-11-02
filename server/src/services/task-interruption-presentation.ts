@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
-import { HEARTBEAT_RUN_STATUSES, type TaskInterruptionPresentation } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
 import { captureTaskInterruptionFailure } from "../sentry.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -48,6 +48,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
     sourceRunIds: [run.id], observedRunId: run.id };
   if (["done", "cancelled"].includes(issue.status) || (run.status === "succeeded" && !wait)) return base;
+  const providerFailure = run.status === "failed" || run.status === "scheduled_retry"
+    ? readProviderFailure(run.resultJson?.providerFailure) : null;
+  if (providerFailure) base.providerFailure = providerFailure;
   const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval || run.errorCode === "native_provider_approval_required" ? "approval"
     : isAiAuthenticationBlocked(run) ? "reconnect"
       : run.errorCode === "native_provider_model_rejected" ? "choose_model"
@@ -110,7 +113,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
-        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied')`,
+        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
+        'providerFailure', ${heartbeatRuns.resultJson}->'providerFailure')`,
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
       .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),

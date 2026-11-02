@@ -30,6 +30,7 @@ pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;
 pub mod provider_events;
+pub mod provider_failure;
 pub mod qualified_launch;
 pub mod question_response;
 pub mod replay;

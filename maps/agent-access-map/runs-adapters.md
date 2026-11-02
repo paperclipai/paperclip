@@ -253,6 +253,14 @@ Capability ID: `runs-adapters/runs`.
 
 Review: `baseline`.
 
+Run reads and task interruption projections can include a sanitized
+`paperclip.provider-failure.v1` cause. Existing company and task/run read policy
+applies. The cause exposes no credential values or new secret access and grants
+no retry authority. Startup receipts and failed-turn events use the same cause;
+unknown categories retain their explanation. Transport/controller restart and
+PostgreSQL finalization tests cover retention. These tests do not independently
+qualify actor access through the routes.
+
 Scoped source-only timing evidence: workspace preparation spans carry only the
 existing hashed run ID. Controller startup phase spans carry no custom attributes.
 Native controller setup and settlement phases use that same run hash, including

@@ -3,6 +3,8 @@ import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
 import { PrimaryAgentCrownButton } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
+import { ProviderFailureNotice } from "@/components/ProviderFailureNotice";
+import { readProviderFailure } from "@paperclipai/shared";
 import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
@@ -3268,7 +3270,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               </div>
             )}
             <AgentFileRunNotice resultJson={run.resultJson} />
-            {run.error && (
+            {readProviderFailure(run.resultJson?.providerFailure) ? (
+              <ProviderFailureNotice failure={readProviderFailure(run.resultJson?.providerFailure)!} />
+            ) : run.error && (
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
