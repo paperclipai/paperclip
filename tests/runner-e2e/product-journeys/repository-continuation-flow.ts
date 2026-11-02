@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
 import type { WorkspaceFileContent } from "../../../packages/shared/src/types/workspace-file-resource.js";
@@ -8,6 +8,7 @@ import { createTaskThroughUi, submitTaskReply } from "../user-actions.js";
 import { fixtureReplyStoredOnce, validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { repositoryContinuationSource, repositoryContinuationStory } from "./repository-continuation-contract.js";
 import { inspectRepositoryBundle, repositoryCommitMatches, repositoryWorkspaceBindingMatches, repositoryWorkspaceFileMatches } from "./repository-continuation-evidence.js";
+import { openDocumentAuthoring } from "./task-document-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
@@ -73,6 +74,20 @@ export async function runRepositoryContinuation(context: JourneyContext, session
     await writeFile(path.join(options.directory, name), bytes, { mode: 0o600, flag: "wx" });
     return artifact!;
   };
+  // Task-chat layouts keep generic output controls in Artifacts. Use the
+  // production download link for this exact attachment, not a coincidental
+  // URL in a model reply or an API-only readback.
+  const browserDownload = async (artifact: { attachmentId: string; sha256: string }, phase: string) => {
+    await openDocumentAuthoring(context);
+    const link = page.getByRole("link", { name: /^Download/ }).and(
+      page.locator(`a[href*="/api/attachments/${artifact.attachmentId}/content"]`)).first();
+    await expect(link).toBeVisible();
+    const [download] = await Promise.all([page.waitForEvent("download", { timeout: Math.max(1, Math.min(30_000, options.deadlineAt - Date.now())) }), link.click()]);
+    const filename = path.join(options.directory, `browser-${phase}`);
+    await download.saveAs(filename);
+    const bytes = await readFile(filename);
+    if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) throw new JourneyError("failed", "repository_browser_download_changed");
+  };
   const file = (name: string) => api.get<WorkspaceFileContent>(`${route}/file-resources/content?workspace=execution&path=${encodeURIComponent(name)}`);
   const first = await settled(1), firstRun = first.taskRuns[0]!;
   const initialView = await api.get<Row>(`${route}/workspace`), workspaceId = initialView.workspace?.id;
@@ -95,7 +110,7 @@ export async function runRepositoryContinuation(context: JourneyContext, session
   const url = `${api.origin}/${company.issuePrefix}/issues/${first.currentIssue.identifier ?? created.issueId}`;
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.reload();
-  await expect(page.locator(`a[href*="${firstBundle.attachmentId}"]`).first()).toBeVisible();
+  await browserDownload(firstBundle, "first-bundle");
   // The original random reference and commit are not supplied by this follow-up.
   await submitTaskReply(page, story.followup);
   const withReply = await waitFor(Math.min(options.deadlineAt, Date.now() + 30_000), read,
@@ -113,7 +128,7 @@ export async function runRepositoryContinuation(context: JourneyContext, session
     files: { [files.context]: original, [files.first]: "first\n", [files.followup]: "verified\n", README: source.readme }, added: [files.followup] }));
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.reload();
-  for (const artifact of [referenceArtifact!, firstBundle, finalBundle]) await expect(page.locator(`a[href*="${artifact.attachmentId}"]`).first()).toBeVisible();
+  for (const [index, artifact] of [referenceArtifact!, firstBundle, finalBundle].entries()) await browserDownload(artifact, `reopened-${index}`);
   const [retained, retainedBundle] = await readRegisteredArtifacts(artifactApi, created.issueId, firstRun.id, [files.context, files.firstBundle]);
   check("repository-original-and-result-reopened", retained!.attachmentId === referenceArtifact!.attachmentId && retained!.content === original
     && retainedBundle!.attachmentId === firstBundle.attachmentId && retainedBundle!.sha256 === firstBundle.sha256

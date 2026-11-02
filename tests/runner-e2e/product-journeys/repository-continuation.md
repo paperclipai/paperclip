@@ -36,3 +36,8 @@ The normal final screenshot is restricted to the authenticated owned task page.
 Registration and local assertion calibration do not establish a deployed pass.
 Daily admission requires a fresh pass against the intended QA target with the
 same source and assertion set, completed collection, and successful cleanup.
+
+Browser result access opens the task's ordinary Artifacts panel. Each exact
+registered attachment is downloaded through its visible production control, and
+the downloaded digest must match the independent registered artifact receipt.
+A URL present only in a chat message cannot satisfy this check.
