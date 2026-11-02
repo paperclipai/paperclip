@@ -1,5 +1,5 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -31,6 +31,11 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     const [row] = await db.execute<{ blocked: boolean }>(sql`SELECT EXISTS (${sql.raw(check.query)}) AS blocked`);
     const elapsed = performance.now() - started;
     if (elapsed > 1000) console.info(`History predicate ${reason}: ${Math.round(elapsed)}ms`);
+    return row.blocked;
+  };
+  const blockedActionKind = async (kind: string) => {
+    const query = completedHistoryChecks.find(check => check.reason === "chat_actions")!.query;
+    const [row] = await db.execute<{ blocked: boolean }>(sql`SELECT EXISTS (${sql.raw(query)} AND a.kind = ${kind}) AS blocked`);
     return row.blocked;
   };
   beforeAll(async () => {
@@ -107,10 +112,28 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await db.insert(tables.mcpOauthTokens).values({ grantId: p.grantId, kind: "access", tokenHash: hashMcpSecret(token),
       expiresAt: new Date(Date.now() + 600_000) });
     const directory = await mkdtemp(path.join(tmpdir(), "history-mcp-storage-"));
-    const router = Router();
-    router.use(issueRoutes(db, createStorageService(createLocalDiskStorageProvider(directory))));
+    const router = Router(), storage = createStorageService(createLocalDiskStorageProvider(directory));
+    router.use(issueRoutes(db, storage));
     const oauth = createPublicMcpOAuth(db, { origin, resource }), api = createMcpApiDispatch(router);
-    return { ...p, token, oauth, api, storage: createStorageService(createLocalDiskStorageProvider(directory)), cleanup: () => rm(directory, { recursive: true, force: true }) };
+    return { ...p, token, oauth, api, storage, cleanup: () => rm(directory, { recursive: true, force: true }) };
+  }
+
+  async function slackFixture() {
+    const f = await seed(), c = await connection(f), p = await mcp(f);
+    await db.update(tables.toolConnections).set({ enabled: true, status: "active" }).where(eq(tables.toolConnections.id, c.connectionId));
+    await db.insert(tables.companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: p.userId,
+      status: "active", membershipRole: "owner" });
+    const [endpoint] = await db.insert(tables.chatEndpoints).values({ companyId: f.companyId, connectionId: c.connectionId,
+      assignedAgentId: f.agentId, publicId: randomUUID(), provider: "slack", status: "active", providerAccountId: "TWORKSPACE",
+      botExternalId: "UBOT", allowDirectMessages: true, publicationMode: "automatic" }).returning();
+    const [conversation] = await db.insert(tables.chatConversations).values({ companyId: f.companyId, endpointId: endpoint.id,
+      issueId: f.issueId, externalConversationId: "DCHANNEL", externalThreadId: "slack:DCHANNEL:123.456", externalLabel: "Personal",
+      state: "active", isDirectMessage: true }).returning();
+    const [principal] = await db.insert(tables.chatExternalPrincipals).values({ companyId: f.companyId, provider: "slack",
+      providerAccountId: "TWORKSPACE", externalId: "UREQUESTER", kind: "user", isBot: false }).returning();
+    const authority = { endpoint, issueId: f.issueId, conversation, userId: p.userId, slackUserId: "UREQUESTER", principalId: principal.id,
+      deliveryId: null, identityContextId: null, revision: "fixture-revision", workMode: "standard", botToken: "fixture-bot-token" };
+    return { ...f, ...p, ...c, endpoint, conversation, principal, authority };
   }
 
   it("checks all 32 families on the real migrated schema and keeps an empty instance eligible", async () => {
@@ -166,13 +189,117 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       const result = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes).timeout({ response: 5000, deadline: 10_000 });
       expect(result.status).toBe(200);
       expect(await blocked("mcp_attachment_uploads")).toBe(false);
-      const abandoned = await transfers.getUploadUrl(principal, { ...args, requestId: randomUUID() });
+      await db.update(tables.mcpAttachmentUploads).set({ cleanedAt: now, cleanupVerifiedAt: now }).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
-      await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0) }).where(eq(tables.mcpAttachmentUploads.id, String(abandoned.uploadId)));
+      await db.update(tables.mcpAttachmentUploads).set({ cleanedAt: null, cleanupVerifiedAt: null }).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
+      const abandonedArgs = { ...args, requestId: randomUUID() };
+      const abandoned = await transfers.getUploadUrl(principal, abandonedArgs);
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      const [old] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(abandoned.uploadId)));
+      await p.storage.putFile({ companyId: f.companyId, namespace: "mcp-transfers", objectKey: old.objectKey,
+        originalFilename: args.filename, contentType: args.contentType, body: bytes });
+      // Model the old owner's optimistic cleanup: its stamp exists while bytes
+      // survive. It must stay blocked until actual deletion and readback.
+      await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0), cleanedAt: new Date() }).where(eq(tables.mcpAttachmentUploads.id, old.id));
+      expect(await p.storage.headObject(f.companyId, old.objectKey)).toMatchObject({ exists: true });
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
       await transfers.getDownloadUrl(principal, result.body.attachment.id);
+      expect(await p.storage.headObject(f.companyId, old.objectKey)).toEqual({ exists: false });
       expect(await blocked("mcp_attachment_uploads")).toBe(false);
-      await db.update(tables.mcpAttachmentUploads).set({ attachmentId: null }).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
+      const verified = (await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, old.id)))[0];
+      const staleUrl = new URL(String(abandoned.url));
+      expect((await request(app).put(staleUrl.pathname + staleUrl.search).set("Content-Type", "text/plain").send(bytes)
+        .timeout({ response: 5000, deadline: 10_000 })).status).toBe(403);
+      expect(await p.storage.headObject(f.companyId, old.objectKey)).toEqual({ exists: false });
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, old.id)))[0]).toEqual(verified);
+      const reissued = await transfers.getUploadUrl(principal, abandonedArgs);
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, old.id)))[0])
+        .toMatchObject({ cleanedAt: null, cleanupVerifiedAt: null });
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      const secondUrl = new URL(String(reissued.url));
+      const second = await request(app).put(secondUrl.pathname + secondUrl.search).set("Content-Type", "text/plain").send(bytes)
+        .timeout({ response: 5000, deadline: 10_000 });
+      expect(second.status).toBe(200);
+      for (const attachment of [result.body.attachment, second.body.attachment]) {
+        expect(await p.api(principal, "DELETE", `/attachments/${attachment.id}`)).toEqual({ ok: true });
+      }
+      const [removed] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
+      expect(removed).toMatchObject({ attachmentId: result.body.attachment.id, cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
+      expect(await p.storage.headObject(f.companyId, removed.objectKey)).toEqual({ exists: false });
+      expect(await blocked("mcp_attachment_uploads")).toBe(false);
+      await expect(transfers.getUploadUrl(principal, args)).rejects.toThrow();
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, removed.id)))[0]).toEqual(removed);
+      expect(await blocked("mcp_attachment_uploads")).toBe(false);
+      await db.update(tables.mcpAttachmentUploads).set({ cleanupVerifiedAt: null }).where(eq(tables.mcpAttachmentUploads.id, removed.id));
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+    } finally { await p.cleanup(); }
+  }, 60_000);
+
+  it.each(["delete_failed", "object_survived", "head_failed"] as const)("retains MCP cleanup uncertainty after actual attachment removal: %s", async failure => {
+    const { createPublicMcpTransfers } = await import("../services/public-mcp/file-transfers.js");
+    const { default: express } = await import("express");
+    const { default: request } = await import("supertest");
+    const f = await seed(), p = await connectedMcp(f);
+    try {
+      const principal = await p.oauth.authenticate(p.token), bytes = Buffer.from("retained uncertain attachment");
+      const transfers = createPublicMcpTransfers(db, p.oauth, p.api, p.storage);
+      const upload = await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
+        filename: "uncertain.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+      const app = express(); app.use(transfers.router);
+      const url = new URL(String(upload.url));
+      const result = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
+        .timeout({ response: 5000, deadline: 10_000 });
+      expect(result.status).toBe(200);
+      const [before] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
+      const originalDelete = p.storage.deleteObject, originalHead = p.storage.headObject;
+      if (failure === "delete_failed") p.storage.deleteObject = async () => { throw new Error("controlled storage removal failure"); };
+      if (failure === "object_survived") p.storage.deleteObject = async () => {};
+      if (failure === "head_failed") p.storage.headObject = async () => { throw new Error("controlled storage readback failure"); };
+      try { expect(await p.api(principal, "DELETE", `/attachments/${result.body.attachment.id}`)).toEqual({ ok: true }); }
+      finally { p.storage.deleteObject = originalDelete; p.storage.headObject = originalHead; }
+      expect(await db.select().from(tables.issueAttachments).where(eq(tables.issueAttachments.id, result.body.attachment.id))).toHaveLength(0);
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, before.id)))[0])
+        .toMatchObject({ attachmentId: before.attachmentId, cleanedAt: null, cleanupVerifiedAt: null });
+      expect((await p.storage.headObject(f.companyId, before.objectKey)).exists).toBe(failure !== "head_failed");
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      // The existing bounded opportunistic owner can later retire this orphan
+      // only by a real successful delete and readback, preserving its identity.
+      await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0) }).where(eq(tables.mcpAttachmentUploads.id, before.id));
+      const pending = await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
+        filename: "new.txt", contentType: "text/plain", byteSize: 1, sha256: createHash("sha256").update("x").digest("hex") });
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, before.id)))[0])
+        .toMatchObject({ attachmentId: before.attachmentId, cleanupVerifiedAt: expect.any(Date) });
+      expect(await p.storage.headObject(f.companyId, before.objectKey)).toEqual({ exists: false });
+      expect(await blocked("mcp_attachment_uploads")).toBe(true); // newly allocated upload remains pending
+      expect(pending.uploadId).toBeTruthy();
+    } finally { await p.cleanup(); }
+  }, 60_000);
+
+  it.each([false, true])("preserves verified MCP cleanup after ordinary issue deletion, storageFailure=%s", async storageFailure => {
+    const { createPublicMcpTransfers } = await import("../services/public-mcp/file-transfers.js");
+    const { default: express } = await import("express");
+    const { default: request } = await import("supertest");
+    const f = await seed(), p = await connectedMcp(f);
+    try {
+      const principal = await p.oauth.authenticate(p.token), bytes = Buffer.from("removed with parent");
+      const transfers = createPublicMcpTransfers(db, p.oauth, p.api, p.storage);
+      const upload = await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
+        filename: "parent.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+      const app = express(); app.use(transfers.router);
+      const url = new URL(String(upload.url));
+      const result = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
+        .timeout({ response: 5000, deadline: 10_000 });
+      expect(result.status).toBe(200);
+      const originalDelete = p.storage.deleteObject;
+      if (storageFailure) p.storage.deleteObject = async () => { throw new Error("controlled parent storage failure"); };
+      try { await p.api(principal, "DELETE", `/issues/${f.issueId}`); }
+      finally { p.storage.deleteObject = originalDelete; }
+      expect(await db.select().from(tables.issues).where(eq(tables.issues.id, f.issueId))).toHaveLength(0);
+      const [removed] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
+      expect(removed.attachmentId).toBe(result.body.attachment.id);
+      expect(removed.cleanupVerifiedAt !== null).toBe(!storageFailure);
+      expect((await p.storage.headObject(f.companyId, removed.objectKey)).exists).toBe(storageFailure);
+      expect(await blocked("mcp_attachment_uploads")).toBe(storageFailure);
     } finally { await p.cleanup(); }
   }, 60_000);
 
@@ -205,7 +332,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       operation: "paperclip_create_task", requestId: randomUUID(), argumentsHash: "a", status: "completed", result: { id: f.issueId } }).returning();
     const [upload] = await db.insert(tables.mcpAttachmentUploads).values({ ...p, companyId: f.companyId, taskId: f.issueId,
       requestId: randomUUID(), argumentsHash: "a", originalFilename: "history.txt", contentType: "text/plain", byteSize: 1,
-      sha256: "a".repeat(64), objectKey: "history/abandoned", storageProvider: "local_disk", expiresAt: now, cleanedAt: now }).returning();
+      sha256: "a".repeat(64), objectKey: "history/abandoned", storageProvider: "local_disk", expiresAt: now, cleanedAt: now, cleanupVerifiedAt: now }).returning();
     expect(await blocked("mcp_mutation_receipts")).toBe(false);
     expect(await blocked("mcp_attachment_uploads")).toBe(false);
     expect(await read()).toEqual({ version: 1, backgroundWork: "none" });
@@ -280,6 +407,698 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await db.update(tables.mcpEventDeliveries).set({ finishedAt: null }).where(eq(tables.mcpEventDeliveries.id, delivery.id));
     expect(await blocked("mcp_event_deliveries")).toBe(true);
   });
+
+  it.each([false, true])("requires actual Speko configure completion after tool receipts, defaultsFailure=%s", async defaultsFailure => {
+    const { chatChannelService } = await import("../services/chat-channels.js");
+    const { instanceSettingsService } = await import("../services/instance-settings.js");
+    const f = await seed(), p = await mcp(f), oldKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "a".repeat(64);
+    await db.insert(tables.companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: p.userId,
+      membershipRole: "owner", status: "active" });
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    await db.insert(tables.principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: p.userId,
+      permissionKey: "agents:configure" });
+    const tools: Record<string, unknown>[] = [], hooks: Record<string, unknown>[] = [];
+    let failDefaults = defaultsFailure;
+    const chat = chatChannelService(db, { heartbeat: { wakeup: async () => { throw new Error("No call expected"); } },
+      publicBaseUrl: "https://history.example", webhookPublicBaseUrl: "https://history.example", fetch: async (input, init) => {
+        const pathname = new URL(String(input)).pathname, method = init?.method ?? "GET";
+        if (pathname === "/v1/agents/agent_test") {
+          if (method === "PATCH" && failDefaults) return new Response("Defaults failed", { status: 503 });
+          return Response.json({ id: "agent_test", organizationId: "org_test", name: "History voice" });
+        }
+        if (pathname.startsWith("/v1/agents/agent_test/tools")) {
+          if (method === "GET") return Response.json(tools);
+          const tool = { ...JSON.parse(String(init?.body)), id: pathname.split("/").length > 5 ? pathname.split("/").at(-1)! : `tool_${tools.length}` };
+          const index = tools.findIndex(old => old.id === tool.id); if (index < 0) tools.push(tool); else tools[index] = tool;
+          return Response.json({ id: tool.id });
+        }
+        if (pathname.startsWith("/v1/webhooks")) {
+          if (method === "GET") return Response.json({ data: hooks });
+          const hook = { ...JSON.parse(String(init?.body)), id: "hook_test", filterTags: {} }; hooks.splice(0, hooks.length, hook);
+          return Response.json({ id: hook.id });
+        }
+        throw new Error(`Unexpected Speko provider boundary ${method} ${pathname}`);
+      } });
+    try {
+      const endpoint = await chat.create(f.companyId, { provider: "speko", assignedAgentId: f.agentId }, p.userId);
+      let configureAttempts = 0;
+      const configure = () => chat.configure(endpoint.id, { action: configureAttempts++ === 0 ? "configure" : "reconnect",
+        credentials: { apiKey: "fixture-api-key", agentId: "agent_test", signingSecret: `whsec_${Buffer.alloc(32, 7).toString("base64")}` } }, p.userId);
+      if (defaultsFailure) {
+        await expect(configure()).rejects.toMatchObject({ status: 422 });
+        const partial = (await db.select().from(tables.chatActions)).filter(a => a.endpointId === endpoint.id);
+        expect(partial).toHaveLength(4);
+        expect(partial.every(a => a.status === "completed")).toBe(true);
+        for (const receipt of partial) expect(await blockedActionKind(receipt.kind)).toBe(true);
+        failDefaults = false;
+      }
+      await configure();
+      const receipts = (await db.select().from(tables.chatActions)).filter(a => a.endpointId === endpoint.id);
+      expect(receipts).toHaveLength(4);
+      expect(await blockedActionKind("speko_tool_setup")).toBe(false);
+      expect(await blockedActionKind("speko_lifecycle_setup")).toBe(false);
+      const [activity] = await db.select().from(tables.activityLog).where(eq(tables.activityLog.action,
+        defaultsFailure ? "chat_endpoint.reconnected" : "chat_endpoint.credentials_verified"));
+      expect(activity.details).toMatchObject({ endpointId: endpoint.id, provider: "speko" });
+    } finally {
+      await chat.shutdown();
+      if (oldKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY; else process.env.PAPERCLIP_SECRETS_MASTER_KEY = oldKey;
+    }
+  }, 60_000);
+
+  it("retires actual GitHub omission navigation only after its exact native response publication settles", async () => {
+    const { createGitHubPublicationPolicy } = await import("../services/chat-channels/github/publication-policy.js");
+    const { ensureNativeCompletionContract } = await import("../services/native-runtime/completion-contracts.js");
+    const { chatChannelService } = await import("../services/chat-channels.js");
+    const f = await slackFixture();
+    const [endpoint] = await db.update(tables.chatEndpoints).set({ provider: "github" }).where(eq(tables.chatEndpoints.id, f.endpoint.id)).returning();
+    const contract = await ensureNativeCompletionContract({ db, companyId: f.companyId, issue: { id: f.issueId, title: "Omitted source", description: null }, actorId: "history" });
+    const [comment] = await db.insert(tables.issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorAgentId: f.agentId, createdByRunId: f.runId, body: "Source unavailable; see the task" }).returning();
+    await db.update(tables.heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId, completionContractId: contract.row.id,
+      resultJson: { presentationDecision: { commentId: comment.id } } }).where(eq(tables.heartbeatRuns.id, f.runId));
+    const [result] = await db.insert(tables.nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      completionContractId: contract.row.id, schemaStatus: "accepted", serverFingerprint: randomUUID(), canonicalSha256: "a".repeat(64), resultJson: {} }).returning();
+    await db.insert(tables.nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      phase: "committed", resultId: result.id });
+    const [publication] = await db.insert(tables.chatPublications).values({ companyId: f.companyId, endpointId: endpoint.id,
+      conversationId: f.conversation.id, issueId: f.issueId, commentId: comment.id, idempotencyKey: randomUUID(), payload: { text: comment.body } }).returning();
+    const unused = async (): Promise<never> => { throw new Error("Unexpected GitHub publication boundary"); };
+    const policy = createGitHubPublicationPolicy(db, { isExplicitOperatorPublication: () => false, getTaskBaseUrl: () => "https://history.example",
+      // Exact current native-input authority is the named consumer boundary;
+      // the actual policy validates canonical owner rows and writes the marker.
+      failedChatRetrySource: async () => ({ endpointId: endpoint.id, conversationId: f.conversation.id,
+        sources: [{ omissionReasons: { download_unavailable: 1 } }] }) as never,
+      isExternalActionAuthorizationChange: () => false, FailedChatRetryPublicationReadError: class extends Error {}, endpointRecord: unused,
+      runIdFromMilestonePublication: () => null, fetchImpl: unused, stageTerminalReceiptReactionRemovals: unused,
+      runtimeContextForRecord: unused, scheduleMessageProcessing: unused, processReceiptReaction: unused });
+    const text = await db.transaction(tx => policy.githubCurrentOmissionPreparedText(tx, publication, endpoint));
+    expect(text).toContain("Open this Paperclip task");
+    const [receipt] = await db.select().from(tables.chatActions).where(eq(tables.chatActions.kind, "github_omission_navigation"));
+    expect(receipt).toMatchObject({ status: "processed", result: null });
+    expect(await blockedActionKind("github_omission_navigation")).toBe(true);
+    await db.update(tables.chatPublications).set({ payload: { ...publication.payload, text: String(text) }, state: "delivery_unknown" })
+      .where(eq(tables.chatPublications.id, publication.id));
+    const chat = chatChannelService(db, { heartbeat: { wakeup: unused }, fetch: unused });
+    try { await chat.resolvePublication(endpoint.id, publication.id, "mark_delivered", f.userId); }
+    finally { await chat.shutdown(); }
+    expect(await blockedActionKind("github_omission_navigation")).toBe(false);
+    await db.update(tables.chatActions).set({ payload: { ...receipt.payload, resultId: randomUUID() } }).where(eq(tables.chatActions.id, receipt.id));
+    expect(await blockedActionKind("github_omission_navigation")).toBe(true);
+  });
+
+  it("retires an actual Discord status-command receipt while preserving registration deadline work", async () => {
+    const { reconcileStoredDiscordCommandRegistration } = await import("../services/chat-discord-command-registration-store.js");
+    const { createDiscordCommands } = await import("../services/chat-channels/discord/commands.js");
+    const { chatCredentialMutationLease } = await import("../services/chat-credential-mutation-lease.js");
+    const f = await slackFixture(), applicationId = String(1_400_000_000_000_000_000n + BigInt(Date.now()) + BigInt(randomBytes(2).readUInt16BE())), guildId = "1457808928258658549", channelId = "333333333333333333";
+    const [endpoint] = await db.update(tables.chatEndpoints).set({ provider: "discord", botExternalId: applicationId,
+      providerAccountId: guildId, capabilities: { slashCommands: true } }).where(eq(tables.chatEndpoints.id, f.endpoint.id)).returning();
+    const [principal] = await db.update(tables.chatExternalPrincipals).set({ provider: "discord", externalId: "444444444444444444",
+      providerAccountId: guildId }).where(eq(tables.chatExternalPrincipals.id, f.principal.id)).returning();
+    const context = { generation: 1, credentialFingerprint: "c".repeat(64), localEpoch: 0, version: "fixture", discordGatewayOwned: true };
+    const scope = { companyId: f.companyId, endpointId: endpoint.id, applicationId, guildId };
+    const remote: Record<string, unknown>[] = [];
+    const registered = await reconcileStoredDiscordCommandRegistration(db, { scope, runtimeFence: { generation: context.generation, credentialFingerprint: context.credentialFingerprint }, botToken: "fixture-token",
+      authorize: async tx => {
+        expect((await tx.select().from(tables.chatEndpoints).where(eq(tables.chatEndpoints.id, endpoint.id)).for("update"))[0].status).toBe("active");
+      }, fetch: async (_url, init) => {
+        if ((init?.method ?? "GET") === "GET") return Response.json(remote);
+        const command = { ...JSON.parse(String(init?.body)), id: "888888888888888888", application_id: applicationId, version: "999999999999999999" };
+        remote.splice(0, remote.length, command); return Response.json(command);
+      } });
+    expect(registered.kind).toBe("registered");
+    const leaseKey = "discord_gateway", token = randomUUID();
+    await db.insert(tables.chatEndpointLeases).values({ companyId: f.companyId, endpointId: endpoint.id, leaseKey, token,
+      expiresAt: new Date(Date.now() + 60_000) });
+    const record = { endpoint, assignedAgentName: "Idle agent", connectionName: "Discord", applicationId: randomUUID(), credentialSecretRefs: [] };
+    const unused = async (): Promise<never> => { throw new Error("No Discord transport/control boundary expected"); };
+    const service = createDiscordCommands(db, { endpointRecord: async () => record, runtimeContextForRecord: () => context,
+      runtimeGeneration: () => 1, credentialFingerprint: () => context.credentialFingerprint, resolveCredentialRefs: unused,
+      fetchImpl: unused, withCredentialMutationLease: chatCredentialMutationLease(db), runtimeCallbackRecord: async () => record,
+      ensurePrincipal: async () => ({ principal, userId: f.userId }), runtimeCallbackEndpoint: async () => endpoint,
+      nonDirectDestinationAllowed: () => true, lockCurrentPrincipalAuthorization: async () => ({ allowed: true, userId: f.userId }),
+      getDiscordGatewayOwnership: () => ({ leaseKey, token }), discordGatewayRuntimeIsCurrent: () => true,
+      stageAuthorizedTaskControlPublication: unused, scheduleMessageProcessing: unused, processPendingPublications: unused });
+    const thread = `discord:${guildId}:${channelId}`;
+    const result = await service.handleDiscordNativeCommand({ endpointId: endpoint.id, provider: "discord", transport: "discord_gateway",
+      event: { command: "/paperclip status", text: "", channelId: thread, channel: { id: thread },
+        user: { userId: principal.externalId, isBot: false, isMe: false }, raw: { id: "777777777777777777", application_id: applicationId,
+          type: 2, version: 1, channel_id: channelId, channel: { id: channelId, type: 0 }, guild_id: guildId, context: 0,
+          authorizing_integration_owners: { "0": guildId }, data: { id: "888888888888888888", type: 1, name: "paperclip",
+            options: [{ type: 1, name: "status" }] }, user: { id: principal.externalId, username: "operator", bot: false } } } } as never, context);
+    expect(result).toMatchObject({ kind: "accepted" });
+    expect(await blockedActionKind("discord_native_command")).toBe(false);
+    expect(await blockedActionKind("discord_command_registration")).toBe(true);
+    const [receipt] = await db.select().from(tables.chatActions).where(eq(tables.chatActions.kind, "discord_native_command"));
+    await db.update(tables.chatActions).set({ result: { ...receipt.result, kind: "unknown" } }).where(eq(tables.chatActions.id, receipt.id));
+    expect(await blockedActionKind("discord_native_command")).toBe(true);
+  });
+
+  it.each(["live_photo_video", "heif_jpeg_preview"] as const)("retains actual Photon %s provenance after source-bound storage registration", async relationKind => {
+    const { createInboundAttachments } = await import("../services/chat-channels/inbound-attachments.js");
+    const { createInboundWakeups } = await import("../services/chat-channels/inbound/wakeups.js");
+    const { downloadPhotonAttachment } = await import("../services/photon/attachments.js");
+    const { issueService } = await import("../services/issues.js");
+    const { createStorageService } = await import("../storage/service.js");
+    const { createLocalDiskStorageProvider } = await import("../storage/local-disk-provider.js");
+    const f = await slackFixture(), directory = await mkdtemp(path.join(tmpdir(), "history-photon-provenance-"));
+    const [endpoint] = await db.update(tables.chatEndpoints).set({ provider: "imessage-photon" }).where(eq(tables.chatEndpoints.id, f.endpoint.id)).returning();
+    const [comment] = await db.insert(tables.issueComments).values({ companyId: f.companyId, issueId: f.issueId, body: "Source-bound photo" }).returning();
+    const providerEventId = randomUUID();
+    const [delivery] = await db.insert(tables.chatDeliveries).values({ companyId: f.companyId, endpointId: endpoint.id,
+      conversationId: f.conversation.id, principalId: f.principal.id, providerEventId, deduplicationKey: randomUUID(),
+      eventKind: "message", state: "processing", attempts: 1, normalizedEvent: { providerEventId, kind: "message" } }).returning();
+    const unused = async (): Promise<never> => { throw new Error("Unexpected Photon admission boundary"); };
+    const wakes = createInboundWakeups(db, { authorizeInboundWakeup: unused, authorizeInboundWorkStart: unused,
+      attachmentOmissionDetail: () => null, isExternalActionAuthorizationChange: () => false, redactError: String,
+      fetchImpl: unused, heartbeat: { wakeup: unused } });
+    try {
+      await db.transaction(tx => wakes.stageInboundWakeup(tx, { endpoint, deliveryId: delivery.id, conversation: f.conversation,
+        commentId: comment.id, principalId: f.principal.id, actorUserId: null }));
+      const storage = createStorageService(createLocalDiskStorageProvider(directory));
+      const bytes = relationKind === "heif_jpeg_preview"
+        ? await readFile(new URL("./photon/fixtures/synthetic.heic", import.meta.url))
+        : Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/6S8AAAAASUVORK5CYII=", "base64");
+      const type = relationKind === "heif_jpeg_preview" ? "image/heic" : "image/png";
+      let body = bytes, closed = false;
+      if (relationKind === "live_photo_video") {
+        const companion = Buffer.from("Actual bounded companion bytes"), locator = { kind: "photon_attachment" as const,
+          lineId: "line", chatGuid: "chat", messageGuid: "message", attachmentGuid: "attachment" };
+        const info = { guid: "attachment", totalBytes: bytes.length, mimeType: type, fileName: "photo.png", isSticker: false, isHidden: false };
+        const stream = { async *[Symbol.asyncIterator]() {
+          yield { type: "header", info, companionInfo: { kind: "live-photo-video", mimeType: "video/mp4", totalBytes: companion.length, fileName: "motion.mp4" } };
+          yield { type: "primaryChunk", data: bytes }; yield { type: "companionChunk", data: companion };
+        }, close: async () => { closed = true; } };
+        body = await downloadPhotonAttachment({ messages: { get: async () => ({ guid: "message", chatGuids: ["chat"], content: { attachments: [info] } }) },
+          attachments: { downloadStream: () => stream } } as never, "line", locator);
+        expect(closed).toBe(true);
+      }
+      const service = createInboundAttachments(db, { storage, authorizeInboundWakeup: async () => ({ delivery, conversation: f.conversation }),
+        lifecycleRuntimeFence: () => ({ generation: 1, credentialFingerprint: "c".repeat(64) }), sanitizeFilename: value => value ?? null,
+        issuesSvc: issueService(db), isExternalActionAuthorizationChange: () => false, redactError: String });
+      const result = await service.ingestAttachments({ endpoint, endpointRuntime: {} as never, deliveryId: delivery.id,
+        issueId: f.issueId, issueCommentId: comment.id, actorUserId: null,
+        attachments: [{ type: "image", name: relationKind === "heif_jpeg_preview" ? "photo.heic" : "photo.png", mimeType: type,
+          size: bytes.length, fetchData: async () => body }] });
+      expect(result.omissionReasons).toEqual({});
+      expect(result.storedIds).toHaveLength(2);
+      const receipt = (await db.select().from(tables.chatActions)).find(a => a.kind === (relationKind === "heif_jpeg_preview" ? "attachment_derivative" : "attachment_companion"))!;
+      expect(receipt).toMatchObject({ status: "processed", payload: { kind: relationKind } });
+      expect(await blockedActionKind(receipt.kind)).toBe(false);
+      expect(await blockedActionKind("inbound_wakeup")).toBe(true);
+      const assets = await db.select().from(tables.assets);
+      for (const asset of assets) expect((await storage.headObject(f.companyId, asset.objectKey)).exists).toBe(true);
+      const { chatChannelService } = await import("../services/chat-channels.js");
+      const chat = chatChannelService(db, { heartbeat: { wakeup: unused }, fetch: unused });
+      try {
+        await expect(chat.publishBoardMessage(endpoint.id, f.conversation.id, "Reuse an already bound attachment", randomUUID(), f.userId,
+          [result.storedIds[0]])).rejects.toMatchObject({ status: 409 });
+        expect(await blockedActionKind("board_send_rejected")).toBe(false);
+      } finally { await chat.shutdown(); }
+      await db.update(tables.chatActions).set({ payload: { ...receipt.payload, derivativeSha256: "0".repeat(64) } }).where(eq(tables.chatActions.id, receipt.id));
+      expect(await blockedActionKind(receipt.kind)).toBe(true);
+      await db.update(tables.chatActions).set({ payload: receipt.payload }).where(eq(tables.chatActions.id, receipt.id));
+      const [otherIssue] = await db.insert(tables.issues).values({ companyId: f.companyId, title: "Wrong lineage" }).returning();
+      await db.update(tables.issueAttachments).set({ issueId: otherIssue.id }).where(eq(tables.issueAttachments.id, String(receipt.payload.derivativeAttachmentId)));
+      expect(await blockedActionKind(receipt.kind)).toBe(true);
+      await db.update(tables.issueAttachments).set({ issueId: f.issueId }).where(eq(tables.issueAttachments.id, String(receipt.payload.derivativeAttachmentId)));
+      const { issueRoutes } = await import("../routes/issues.js");
+      const { createMcpApiDispatch } = await import("../services/public-mcp/capabilities.js");
+      const { Router } = await import("express");
+      const router = Router(); router.use(issueRoutes(db, storage));
+      const api = createMcpApiDispatch(router), actor = { type: "board", userId: f.userId, companyIds: [f.companyId], source: "session",
+        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }] };
+      for (const id of result.storedIds) expect(await api({ actor } as never, "DELETE", `/attachments/${id}`)).toEqual({ ok: true });
+      expect(await db.select().from(tables.issueAttachments)).toHaveLength(0);
+      for (const asset of assets) expect((await storage.headObject(f.companyId, asset.objectKey)).exists).toBe(false);
+      expect(await blockedActionKind(receipt.kind)).toBe(false);
+      expect(await blockedActionKind("inbound_wakeup")).toBe(true);
+    } finally { wakes.unregisterDeferredWakeOwner(); await rm(directory, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it("retires actual Photon interaction, retry and response-notice history with their canonical owners", async () => {
+    const { issueThreadInteractionService } = await import("../services/issue-thread-interactions.js");
+    const { recordPhotonPublicationRetry } = await import("../services/chat-channels/imessage-photon/publication-retry.js");
+    const { stagePhotonResponseNotice } = await import("../services/chat-channels/imessage-photon/response-notices.js");
+    const { chatChannelService } = await import("../services/chat-channels.js");
+    const f = await seed(), c = await connection(f);
+    await db.update(tables.issues).set({ status: "in_progress" }).where(eq(tables.issues.id, f.issueId));
+    const [endpoint] = await db.insert(tables.chatEndpoints).values({ companyId: f.companyId, connectionId: c.connectionId,
+      assignedAgentId: f.agentId, provider: "imessage-photon", publicId: randomUUID(), status: "active", publicationMode: "automatic" }).returning();
+    const [conversation] = await db.insert(tables.chatConversations).values({ companyId: f.companyId, endpointId: endpoint.id,
+      issueId: f.issueId, externalConversationId: "photon-personal", externalThreadId: "photon-personal", externalLabel: "Personal", state: "active" }).returning();
+    const interactions = issueThreadInteractionService(db);
+    const interaction = await interactions.create({ id: f.issueId, companyId: f.companyId }, { kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee", payload: { version: 1, title: "Choose", submitLabel: "Continue", questions: [{
+        id: "choice", prompt: "Choose", selectionMode: "single", required: true, allowOther: false,
+        options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] }] } }, { agentId: f.agentId });
+    const [token] = await db.select().from(tables.chatActions);
+    expect(token).toMatchObject({ kind: "photon_interaction", status: "issued", conversationId: conversation.id });
+    expect(await blockedActionKind("photon_interaction")).toBe(true);
+    await interactions.answerQuestions({ id: f.issueId, companyId: f.companyId }, interaction.id,
+      { answers: [{ questionId: "choice", optionIds: ["yes"] }] }, { userId: "local-board" });
+    expect(await blockedActionKind("photon_interaction")).toBe(false);
+    const [previousSource] = await db.select().from(tables.chatPublications);
+    const [source] = await db.update(tables.chatPublications).set({ state: "delivery_unknown" })
+      .where(eq(tables.chatPublications.id, previousSource.id)).returning();
+    await db.transaction(async tx => {
+      await recordPhotonPublicationRetry(tx, endpoint.id, source, "local-board");
+      await stagePhotonResponseNotice(tx, { publication: source, reference: String(token.payload.reference), questionIndex: 0,
+        key: `photon-response:${token.payload.reference}:1`, text: "Answer saved" });
+    });
+    expect(await blockedActionKind("photon_publication_retry")).toBe(true);
+    expect(await blockedActionKind("photon_response_notice")).toBe(true);
+    const unused = async (): Promise<never> => { throw new Error("No Photon network expected"); };
+    const service = chatChannelService(db, { heartbeat: { wakeup: unused }, fetch: unused });
+    try {
+      for (const publication of await db.select().from(tables.chatPublications)) {
+        await db.update(tables.chatPublications).set({ state: "delivery_unknown" }).where(eq(tables.chatPublications.id, publication.id));
+        await service.resolvePublication(endpoint.id, publication.id, "mark_delivered", "local-board");
+      }
+      expect(await blocked("chat_actions")).toBe(false);
+      await db.update(tables.chatActions).set({ payload: { ...token.payload, interactionId: randomUUID() } }).where(eq(tables.chatActions.id, token.id));
+      expect(await blockedActionKind("photon_interaction")).toBe(true);
+    } finally { await service.shutdown(); }
+  });
+
+  it("retains actual Slack connect discovery while its separate notice remains pending", async () => {
+    const { createSlackCommands, slackCommandForAgent } = await import("../services/chat-channels/slack/commands.js");
+    const { createProviderEffects } = await import("../services/chat-channels/provider-effects.js");
+    const { chatCredentialMutationLease } = await import("../services/chat-credential-mutation-lease.js");
+    const f = await slackFixture(), unused = async (): Promise<never> => { throw new Error("Unexpected discovery boundary"); };
+    const effects = createProviderEffects(db, { endpointRecord: unused, runtimeCallbackEndpoint: async () => f.endpoint,
+      withCredentialMutationLease: chatCredentialMutationLease(db), runtimeFor: unused, invalidateRuntime: unused,
+      lockCurrentPrincipalAuthorization: unused, redactError: String, MAX_ERROR_TEXT: 500,
+      nonDirectDestinationAllowed: () => false, lockTelegramCallbackNoticeAuthority: unused });
+    const command = slackCommandForAgent("Idle agent", f.endpoint.publicId), scheduled: string[] = [];
+    const service = createSlackCommands(db, { runtime: { get: () => undefined }, runtimeFor: unused, handleSdkMessage: unused,
+      stageProviderEffect: effects.stageProviderEffect, scheduleProviderEffect: id => { scheduled.push(id); },
+      ensurePrincipal: async () => ({ principal: f.principal, userId: null, linkedDenied: false }),
+      runtimeCallbackEndpoint: async () => f.endpoint, getPublicBaseUrl: () => "https://history.example",
+      canonicalProviderResourceId: unused, nonDirectDestinationAllowed: () => false, sponsorAllowsGuest: unused,
+      latestSlackDmControlThreadId: unused, scheduleMessageProcessing: unused, processSlackTaskStart: unused });
+    await service.handleSlackSlashCommand({ endpointId: f.endpoint.id, provider: "slack", transport: "slack_socket",
+      event: { command, text: "connect", triggerId: randomUUID(), channel: { id: "DCHANNEL" },
+        user: { userId: "UREQUESTER", isBot: false, isMe: false }, raw: {} } } as never,
+      { generation: 1, credentialFingerprint: "c".repeat(64), localEpoch: 0, version: "fixture" },
+      { endpoint: f.endpoint, assignedAgentName: "Idle agent", connectionName: "Slack", applicationId: randomUUID(), credentialSecretRefs: [] }, command, "connect");
+    expect(scheduled).toHaveLength(1);
+    expect((await db.select().from(tables.chatIdentityLinks))[0]).toMatchObject({ status: "pending", confirmationTokenHash: expect.any(String) });
+    expect(await blockedActionKind("slack_connect")).toBe(false);
+    expect(await blockedActionKind("provider_effect")).toBe(true);
+    expect(await blocked("chat_actions")).toBe(true);
+  });
+
+  it("retains the actual Telegram stop-subscription ownership receipt", async () => {
+    const { createTelegramMaintenance } = await import("../services/chat-channels/telegram/maintenance.js");
+    const { chatCredentialMutationLease } = await import("../services/chat-credential-mutation-lease.js");
+    const f = await seed(), c = await connection(f);
+    await db.update(tables.toolConnections).set({ enabled: true, status: "active" }).where(eq(tables.toolConnections.id, c.connectionId));
+    const [endpoint] = await db.insert(tables.chatEndpoints).values({ companyId: f.companyId, connectionId: c.connectionId,
+      assignedAgentId: f.agentId, provider: "telegram", publicId: randomUUID(), status: "active", botExternalId: "1234567" }).returning();
+    const unused = async (): Promise<never> => { throw new Error("Unexpected Telegram provider boundary"); };
+    const context = { generation: 3, credentialFingerprint: "c".repeat(64) }, withCredentialMutationLease = chatCredentialMutationLease(db);
+    const service = createTelegramMaintenance(db, { endpointRecord: unused, runtimeContextForRecord: () => context,
+      withCredentialMutationLease, resolveCredentials: unused, clearCredentials: unused,
+      runtimeCallbackEndpoint: async () => endpoint, getWebhookPublicBaseUrl: () => "https://history.example",
+      fetchImpl: unused, runtimeGeneration: () => 3, credentialFingerprint: () => context.credentialFingerprint,
+      redactError: String, credentialCheckTimeoutMs: 1000 });
+    await withCredentialMutationLease(endpoint, lease => service.recordTelegramStopSubscription(endpoint, context, lease));
+    expect(await service.hasTelegramStopSubscription(endpoint, context)).toBe(true);
+    expect(await blocked("chat_actions")).toBe(false);
+    const [receipt] = await db.select().from(tables.chatActions);
+    await db.update(tables.chatActions).set({ payload: { ...receipt.payload, webhookUrlSha256: "unknown" } }).where(eq(tables.chatActions.id, receipt.id));
+    expect(await blocked("chat_actions")).toBe(true);
+  });
+
+  it("retains the actual Slack private-source boundary and governed completed write", async () => {
+    const { recordSlackReadBoundary } = await import("../services/connectors/slack-access.js");
+    const { registerSlackTaskAuthority } = await import("../services/connectors/slack-authority.js");
+    const { executeSlackWrite } = await import("../services/connectors/slack-writes.js");
+    const f = await slackFixture();
+    await recordSlackReadBoundary(db, f.authority, { id: "CPRIVATE", is_private: true });
+    expect(await blocked("chat_actions")).toBe(false);
+    const invocationId = randomUUID();
+    await db.insert(tables.toolInvocations).values({ id: invocationId, companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, runId: f.runId, connectionId: f.connectionId, actorType: "agent", actorId: f.agentId,
+      toolName: "slack_post_message", status: "executing" });
+    const unregister = registerSlackTaskAuthority(db, async () => f.authority);
+    const methods: string[] = [];
+    try {
+      await executeSlackWrite(db, { companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, runId: f.runId },
+        "slack_post_message", { channel: "DCHANNEL", text: "Confirmed message", idempotencyKey: randomUUID() }, invocationId,
+        async input => {
+          const method = new URL(String(input)).pathname.split("/").at(-1)!; methods.push(method);
+          if (method === "conversations.info") return Response.json({ ok: true, channel: { id: "DCHANNEL", is_im: true, user: "UREQUESTER" } });
+          if (method === "users.info") return Response.json({ ok: true, user: { id: "UREQUESTER", team_id: "TWORKSPACE", is_bot: false } });
+          if (method === "chat.postMessage") return Response.json({ ok: true, channel: "DCHANNEL", ts: "123.456" });
+          throw new Error(`Unexpected Slack boundary ${method}`);
+        });
+      expect(methods).toContain("chat.postMessage");
+      expect((await db.select().from(tables.chatActions)).find(a => a.kind === "slack_tool_write"))
+        .toMatchObject({ status: "processed", result: { channel: "DCHANNEL", ts: "123.456" } });
+      expect(await blocked("chat_actions")).toBe(false);
+      await db.update(tables.chatActions).set({ status: "uncertain" }).where(eq(tables.chatActions.kind, "slack_tool_write"));
+      expect(await blocked("chat_actions")).toBe(true);
+    } finally { unregister(); }
+  });
+
+  it("retires actual Slack invitation, test-message and mirror receipts without hiding their publication", async () => {
+    const { slackTestMessageService } = await import("../services/connectors/slack/test-message.js");
+    const { mirrorSlackBoardComment } = await import("../services/slack-board-messages.js");
+    const { chatChannelService } = await import("../services/chat-channels.js");
+    const { chatCredentialMutationLease } = await import("../services/chat-credential-mutation-lease.js");
+    const { instanceSettingsService } = await import("../services/instance-settings.js");
+    const f = await slackFixture();
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const unused = async (): Promise<never> => { throw new Error("Unexpected provider boundary"); };
+    const credentialLease = chatCredentialMutationLease(db);
+    const send = slackTestMessageService(db, { withLock: (id, task) => credentialLease(f.endpoint, task),
+      runtimeBotToken: async () => "test-token", linkInstaller: async () => {}, ensureAccount: async () => f.principal.id,
+      createLinkIntent: async () => ({ confirmationUrl: "https://example.test/link", expiresAt: new Date(Date.now() + 600_000).toISOString() }),
+      fetch: async input => {
+        const method = new URL(String(input)).pathname.split("/").at(-1);
+        if (method === "users.info") return Response.json({ ok: true, user: { id: "UREQUESTER", team_id: "TWORKSPACE", is_bot: false } });
+        if (method === "chat.postMessage") return Response.json({ ok: true, channel: "DCHANNEL", ts: "123.456" });
+        throw new Error(`Unexpected setup boundary ${method}`);
+      } });
+    expect(await send(f.endpoint.id, { userId: f.userId }, { requestId: randomUUID(), slackUserId: "UREQUESTER" }))
+      .toMatchObject({ status: "connection_pending" });
+    expect(await blocked("chat_actions")).toBe(false);
+    await db.insert(tables.chatIdentityLinks).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+      principalId: f.principal.id, paperclipUserId: f.userId, status: "linked", confirmedAt: now });
+    expect(await send(f.endpoint.id, { userId: f.userId }, { requestId: randomUUID(), slackUserId: "UREQUESTER" }))
+      .toMatchObject({ status: "sent" });
+    expect(await blocked("chat_actions")).toBe(false);
+    const [comment] = await db.insert(tables.issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: f.userId, body: "Mirror this board comment" }).returning();
+    await db.transaction(tx => mirrorSlackBoardComment(tx, comment));
+    const [publication] = await db.select().from(tables.chatPublications);
+    expect(publication).toMatchObject({ state: "pending", commentId: comment.id });
+    expect(await blocked("chat_actions")).toBe(true);
+    const service = chatChannelService(db, { heartbeat: { wakeup: unused }, fetch: unused });
+    try {
+      await db.update(tables.chatPublications).set({ state: "delivery_unknown" }).where(eq(tables.chatPublications.id, publication.id));
+      await service.resolvePublication(f.endpoint.id, publication.id, "mark_delivered", f.userId);
+      expect(await blocked("chat_actions")).toBe(false);
+      await db.update(tables.chatActions).set({ status: "uncertain" }).where(eq(tables.chatActions.kind, "slack_test_message"));
+      expect(await blocked("chat_actions")).toBe(true);
+    } finally { await service.shutdown(); }
+  });
+
+  it("retires the actual shared GitHub response target only after its request is final", async () => {
+    const { githubIngressFixture } = await import("./helpers/github-webhook-ingress.js");
+    const { writeGitHubResponseComment } = await import("../services/chat-github-response-comments.js");
+    const { stagePullResponse } = await import("../services/chat-channels/github/response-target.js");
+    const { withGitHubPublicationLease } = await import("../services/chat-github-publication-lease.js");
+    const f = await githubIngressFixture(db), providerEventId = randomUUID();
+    const [issue] = await db.insert(tables.issues).values({ companyId: f.companyId, title: "GitHub reply", status: "done" }).returning();
+    const [conversation] = await db.insert(tables.chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+      issueId: issue.id, externalConversationId: "repository:418", externalThreadId: "github:org/repo:7", externalLabel: "PR7" }).returning();
+    const [delivery] = await db.insert(tables.chatDeliveries).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+      conversationId: conversation.id, providerEventId, deduplicationKey: randomUUID(), eventKind: "action", normalizedEvent: { providerEventId, kind: "action" } }).returning();
+    const source = { endpoint: f.endpoint, conversation, delivery, number: 7, replyId: null, repositoryId: "418" };
+    await stagePullResponse(db, source);
+    expect(await blocked("chat_actions")).toBe(false); // initialized target owns no request yet
+    let posted: { id: number; html_url: string; body: string; user: { login: string | null } } | undefined;
+    const calls: string[] = [];
+    const api = { request: async <T>(pathname: string, options?: { method?: string; body?: unknown }): Promise<T> => {
+      calls.push(`${options?.method ?? "GET"} ${pathname}`);
+      if (!options?.method) return (pathname.includes("?per_page=") ? [] : posted) as T;
+      posted = { id: 123, html_url: "https://github.com/org/repo/pull/7#issuecomment-123",
+        body: (options.body as { body: string }).body, user: { login: f.endpoint.botUsername } };
+      return posted as T;
+    } };
+    const publish = (final: boolean) => withGitHubPublicationLease(db, { companyId: f.companyId, endpointId: f.endpoint.id,
+      repositoryId: "418", number: 7 }, async () => { throw new Error("No lease network expected"); }, lease =>
+      writeGitHubResponseComment(db, source, api, lease, { body: final ? "Final result" : "Working", final }, async () => {}));
+    await publish(false);
+    expect(await blocked("chat_actions")).toBe(true);
+    await publish(true);
+    expect(calls).toContain("PATCH /issues/comments/123");
+    expect(await blocked("chat_actions")).toBe(false);
+    const request = (await db.select().from(tables.chatActions)).find(a => a.kind === "github_response_comment")!;
+    expect(request).toMatchObject({ status: "processed", result: { final: true, id: "123" } });
+    await db.update(tables.chatActions).set({ result: { ...request.result, final: false } }).where(eq(tables.chatActions.id, request.id));
+    expect(await blocked("chat_actions")).toBe(true);
+  });
+
+  it("retires actual GitHub terminal review checks despite their retained retry hints", async () => {
+    const { githubIngressFixture } = await import("./helpers/github-webhook-ingress.js");
+    const { githubReviewCheckService } = await import("../services/chat-github-checks.js");
+    const { secretService } = await import("../services/secrets.js");
+    const { defaultGitHubReviewPolicy } = await import("@paperclipai/shared");
+    const oldKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "a".repeat(64);
+    try {
+      const f = await githubIngressFixture(db);
+      const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048,
+        privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey;
+      const refs = [];
+      for (const [key, value] of Object.entries({ appId: "12", installationId: "34", privateKey })) {
+        const secret = await secretService(db).create(f.companyId, { name: `GitHub ${key}`, key, provider: "local_encrypted", value });
+        refs.push({ configPath: `credentials.${key}`, secretId: secret.id, versionSelector: "latest" as const });
+        await secretService(db).createBinding({ companyId: f.companyId, secretId: secret.id, targetType: "tool_connection",
+          targetId: f.endpoint.connectionId, configPath: `credentials.${key}`, versionSelector: "latest" });
+      }
+      await db.update(tables.toolConnections).set({ enabled: true, status: "active", credentialSecretRefs: refs })
+        .where(eq(tables.toolConnections.id, f.endpoint.connectionId));
+      await db.insert(tables.chatGitHubConfigurations).values({ companyId: f.companyId, endpointId: f.endpoint.id, updatedByUserId: "local-board",
+        configuration: { version: 1, toolsEnabled: true, responsibleUserId: "local-board", memberAccess: "all_linked", people: [],
+          repositories: {}, defaults: { ...defaultGitHubReviewPolicy(), ratingThreshold: 3 } } });
+      await db.insert(tables.chatEndpointResources).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+        providerResourceId: "org/repo", type: "repository", label: "org/repo", enabled: true,
+        availability: "available", metadata: { providerRepositoryId: "418" } });
+      const event = { event: "opened" as const, deliveryId: randomUUID(), repositoryId: "418", repository: "org/repo", pullNumber: 7,
+        title: "Saved review", body: "", baseSha: "a".repeat(40), headSha: "b".repeat(40), baseBranch: "master",
+        author: { id: "42", login: "octocat", isBot: false }, sender: { id: "42", login: "octocat" }, draft: false, labels: [] };
+      const calls: string[] = [];
+      let stale = false;
+      const service = githubReviewCheckService(db, async input => {
+        const pathname = new URL(String(input)).pathname; calls.push(pathname);
+        if (pathname === "/app/installations/34/access_tokens") return Response.json({ token: "test-token" });
+        if (pathname === "/repos/org/repo/pulls/7") return Response.json({ head: { sha: stale ? "c".repeat(40) : event.headSha } });
+        if (pathname.endsWith("/check-runs")) return Response.json(pathname.includes("/commits/")
+          ? { check_runs: [] } : { id: 123, html_url: "https://github.com/org/repo/runs/123" });
+        throw new Error(`Unexpected GitHub boundary ${pathname}`);
+      });
+      await service.enqueue(f.endpoint, event, false, "manual review required");
+      const [pending] = await db.select().from(tables.chatActions).where(eq(tables.chatActions.kind, "github_review_check"));
+      expect(await blocked("chat_actions")).toBe(true);
+      await service.processPending();
+      const [completed] = await db.select().from(tables.chatActions).where(eq(tables.chatActions.id, pending.id));
+      expect(completed, JSON.stringify({ result: completed.result, calls })).toMatchObject({ status: "processed", result: { state: "manual_required", retryable: true } });
+      expect(calls).toContain("/repos/org/repo/check-runs");
+      expect(await blocked("chat_actions")).toBe(false);
+      stale = true;
+      await service.enqueue(f.endpoint, { ...event, deliveryId: randomUUID() }, false, "stale head");
+      const next = (await db.select().from(tables.chatActions)).find(a => a.status === "received")!;
+      await service.processPending();
+      expect((await db.select().from(tables.chatActions).where(eq(tables.chatActions.id, next.id)))[0])
+        .toMatchObject({ status: "cancelled", result: { code: "stale_head" } });
+      expect(await blocked("chat_actions")).toBe(false);
+      await service.enqueue(f.endpoint, { ...event, deliveryId: randomUUID() }, false, "connection removed");
+      await db.update(tables.chatEndpointResources).set({ enabled: false }).where(eq(tables.chatEndpointResources.endpointId, f.endpoint.id));
+      const last = (await db.select().from(tables.chatActions)).find(a => a.status === "received")!;
+      await service.processPending();
+      expect((await db.select().from(tables.chatActions).where(eq(tables.chatActions.id, last.id)))[0])
+        .toMatchObject({ status: "cancelled", result: { code: "connection_changed" } });
+      expect(await blocked("chat_actions")).toBe(false);
+      await db.update(tables.chatActions).set({ result: { state: "queued", retryable: true } }).where(eq(tables.chatActions.id, completed.id));
+      expect(await blocked("chat_actions")).toBe(true);
+    } finally { if (oldKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY; else process.env.PAPERCLIP_SECRETS_MASTER_KEY = oldKey; }
+  }, 60_000);
+
+  it("retires real question-form tokens only after their exact canonical answer commits", async () => {
+    const { issueThreadInteractionService } = await import("../services/issue-thread-interactions.js");
+    const { claimChatQuestionFormSubmission, completeChatQuestionFormSubmission } = await import("../services/chat-question-forms.js");
+    const f = await seed(), c = await connection(f);
+    await db.update(tables.issues).set({ status: "in_progress" }).where(eq(tables.issues.id, f.issueId));
+    const [endpoint] = await db.insert(tables.chatEndpoints).values({ companyId: f.companyId, connectionId: c.connectionId,
+      assignedAgentId: f.agentId, publicId: randomUUID(), provider: "slack", status: "active", publicationMode: "automatic",
+      capabilities: { actions: true, modals: true } }).returning();
+    const [conversation] = await db.insert(tables.chatConversations).values({ companyId: f.companyId, endpointId: endpoint.id,
+      issueId: f.issueId, externalConversationId: "question-channel", externalThreadId: "question-thread", externalLabel: "Question", state: "active" }).returning();
+    const [principal] = await db.insert(tables.chatExternalPrincipals).values({ companyId: f.companyId, provider: "slack",
+      providerAccountId: "workspace", externalId: "answering-user" }).returning();
+    const service = issueThreadInteractionService(db);
+    const interaction = await service.create({ id: f.issueId, companyId: f.companyId }, {
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", title: "Two questions",
+      payload: { version: 1, title: "Two questions", submitLabel: "Continue", questions: ["first", "second"].map(id => ({
+        id, prompt: id, selectionMode: "single" as const, required: true, allowOther: false,
+        options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] })) },
+    }, { agentId: f.agentId });
+    const actions = await db.select().from(tables.chatActions);
+    const open = actions.find(a => a.kind === "question_form_open"), submit = actions.find(a => a.kind === "question_form_submit");
+    expect(open).toMatchObject({ conversationId: conversation.id, status: "issued", result: null });
+    expect(submit).toMatchObject({ status: "issued", result: null });
+    expect(await blocked("chat_actions")).toBe(true);
+    await service.answerQuestions({ id: f.issueId, companyId: f.companyId }, interaction.id,
+      { answers: ["first", "second"].map(questionId => ({ questionId, optionIds: ["yes"] })) }, { userId: "local-board" }, {
+        afterResolveInTransaction: async (tx, resolved) => {
+          expect(await claimChatQuestionFormSubmission(tx, { actionRowId: submit!.id, principalId: principal.id })).toBe(true);
+          expect(await completeChatQuestionFormSubmission(tx, { actionRowId: submit!.id, interactionId: resolved.id })).toBe(true);
+        },
+      });
+    expect((await db.select().from(tables.issueThreadInteractions).where(eq(tables.issueThreadInteractions.id, interaction.id)))[0])
+      .toMatchObject({ status: "answered", resolvedAt: expect.any(Date) });
+    expect(await blocked("chat_actions")).toBe(false);
+    await db.update(tables.chatActions).set({ result: { code: "question_form_answered", interactionId: randomUUID() } })
+      .where(eq(tables.chatActions.id, submit!.id));
+    expect(await blocked("chat_actions")).toBe(true);
+  });
+
+  it("retires a staged inbound wake only after its actual delivery owner rejects it", async () => {
+    const { githubIngressFixture } = await import("./helpers/github-webhook-ingress.js");
+    const { createInboundWakeups } = await import("../services/chat-channels/inbound/wakeups.js");
+    const { chatChannelService } = await import("../services/chat-channels.js");
+    const f = await githubIngressFixture(db);
+    const [issue] = await db.insert(tables.issues).values({ companyId: f.companyId, title: "Rejected input" }).returning();
+    const [conversation] = await db.insert(tables.chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+      issueId: issue.id, externalConversationId: "rejected", externalThreadId: "rejected", externalLabel: "Rejected" }).returning();
+    const [principal] = await db.insert(tables.chatExternalPrincipals).values({ companyId: f.companyId, provider: "github",
+      providerAccountId: "test", externalId: "42" }).returning();
+    const [comment] = await db.insert(tables.issueComments).values({ companyId: f.companyId, issueId: issue.id, body: "Input" }).returning();
+    const providerEventId = randomUUID();
+    const [delivery] = await db.insert(tables.chatDeliveries).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+      conversationId: conversation.id, providerEventId, deduplicationKey: randomUUID(), eventKind: "message", state: "received",
+      normalizedEvent: { providerEventId, kind: "message" } }).returning();
+    const unused = async (): Promise<never> => { throw new Error("No provider/admission boundary expected"); };
+    const wakes = createInboundWakeups(db, { authorizeInboundWakeup: unused, authorizeInboundWorkStart: unused,
+      attachmentOmissionDetail: () => null, isExternalActionAuthorizationChange: () => false, redactError: String,
+      fetchImpl: unused, heartbeat: { wakeup: unused } });
+    const service = chatChannelService(db, { heartbeat: { wakeup: unused }, fetch: unused });
+    try {
+      await db.transaction(tx => wakes.stageInboundWakeup(tx, { endpoint: f.endpoint, deliveryId: delivery.id,
+        conversation, commentId: comment.id, principalId: principal.id, actorUserId: null }));
+      expect(await blocked("chat_actions")).toBe(true);
+      await wakes.settleRejectedInboundWakeups(delivery.id);
+      expect((await db.select().from(tables.chatActions))[0].status).toBe("preparing");
+      await service.configure(f.endpoint.id, { action: "pause" }, "local-board");
+      await wakes.settleRejectedInboundWakeups(delivery.id);
+      expect((await db.select().from(tables.chatActions))[0]).toMatchObject({ status: "failed",
+        result: { code: "inbound_wakeup_delivery_rejected" } });
+      expect(await db.select().from(tables.agentWakeupRequests)).toHaveLength(0);
+      expect(await blocked("chat_actions")).toBe(false);
+      expect(await blocked("chat_deliveries")).toBe(false);
+      await db.update(tables.chatDeliveries).set({ nextAttemptAt: new Date(Date.now() + 60_000) }).where(eq(tables.chatDeliveries.id, delivery.id));
+      expect(await blocked("chat_actions")).toBe(true);
+    } finally { wakes.unregisterDeferredWakeOwner(); await service.shutdown(); }
+  });
+
+  it("retires actual Teams consent and provider-effect receipts only after the transfer closes", async () => {
+    const { teamsFileTransferService } = await import("../services/chat-teams-file-transfers.js");
+    const { projectTeamsFilePublication } = await import("../services/chat-teams-file-publication.js");
+    const { installTeamsFileConsentHook, restoreTeamsFileConsentBinding } = await import("../services/chat-teams-file-consent.js");
+    const oldKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "a".repeat(64);
+    try {
+      const f = await seed(), c = await connection(f), bytes = Buffer.from("Actual Teams transfer");
+      const authority = { companyId: f.companyId, endpointId: randomUUID(), conversationId: randomUUID(), issueId: f.issueId,
+        publicationId: randomUUID(), commentId: randomUUID(), attachmentId: randomUUID(), principalId: randomUUID(),
+        authorizedUserId: "local-board", runtimeGeneration: 3, credentialFingerprint: "c".repeat(64), conversationGeneration: 2,
+        sourceDigest: "d".repeat(64), tenantId: randomUUID(), botAppId: randomUUID(), aadObjectId: randomUUID(),
+        providerConversationId: "a:exact-personal", providerUserId: "29:exact-recipient",
+        sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.length, filename: "file.txt" };
+      await db.insert(tables.chatEndpoints).values({ id: authority.endpointId, companyId: f.companyId, connectionId: c.connectionId,
+        assignedAgentId: f.agentId, publicId: randomUUID(), provider: "microsoft-teams", status: "active",
+        providerAccountId: authority.tenantId, botExternalId: authority.botAppId });
+      await db.insert(tables.chatConversations).values({ id: authority.conversationId, companyId: f.companyId,
+        endpointId: authority.endpointId, issueId: f.issueId, externalConversationId: authority.providerConversationId,
+        externalThreadId: `teams:${Buffer.from(authority.providerConversationId).toString("base64url")}`, externalLabel: "Personal",
+        isDirectMessage: true, sessionGeneration: 2 });
+      await db.insert(tables.chatExternalPrincipals).values({ id: authority.principalId, companyId: f.companyId, provider: "microsoft-teams",
+        providerAccountId: authority.tenantId, externalId: authority.aadObjectId });
+      await db.insert(tables.issueComments).values({ id: authority.commentId, companyId: f.companyId, issueId: f.issueId,
+        authorUserId: "local-board", body: "Share this file" });
+      const [asset] = await db.insert(tables.assets).values({ companyId: f.companyId, provider: "local_disk", objectKey: randomUUID(),
+        contentType: "text/plain", byteSize: bytes.length, sha256: authority.sha256, originalFilename: authority.filename }).returning();
+      await db.insert(tables.issueAttachments).values({ id: authority.attachmentId, companyId: f.companyId, issueId: f.issueId,
+        assetId: asset.id, issueCommentId: authority.commentId });
+      await db.insert(tables.chatPublications).values({ id: authority.publicationId, companyId: f.companyId,
+        endpointId: authority.endpointId, conversationId: authority.conversationId, issueId: f.issueId, commentId: authority.commentId,
+        idempotencyKey: randomUUID(), payload: { text: "Share file", attachmentIds: [authority.attachmentId] } });
+      const service = teamsFileTransferService(db, { authorize: async () => ({ ...authority }), loadBytes: async () => bytes,
+        postConsent: async () => ({ id: "card-1" }), postFileInfo: async () => ({ id: "file-info-1" }),
+        uploadRequest: async () => Response.json({ id: "item-1", name: "file.txt", size: bytes.length }, { status: 201 }),
+        project: projectTeamsFilePublication });
+      const created = await service.issue(authority, new Date(Date.now() + 60_000));
+      await service.process(f.companyId, created.id);
+      const [pending] = await db.select().from(tables.chatTeamsFileTransfers);
+      expect(pending.phase).toBe("awaiting_consent");
+      expect((await db.select().from(tables.chatActions)).map(a => a.kind)).toContain("teams_file_effect_intent");
+      expect(await blocked("chat_actions")).toBe(true);
+      const binding = await restoreTeamsFileConsentBinding({ companyId: f.companyId, endpointId: authority.endpointId,
+        transferId: created.id, authorityDigest: pending.authorityDigest }, pending.privateState.binding as Record<string, unknown>);
+      const handlers = new Map<string, (context: { activity: unknown }) => Promise<{ status: number }>>();
+      installTeamsFileConsentHook({ on: (name, callback) => { handlers.set(name, callback); } }, {
+        companyId: f.companyId, endpointId: authority.endpointId, tenantId: authority.tenantId, botAppId: authority.botAppId,
+        onConsent: event => service.recordConsent(event) });
+      expect((await handlers.get("file.consent.decline")!({ activity: { type: "invoke", name: "fileConsent/invoke", channelId: "msteams",
+        id: "decline-1", from: { id: authority.providerUserId, aadObjectId: authority.aadObjectId },
+        recipient: { id: `28:${authority.botAppId}` }, conversation: { id: authority.providerConversationId, conversationType: "personal", tenantId: authority.tenantId },
+        replyToId: "card-1", value: { action: "decline", context: { schema: binding.schema, token: binding.token, action: "decline" } } } })).status).toBe(200);
+      expect((await db.select().from(tables.chatTeamsFileTransfers))[0]).toMatchObject({ phase: "declined", attemptId: null, attemptExpiresAt: null });
+      expect((await db.select().from(tables.chatActions)).map(a => a.kind)).toEqual(expect.arrayContaining(["teams_file_effect_intent", "teams_file_consent"]));
+      expect(await blocked("chat_actions")).toBe(false);
+      expect(await blocked("chat_publications")).toBe(false);
+      const [receipt] = await db.select().from(tables.chatActions).where(eq(tables.chatActions.kind, "teams_file_consent"));
+      await db.update(tables.chatActions).set({ payload: { ...receipt.payload, receiptDigest: "wrong" } }).where(eq(tables.chatActions.id, receipt.id));
+      expect(await blocked("chat_actions")).toBe(true);
+    } finally { if (oldKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY; else process.env.PAPERCLIP_SECRETS_MASTER_KEY = oldKey; }
+  });
+
+  it("measures both chat predicates against 10000 valid retained deliveries and 30000 completed actions", async () => {
+    const { githubIngressFixture } = await import("./helpers/github-webhook-ingress.js");
+    const { chatChannelService } = await import("../services/chat-channels.js");
+    const f = await githubIngressFixture(db, undefined, 256), providerEventId = randomUUID();
+    const [delivery] = await db.insert(tables.chatDeliveries).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+      providerEventId, deduplicationKey: randomUUID(), eventKind: "message", state: "received",
+      normalizedEvent: { providerEventId, kind: "message" } }).returning();
+    const action = await f.insertAction({ deliveryId: delivery.id });
+    await f.service.processGitHubWebhookIngress(action.id);
+    const unused = async (): Promise<never> => { throw new Error("No external boundary expected"); };
+    const service = chatChannelService(db, { heartbeat: { wakeup: unused }, fetch: unused });
+    try { await service.configure(f.endpoint.id, { action: "pause" }, "local-board"); }
+    finally { await service.shutdown(); }
+    expect(await blocked("chat_deliveries")).toBe(false);
+    expect(await blocked("chat_actions")).toBe(false);
+    // Retention load clones a receipt produced above; it is measurement data,
+    // not a substitute for the producer regressions in the surrounding cases.
+    await db.execute(sql`INSERT INTO chat_deliveries (company_id, endpoint_id, provider_event_id, deduplication_key, event_kind,
+      state, normalized_event, processed_at)
+      SELECT ${f.companyId}::uuid, ${f.endpoint.id}::uuid, 'retained:' || n, 'retained:' || n, d.event_kind, d.state,
+        jsonb_set(d.normalized_event, '{providerEventId}', to_jsonb('retained:' || n)), d.processed_at
+      FROM chat_deliveries d CROSS JOIN generate_series(1, 9999) n WHERE d.id = ${delivery.id}::uuid`);
+    await db.execute(sql`INSERT INTO chat_actions (company_id, endpoint_id, delivery_id, kind, provider_action_id, payload, status, result)
+      SELECT a.company_id, a.endpoint_id, d.id, a.kind, 'retained:' || d.id || ':' || n, a.payload, a.status, a.result
+      FROM chat_actions a JOIN chat_deliveries d ON d.endpoint_id = a.endpoint_id CROSS JOIN generate_series(1, 3) n
+      WHERE a.id = ${action.id}::uuid AND d.id <> ${delivery.id}::uuid`);
+    await db.execute(sql`ANALYZE chat_deliveries`);
+    await db.execute(sql`ANALYZE chat_actions`);
+    const current = completedHistoryChecks.filter(c => ["chat_deliveries", "chat_actions"].includes(c.reason));
+    const baselinePath = process.env.PAPERCLIP_HISTORY_QUERY_BASELINE_PATH;
+    const baseline: { reason: string; query: string }[] = baselinePath ? JSON.parse(await readFile(baselinePath, "utf8")) : [];
+    const measurements = [];
+    for (const [revision, checks] of [["published_aaf55692", baseline], ["repair", current]] as const) {
+      for (const check of checks) {
+        const started = performance.now();
+        const plan = await db.transaction(async tx => {
+          await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+          return tx.execute(sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT EXISTS (${sql.raw(check.query)}) AS blocked`);
+        });
+        measurements.push({ revision, reason: check.reason, wallMs: performance.now() - started, plan });
+      }
+    }
+    const evidence = { deliveries: 10000, actions: 29998, measurements };
+    if (process.env.PAPERCLIP_HISTORY_QUERY_PLANS_PATH) await writeFile(process.env.PAPERCLIP_HISTORY_QUERY_PLANS_PATH,
+      JSON.stringify(evidence, null, 2));
+    console.info(`Retained chat history query plans ${JSON.stringify(evidence)}`);
+    expect(await blocked("chat_deliveries")).toBe(false);
+    expect(await blocked("chat_actions")).toBe(false);
+  }, 60_000);
 
   it("uses actual chat ingress, lifecycle application and operator publication receipts", async () => {
     const { githubIngressFixture } = await import("./helpers/github-webhook-ingress.js");

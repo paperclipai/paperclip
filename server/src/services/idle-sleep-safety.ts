@@ -17,7 +17,7 @@ import { idleBrowserHistoryChecks } from "./browser-use-idle-proof.js";
 import { idleDecisionHistoryChecks } from "./decision-idle-proof.js";
 import { idleWorkspaceHistoryChecks } from "./workspace-history-idle-proof.js";
 import { idleMcpHistoryChecks } from "./public-mcp/idle-history-proof.js";
-import { idleExternalAgentHistoryChecks } from "../modules/external-agents/idle-history-proof.js";
+import { idleExternalAgentHistoryChecks } from "../modules/external-agents/index.js";
 
 export const completedHistoryChecks = [
   ...idleChatHistoryChecks, ...idleToolActionHistoryChecks, ...idleBrowserHistoryChecks,

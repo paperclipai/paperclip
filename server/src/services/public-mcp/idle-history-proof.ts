@@ -22,14 +22,17 @@ export const idleMcpHistoryChecks = [
         OR (d.mailbox_item_id IS NOT NULL AND d.activity_id IS NULL AND EXISTS (
           SELECT 1 FROM dot_mailbox_items m WHERE m.id = d.mailbox_item_id
             AND m.company_id = s.company_id AND m.binding_id = s.binding_id))))) IS NOT TRUE` },
-  // The upload owner allocates object identity before storage writes and only
-  // stamps cleaned_at after deletion. A committed attachment is never deleted.
+  // Upload identity survives user deletion. Only the new owner-verified
+  // absence stamp can retire cleanup; legacy cleaned_at alone was optimistic.
   { reason: "mcp_attachment_uploads", query: `SELECT 1 FROM mcp_attachment_uploads u WHERE (
-    EXISTS (SELECT 1 FROM issues i WHERE i.id = u.task_id AND i.company_id = u.company_id)
+    EXISTS (SELECT 1 FROM companies c WHERE c.id = u.company_id)
+    AND NOT EXISTS (SELECT 1 FROM issues contradiction WHERE contradiction.id = u.task_id AND contradiction.company_id <> u.company_id)
     AND (u.grant_id IS NULL OR EXISTS (SELECT 1 FROM mcp_oauth_grants g WHERE g.id = u.grant_id
       AND g.company_id = u.company_id AND g.user_id = u.user_id))
-    AND ((u.attachment_id IS NULL AND u.cleaned_at IS NOT NULL)
-      OR (u.cleaned_at IS NULL AND u.attachment_id IS NOT NULL AND EXISTS (
+    AND ((u.cleaned_at IS NOT NULL AND u.cleanup_verified_at IS NOT NULL AND u.cleanup_verified_at >= u.cleaned_at
+        AND (u.attachment_id IS NULL OR NOT EXISTS (SELECT 1 FROM issue_attachments live WHERE live.id = u.attachment_id)))
+      OR (u.cleaned_at IS NULL AND u.cleanup_verified_at IS NULL AND u.attachment_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM issues i WHERE i.id = u.task_id AND i.company_id = u.company_id) AND EXISTS (
         SELECT 1 FROM issue_attachments a JOIN assets stored ON stored.id = a.asset_id
         WHERE a.id = u.attachment_id AND a.company_id = u.company_id AND a.issue_id = u.task_id
           AND stored.company_id = u.company_id AND stored.object_key = u.object_key

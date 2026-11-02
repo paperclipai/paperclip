@@ -118,6 +118,30 @@ Failed company transfers remain resumable. Completed transfers require their
 recorded manifest, exact part receipts and matching counts. Completed/cancelled
 transfers still block while their registered local spool contains cleanup work.
 
+Chat control tokens can remain issued or become expired after another actor
+resolves their canonical interaction. Their exact interaction, publication and
+conversation receipts establish completion; a token status alone does not.
+Provider submission receipts do not exempt pending source wakes or publications.
+Photon attachment provenance remains immutable history after ordinary attachment
+removal, but any surviving metadata must agree with its recorded identities and
+hashes. This proof establishes completed registration, not storage cleanup.
+
+Public-MCP upload cleanup requires both the existing cleanup stamp and a new
+verified-cleanup stamp. Ordinary attachment and issue removal write this proof
+only after successful object deletion and an absence readback. Legacy cleanup
+stamps are not backfilled: the existing bounded opportunistic sweep can verify
+expired or orphaned uploads. Reissuing an uncommitted upload clears both stamps;
+a committed/deleted request replay preserves them. An expired or cleaned upload
+cannot accept a still-valid old transport ticket.
+
+Voice report refresh remains work for the owner's full 24-hour window after a
+provider session ends, even when the report is available. Live session recovery,
+unconfirmed inbound cleanup and ambiguous reply submission still block. A
+completed provider submission does not prove spoken playback. Speko setup also
+requires the existing successful whole-configuration receipt after its individual
+tool and webhook writes. Discord command registration retains its own future
+check; a completed command invocation does not retire that deadline.
+
 Waiting agent conversations can be passive containers under both ordinary and
 scheduled inspection. The same narrow proof requires the exact conversation
 agent/company/user, waiting state, no checkout, active run, accounting, monitor
