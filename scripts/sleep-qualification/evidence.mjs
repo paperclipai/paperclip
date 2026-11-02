@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -6,6 +7,37 @@ const finite = value => typeof value === 'number' && Number.isFinite(value) && v
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const layers = ['workerQuiet', 'eligibility', 'databaseSuspension', 'hostSuspension', 'backupPersistence', 'inboundWake', 'timedWake', 'returnToIdle'];
 const result = (verdict, reason) => ({ verdict, reason });
+const validBackupCheckpoint = (backup, inRun, quietFinishedAt) => backup?.owner === 'normal-idle-checkpoint' && backup.wakeMarkerObserved === true
+  && backup.failureObserved === false && inRun(backup.startedAt) && inRun(backup.observedAt)
+  && Date.parse(backup.startedAt) >= Date.parse(quietFinishedAt) && Date.parse(backup.observedAt) >= Date.parse(backup.startedAt) && Array.isArray(backup.archives) && backup.archives.length > 0
+  && backup.archives.every(archive => typeof archive.name === 'string' && /^[^/\\]+\.sql\.gz$/.test(archive.name)
+    && finite(archive.bytes) && archive.bytes > 0 && finite(archive.sqlBytes) && archive.sqlBytes > 0
+    && /^[a-f0-9]{64}$/.test(archive.sha256 ?? '') && archive.gzipVerified === true && archive.fixtureIdentifierFound === true
+    && inRun(archive.createdAt) && Date.parse(archive.createdAt) >= Date.parse(backup.startedAt) && Date.parse(archive.createdAt) <= Date.parse(backup.observedAt));
+
+/** Canonical logical configuration: ephemeral collector addresses are bound separately. */
+export function logicalSleepConfiguration(configuration) {
+  if (!configuration || typeof configuration.announcements !== 'boolean' || typeof configuration.serveUi !== 'boolean'
+    || typeof configuration.telemetryOrigin !== 'string' || typeof configuration.otelOrigin !== 'string'
+    || typeof configuration.automaticBackups?.idleCheckpoint !== 'boolean'
+    || !finite(configuration.automaticBackups?.intervalMinutes) || configuration.automaticBackups.intervalMinutes < 1) {
+    throw new Error('sleep_qualification_configuration_invalid');
+  }
+  return { automaticBackups: { intervalMinutes: configuration.automaticBackups.intervalMinutes,
+    idleCheckpoint: configuration.automaticBackups.idleCheckpoint }, announcements: configuration.announcements,
+    telemetry: Boolean(configuration.telemetryOrigin), otel: { enabled: Boolean(configuration.otelOrigin), protocol: 'http/json' }, serveUi: configuration.serveUi };
+}
+export const sleepConfigurationDigest = configuration => createHash('sha256').update(JSON.stringify(logicalSleepConfiguration(configuration))).digest('hex');
+
+/** Finish after observations, then validate the exact serialized local receipt. */
+export function finalizeLocalSleepReceipt(observations, expected, now = () => new Date().toISOString()) {
+  const receipt = { ...observations, finishedAt: now() };
+  const report = evaluateSleepQualification(receipt, expected);
+  if (report.layers.workerQuiet.verdict !== 'VERIFIED' || report.layers.eligibility.verdict !== 'VERIFIED') {
+    throw new Error('sleep_qualification_local_evidence_invalid');
+  }
+  return { receipt, report };
+}
 
 /** Evaluate this campaign's measured boundaries. A local run cannot certify a provider. */
 export function evaluateSleepQualification(receipt, expected) {
@@ -17,6 +49,12 @@ export function evaluateSleepQualification(receipt, expected) {
     || ['appSha', 'cloudSha', 'target', 'configDigest'].some(key => receipt[key] !== expected[key])) {
     throw new Error('sleep_qualification_identity_or_window_invalid');
   }
+  if (sleepConfigurationDigest(receipt.configuration) !== expected.configDigest) throw new Error('sleep_qualification_configuration_digest_invalid');
+  const origins = receipt.collectorOrigins;
+  if (!origins || origins.telemetry !== receipt.configuration.telemetryOrigin || origins.otel !== receipt.configuration.otelOrigin
+    || (expected.collectorOrigins && (origins.telemetry !== expected.collectorOrigins.telemetry || origins.otel !== expected.collectorOrigins.otel))) {
+    throw new Error('sleep_qualification_collector_origins_invalid');
+  }
   const output = Object.fromEntries(layers.map(layer => [layer, result('INCONCLUSIVE', 'No evidence for this layer')]));
   const inRun = value => stamp(value) && Date.parse(value) >= Date.parse(receipt.startedAt) && Date.parse(value) <= Date.parse(receipt.finishedAt);
   const quiet = receipt.quiet;
@@ -27,7 +65,7 @@ export function evaluateSleepQualification(receipt, expected) {
       && finite(quiet.connectionsRemaining) && finite(quiet.nonDatabaseRequests) && finite(quiet.nonDatabaseBytes)
       && Array.isArray(quiet.observerRequests) && quiet.observerRequests.length === 0
       && receipt.features?.telemetry === true && receipt.features?.announcements === true
-      && receipt.features?.automaticBackups === true
+      && receipt.features?.automaticBackups === true && validBackupCheckpoint(receipt.backupCheckpoint, inRun, quiet.finishedAt)
       && receipt.features?.otel === true && receipt.features?.exportedSpans > 0;
     const idle = valid && quiet.sqlQueries === 0 && quiet.connectionsOpened === 0 && quiet.connectionsRemaining === 0
       && quiet.nonDatabaseRequests === 0 && quiet.nonDatabaseBytes === 0;
@@ -37,7 +75,7 @@ export function evaluateSleepQualification(receipt, expected) {
   if (eligibility) {
     const valid = inRun(eligibility.observedAt) && eligibility.backgroundWork === 'none'
       && eligibility.ownedHold === true && eligibility.unchangedGeneration === true
-      && eligibility.apiCooldownElapsedMs >= 600_000;
+      && finite(eligibility.apiCooldownElapsedMs) && eligibility.apiCooldownElapsedMs >= 600_000;
     output.eligibility = result(valid ? 'VERIFIED' : 'NOT VERIFIED', valid ? 'Owned stable safety proof after real API activity cooldown' : 'Safety proof or real API activity cooldown not established');
   }
   const provider = receipt.provider;
@@ -53,11 +91,19 @@ export function evaluateSleepQualification(receipt, expected) {
     if (untouched && endpoint?.identityVerified === true && endpoint.currentState === 'idle' && endpoint.pendingState === null) {
       output.databaseSuspension = result('VERIFIED', 'Exact endpoint idle from live Neon control-plane metadata');
     }
+    if (untouched && endpoint?.identityVerified === true && (endpoint.currentState === 'active'
+      || (endpoint.currentState === 'idle' && endpoint.pendingState === 'active'))) {
+      output.databaseSuspension = result('NOT VERIFIED', 'Exact Neon endpoint is active or becoming active');
+    }
     const services = provider.railway?.services;
     if (untouched && provider.railway?.identityVerified === true && provider.railway.state === 'OBSERVED' && Array.isArray(services) && services.length > 0
       && services.every(service => service.identityVerified === true && service.state === 'OBSERVED' && service.allDeploymentsStopped === true
         && typeof service.backupsEnabled === 'boolean' && (service.backupsEnabled === false || service.backupStorageVerified === true))) {
       output.hostSuspension = result('VERIFIED', 'Every exact owned service has stopped deployments');
+    }
+    if (untouched && provider.railway?.identityVerified === true && Array.isArray(services)
+      && services.some(service => service.identityVerified === true && service.state === 'OBSERVED' && service.allDeploymentsStopped === false)) {
+      output.hostSuspension = result('NOT VERIFIED', 'An exact observed owned service still has running deployments');
     }
     const storage = provider.storage;
     if (output.hostSuspension.verdict === 'VERIFIED' && storage?.identityVerified === true
@@ -83,11 +129,18 @@ export function evaluateSleepQualification(receipt, expected) {
     output[layer] = result(verified ? 'VERIFIED' : 'NOT VERIFIED', verified ? `Useful authorized ${kind} wake after provider sleep` : `Missing provider sleep, chronology, authorization or useful ${kind} outcome`);
   }
   if (receipt.returnToIdle) {
-    const lastWake = Math.max(...['inboundWake', 'timedWake'].filter(layer => receipt[layer]).map(layer => Date.parse(receipt[layer].finishedAt)));
+    const presentWakes = ['inboundWake', 'timedWake'].filter(layer => Object.hasOwn(receipt, layer));
+    const everyWakeInRun = presentWakes.every(layer => inRun(receipt[layer]?.stimulusAt) && inRun(receipt[layer]?.finishedAt)
+      && Date.parse(receipt[layer].finishedAt) >= Date.parse(receipt[layer].stimulusAt));
+    const lastWake = Math.max(...presentWakes.map(layer => Date.parse(receipt[layer]?.finishedAt)));
     const idle = receipt.returnToIdle;
     const usefulWake = ['inboundWake', 'timedWake'].some(layer => output[layer].verdict === 'VERIFIED');
-    const valid = usefulWake && Number.isFinite(lastWake) && inRun(idle.observedAt) && Date.parse(idle.observedAt) > lastWake
-      && idle.freshQuietWindowMs >= 90_000 && idle.backgroundWork === 'none' && idle.ownedHold === true;
+    const valid = usefulWake && everyWakeInRun && Number.isFinite(lastWake) && inRun(idle.observedAt) && Date.parse(idle.observedAt) > lastWake
+      && inRun(idle.quietStartedAt) && inRun(idle.quietFinishedAt)
+      && Date.parse(idle.quietStartedAt) >= lastWake && Date.parse(idle.quietFinishedAt) <= Date.parse(idle.observedAt)
+      && Date.parse(idle.quietFinishedAt) - Date.parse(idle.quietStartedAt) >= 90_000
+      && finite(idle.freshQuietWindowMs) && idle.freshQuietWindowMs >= 90_000
+      && idle.freshQuietWindowMs <= Date.parse(idle.quietFinishedAt) - Date.parse(idle.quietStartedAt) && idle.backgroundWork === 'none' && idle.ownedHold === true;
     output.returnToIdle = result(valid ? 'VERIFIED' : 'NOT VERIFIED', valid ? 'Fresh quiet owned proof after useful wake' : 'No fresh quiet proof after useful wake');
   }
   return { version: 1, target: expected.target, appSha: expected.appSha, cloudSha: expected.cloudSha, configDigest: expected.configDigest, layers: output };

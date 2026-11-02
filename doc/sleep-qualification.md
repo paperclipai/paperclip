@@ -88,8 +88,35 @@ node scripts/sleep-qualification/evidence.mjs receipt.json expected.json report.
 ```
 
 `expected.json` binds `appSha`, `cloudSha`, `target` and a SHA-256 `configDigest`.
+The digest uses `logicalSleepConfiguration(configuration)`: explicit backup interval
+and checkpoint policy, announcements, telemetry activation, OTLP activation/protocol,
+and UI activation in a fixed order. It excludes ephemeral loopback ports. Compute
+the expected logical contract independently before starting the fixture; the
+evaluator recomputes the receipt digest. Keep actual `collectorOrigins.telemetry`
+and `.otel` separately, matching the actual configuration and optional expected
+origin bindings.
+
+Before the normal cooldown, a signed diagnostic-only inventory saves both raw
+reports. It explicitly expects the active API cooldown aggregate and the skipped
+backup diagnostic; every other reported blocker must be absent. Aggregate local
+probes cannot identify which probe is present, so this early inventory never
+proves eligibility. Its hold is released before the full unchanged cooldown.
+After quiet, raw ordinary reports are saved before assertions; a refusal also saves
+a diagnostic report under that hold.
+
+Automatic backup coverage requires a new archive from the normal idle checkpoint,
+not an enabled flag. After quiet counters freeze, the harness reads every new
+owned gzip through its trailer, hashes compressed bytes, checks nonempty SQL for
+the fixture identifier without retaining contents, and observes the wake marker
+and absence of backup failure markers. This local evidence carries no provider
+volume or restore claim. The owning backup suite separately qualifies restoration.
+Receipt finalization follows all observations and runs the same evaluator before
+writing the final receipt. A return-to-idle claim also needs explicit in-run quiet
+start/end timestamps spanning at least 90 real seconds after the latest wake;
+a duration field alone cannot prove it.
 The evaluator rejects mismatched identities and chronology. Missing evidence stays
-`INCONCLUSIVE`; a measured failed condition is `NOT VERIFIED`. It does not produce
+`INCONCLUSIVE`; a measured failed condition is `NOT VERIFIED`, including an
+identity-verified active Neon endpoint or exact Railway service with running deployments. It does not produce
 provider proof from local counters, fake time, a registry sleep flag or a successful
 control response. Preserve original failures and their raw logs after a retry.
 
