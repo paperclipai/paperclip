@@ -320,6 +320,14 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Fresh remote Retry preparation retains the admitted strategy in its saved
+fingerprint. An unchanged follow-up must not report strategy drift; actual policy
+changes retain the replacement guard. This changes no retry, session-reset,
+workspace or credential authority. The
+[preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+uses PostgreSQL and controlled runtime acquisition. Live provider resumption
+remains a separate check in the [session recipe](../feature-map/runs-adapters.md#session).
+
 Scoped source evidence: restart preparation transfers its lease renewal to the
 native executor after the executor acquires its own reference. Completion stops
 renewal before coordinator release, while real ownership loss retains the detach

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, nativeRunFinalizations, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, nativeRunFinalizations, plugins, projects, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -246,6 +246,34 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         ref: "main", branchMode, branchName: branchMode === "existing" ? "feature/diverged" : "test-WSP-1",
       } });
       await expect(access(workspace.cwd!)).rejects.toThrow();
+      if (fresh && branchMode === "create") {
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+          .where(eq(heartbeatRuns.id, input.run.id));
+        const [saved] = await db.update(executionWorkspaces).set({ metadata: {
+          ...workspace.metadata,
+          remoteWorkspace: { ...workspace.metadata!.remoteWorkspace as object, writerRunId: null, dirty: false },
+        } }).where(eq(executionWorkspaces.id, workspace.id)).returning();
+        const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId,
+          agentId: input.agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
+        input.run = nextRun;
+        input.task.freshWorkspace = null;
+        input.task.issueRef = { ...input.task.issueRef!, executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" };
+        input.reuse.existingExecutionWorkspace = toExecutionWorkspace(saved);
+        input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(saved);
+        input.reuse.requestedShouldReuseExisting = true;
+        input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
+          issueExecutionWorkspaceId: saved.id, issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: "active",
+        });
+        await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached remote acquisition");
+        const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, nextRun.id));
+        expect(operations.filter(operation => operation.phase === "workspace_config_freshness")).toEqual([]);
+        const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, saved.id));
+        expect(retained.id).toBe(workspace.id);
+        expect(retained.metadata?.configFingerprint).toMatchObject({
+          workspaceHash: (saved.metadata?.configFingerprint as { workspaceHash: string }).workspaceHash,
+        });
+        expect(retained.metadata?.remoteWorkspace).toMatchObject({ writerRunId: nextRun.id });
+      }
     } finally {
       for (const [key, value] of previous) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
