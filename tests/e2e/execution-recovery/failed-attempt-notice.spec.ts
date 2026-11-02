@@ -29,7 +29,7 @@ test.describe("failed-attempt notice", () => {
         });
         expect(surface.background).not.toBe("rgba(0, 0, 0, 0)");
         expect(surface.padding.every(value => value > 0)).toBe(true);
-        expect(surface.topPadding).toBeGreaterThan(0);
+        expect(surface.topPadding).toBeCloseTo(16);
 
         const iconBounds = (await icon.boundingBox())!;
         const textBounds = (await message.boundingBox())!;
