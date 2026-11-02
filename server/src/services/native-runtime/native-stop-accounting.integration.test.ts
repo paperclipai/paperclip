@@ -119,7 +119,7 @@ describe("native Stop accounting after the last usage receipt", () => {
       expect(coordinator.nextWakeAt()).toBeNull();
     } finally { worker.stop(); await coordinator.stop(); }
   }, 30_000);
-  it("recovers the combined Stop fence through existing-session cleanup without new paid work", async () => {
+  it.each(["user", "system"] as const)("recovers the combined Stop fence through existing-session cleanup without new paid work (%s)", async actorType => {
     const { companyId, agentId, issueId, runId, native, execution } = await fixture();
     const hold = await reserveRunBudget(db, companyId, runId, null);
     const controller = await currentNativeControllerIdentity(), owner = `cleanup:${randomUUID()}`;
@@ -131,8 +131,8 @@ describe("native Stop accounting after the last usage receipt", () => {
       recoveryState: "awaiting_runner_reattach", recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }] })
       .where(eq(nativeRunFinalizations.runId, runId));
     await db.update(heartbeatRuns).set({ resultJson: {
-      cancelledByActorType: "user", cancelledByUserId: "test-board",
-      cancellation: requestedRunCancellation({ cancelledByActorType: "user" }, "Operator requested Stop"),
+      cancelledByActorType: actorType, ...(actorType === "user" ? { cancelledByUserId: "test-board" } : {}),
+      cancellation: requestedRunCancellation({ cancelledByActorType: actorType }, "Operator requested Stop"),
       startupCancellation: { beforeNativeSelection: false, errorCode: "cancelled", requestedAt },
       executionCancellation: { state: "requested", requestedAt },
       nativeCancellation: { schema: "paperclip.native-cancellation.v1", companyId, issueId, runId, scope: "run",
@@ -167,6 +167,10 @@ describe("native Stop accounting after the last usage receipt", () => {
         reservationId: reservation.id, recoveryLeaseOwner: owner, expectedStatus: "running", now: new Date(), dispatch });
       expect(duplicate.dispatched).toBe(false);
       expect(dispatch).toHaveBeenCalledOnce();
+      const [pending] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(pending.resultJson?.nativeCancellation).toMatchObject({ dispatchState: "pending", dispatched: false });
+      expect(pending.costAccountingPending).toBe(true);
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("observed");
     } finally { completeCleanup(); }
     await expect(gate.resultPromise).rejects.toThrow("native_cancellation_pending_recovery");
     expect(cancel).toHaveBeenCalledOnce();
