@@ -27,6 +27,16 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
   const onAbort = () => stop(input.signal!.reason);
   input.signal?.addEventListener("abort", onAbort, { once: true });
   if (input.signal?.aborted) onAbort();
+  const readNext = async () => {
+    controller.signal.throwIfAborted();
+    let abort!: () => void;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", abort, { once: true });
+    });
+    try { return await Promise.race([iterator.next(), interrupted]); }
+    finally { controller.signal.removeEventListener("abort", abort); }
+  };
   let pending = Buffer.alloc(0);
   let uploadId: string | undefined;
   // Scale part sizes to the S3 part-count limit while retaining stream backpressure.
@@ -54,7 +64,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
       while (remaining > 0) {
         check();
         if (!pending.length) {
-          const next = await iterator.next();
+          const next = await readNext();
           check();
           if (next.done) throw new Error("S3 upload source was truncated");
           pending = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
@@ -69,7 +79,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
       body.end();
       offset += length;
     }
-    if (pending.length || !(await iterator.next()).done) throw new Error("S3 upload source exceeds its declared size");
+    if (pending.length || !(await readNext()).done) throw new Error("S3 upload source exceeds its declared size");
     await Promise.all(active);
     check();
     await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }));

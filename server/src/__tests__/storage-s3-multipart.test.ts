@@ -273,4 +273,43 @@ describe("streamed S3 multipart uploads", () => {
       await expect(storage.putFile({ companyId: "company", namespace: "skill-packages", originalFilename: "next", contentType: "text/plain", body: Buffer.from("next") })).resolves.toMatchObject({ byteSize: 4 });
     } finally { send.mockRestore(); vi.useRealTimers(); }
   });
+
+  it("bounds cancellation while an asynchronous source read is stalled", async () => {
+    vi.useFakeTimers();
+    const client = new S3Client({ region: "us-east-1" });
+    const cancellation = new AbortController();
+    let release!: () => void, waiting = false, settled = false;
+    const sourceGate = new Promise<void>(resolve => { release = resolve; });
+    const body = Readable.from((async function* () {
+      yield Buffer.alloc(64 * 1024);
+      waiting = true;
+      await sourceGate;
+      yield Buffer.alloc(64 * 1024);
+    })());
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any, options: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
+      if (command instanceof UploadPartCommand) {
+        (command.input.Body as Readable).resume();
+        return new Promise((_resolve, reject) => options.abortSignal.addEventListener("abort", () => reject(options.abortSignal.reason), { once: true }));
+      }
+      expect(command).toBeInstanceOf(AbortMultipartUploadCommand);
+      return {};
+    });
+    const saving = putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "text/plain", contentLength: 128 * 1024, body, signal: cancellation.signal })
+      .catch(error => error).finally(() => { settled = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(waiting).toBe(true);
+      cancellation.abort(new Error("cancelled during source read"));
+      await vi.advanceTimersByTimeAsync(STORAGE_FAILURE_CLEANUP_MS + 1);
+      expect(settled).toBe(true);
+      expect((await saving).message).toBe("cancelled during source read");
+      expect(body.destroyed).toBe(true);
+    } finally {
+      release();
+      await vi.advanceTimersByTimeAsync(STORAGE_FAILURE_CLEANUP_MS + 1);
+      await saving;
+      send.mockRestore(); client.destroy(); vi.useRealTimers();
+    }
+  });
 });
