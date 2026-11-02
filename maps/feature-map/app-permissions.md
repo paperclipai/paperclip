@@ -160,3 +160,9 @@ Sources: Source: [PermissionsPanel.tsx](../../ui/src/pages/apps/app-detail/Permi
 ### `delegated-configuration`
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+The contextual connection sidebar reads only the selected connection's pending
+signed action request and quarantined action counts. Its Review badge is the
+pending request count plus one when any action is quarantined. It refreshes every
+30 seconds and after existing attention invalidations. Archived connections show
+no badge. The full Apps attention view keeps its existing company-wide read.

@@ -1014,6 +1014,11 @@ export interface ToolAppAttentionItem {
   reasons: ToolAppAttentionReason[];
 }
 
+export interface ToolConnectionReviewCounts {
+  pendingActionRequestCount: number;
+  quarantinedCatalogEntryCount: number;
+}
+
 export interface ToolAppsAttentionResponse {
   generatedAt: Date | string;
   apps: ToolAppAttentionItem[];

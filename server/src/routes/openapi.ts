@@ -11773,6 +11773,15 @@ registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
   method: "get",
+  path: "/api/tool-connections/{connectionId}/review-counts",
+  tags: ["tool-access"],
+  summary: "Get pending action request and quarantined catalog entry counts for one connection",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:read",
+  method: "get",
   path: "/api/tool-connections/{connectionId}/usage",
   tags: ["tool-access"],
   summary: "Get tool connection usage",
