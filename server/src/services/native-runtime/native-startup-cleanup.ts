@@ -1,5 +1,5 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -71,6 +71,8 @@ export async function requestNativeStartupCleanup(db: Db, input: {
       runId: run.id, contextId: input.contextId, deadlineAtMs: input.deadlineAtMs, leaseOwner: input.leaseOwner,
       controllerGeneration: coordinator.controllerGeneration, attempt: coordinator.attempt, leaseId: lease.id,
       taskId: lease.providerLeaseId!, requiresPreparationStop: input.requiresPreparationStop, state: "pending", auditId: activity.activity.id };
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.environmentCleanup);
     await tx.update(heartbeatRuns).set({ errorCode: NATIVE_STARTUP_CLEANUP_PENDING,
       error: "Native startup timed out. Cancellation and verified cleanup are pending.",
       resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ nativeStartupCleanup: marker,
@@ -82,12 +84,22 @@ export async function requestNativeStartupCleanup(db: Db, input: {
     await tx.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
       runnerTaskRetiring: true, runnerTaskStartupCleanup: { contextId: marker.contextId, requiresPreparationStop: marker.requiresPreparationStop },
     })}::jsonb`, updatedAt: new Date() }).where(eq(environmentLeases.id, lease.id));
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.environmentCleanup);
     return true;
   });
   if (publication && options.publish !== false) publishActivity(publication);
   return requested;
+}
+
+async function assertStartupCreationsStopped(db: Db, marker: NativeStartupCleanup): Promise<void> {
+  const creations = await db.select({ creation: sandboxCreationOperations, lease: environmentLeases }).from(sandboxCreationOperations)
+    .leftJoin(environmentLeases, eq(environmentLeases.id, sandboxCreationOperations.leaseId)).where(and(
+      eq(sandboxCreationOperations.companyId, marker.companyId), eq(sandboxCreationOperations.runId, marker.runId),
+      sql`${sandboxCreationOperations.metadata}->>'runnerTaskLease' = 'true'`));
+  if (creations.some(({ creation, lease }) => creation.state !== "attached" &&
+      (!["cleanup_pending", "resolved"].includes(creation.state) || !lease || lease.companyId !== marker.companyId || lease.heartbeatRunId !== marker.runId ||
+        lease.providerLeaseId !== creation.metadata.creationProviderLeaseId || lease.cleanupStatus !== "success" || !hasRemoteTerminationReceipt(lease)))) {
+    throw conflict("Task cleanup is still pending", { code: NATIVE_STARTUP_CLEANUP_PENDING });
+  }
 }
 
 export async function verifyNativeStartupCleanup(db: Db, run: Run, release: () => Promise<unknown>): Promise<void> {
@@ -106,6 +118,7 @@ export async function verifyNativeStartupCleanup(db: Db, run: Run, release: () =
     (!marker.requiresPreparationStop || value.metadata?.runnerTaskPreparationStopped === true);
   if (!stopped(lease)) { await release(); lease = await read(); }
   if (!stopped(lease)) throw conflict("Task cleanup is still pending", { code: NATIVE_STARTUP_CLEANUP_PENDING });
+  await assertStartupCreationsStopped(db, marker);
   await db.transaction(async tx => {
     await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, run.nativeIssueId!))).for("update");
     const [coordinator] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).for("update");
@@ -117,6 +130,7 @@ export async function verifyNativeStartupCleanup(db: Db, run: Run, release: () =
         !receipt || receipt.providerLeaseId !== marker.taskId || receipt.heartbeatRunId !== run.id || !stopped(receipt)) {
       throw conflict("Native startup cleanup ownership changed");
     }
+    await assertStartupCreationsStopped(tx as unknown as Db, marker);
     await tx.update(heartbeatRuns).set({ resultJson: sql`jsonb_set(${heartbeatRuns.resultJson}, '{nativeStartupCleanup,state}', '"complete"'::jsonb)`, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, run.id));
   });
@@ -137,9 +151,10 @@ export async function acknowledgeNativeStartupCleanup(db: Db, input: { companyId
     const [lease] = await tx.select().from(environmentLeases).where(eq(environmentLeases.id, marker.leaseId)).for("update");
     if (!lease || lease.heartbeatRunId !== run.id || lease.providerLeaseId !== marker.taskId || !hasRemoteTerminationReceipt(lease) ||
         (marker.requiresPreparationStop && lease.metadata?.runnerTaskPreparationStopped !== true)) return;
-    await tx.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, recoveryState: null,
-      failureCode: "native_retry_cancelled", updatedAt: new Date() }).where(and(eq(nativeRunFinalizations.runId, input.runId), isNull(nativeRunFinalizations.resultId)));
+    await assertStartupCreationsStopped(tx as unknown as Db, marker);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.environmentCleanup);
+    await tx.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, recoveryState: null,
+      failureCode: "native_retry_cancelled", updatedAt: new Date() }).where(and(eq(nativeRunFinalizations.runId, input.runId), isNull(nativeRunFinalizations.resultId)));
   });
 }

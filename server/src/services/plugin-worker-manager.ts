@@ -725,6 +725,7 @@ export interface PluginWorkerHandle {
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
     startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -865,6 +866,7 @@ export interface PluginWorkerManager {
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
     startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -914,6 +916,10 @@ export function createPluginWorkerHandle(
   // Unlike RPC promises, these survive timeouts. A late response is the
   // completion receipt. A worker crash cannot manufacture one.
   const unsettledCalls = new Map<string | number, () => void>();
+  const observedResults = new Map<string | number, {
+    contextId: string; response?: JsonRpcResponse; running?: Promise<void>;
+    observe: (result: unknown) => Promise<void>; finish: () => void;
+  }>();
   const startupCalls = new Map<string, Set<() => void>>();
   const startupRetirements = new Map<string, Promise<void>>();
   const startupHostHandlers = new Map<string, Set<Promise<void>>>();
@@ -1156,24 +1162,50 @@ export function createPluginWorkerHandle(
   /**
    * Handle a JSON-RPC response from the worker (matching a pending request).
    */
+  function settleResponse(response: JsonRpcResponse): void {
+    const id = response.id!;
+    unsettledCalls.get(id)?.();
+    unsettledCalls.delete(id);
+    const pending = pendingRequests.get(id);
+    if (!pending) { log.warn({ id }, "received response for unknown request id"); return; }
+    clearTimeout(pending.timer);
+    pendingRequests.delete(id);
+    pending.resolve(response);
+  }
+
+  function processObservedResult(id: string | number): Promise<void> {
+    const observer = observedResults.get(id);
+    if (!observer?.response) return Promise.resolve();
+    if (observer.running) return observer.running;
+    const response = observer.response;
+    const processing = (async () => {
+      if (isJsonRpcSuccessResponse(response)) await observer.observe(response.result);
+      observedResults.delete(id);
+      observer.finish();
+      settleResponse(response);
+    })();
+    observer.running = processing;
+    void processing.catch(() => {
+      const pending = pendingRequests.get(id);
+      pending?.resolve(createErrorResponse(id, JSONRPC_ERROR_CODES.INTERNAL_ERROR, "Plugin result could not be recorded"));
+    }).finally(() => { if (observer.running === processing) observer.running = undefined; });
+    return processing;
+  }
+
   function handleResponse(response: JsonRpcResponse): void {
     const id = response.id;
     if (id === null || id === undefined) {
       log.warn("received response with null/undefined id");
       return;
     }
-
-    unsettledCalls.get(id)?.();
-    unsettledCalls.delete(id);
-    const pending = pendingRequests.get(id);
-    if (!pending) {
-      log.warn({ id }, "received response for unknown request id");
+    const observer = observedResults.get(id);
+    if (observer) {
+      if (observer.response) return;
+      observer.response = response;
+      void processObservedResult(id).catch(() => log.warn({ id }, "plugin result recording will retry during cleanup"));
       return;
     }
-
-    clearTimeout(pending.timer);
-    pendingRequests.delete(id);
-    pending.resolve(response);
+    settleResponse(response);
   }
 
   function readNonEmptyString(value: unknown): string | null {
@@ -3423,8 +3455,9 @@ export function createPluginWorkerHandle(
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
     startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]> {
-    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId));
+    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId, observeResult));
     // Tracing wraps the RPC in a new promise. Guard the promise handed to the
     // caller as well, without swallowing its eventual rejection for that caller.
     void dispatched.catch(() => undefined);
@@ -3438,6 +3471,7 @@ export function createPluginWorkerHandle(
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
     startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (startupContextId && startupRetirements.has(startupContextId)) {
@@ -3483,6 +3517,19 @@ export function createPluginWorkerHandle(
           calls.add(finish);
         }
         if (method === "environmentInspectLease") unsettledInspections.add(finish);
+      }
+      if (observeResult && startupContextId) {
+        let finish!: () => void;
+        const processing = new Promise<void>(resolve => { finish = resolve; });
+        let handlers = startupHostHandlers.get(startupContextId);
+        if (!handlers) { handlers = new Set(); startupHostHandlers.set(startupContextId, handlers); }
+        handlers.add(processing);
+        observedResults.set(id, { contextId: startupContextId, observe: observeResult as (result: unknown) => Promise<void>, finish: () => {
+          startupHostHandlers.get(startupContextId)?.delete(processing);
+          if (startupHostHandlers.get(startupContextId)?.size === 0) startupHostHandlers.delete(startupContextId);
+          finish();
+          onStartupWorkChanged?.();
+        } });
       }
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
@@ -3550,6 +3597,8 @@ export function createPluginWorkerHandle(
       } catch (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);
+        observedResults.get(id)?.finish();
+        observedResults.delete(id);
         unsettledCalls.get(id)?.();
         unsettledCalls.delete(id);
         clearInvocation(invocation);
@@ -3637,6 +3686,7 @@ export function createPluginWorkerHandle(
     hasStartupWork() { return startupCalls.size > 0 || startupHostHandlers.size > 0 || startupRetirements.size > 0; },
     async drainStartup(contextId: string) {
       revokeStartupInvocations(contextId);
+      for (const [id, observer] of observedResults) if (observer.contextId === contextId) void processObservedResult(id).catch(() => undefined);
       await waitForStartupHandlers(contextId);
     },
     async retireStartup(contextId: string) {
@@ -3644,6 +3694,7 @@ export function createPluginWorkerHandle(
       if (current) return current;
       const retiring = (async () => {
         revokeStartupInvocations(contextId);
+        for (const [id, observer] of observedResults) if (observer.contextId === contextId) void processObservedResult(id).catch(() => undefined);
         await waitForStartupHandlers(contextId);
         for (const finish of [...startupCalls.get(contextId) ?? []]) finish();
       })();
@@ -3662,6 +3713,7 @@ export function createPluginWorkerHandle(
       executeLogSink?: ExecuteLogSink,
       onWorkerSettled?: () => void,
       startupContextId?: string,
+      observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
         onWorkerSettled?.();
@@ -3671,7 +3723,7 @@ export function createPluginWorkerHandle(
           ),
         );
       }
-      return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId);
+      return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId, observeResult);
     },
 
     openLoginPtySession(input: LoginPtyOpenInput) {
@@ -4032,6 +4084,7 @@ export function createPluginWorkerManager(
       executeLogSink?: ExecuteLogSink,
       onWorkerSettled?: () => void,
       startupContextId?: string,
+      observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
     ): Promise<HostToWorkerMethods[M][1]> {
       const handle = workers.get(pluginId);
       if (!startupContextId && ["environmentReleaseLease", "environmentDestroyLease"].includes(method)) {
@@ -4057,7 +4110,7 @@ export function createPluginWorkerManager(
       // A caller timeout is not worker completion. Inspection capacity is
       // released only by its actual reply, send failure, or worker exit.
       const finish = onWorkerSettled ? () => { finishInspection?.(); onWorkerSettled(); } : finishInspection;
-      const result = handle.call(method, params, timeoutMs, executeLogSink, finish, startupContextId);
+      const result = handle.call(method, params, timeoutMs, executeLogSink, finish, startupContextId, observeResult);
       if (method === "configChanged") void result.then(() => {
         for (const listener of configApplied) {
           try { listener(); }

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { databaseWorkPending } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
@@ -7,7 +9,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases,
-  environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults,
+  environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, sandboxCreationOperations,
 } from "@paperclipai/db";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
@@ -28,6 +30,9 @@ import { claimNativeRestartRecoveries } from "../services/native-runtime/native-
 import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
 import { createPluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+
+import { createOwnedSandbox, recordSandboxCreationResource, recoverSandboxCreations } from "../services/sandbox-creation-operations.js";
+import { environmentService } from "../services/environments.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
 
@@ -91,6 +96,67 @@ describePostgres("durable cleanup after a native startup timeout", () => {
     };
     return { request, reload, owner, lease, stopReceipt, acceptedResult };
   }
+
+  it("keeps ownership until a replacement queued after the first teardown snapshot is verified stopped", async () => {
+    const f = await fixture(true), original = await f.lease();
+    let reply!: (result: { providerLeaseId: string }) => void, creating!: () => void;
+    const entered = new Promise<void>(resolve => { creating = resolve; });
+    const acquiring = createOwnedSandbox(db, { companyId, environmentId: original.environmentId!, heartbeatRunId: f.request.runId,
+      issueId: original.issueId, provider: original.provider!, driverKey: "tasks", config: {}, requestKey: original.providerLeaseId!,
+      metadata: { runnerTaskLease: true } }, async () => new Promise(resolve => { reply = resolve; creating(); }));
+    await entered;
+    await requestNativeStartupCleanup(db, f.request);
+    await f.stopReceipt({}, true);
+    await expect(verifyNativeStartupCleanup(db, await f.reload(), async () => {})).rejects.toThrow("cleanup is still pending");
+    reply({ providerLeaseId: "late-replacement" });
+    const fresh = await acquiring;
+    await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId,
+      environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId, providerMetadata: { binding: "actual" } });
+    await db.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(0) }).where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId)));
+    await recoverSandboxCreations(db, async () => { throw new Error("A recorded task identity needs no new provider inspection"); });
+    const [creation] = await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId)));
+    await expect(verifyNativeStartupCleanup(db, await f.reload(), async () => {})).rejects.toThrow("cleanup is still pending");
+    const replacement = (await environmentService(db).getLeaseById(creation.leaseId!))!;
+    await environmentService(db).releaseLease(replacement.id, "released", { cleanupStatus: "success",
+      remoteExecutionTermination: remoteTerminationReceipt(replacement, { providerLeaseId: replacement.providerLeaseId, state: "stopped" }) });
+    expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, creation.id)))[0].state).toBe("resolved");
+    await verifyNativeStartupCleanup(db, await f.reload(), async () => {});
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.request.runId));
+    await acknowledgeNativeStartupCleanup(db, f.request);
+    expect((await f.owner()).leaseOwner).toBeNull();
+  });
+
+  it.each(["request", "acknowledge"])("registers queue intent before cleanup %s writes", async phase => {
+    const f = await fixture(true);
+    const writes: boolean[][] = [];
+    const observe = async (queues: string[], work: () => Promise<unknown>) => {
+      const transaction = db.transaction.bind(db);
+      const spy = vi.spyOn(db, "transaction").mockImplementation(((callback: (tx: typeof db) => Promise<unknown>) => transaction(async tx => {
+        const update = tx.update.bind(tx);
+        tx.update = ((table: unknown) => {
+          if ([heartbeatRuns, nativeRunFinalizations, environmentLeases].includes(table as never)) {
+            writes.push(queues.map(queue => databaseWorkPending(db, queue)));
+          }
+          return update(table as never);
+        }) as typeof tx.update;
+        return callback(tx as unknown as typeof db);
+      })) as typeof db.transaction);
+      try { await work(); } finally { spy.mockRestore(); }
+    };
+    if (phase === "request") {
+      await observe([DELIVERY_QUEUES.executionFinalization, DELIVERY_QUEUES.environmentCleanup], () => requestNativeStartupCleanup(db, f.request));
+      expect(writes).toEqual([[true, true], [true, true], [true, true]]);
+      await verifyNativeStartupCleanup(db, await f.reload(), () => f.stopReceipt({}, true));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.request.runId));
+      await acknowledgeNativeStartupCleanup(db, f.request);
+    } else {
+      await requestNativeStartupCleanup(db, f.request);
+      await verifyNativeStartupCleanup(db, await f.reload(), () => f.stopReceipt({}, true));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.request.runId));
+      await observe([DELIVERY_QUEUES.agentLifecycle, DELIVERY_QUEUES.environmentCleanup], () => acknowledgeNativeStartupCleanup(db, f.request));
+      expect(writes).toEqual([[true, true]]);
+    }
+  });
 
   it("returns the deadline queue to quiet and wakes again for the next startup failure", async () => {
     const schedule = executionControlSchedule(db);

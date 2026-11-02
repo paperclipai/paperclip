@@ -32,8 +32,8 @@ const invocations = [];
 const send = (id, result) => process.stdout.write(JSON.stringify({jsonrpc:"2.0",id,result})+"\\n");
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line", line => {
   const message = JSON.parse(line);
-  if (message.method === "initialize") send(message.id, {ok:true,supportedMethods:["environmentTask","configChanged","health"]});
-  else if (message.method === "environmentTask" || message.method === "environmentDestroyLease") {
+  if (message.method === "initialize") send(message.id, {ok:true,supportedMethods:["environmentTask","environmentAcquireLease","configChanged","health"]});
+  else if (message.method === "environmentTask" || message.method === "environmentDestroyLease" || message.method === "environmentAcquireLease") {
     held.push(message.id);
     invocations.push(message.paperclipInvocation?.id);
     if (message.params.config.hostWrite) process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:"host-"+message.id,method:"companies.get",params:{companyId:"company"},paperclipInvocationId:message.paperclipInvocation.id})+"\\n");
@@ -43,7 +43,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line", li
   else if (message.method === "configChanged") {
     if (message.params.config.exit) process.exit(1);
     if (message.params.config.hostAfter) process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:"late-host",method:"companies.get",params:{companyId:"company"},paperclipInvocationId:invocations.at(-1)})+"\\n");
-    if (message.params.config.release) for (const id of held.splice(0)) send(id, {kind:"description",taskId:"task"});
+    if (message.params.config.release) for (const id of held.splice(0)) { send(id, {providerLeaseId:"late-task",kind:"description",taskId:"task"}); if (message.params.config.duplicate) send(id, {providerLeaseId:"late-task",kind:"description",taskId:"task"}); }
     send(message.id, {});
   } else if (message.method === "shutdown") {send(message.id, {});setImmediate(()=>process.exit(0));}
 });
@@ -59,6 +59,44 @@ async function startWorker(hostHandlers: Record<string, unknown> = {}) {
 }
 
 describe("Core startup responsibility across real worker IPC", () => {
+  it("retains a late acquisition reply through failed recording, duplicate replies, and verified retirement", async () => {
+    const manager = await startWorker(), settled = vi.fn();
+    let release!: () => void, recording!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { recording = resolve; });
+    let unavailable = true;
+    const observe = vi.fn(async (result: unknown) => {
+      expect(result).toMatchObject({ providerLeaseId: "late-task" });
+      if (unavailable) throw new Error("Database unavailable");
+      recording(); await gate;
+    });
+    try {
+      const acquire = manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: {}, runId: "run", agentId: "agent", adapterType: "paperclip_runner" }, 10, undefined, settled, "late-acquire", observe);
+      await expect(acquire).rejects.toThrow("timed out");
+      await manager.call(manifest.id, "configChanged", { config: { release: true, duplicate: true } });
+      await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce());
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).not.toHaveBeenCalled();
+      unavailable = false;
+      vi.useFakeTimers();
+      const failed = manager.retireStartup!("late-acquire").catch(error => error.message);
+      await started;
+      expect(observe).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await failed).toBe("Task cleanup is still pending");
+      expect(settled).not.toHaveBeenCalled();
+      vi.useRealTimers();
+      let retired = false;
+      const retiring = manager.retireStartup!("late-acquire").then(() => { retired = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(retired).toBe(false);
+      release(); await retiring;
+      expect(settled).toHaveBeenCalledOnce();
+      await manager.retireStartup!("late-acquire");
+      expect(observe).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); release(); await manager.stopAll(); }
+  });
+
   it.each(["stop", "replace", "stopAll"])("keeps stopped startup work reachable through %s until verified retirement", async mode => {
     let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });

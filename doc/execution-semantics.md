@@ -2003,6 +2003,15 @@ preserving history, unknown action outcomes, and attempt counts. Pauses, approva
 budgets, task ownership, and terminal task status still gate admission. No
 automatic provider replay is authorized by a cancelled startup.
 
+A failed cleanup attempt saves its next retry time in the existing control-work
+deadlines. The startup marker retains the original admission deadline. Both
+candidate batches use stable deadline order, and pending cleanup cannot enter
+ordinary forced finalization. A late replacement-task reply remains owned until
+its resource identity is durable. It is queued for cleanup instead of attached
+after cancellation. The old task's Stop receipt cannot settle cleanup of a new
+replacement task. A lost reply with no known resource identity remains unresolved
+until provider inspection or operator reconciliation establishes its outcome.
+
 ### Delivering queued messages after a legacy run stops
 
 The legacy queued-message Interrupt action accepts a null `targetRunId` when

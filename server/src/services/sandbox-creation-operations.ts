@@ -78,9 +78,10 @@ export async function createOwnedSandbox(
  * This enriches the existing owner; it never transfers or reopens ownership. */
 export async function recordSandboxCreationResource(db: Db, input: {
   id: string; companyId: string; environmentId: string; providerLeaseId: string;
+  providerMetadata?: Record<string, unknown>;
 }): Promise<void> {
   const [recorded] = await db.update(sandboxCreationOperations).set({
-    metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ creationProviderLeaseId: input.providerLeaseId })}::jsonb`,
+    metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ creationProviderLeaseId: input.providerLeaseId, ...(input.providerMetadata ? { creationProviderMetadata: input.providerMetadata } : {}) })}::jsonb`,
     updatedAt: new Date(),
   }).where(and(eq(sandboxCreationOperations.id, input.id), eq(sandboxCreationOperations.companyId, input.companyId),
     eq(sandboxCreationOperations.originalEnvironmentId, input.environmentId),
@@ -88,6 +89,35 @@ export async function recordSandboxCreationResource(db: Db, input: {
       sql`${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' = ${input.providerLeaseId}`),
   )).returning({ id: sandboxCreationOperations.id });
   if (!recorded) throw new Error("Sandbox creation resource identity changed");
+}
+
+export async function queueSandboxCreationCleanup(db: Db, input: {
+  id: string; companyId: string; environmentId: string; providerLeaseId: string;
+  providerMetadata?: Record<string, unknown>;
+}): Promise<void> {
+  await db.transaction(async tx => {
+    await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, input.environmentId)).for("update");
+    const [operation] = await tx.select().from(sandboxCreationOperations).where(and(eq(sandboxCreationOperations.id, input.id),
+      eq(sandboxCreationOperations.companyId, input.companyId), eq(sandboxCreationOperations.originalEnvironmentId, input.environmentId))).for("update");
+    if (!operation || (operation.metadata.creationProviderLeaseId && operation.metadata.creationProviderLeaseId !== input.providerLeaseId)) {
+      throw new Error("Sandbox creation cleanup ownership changed");
+    }
+    if (["attached", "cleanup_pending", "resolved"].includes(operation.state)) return;
+    if (operation.state !== "pending") throw new Error("Sandbox creation cleanup ownership changed");
+    await notifyEnvironmentCleanup(tx, { companyId: operation.companyId, runId: operation.runId });
+    const lease = await environmentService(tx as unknown as Db).insertPendingCleanupLease({
+      companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
+      heartbeatRunId: operation.runId, issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId,
+      provider: operation.provider, providerLeaseId: input.providerLeaseId,
+      metadata: { ...operation.metadata, creationOperationId: operation.id, environmentId: operation.originalEnvironmentId,
+        providerMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {}, runnerTaskRetiring: true },
+      failureReason: "interrupted_task_creation",
+    });
+    await tx.update(sandboxCreationOperations).set({ state: "cleanup_pending", leaseId: lease.id, updatedAt: new Date(),
+      metadata: { ...operation.metadata, creationProviderLeaseId: input.providerLeaseId,
+        creationProviderMetadata: input.providerMetadata ?? operation.metadata.creationProviderMetadata ?? {} },
+    }).where(eq(sandboxCreationOperations.id, operation.id));
+  });
 }
 
 export async function recoverSandboxCreations(db: Db,
@@ -98,6 +128,11 @@ export async function recoverSandboxCreations(db: Db,
   )).limit(100);
   for (const candidate of due) {
     try {
+      if (candidate.metadata.runnerTaskLease === true && typeof candidate.metadata.creationProviderLeaseId === "string") {
+        await queueSandboxCreationCleanup(db, { id: candidate.id, companyId: candidate.companyId,
+          environmentId: candidate.originalEnvironmentId, providerLeaseId: candidate.metadata.creationProviderLeaseId });
+        continue;
+      }
       const [existingCompany] = await db.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).limit(1);
       const observation = existingCompany ? await inspect(candidate) : null;
       const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
