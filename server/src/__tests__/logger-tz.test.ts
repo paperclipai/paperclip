@@ -28,10 +28,17 @@ const mockPino = vi.hoisted(() => {
   return fn;
 });
 
-// Mock fs so the module-level mkdirSync call is a no-op in tests.
+// Mock fs so log path setup is a no-op in tests.
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, mkdirSync: vi.fn() };
+  return {
+    ...actual,
+    mkdirSync: vi.fn(),
+    chmodSync: vi.fn(),
+    existsSync: vi.fn(() => false),
+    closeSync: vi.fn(),
+    openSync: vi.fn(() => 1),
+  };
 });
 
 vi.mock("pino", () => ({
@@ -60,12 +67,16 @@ describe("logger translateTime respects TZ environment variable", () => {
     await import("../middleware/logger.js");
 
     expect(mockTransport).toHaveBeenCalledOnce();
-    const transport = mockTransport.mock.calls[0][0] as {
-      target: string;
-      options: Record<string, unknown>;
+    const transportConfig = mockTransport.mock.calls[0][0] as {
+      target?: string;
+      options?: Record<string, unknown>;
+      targets?: Array<{ target: string; options: Record<string, unknown> }>;
     };
-    expect(transport.target).toBe("pino-pretty");
-    expect(transport.options.translateTime).toBe("SYS:HH:MM:ss");
+    const prettyTarget =
+      transportConfig.targets?.find((entry) => entry.target === "pino-pretty") ??
+      transportConfig;
+    expect(prettyTarget.target).toBe("pino-pretty");
+    expect(prettyTarget.options?.translateTime).toBe("SYS:HH:MM:ss");
   });
 
   it("does not construct a pretty transport in production", async () => {
