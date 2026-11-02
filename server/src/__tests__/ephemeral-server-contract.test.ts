@@ -26,14 +26,15 @@ it("never connects the listener with migration privileges, another tenant, or th
 });
 it("rejects disk-dependent execution and instructions while retaining remote warm execution", () => {
   vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
-  const remote = { externalConversation: false, native: true, adapterType: "paperclip_runner", pluginTaskWorkspace: false, remoteAuthority: true };
+  const remote = { externalConversation: false, adapterType: "paperclip_runner", pluginTaskWorkspace: false, remoteAuthority: true };
   expect(() => assertEphemeralWorkspaceExecution(remote)).not.toThrow();
   expect(() => assertEphemeralWorkspaceExecution({ ...remote, remoteAuthority: false, pluginTaskWorkspace: true })).not.toThrow();
-  for (const patch of [{ native: false }, { remoteAuthority: false }, { adapterType: "process" }]) {
+  for (const patch of [{ remoteAuthority: false }, { adapterType: "process" }]) {
     expect(() => assertEphemeralWorkspaceExecution({ ...remote, ...patch })).toThrow("warm Paperclip Runner");
   }
   expect(() => assertEphemeralNativeLifecycle("warm")).not.toThrow();
   expect(() => assertEphemeralNativeLifecycle("per_turn")).toThrow("warm Paperclip Runner");
+  expect(() => assertEphemeralNativeLifecycle(undefined)).toThrow("warm Paperclip Runner");
   const agent = { id: "agent", companyId: "company", name: "Agent", adapterConfig: {} };
   expect(() => assertEphemeralAgentInstructions(agent)).not.toThrow();
   expect(() => assertEphemeralAgentInstructions({ ...agent, adapterConfig: { instructionsBundleMode: "external", instructionsRootPath: "/old-volume" } })).toThrow("managed agent instructions");
