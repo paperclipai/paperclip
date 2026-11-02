@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 
-it.each(["idle", "status", "silent", "correcting-idle", "correcting-silent"] as const)("does not restart an interrupted empty OpenCode response: %s", async terminal => {
+it.each(["idle", "status", "silent", "correcting-idle", "correcting-silent", "busy-idle"] as const)("does not restart an interrupted empty OpenCode response: %s", async terminal => {
   const root = await mkdtemp(join(tmpdir(), "opencode-interrupt-empty-"));
   const command = join(root, "fake-opencode.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), command);
@@ -17,6 +17,8 @@ it.each(["idle", "status", "silent", "correcting-idle", "correcting-silent"] as 
   const observed: PrpEvent[] = [];
   const correcting = terminal.startsWith("correcting-");
   const silent = terminal.endsWith("silent");
+  const busy = terminal === "busy-idle";
+  let ownedSessionId = "";
   const emit = (value: unknown) => stream!.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`));
   let resumed = false;
   const driver = new OpenCodeServerDriver({
@@ -30,6 +32,7 @@ it.each(["idle", "status", "silent", "correcting-idle", "correcting-silent"] as 
       }), { headers: { "Content-Type": "text/event-stream" } });
       const sessionID = decodeURIComponent(url.pathname.split("/")[2] ?? "");
       if (url.pathname.endsWith("/prompt_async")) {
+        ownedSessionId = sessionID;
         prompts.push(JSON.parse(String(init?.body)));
         if (resumed) queueMicrotask(() => {
           emit({ type: "message.updated", properties: { info: { id: "resumed-answer", sessionID, role: "assistant", finish: "stop", time: { completed: 2 } } } });
@@ -38,6 +41,11 @@ it.each(["idle", "status", "silent", "correcting-idle", "correcting-silent"] as 
         });
         else if (correcting && prompts.length === 1) queueMicrotask(() => {
           emit({ type: "session.idle", properties: { sessionID } });
+        });
+        else if (busy && prompts.length === 1) queueMicrotask(() => {
+          emit({ type: "message.updated", properties: { info: { id: "tool-message", sessionID, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { part: { id: "owned-tool", messageID: "tool-message", sessionID,
+            type: "tool", tool: "bash", callID: "owned-call", state: { status: "running", input: { command: "controlled work" } } } } });
         });
         return new Response(null, { status: 204 });
       }
@@ -68,10 +76,18 @@ it.each(["idle", "status", "silent", "correcting-idle", "correcting-silent"] as 
     // is a terminal, but must never authorize a new corrective model request.
     expect(prompts).toHaveLength(allowedPrompts);
     const terminalEvents = () => observed.filter(event => ["turn.completed", "turn.cancelled", "turn.failed"].includes(event.eventType));
-    expect(terminalEvents()).toHaveLength(silent ? 0 : 1);
+    expect(terminalEvents()).toHaveLength(silent || busy ? 0 : 1);
     await vi.advanceTimersByTimeAsync(20_001);
     expect(prompts).toHaveLength(allowedPrompts);
-    expect(terminalEvents()).toHaveLength(silent ? 0 : 1);
+    expect(terminalEvents()).toHaveLength(silent || busy ? 0 : 1);
+    if (busy) {
+      emit({ type: "message.part.updated", properties: { part: { id: "owned-tool", messageID: "tool-message", sessionID: ownedSessionId,
+        type: "tool", tool: "bash", callID: "owned-call", state: { status: "completed", input: { command: "controlled work" }, output: "Work stopped.", time: { start: 1, end: 2 } } } } });
+      emit({ type: "session.idle", properties: { sessionID: ownedSessionId } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(terminalEvents()).toHaveLength(1);
+      expect(prompts).toHaveLength(allowedPrompts);
+    }
     if (!silent) {
       resumed = true;
       const next = await session.startTurn({ message: { role: "user", text: "The plan is approved. Continue." } });

@@ -774,11 +774,11 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   #recoverEmptyResponse(turnId: string): boolean {
-    // An intentional pause needs the provider's idle fact, not another model
-    // request. The native session loop still requires that terminal evidence.
-    if (this.#interruptedTurnId === turnId) return false;
     if (this.#result !== null || this.#pendingRuntimeRequests.size > 0) return false;
     if (this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return true;
+    // An intentional pause needs the provider's idle fact, not another model
+    // request. Keep in-flight tool work gated by the checks above.
+    if (this.#interruptedTurnId === turnId) return false;
     const recovery = this.#emptyResponseRecovery;
     const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
     if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary)) return false;
