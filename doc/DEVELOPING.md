@@ -1058,8 +1058,55 @@ For normal issue work, start with the smallest targeted check that proves the ch
 
 #### Embedded Postgres template cache
 
+To run the suite with one owned PostgreSQL server and a separate disposable
+database for each fixture, use:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts -- pnpm exec vitest run --project @paperclipai/db
+```
+
+The command starts an embedded server, prepares a migrated database template,
+passes it to the child command, and waits for server shutdown before returning.
+It preserves the child command's exit status. On cancellation it stops and waits
+for the test process group before shutting down PostgreSQL. Database, server,
+and CLI fixtures all use the common implementation. Tests of embedded startup itself continue to
+start dedicated clusters.
+
+To reuse a disposable server that you already manage, set
+`PAPERCLIP_TEST_POSTGRES_ADMIN_URL` to its administrative PostgreSQL URL. The role
+must be able to create databases. Each fixture creates a random database and
+closes only its clients before dropping it. It never stops the external server.
+`DATABASE_URL` does not select this test path. The optional
+`PAPERCLIP_TEST_POSTGRES_TEMPLATE` can name an existing migrated database with
+the form `paperclip_test_template_<hex>`; `0` disables template reuse.
+
+On a supported platform, PostgreSQL startup failures fail test collection.
+Resource exhaustion, unavailable configured servers, and broken native binaries
+do not make integration tests skip. A genuinely unsupported platform or CPU can
+still skip embedded PostgreSQL coverage. Startup retries apply only to port
+collisions. Teardown waits for process exit, requests fast shutdown first, and
+uses immediate PostgreSQL shutdown if needed. A failed stop fails the hook and
+retains its data directory. Worker termination also requests owned server
+shutdown. A forced `SIGKILL` can bypass these handlers; the separate host cleanup
+job remains the backstop for stale macOS semaphore sets.
+Database and CLI hooks use the same 30-second deadline as server hooks. This
+allows the ten-second shutdown protocol and client/database cleanup to finish
+before the test runner ends a worker. A shutdown timeout still fails the hook.
+Template publication uses `pg_ctl` to request clean fast shutdown on every
+supported platform and allows thirty seconds for it. A template is never
+published after immediate shutdown or a crash. Cancelling the shared-server
+command also waits for its owned cluster-directory cleanup after the test
+processes and PostgreSQL exit. Direct worker termination stops PostgreSQL but
+retains its disposable files for inspection; the synchronous exit guard cannot
+await directory removal.
+Stopped cluster directories are removed asynchronously, and cleanup awaits their
+removal. Large suites can leave many relation files; deleting them must not block
+the worker's event loop. The idle-sleep suite uses the existing 90-second fixture
+budget for its final directory cleanup after hundreds of table truncations.
+
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
-get their own embedded Postgres cluster. The first such suite on a host builds
+without an administrative URL get their own embedded Postgres cluster. The first such suite on a host builds
 one fully migrated cluster and publishes its data directory under
 `$TMPDIR/paperclip-embedded-postgres-templates-<uid>/<key>`. Every later suite
 copies that template and starts Postgres on the copy instead of running
