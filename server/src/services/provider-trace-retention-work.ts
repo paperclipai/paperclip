@@ -13,7 +13,7 @@ export function registerProviderTraceRetentionWork(
   const traces = providerTraceStore(db);
   let deadline: number | null | undefined;
 
-  const unregister = registerIdleLocalWorkProbe(options => {
+  const unregister = registerIdleLocalWorkProbe((options = {}) => {
     if (deadline === undefined) return "unknown";
     if (deadline === null) return "none";
     return options.deadlineCapability?.deadlineCatalog === "domain_deadlines_v1" && deadline > Date.now()
