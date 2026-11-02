@@ -8287,6 +8287,11 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-A-capability",
       PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
       PAPERCLIP_PROVIDER_TRACE_MAX_BYTES: String(64 * 1024 * 1024),
+      ...(credentialsCleaned ? {
+        PAPERCLIP_NATIVE_MCP_NAME: "assigned",
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp/first",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "first-assigned-gateway-credential",
+      } : {}),
     },
     lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
     runtimeContext: assignedRuntimeContext(skillRoot, instructionRoot),
@@ -8408,7 +8413,12 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
         await retainedAccepted;
       }
     } : undefined,
-    environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability" },
+    environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability",
+      ...(credentialsCleaned ? {
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp/current",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "current-assigned-gateway-credential",
+      } : {}),
+    },
     codexArgs: options.codexArgs.map((arg) => arg.replace('/run/A', '/run/B')),
     resumeDynamicTools: dynamicTools,
     resumeCompletionContract: {
@@ -8483,6 +8493,13 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       } : JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
       expect(retainedCore.identity).toEqual(baseIdentity);
       expect(retainedCore.commands.some((command: { type: string }) => command.type === "run.attach")).toBe(false);
+      if (credentialsCleaned) {
+        const config = await readFile(join(stateDirectory, "codex-home", "config.toml"), "utf8");
+        expect(config).toContain("https://paperclip.example/mcp/current");
+        expect(config).toContain("current-assigned-gateway-credential");
+        expect(config).not.toContain("first-assigned-gateway-credential");
+        expect(currentHandler).not.toHaveBeenCalled();
+      }
     }
     releaseRetained();
     const read = await reading;

@@ -6063,7 +6063,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey: this.options.environment?.CODEX_API_KEY ?? this.options.environment?.OPENAI_API_KEY,
       };
       if (this.#sourceRecoveryIdentity !== null) {
-        await prepareIsolatedCodexRecoveryHome({ ...auth, observability: this.options.observability });
+        await prepareIsolatedCodexRecoveryHome({
+          ...auth,
+          observability: this.options.observability,
+          nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        });
       } else {
         await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
         this.#assertStartupOpen();

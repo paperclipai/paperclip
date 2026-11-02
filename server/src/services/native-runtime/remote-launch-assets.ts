@@ -97,6 +97,10 @@ fs.mkdirSync(skills, { mode: 0o700 });
 fs.chmodSync(skills, 0o700);
 `;
 
+const prepareRemoteCodexRecoveryHome = `${validateRemoteCodexHome}
+if (process.argv[3] === "remove-auth") fs.rmSync(path.join(current, "auth.json"), { force: true });
+`;
+
 export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise<void> {
   const measure = async (name: string, operation: () => Promise<void>) =>
     input.trace ? input.trace.measure(name, operation) : operation();
@@ -130,7 +134,8 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
     if (!home?.targetPath || !input.isolatedCodexSkills) throw new Error("runner_remote_codex_credentials_path_invalid");
     const validated = await input.runner.execute({
       command: "node",
-      args: ["-e", validateRemoteCodexHome, home.targetPath, input.isolatedCodexSkills.workspaceRoot],
+      args: ["-e", prepareRemoteCodexRecoveryHome, home.targetPath, input.isolatedCodexSkills.workspaceRoot,
+        existsSync(resolve(input.root, "codex-home", "auth.json")) ? "keep-auth" : "remove-auth"],
       bypassSession: true,
       timeoutMs: 10_000,
     });

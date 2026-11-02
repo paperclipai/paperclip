@@ -391,7 +391,7 @@ type CodexAuthInput = {
   observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
 };
 
-export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput): Promise<void> {
+export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }): Promise<void> {
   const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, providerConfig);

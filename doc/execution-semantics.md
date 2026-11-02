@@ -2823,9 +2823,12 @@ Restoring that stopped source rebuilds disposable Codex authentication and safe
 provider configuration from the currently admitted account. Retained provider
 endpoints and MCP settings cannot select where the new credential is sent. Local
 and remote launches preserve the source's skills and authenticated PRP authority
-until its retained work is reconciled.
+until its retained work is reconciled. An assigned HTTP MCP gateway comes only
+from the admitted launch binding, so the restored provider retains its tools
+without trusting old MCP settings. No new turn starts before source reconciliation.
 Live process adoption and preconfigured homes do not rewrite credentials. A
-missing selected credential never enables ambient account fallback.
+missing selected credential removes retained remote authentication and never
+enables ambient account fallback.
 
 The staged controller format is
 `paperclip.runner.durable.control-plane-state.staged-attachment.v1`. It contains

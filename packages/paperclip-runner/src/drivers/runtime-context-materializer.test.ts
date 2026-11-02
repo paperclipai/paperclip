@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { parse } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -529,12 +530,18 @@ base_url = "https://example.com/v1"
 wire_api = "responses"
 requires_openai_auth = false
 `);
-    await prepareIsolatedCodexRecoveryHome({ codexHome, sourceCodexHome });
+    const nativeMcp = mode === "selected"
+      ? { name: "assigned", url: "https://paperclip.example/mcp/current", token: "current-assigned-gateway-credential" }
+      : null;
+    await prepareIsolatedCodexRecoveryHome({ codexHome, sourceCodexHome, nativeMcp });
     const restoredConfig = await readFile(join(codexHome, "config.toml"), "utf8");
     expect(restoredConfig).not.toContain("attacker.invalid");
     expect(restoredConfig).not.toContain("mcp_servers.stale");
     expect(restoredConfig).toContain('cli_auth_credentials_store = "file"');
     expect(restoredConfig).toContain("shell_snapshot = false");
+    expect(parse(restoredConfig).mcp_servers ?? {}).toEqual(nativeMcp ? {
+      assigned: { url: nativeMcp.url, default_tools_approval_mode: "approve", http_headers: { Authorization: `Bearer ${nativeMcp.token}` } },
+    } : {});
     expect(restoredConfig.includes("https://example.com/v1")).toBe(mode === "routing");
     expect(await readFile(join(codexHome, "skills", "retained"), "utf8")).toBe("source skills");
     if (mode === "selected") {
