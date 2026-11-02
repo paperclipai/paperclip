@@ -501,6 +501,24 @@ const server = createServer(async (request, response) => {
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("argument-diagnostics")) {
+          const receipts = [];
+          for (const name of [42, "benign-operation"]) {
+            receipts.push(await mcpRequest("tools/call", {
+              name: "paperclip_paperclip_call_assigned_tool",
+              arguments: { name, arguments: { token: "private-argument-canary" }, "private-key-canary": "private-value-canary" },
+            }));
+          }
+          // Provider tool identities differ from MCP JSON-RPC IDs. Their
+          // duplicate display rows must not replace authenticated diagnostics.
+          emit({ type: "message.part.updated", properties: { sessionID: session.id,
+            part: { id: "diagnostic-provider-row", type: "tool", tool: "paperclip_paperclip_call_assigned_tool",
+              callID: "unrelated-provider-call", state: { status: "completed", output: "private-provider-copy" } } } });
+          await writeFile(join(process.cwd(), "fake-diagnostic-receipts.json"), JSON.stringify(receipts));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
         await callFirstPaperclipTool();
         if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
           const result = await new Promise(resolve => {

@@ -153,6 +153,66 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it.each(["1", "0"])("exports safe dispatch argument diagnostics with tool content=%s", async capture => {
+    await chmod(fixture, 0o755);
+    const bodies: any[] = [];
+    const collector = createHttpServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", chunk => chunks.push(chunk));
+      request.on("end", () => { bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); response.end("{}"); });
+    });
+    await new Promise<void>(resolve => collector.listen(0, "127.0.0.1", resolve));
+    const address = collector.address();
+    if (!address || typeof address === "string") throw new Error("collector did not bind");
+    const root = await mkdtemp(join(tmpdir(), "paperclip-argument-diagnostics-")); roots.push(root);
+    const calls: unknown[] = [];
+    const driver = new OpenCodeServerDriver({ model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+      environment: { PATH: process.env.PATH, PAPERCLIP_OBSERVABILITY_OPENCODE: "1",
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/v1/traces`,
+        OTEL_LOG_TOOL_DETAILS: "1", OTEL_LOG_TOOL_CONTENT: capture },
+      taskEnvelope: createCodexTaskEnvelope({ objective: "argument-diagnostics" }),
+      dynamicTools: [{ name: "paperclip_call_assigned_tool", inputSchema: { type: "object" } }],
+      dynamicToolHandler: async call => {
+        calls.push(call.arguments);
+        if (typeof (call.arguments as { name?: unknown }).name !== "string") throw new Error("name must be a string");
+        return { receipt: "benign-receipt" };
+      },
+    });
+    let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+    try {
+      session = await driver.openSession({ runId: "first", normalizedSessionId: "diagnostics", workingDirectory: root });
+      for (const runId of ["first", "second"]) {
+        if (runId === "second") session.attachRun!({ runId });
+        await session.startTurn({ message: { role: "user", text: JSON.stringify({ message: "argument-diagnostics", completionContract: createCodexTaskEnvelope({ objective: "argument-diagnostics" }).completionContract }) } });
+        const events = await collectTurnEvents(session.events());
+        expect(events.at(-1)?.eventType).toBe("turn.completed");
+        expect(events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
+        const receipts = JSON.parse(await readFile(join(root, "fake-diagnostic-receipts.json"), "utf8"));
+        expect(receipts[0].result.isError).toBe(true);
+        expect(receipts[1].result.content[0].text).toContain("benign-receipt");
+      }
+      await session.close({ reason: "test" }); session = undefined;
+      expect(calls).toHaveLength(4);
+      expect(bodies).toHaveLength(2);
+      for (const [index, body] of bodies.entries()) {
+        const spans = body.resourceSpans[0].scopeSpans[0].spans;
+        const attrs = (span: any) => Object.fromEntries(span.attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.boolValue]));
+        const tools = spans.filter((span: any) => span.name === "tool paperclip_call_assigned_tool");
+        expect(tools).toHaveLength(2);
+        expect(tools.map((span: any) => span.status.code)).toEqual([2, 1]);
+        expect(attrs(tools[0])["paperclip.run.id"]).toBe(index === 0 ? "first" : "second");
+        if (capture === "1") {
+          expect(JSON.parse(attrs(tools[0])["braintrust.input"])).toMatchObject({ schema: "paperclip.opencode.tool-diagnostics.v1", method: "tools/call", argumentType: "object", fields: { name: "number", arguments: "object" } });
+          expect(JSON.parse(attrs(tools[1])["braintrust.input"]).fields.name).toBe("string");
+        } else for (const tool of tools) expect(attrs(tool)).not.toHaveProperty("braintrust.input");
+      }
+      for (const excluded of ["private-argument-canary", "private-key-canary", "private-value-canary", "private-provider-copy", "benign-operation"]) expect(JSON.stringify(bodies)).not.toContain(excluded);
+    } finally {
+      await session?.close({ reason: "test" });
+      await new Promise<void>(resolve => { collector.close(() => resolve()); collector.closeAllConnections(); });
+    }
+  });
+
   it("exports company traces across warm runs without giving the ingestion key to the provider", async () => {
     await chmod(fixture, 0o755);
     const bodies: Array<Record<string, any>> = [];

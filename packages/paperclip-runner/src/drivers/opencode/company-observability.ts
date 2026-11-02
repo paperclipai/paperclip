@@ -23,9 +23,29 @@ function pairs(value: string | undefined): Record<string, string> {
   }));
 }
 
+// Closed vocabulary only: values, arbitrary property names and nested payloads
+// never enter the diagnostic, even when content capture is enabled.
+function argumentDiagnostics(value: unknown): string {
+  const type = (entry: unknown) => entry === null ? "null" : Array.isArray(entry) ? "array" : typeof entry;
+  const fields = record(value);
+  return JSON.stringify({
+    schema: "paperclip.opencode.tool-diagnostics.v1", method: "tools/call",
+    argumentType: type(value),
+    fields: Object.fromEntries([
+      "name", "arguments", "schema", "reportedWorkDisposition", "summary",
+      "completionClaim", "verification", "evidence", "artifacts", "continuation", "blocker",
+    ].filter(key => Object.hasOwn(fields, key)).map(key => [key, type(fields[key])])),
+  });
+}
+function outputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value) ?? ""; } catch { return ""; }
+}
+
 /** A controller opt-in, not OpenCode's raw OTLP. Projected PRP events never include reasoning or raw provider payloads. */
 export function createOpenCodeCompanyObservability(input: {
   environment: NodeJS.ProcessEnv | undefined; model: string; sensitiveValues: readonly string[];
+  managedToolNames?: readonly string[];
   fetch?: typeof globalThis.fetch; onDiagnostic?: (message: string) => void;
 }) {
   const env = input.environment;
@@ -42,6 +62,10 @@ export function createOpenCodeCompanyObservability(input: {
       ["paperclip.company.id", "paperclip.agent.id", "paperclip.observability.revision"]
         .filter(key => supplied[key]).map(key => [key, supplied[key]])) };
   } catch { diagnostic("configuration_invalid"); return undefined; }
+  // Dispatch owns Paperclip tool outcomes. Native SSE call IDs are provider
+  // identities, not MCP JSON-RPC IDs; do not correlate them by name or order.
+  const managedTools = new Set(["paperclip_finish", "paperclip_block", ...(input.managedToolNames ?? [])]
+    .flatMap(name => [name, `paperclip_${name}`]));
   const capture = (key: string) => env[key] === "1";
   const clean = (value: unknown, limit = maxTextBytes): string => {
     if (typeof value !== "string") return "";
@@ -123,19 +147,27 @@ export function createOpenCodeCompanyObservability(input: {
       if (event.eventType === "item.completed" && payload.kind === "agentMessage" && capture("OTEL_LOG_ASSISTANT_RESPONSES")) {
         turn.root.attributes["braintrust.output"] = clean(payload.text);
       }
-      if (event.eventType.startsWith("tool.execution.") && event.itemId && capture("OTEL_LOG_TOOL_DETAILS")) {
-        let span = turn.tools.get(event.itemId);
+      const dynamic = payload.kind === "dynamicToolCall" && ["item.started", "item.completed"].includes(event.eventType);
+      const item = record(payload.item);
+      const canonicalTool = event.eventType.startsWith("tool.execution.") && !managedTools.has(String(payload.name));
+      if ((dynamic || canonicalTool) && event.itemId && capture("OTEL_LOG_TOOL_DETAILS")) {
+        const key = `${dynamic ? "dispatch" : "native"}:${event.itemId}`;
+        let span = turn.tools.get(key);
         if (!span && turn.tools.size < maxRows) {
-          const name = clean(payload.name, 128);
+          const name = clean(dynamic ? item.name : payload.name, 128);
           span = makeSpan(`tool ${name || "execution"}`, time, {
             "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name });
-          turn.tools.set(event.itemId, span);
+          turn.tools.set(key, span);
         }
         if (span) {
-          span.end = time; span.failed = payload.status === "failed";
+          span.end = time; span.failed = dynamic ? item.is_error === true : payload.status === "failed";
           if (capture("OTEL_LOG_TOOL_CONTENT")) {
-            span.attributes["braintrust.output"] = clean(payload.output);
-            if (payload.outputTruncated === true) turn.truncated = true;
+            if (dynamic && event.eventType === "item.started") {
+              span.attributes["braintrust.input"] = argumentDiagnostics(item.arguments);
+            } else {
+              span.attributes["braintrust.output"] = clean(dynamic ? outputText(item.result ?? item.error) : payload.output);
+            }
+            if (!dynamic && payload.outputTruncated === true) turn.truncated = true;
           }
         } else turn.truncated = true;
       }

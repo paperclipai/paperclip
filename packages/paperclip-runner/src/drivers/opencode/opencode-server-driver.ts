@@ -445,6 +445,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           snapshot,
           now: this.#options.now ?? (() => new Date()),
           observabilityEnvironment: this.#options.environment,
+          managedToolNames: this.#options.dynamicTools?.map(tool => text(tool.name)).filter(Boolean),
           onDiagnostic: this.#options.onDiagnostic,
         });
         session.startEventPump();
@@ -566,11 +567,13 @@ class OpenCodeHarnessSession implements HarnessSession {
     snapshot: PersistedHarnessSession | null;
     now: () => Date;
     observabilityEnvironment?: NodeJS.ProcessEnv;
+    managedToolNames?: readonly string[];
     onDiagnostic?: (message: string) => void;
   }) {
     this.#runtime = input.runtime;
     this.#companyObservability = createOpenCodeCompanyObservability({
       environment: input.observabilityEnvironment, model: input.model, sensitiveValues: input.runtime.sensitiveValues,
+      managedToolNames: input.managedToolNames,
       onDiagnostic: input.onDiagnostic ?? ((message) => console.warn(message)),
     });
     this.#fetch = input.fetcher;
