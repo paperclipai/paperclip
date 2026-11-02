@@ -239,6 +239,16 @@ The work is complete and terminal.
 
 The work will not continue and is terminal.
 
+When a board user marks an active native task `done` or `cancelled` through
+the task update API, Paperclip must confirm the run's cancellation before
+clearing its task execution lock. This also applies to providers without
+session goals. An unconfirmed stop leaves the task open. Native agents still
+report their own completion through `paperclip_finish` or `paperclip_block`,
+so normal result and workspace finalization retain their existing ordering.
+The cancellation records the board user's identity. Its acknowledged operator
+Stop receipt keeps recovery from promoting old queued input or creating a retry
+while the task closure commits.
+
 ## 4. Agent-Owned vs User-Owned Execution
 
 The execution model differs depending on assignee type.

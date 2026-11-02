@@ -1,4 +1,4 @@
-import { testopsClient, endpoint } from './chat-feature-testops-api.mjs';
+import { testopsClient, endpoint, launchNameSearch } from './chat-feature-testops-api.mjs';
 import { cases, planName, positive, reject, validateSelection, catalogDefinition } from './chat-completion-testops-contract.mjs';
 
 import { reconcileFullCatalog } from './chat-full-catalog-testops-reconcile.mjs';
@@ -135,32 +135,12 @@ export async function inspectPilotCatalog(api) {
 }
 
 export async function bootstrapPilotPlan(api, integrationId, markOnce, context = {}) {
+  // The pilot plan is retired. Reject before API reads or mutation markers.
+  if (context.catalog !== 'full') reject('plan_retired');
   if (!positive(integrationId)) reject('integration');
   const integration = await api(`/api/integration/${integrationId}/project/1`);
   if (integration.id !== integrationId || integration.projectId !== 1 || integration.info?.type !== 'github' || integration.disabled !== false) reject('integration');
-  if (context.catalog === 'full') return { ...await reconcileFullCatalog(api, markOnce), integrationId };
-  const inspected = await inspectPilotCatalog(api);
-  if (inspected.plans.length && inspected.cases.length !== cases.length) reject('plan_conflict');
-  const selected = [...inspected.cases];
-  for (const row of cases) {
-    if (selected.some(value => value.key === row.key)) continue;
-    await markOnce(`create_case_${row.key}`);
-    const created = await api('/api/testcase', 'POST', { projectId: 1, name: row.name, fullName: row.fullName, automated: true });
-    if (!positive(created?.id)) reject('created_case');
-    assertCase(created, { ...row, caseId: created.id });
-    selected.push({ ...row, caseId: created.id });
-  }
-  const ordered = cases.map(row => selected.find(value => value.key === row.key));
-  let planId = inspected.plans[0]?.id;
-  if (!planId) {
-    await markOnce('create_plan');
-    const created = await api('/api/testplan', 'POST', { projectId: 1, name: planName,
-      treeSelection: { inverted: false, leafsInclude: ordered.map(row => row.caseId) } });
-    if (!positive(created?.id)) reject('created_plan'); planId = created.id;
-  }
-  const binding = { planId, integrationId, cases: ordered };
-  assertPlan(await api(`/api/testplan/${planId}`), binding);
-  return binding;
+  return { ...await reconcileFullCatalog(api, markOnce), integrationId };
 }
 
 export async function completePilotRegistration(api, prepared, official, context, workflowId, markOnce, observe = async () => {}) {
@@ -225,7 +205,7 @@ export async function launchPilotPlan(api, env, context, workflowId, markOnce) {
   if (!Array.isArray(assignments) || assignments.length !== 1 || assignments[0].job?.id !== binding.jobId
     || assignments[0].testCasesCount !== cases.length) reject('plan_job_mismatch');
   const name = `${planName} · ${env.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE}`;
-  const existing = pageRows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: name, page: '0', size: '100' })}`));
+  const existing = pageRows(await api(`/api/launch?${new URLSearchParams({ projectId: '1', search: launchNameSearch(name), page: '0', size: '100' })}`));
   if (existing.length) reject('launch_already_requested');
   await markOnce('launch_plan');
   const launched = await api(`/api/testplan/${binding.planId}/run`, 'POST', { launchName: name });
