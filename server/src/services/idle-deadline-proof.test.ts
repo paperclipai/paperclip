@@ -1,5 +1,8 @@
 import { pluginIdleManifestGeneration } from "./plugin-idle-catalog.js";
-import type { Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, costEvents, issues, type Db } from "@paperclipai/db";
+import { getTableName } from "drizzle-orm";
+import { readIdleAgentTimerSchedule } from "./heartbeat/idle-timer-schedule.js";
+import { createHeartbeatTimerPolicy } from "./heartbeat/timer-policy.js";
 import { describe, expect, it } from "vitest";
 import { composeIdleDeadlineProof, createIdleDeadlineInspectionBudget, deadlineWorkReplacement, readIdleDeadlineProof,
   IdleDeadlineInspectionBudgetExceeded, type IdleDeadlineProofOptions } from "./idle-deadline-proof.js";
@@ -90,7 +93,7 @@ it("trace expiry transfers actual retained data; capture/import/deletion/cross-c
   expect(projectIdleProviderTraceSchedule([expired], now)).toMatchObject({ blocked: false, deadlines: [] });
 });
 type ContinuityRow = Parameters<typeof projectIdleGitHubGrantContinuity>[0][number];
-const github = (): ContinuityRow => ({ companyStatus: "active", connection: { id: "connection", companyId: "company", status: "active", enabled: true, config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } } } as unknown as ContinuityRow["connection"], grant: { id: "grant", companyId: "company", credentialSecretRefs: [{ configPath: "oauth.access_token", secretId: "secret" }], providerTenant: { oauth: { accessTokenExpiresAt: new Date(now + 8 * 3_600_000).toISOString(), refreshedAt: new Date(now).toISOString() }, github: { userId: "user", installationIds: ["101"], lastAccessRefreshAt: new Date(now).toISOString() } } } as ContinuityRow["grant"] });
+const github = (): ContinuityRow => ({ companyStatus: "active", connection: { id: "connection", companyId: "company", status: "active", enabled: true, authKind: "oauth", credentialSource: "paperclip_vault", config: { sourceTemplateKey: "github", oauth: { strategy: "paperclip_cloud_connector", connectorProfile: "github.code" } } } as unknown as ContinuityRow["connection"], grant: { id: "grant", companyId: "company", connectionId: "connection", kind: "user", subjectUserId: "user", credentialSecretRefs: [{ configPath: "oauth.access_token", secretId: "secret" }], providerTenant: { oauth: { accessTokenExpiresAt: new Date(now + 8 * 3_600_000).toISOString(), refreshedAt: new Date(now).toISOString() }, github: { userId: "user", installationIds: ["101"], lastAccessRefreshAt: new Date(now).toISOString() } } } as ContinuityRow["grant"] });
 it("GitHub enrollment alone never bypasses its credential continuity deadline or unresolved authority", () => {
   expect(projectIdleGitHubGrantContinuity([github()], now)).toMatchObject({ blocked: false, deadlines: [now + 7 * 3_600_000], connectionIds: ["connection"] });
   const nonexpiring = github(); delete nonexpiring.grant.providerTenant!.oauth;
@@ -104,22 +107,112 @@ it("GitHub enrollment alone never bypasses its credential continuity deadline or
 });
 
 
-it("stops owner read orchestration at its query budget and rejects row overflow", async () => {
-  const agentRows = Array.from({ length: 80 }, (_, i) => ({ agent: { id: `agent-${i}`, companyId: "company", name: "Timer",
-    status: "idle", reportsTo: null, adapterType: "codex_local", runtimeConfig: { heartbeat: { enabled: true, intervalSec: 3600, maxDailyRuns: 1 } },
-    createdAt: new Date(now), lastHeartbeatAt: null }, companyStatus: "active", companyUpdatedAt: new Date(now) }));
-  let reads = 0;
-  const tx = { select: (columns: object) => {
-    reads++;
-    const rows = "agent" in columns ? agentRows : [{ total: 0 }];
-    const query = { from: () => query, leftJoin: () => query, orderBy: () => query, where: () => query,
-      limit: () => Promise.resolve(rows), then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
+function timerAgent(index: number): typeof agents.$inferSelect {
+  return { id: `agent-${index}`, companyId: "company", name: "Timer", status: "idle", reportsTo: null,
+    adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 3600, maxDailyRuns: 1 } },
+    createdAt: new Date(now), lastHeartbeatAt: new Date(now) } as unknown as typeof agents.$inferSelect;
+}
+function fixtureDb(tables: Record<string, unknown[]>, onRead: () => void = () => {}) {
+  return { select: () => {
+    onRead();
+    let table = "";
+    const query = { from: (source: Parameters<typeof getTableName>[0]) => { table = getTableName(source); return query; },
+      leftJoin: () => query, orderBy: () => query, where: () => query, groupBy: () => query,
+      limit: () => Promise.resolve(tables[table] ?? []),
+      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(tables[table] ?? []).then(resolve) };
     return query;
   } } as unknown as Pick<Db, "select">;
-  expect(await readIdleDeadlineProof(tx, hold, options)).toEqual({ blocked: true });
-  expect(reads).toBe(64);
-  agentRows.push(...Array.from({ length: 10_001 }, () => agentRows[0]));
-  reads = 0;
+}
+it("batches more than128 eligible timers and the old80 run-cap shape within a fixed query budget", async () => {
+  const rows = Array.from({ length: 160 }, (_, i) => ({ agent: timerAgent(i), companyStatus: "active", companyUpdatedAt: new Date(now) }));
+  rows.push(...["paused", "terminated", "idle"].map((status, i) => ({ agent: { ...timerAgent(200 + i), status,
+    runtimeConfig: { heartbeat: { enabled: false } } }, companyStatus: "active", companyUpdatedAt: new Date(now) })));
+  let reads = 0;
+  const tables: Record<string, unknown[]> = { agents: rows };
+  const tx = fixtureDb(tables, () => { reads++; });
+  const future = await readIdleDeadlineProof(tx, hold, options);
+  expect(future.blocked).toBe(false);
+  expect(future.scheduledWake?.nextWakeAt).toBe(new Date(now + 3_600_000).toISOString());
+  expect(reads).toBe(5);
+  tables.agents = rows.slice(0, 80); reads = 0;
+  expect((await readIdleDeadlineProof(tx, hold, options)).blocked).toBe(false);
+  expect(reads).toBe(5);
+  rows[0].agent.lastHeartbeatAt = new Date(now - 3_600_000); tables.agents = rows; reads = 0;
+  expect((await readIdleDeadlineProof(tx, hold, options)).blocked).toBe(true);
+  expect(reads).toBe(2);
+  rows[0].agent.lastHeartbeatAt = new Date(now);
+  tables.agents = Array.from({ length: 10_001 }, () => rows[0]); reads = 0;
   expect(await readIdleDeadlineProof(tx, hold, options)).toEqual({ blocked: true });
   expect(reads).toBe(1);
+  tables.agents = rows;
+  for (const total of [null, "", true, false, "0", NaN, Infinity, -1, 1.5]) {
+    tables.heartbeat_runs = [{ companyId: rows[0].agent.companyId, agentId: rows[0].agent.id, total }];
+    expect((await readIdleDeadlineProof(tx, hold, options)).blocked).toBe(true);
+  }
+  tables.heartbeat_runs = [{ companyId: "foreign", agentId: rows[0].agent.id, total: 0 }];
+  expect((await readIdleDeadlineProof(tx, hold, options)).blocked).toBe(true);
+});
+it("single and batch owner schedules share cap, actionable, UTC and decimal semantics", async () => {
+  for (const heartbeat of [
+    { enabled: false }, { enabled: true, intervalSec: 600, maxDailyRuns: 0 },
+    { enabled: true, intervalSec: 600, maxDailyRuns: 2 },
+    { enabled: true, intervalSec: 600, maxDailyCostCents: 1 },
+    { enabled: true, intervalSec: 600, maxDailyRuns: 2, maxDailyCostCents: 1, skipTimerWhenNoActionableWork: true },
+  ]) for (const actionable of [false, true]) for (const runTotal of [0, 2]) for (const cost of ["0.999999", "1.000001"]) {
+    const agent = { ...timerAgent(0), runtimeConfig: { heartbeat } };
+    const owner = createHeartbeatTimerPolicy(fixtureDb({
+      [getTableName(heartbeatRuns)]: [{ companyId: agent.companyId, agentId: agent.id, total: runTotal }],
+      [getTableName(costEvents)]: [{ companyId: agent.companyId, agentId: agent.id, total: cost }],
+      [getTableName(issues)]: actionable ? [{ companyId: agent.companyId, agentId: agent.id, id: "issue" }] : [],
+    }));
+    const single = await owner.readTimerHeartbeatSchedule(agent, new Date(now));
+    const batch = await owner.readTimerHeartbeatSchedules([agent], new Date(now));
+    expect(batch?.schedules.get(agent.id)).toEqual(single);
+  }
+});
+it("checks global suppression even without eligible timers and retains owner org-chain checks", async () => {
+  for (const rows of [[], [timerAgent(1)], [{ ...timerAgent(1), status: "paused" }]]) {
+    if (rows[0]?.status === "idle") rows[0].runtimeConfig = { heartbeat: { enabled: false } };
+    for (const env of [{ PAPERCLIP_IN_WORKTREE: "true" }, { PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "1" },
+      { PAPERCLIP_RESTORE_IN_PROGRESS: "yes" }, { HEARTBEAT_SCHEDULER_ENABLED: "false" }]) {
+      let reads = 0;
+      expect((await readIdleAgentTimerSchedule(fixtureDb({ agents: rows }, () => { reads++; }), now, env)).blocked).toBe(true);
+      expect(reads).toBe(0);
+    }
+  }
+  const parent = timerAgent(1), child = { ...timerAgent(2), reportsTo: parent.id };
+  const rows = [parent, child].map(agent => ({ agent, companyStatus: "active", companyUpdatedAt: new Date(now) }));
+  const tx = fixtureDb({ agents: rows });
+  expect((await readIdleAgentTimerSchedule(tx, now, {})).blocked).toBe(false);
+  parent.status = "paused";
+  expect((await readIdleAgentTimerSchedule(tx, now, {})).blocked).toBe(false);
+  parent.status = "terminated";
+  expect((await readIdleAgentTimerSchedule(tx, now, {})).blocked).toBe(true);
+  parent.status = "idle"; parent.reportsTo = child.id;
+  expect((await readIdleAgentTimerSchedule(tx, now, {})).blocked).toBe(true);
+  let checks = 0;
+  await expect(readIdleAgentTimerSchedule(tx, now, {}, () => {
+    if (++checks > 1) throw new IdleDeadlineInspectionBudgetExceeded();
+  })).rejects.toThrow(IdleDeadlineInspectionBudgetExceeded);
+});
+it("does not turn unrelated GitHub grant shapes into continuity authority", () => {
+  const unrelated = github(); unrelated.connection!.authKind = "api_key";
+  expect(projectIdleGitHubGrantContinuity([unrelated], now)).toMatchObject({ blocked: false, deadlines: [], connectionIds: [] });
+  unrelated.connection!.authKind = "oauth"; unrelated.connection!.config = { sourceTemplateKey: "other" };
+  expect(projectIdleGitHubGrantContinuity([unrelated], now)).toMatchObject({ blocked: false, connectionIds: [] });
+  for (const patch of [{ oauth: { connectorProfile: "github.code", strategy: "unknown_strategy" } },
+    { oauth: { connectorProfile: "github.code" } }, { oauth: null }, { oauth: { connectorProfile: 123 } }]) {
+    const malformed = github(); malformed.connection!.config = { sourceTemplateKey: "github", ...patch };
+    expect(projectIdleGitHubGrantContinuity([malformed], now).blocked).toBe(true);
+  }
+  for (const patch of [{ authKind: "unknown_auth" }, { credentialSource: "unknown_source" }]) {
+    const malformed = github(); Object.assign(malformed.connection!, patch);
+    expect(projectIdleGitHubGrantContinuity([malformed], now).blocked).toBe(true);
+  }
+  const persisted = github(); persisted.connection!.config.oauth = { connectorProfile: "github.code", strategy: "paperclip_id_connector" };
+  expect(projectIdleGitHubGrantContinuity([persisted], now).blocked).toBe(false);
+  const agent = github(); agent.grant.kind = "agent"; agent.grant.subjectUserId = null; agent.grant.subjectAgentId = "dedicated-agent";
+  expect(projectIdleGitHubGrantContinuity([agent], now).connectionIds).toEqual(["connection"]);
+  const orphan = github(); orphan.connection = null;
+  expect(projectIdleGitHubGrantContinuity([orphan], now).blocked).toBe(true);
 });

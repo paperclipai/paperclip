@@ -52,9 +52,10 @@ ordinary routine/monitor proof, exact domain rows and plugin worker identities.
 Any changed state, cancellation, moved deadline, owner replacement or restart
 invalidates the old proof. Unknown or malformed states fail closed.
 
+The timer owner batches UTC-day run counts, exact decimal cost sums and actionable-work inputs. Credential ownership and selected current/previous version metadata use bounded chunks; they never read credential material or value hashes. Managed GitHub OAuth user and agent grants retain their owner deadlines. Other grant shapes grant no continuity exemption.
+
 The additional domain projection is bounded to 64 data reads, a two-second monotonic budget for
-starting further reads, 128 eligible timer candidates and 10,000 rows per
-family, while reserving 60 seconds of hold headroom. Overflow refuses sleep;
+starting further reads and 10,000 rows per family, while reserving 60 seconds of hold headroom. Overflow refuses sleep;
 it never truncates the proof or changes a schedule. These limits supplement the
 transaction's statement timeout. A query already in progress may still take its five-second statement timeout;
 SQL execution can therefore finish about seven seconds after the projection

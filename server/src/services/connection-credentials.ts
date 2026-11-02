@@ -117,26 +117,36 @@ export async function writeConnectionCredential(
   return { secret, created: true, definitionId: createdDefinitionId };
 }
 
-/** Validate metadata without reading secret values, including for connection pickers. */
-export async function validateConnectionGrantSecretOwnership(
-  db: Pick<Db, "select">,
-  connection: Pick<typeof toolConnections.$inferSelect, "id" | "companyId">,
-  grant: Pick<typeof connectionGrants.$inferSelect, "id" | "companyId" | "connectionId" | "kind" | "subjectUserId">,
-  ref: ToolCredentialSecretRef,
-) {
-  const [secret] = await db.select().from(companySecrets).where(and(
-    eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, connection.companyId),
-  )).limit(1);
+const credentialSecretColumns = {
+  id: companySecrets.id, companyId: companySecrets.companyId, scope: companySecrets.scope,
+  ownerUserId: companySecrets.ownerUserId, userSecretDefinitionId: companySecrets.userSecretDefinitionId,
+  status: companySecrets.status, deletedAt: companySecrets.deletedAt, latestVersion: companySecrets.latestVersion,
+  updatedAt: companySecrets.updatedAt,
+};
+type CredentialConnection = Pick<typeof toolConnections.$inferSelect, "id" | "companyId">;
+type CredentialGrantOwner = Pick<typeof connectionGrants.$inferSelect,
+  "id" | "companyId" | "connectionId" | "kind" | "subjectUserId">;
+type CredentialSecretOwner = Pick<typeof companySecrets.$inferSelect,
+  "id" | "companyId" | "scope" | "ownerUserId" | "userSecretDefinitionId">;
+function assertConnectionGrantSecretOwnership(connection: CredentialConnection, grant: CredentialGrantOwner,
+  ref: ToolCredentialSecretRef, secret: CredentialSecretOwner | undefined) {
   const personal = grant.kind === "user";
   if (grant.companyId !== connection.companyId || grant.connectionId !== connection.id || !secret
-    || (personal
+    || secret.companyId !== connection.companyId || (personal
       ? !grant.subjectUserId || secret.scope !== "user" || secret.ownerUserId !== grant.subjectUserId || !secret.userSecretDefinitionId
       : secret.scope !== "company")) {
     throw unprocessable("This connection's credential does not belong to the selected identity. Its owner must reconnect it.", {
       code: "grant_credential_invalid", connectionId: connection.id, grantId: grant.id, credential: ref.configPath,
     });
   }
-  return secret;
+}
+export async function validateConnectionGrantSecretOwnership(db: Pick<Db, "select">,
+  connection: CredentialConnection, grant: CredentialGrantOwner, ref: ToolCredentialSecretRef) {
+  const [secret] = await db.select(credentialSecretColumns).from(companySecrets).where(and(
+    eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, connection.companyId),
+  )).limit(1);
+  assertConnectionGrantSecretOwnership(connection, grant, ref, secret);
+  return secret!;
 }
 
 /** The same owner/declaration checks apply during setup, testing and execution. */
@@ -166,38 +176,82 @@ export async function resolveConnectionGrantSecret(
   return { value: resolved.value, latestVersion: secret.latestVersion };
 }
 
-export async function readConnectionGrantCredentialState(
-  db: Pick<Db, "select">,
-  connection: Pick<typeof toolConnections.$inferSelect, "id" | "companyId">,
-  grant: Pick<typeof connectionGrants.$inferSelect, "id" | "companyId" | "connectionId" | "kind" | "subjectUserId" | "credentialSecretRefs">,
-): Promise<unknown[] | undefined> {
-  const refs = grant.credentialSecretRefs.filter(ref => ["oauth.access_token", "oauth.refresh_token"].includes(ref.configPath));
-  if (refs.filter(ref => ref.configPath === "oauth.access_token").length !== 1
-    || new Set(refs.map(ref => ref.configPath)).size !== refs.length) return;
-  const state: unknown[] = [];
-  for (const ref of refs) {
-    let secret;
-    try { secret = await validateConnectionGrantSecretOwnership(db, connection, grant, ref); }
-    catch (error) {
-      if (error && typeof error === "object" && "status" in error && error.status === 422) return;
-      throw error;
+type CredentialGrant = CredentialGrantOwner & Pick<typeof connectionGrants.$inferSelect, "credentialSecretRefs">;
+export type ConnectionGrantCredentialInput = { connection: CredentialConnection; grant: CredentialGrant };
+export async function readConnectionGrantCredentialStates(db: Pick<Db, "select">,
+  inputs: ConnectionGrantCredentialInput[], checkBudget: () => void = () => {}): Promise<Map<string, unknown[]> | undefined> {
+  if (inputs.length > 10_000) return;
+  const states = new Map<string, unknown[]>();
+  const requests: { input: ConnectionGrantCredentialInput; ref: ToolCredentialSecretRef }[] = [];
+  for (const input of inputs) {
+    checkBudget();
+    if (states.has(input.grant.id)) return;
+    states.set(input.grant.id, []);
+    const paths = new Set<string>();
+    for (const ref of input.grant.credentialSecretRefs) {
+      checkBudget();
+      if (!["oauth.access_token", "oauth.refresh_token"].includes(ref.configPath)) continue;
+      if (paths.has(ref.configPath)) return;
+      paths.add(ref.configPath);
+      requests.push({ input, ref });
     }
-    if (secret.status !== "active" || secret.deletedAt || !Number.isSafeInteger(secret.latestVersion) || secret.latestVersion <= 0) return;
-    let definitionState: unknown;
-    if (secret.scope === "user") {
-      const [definition] = await db.select({ id: userSecretDefinitions.id, companyId: userSecretDefinitions.companyId,
-        status: userSecretDefinitions.status, deletedAt: userSecretDefinitions.deletedAt, updatedAt: userSecretDefinitions.updatedAt })
-        .from(userSecretDefinitions).where(eq(userSecretDefinitions.id, secret.userSecretDefinitionId!)).limit(1);
-      if (!definition || definition.companyId !== connection.companyId || definition.status !== "active" || definition.deletedAt) return;
-      definitionState = definition;
-    }
-    const version = ref.versionSelector === undefined || ref.versionSelector === "latest" ? secret.latestVersion : ref.versionSelector;
-    if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) return;
-    const [saved] = await db.select({ id: companySecretVersions.id, version: companySecretVersions.version,
-      status: companySecretVersions.status, revokedAt: companySecretVersions.revokedAt })
-      .from(companySecretVersions).where(and(eq(companySecretVersions.secretId, secret.id), eq(companySecretVersions.version, version))).limit(1);
-    if (!saved || saved.status !== "current" || saved.revokedAt) return;
-    state.push([ref.configPath, secret.id, secret.scope, secret.ownerUserId, secret.latestVersion, secret.updatedAt, definitionState, saved]);
+    if (!paths.has("oauth.access_token")) return;
   }
-  return state;
+  if (requests.length > 20_000) return;
+  for (let offset = 0; offset < requests.length; offset += 1000) {
+    checkBudget();
+    const chunk = requests.slice(offset, offset + 1000);
+    const ids = [...new Set(chunk.map(request => request.ref.secretId))];
+    const rows = await db.select({ secret: credentialSecretColumns, definition: {
+      id: userSecretDefinitions.id, companyId: userSecretDefinitions.companyId, status: userSecretDefinitions.status,
+      deletedAt: userSecretDefinitions.deletedAt, updatedAt: userSecretDefinitions.updatedAt,
+    } }).from(companySecrets).leftJoin(userSecretDefinitions, eq(userSecretDefinitions.id, companySecrets.userSecretDefinitionId))
+      .where(inArray(companySecrets.id, ids)).orderBy(companySecrets.id).limit(1001);
+    if (rows.length > ids.length) return;
+    const secrets = new Map(rows.map(row => [row.secret.id, row]));
+    if (secrets.size !== rows.length) return;
+    const selected = [];
+    const pairs = new Map<string, { secretId: string; version: number }>();
+    for (const request of chunk) {
+      checkBudget();
+      const row = secrets.get(request.ref.secretId);
+      try { assertConnectionGrantSecretOwnership(request.input.connection, request.input.grant, request.ref, row?.secret); }
+      catch (error) {
+        if (error && typeof error === "object" && "status" in error && error.status === 422) return;
+        throw error;
+      }
+      if (!row) return;
+      const { secret, definition } = row;
+      if (secret.status !== "active" || secret.deletedAt || !Number.isSafeInteger(secret.latestVersion) || secret.latestVersion <= 0) return;
+      if (secret.scope === "user" && (!definition || definition.id !== secret.userSecretDefinitionId
+        || definition.companyId !== request.input.connection.companyId || definition.status !== "active" || definition.deletedAt)) return;
+      const version = request.ref.versionSelector === undefined || request.ref.versionSelector === "latest"
+        ? secret.latestVersion : request.ref.versionSelector;
+      if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) return;
+      const key = JSON.stringify([secret.id, version]);
+      pairs.set(key, { secretId: secret.id, version });
+      selected.push({ request, secret, definition: secret.scope === "user" ? definition : undefined, key });
+    }
+    checkBudget();
+    const versions = await db.select({ id: companySecretVersions.id, secretId: companySecretVersions.secretId,
+      version: companySecretVersions.version, status: companySecretVersions.status, revokedAt: companySecretVersions.revokedAt })
+      .from(companySecretVersions).where(or(...[...pairs.values()].map(pair => and(
+        eq(companySecretVersions.secretId, pair.secretId), eq(companySecretVersions.version, pair.version)))))
+      .orderBy(companySecretVersions.secretId, companySecretVersions.version).limit(1001);
+    if (versions.length > pairs.size) return;
+    const saved = new Map(versions.map(version => [JSON.stringify([version.secretId, version.version]), version]));
+    if (saved.size !== versions.length || versions.some(version => !pairs.has(JSON.stringify([version.secretId, version.version])))) return;
+    for (const { request, secret, definition, key } of selected) {
+      checkBudget();
+      const version = saved.get(key);
+      if (!version || !["current", "previous"].includes(version.status) || version.revokedAt) return;
+      states.get(request.input.grant.id)!.push([request.ref.configPath, secret.id, secret.scope, secret.ownerUserId,
+        secret.latestVersion, secret.updatedAt, definition, version]);
+    }
+  }
+  return states;
+}
+export async function readConnectionGrantCredentialState(db: Pick<Db, "select">,
+  connection: CredentialConnection, grant: CredentialGrant): Promise<unknown[] | undefined> {
+  return (await readConnectionGrantCredentialStates(db, [{ connection, grant }]))?.get(grant.id);
 }
