@@ -1078,9 +1078,21 @@ function StreamlinedInbox({
       contextIssueIds: new Set([...parentIds, ...failureIds]),
     };
   }, [tab, mineIssuesRaw, touchedIssuesRaw, heartbeatRuns]);
-  const { data: contextIssues = [], isLoading: isContextIssuesLoading, error: contextIssuesError } = useQuery<Issue[]>({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "row-context", "parent-index", parentContextIds, failureContextIds],
-    placeholderData: (previous) => previous?.filter((issue) => issue.companyId === selectedCompanyId && contextIssueIds.has(issue.id)),
+  const needsIssueContext = !!selectedCompanyId && contextIssueIds.size > 0 && tab !== "blocked";
+  const {
+    data: issueContext,
+    isLoading: isContextIssuesLoading,
+    isPlaceholderData: isContextIssuesPlaceholder,
+    error: contextIssuesError,
+  } = useQuery<{
+    companyId: string | null;
+    issues: Issue[];
+    failureIssueIds: string[];
+  }>({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "row-context", "parent-index-with-failure-state", parentContextIds, failureContextIds],
+    placeholderData: (previous) => needsIssueContext && previous?.companyId === selectedCompanyId
+      ? { ...previous, issues: previous.issues.filter((issue) => contextIssueIds.has(issue.id)) }
+      : undefined,
     queryFn: async ({ signal }) => {
       const loadContext = async (ids: string[], projection: "index" | "rows") => {
         const result: Issue[] = [];
@@ -1096,10 +1108,14 @@ function StreamlinedInbox({
         loadContext(parentContextIds, "index"),
         loadContext(failureContextIds, "rows"),
       ]);
-      return [...parents, ...failures];
+      // A completed failure read also establishes absence for filtered/missing
+      // tasks. Parent-only placeholders cannot supply this coverage.
+      return { companyId: selectedCompanyId, issues: [...parents, ...failures], failureIssueIds: failureContextIds };
     },
-    enabled: !!selectedCompanyId && (parentContextIds.length > 0 || failureContextIds.length > 0) && tab !== "blocked",
+    enabled: needsIssueContext,
   });
+  const contextIssues = issueContext?.issues ?? [];
+  const knownFailureContextIds = useMemo(() => new Set(issueContext?.failureIssueIds ?? []), [issueContext]);
   const issues = useMemo(() => [...mineIssuesRaw, ...touchedIssuesRaw, ...contextIssues], [mineIssuesRaw, touchedIssuesRaw, contextIssues]);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
@@ -1398,11 +1414,13 @@ function StreamlinedInbox({
 
   const failedRuns = useMemo(
     () =>
-      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
-        (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt)
-          && issueById.get(readIssueIdFromRun(r) ?? "")?.interruption?.state !== "resolved",
-      ),
-    [heartbeatRuns, dismissedAtByKey, issueById],
+      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((run) => {
+        const issueId = readIssueIdFromRun(run);
+        return !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt)
+          && (!issueId || knownFailureContextIds.has(issueId) || !!contextIssuesError)
+          && issueById.get(issueId ?? "")?.interruption?.state !== "resolved";
+      }),
+    [heartbeatRuns, dismissedAtByKey, issueById, knownFailureContextIds, contextIssuesError],
   );
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
@@ -2483,6 +2501,7 @@ function StreamlinedInbox({
     !isApprovalsLoading &&
     !isDashboardLoading &&
     !isContextIssuesLoading &&
+    !isContextIssuesPlaceholder &&
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
     !isRunsLoading

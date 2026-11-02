@@ -1062,10 +1062,89 @@ describe("Inbox toolbar", () => {
       await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
         ids: [parent.id], projection: "rows",
       }), expect.anything()));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(1);
       await act(() => releaseFailure([resolved]));
       await vi.waitFor(() => expect(client.isFetching()).toBe(0));
       expect(container.textContent).toContain(child.title);
       expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(1);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("reveals an empty view after leaving a Mine view with parent context", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
+    const child = createIssue({ id: "child", parentId: parent.id, title: "Mine child", listProjection: "index" });
+    apiMocks.issuesList.mockImplementation((_company, filters) => Promise.resolve(filters.ids
+      ? [parent] : filters.inboxArchivedByUserId ? [child] : []));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox tab="mine" /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain(child.title));
+      routerMock.location.pathname = "/inbox/recent";
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox tab="recent" /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("No recent inbox items."));
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("waits for rich failure state when heartbeat data arrives after parent captions", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
+    const child = createIssue({ id: "child", parentId: parent.id, title: "Mine child", listProjection: "index" });
+    const failure = createFailedRun({ issueId: parent.id, responsibleUserId: "local-board" });
+    let releaseRuns!: (rows: HeartbeatRun[]) => void;
+    apiMocks.heartbeatRunsList.mockImplementation(() => new Promise(resolve => { releaseRuns = resolve; }));
+    let releaseFailure!: (rows: Issue[]) => void;
+    const pendingFailure = new Promise<Issue[]>(resolve => { releaseFailure = resolve; });
+    apiMocks.issuesList.mockImplementation((_company, filters) => !filters.ids ? Promise.resolve([child])
+      : filters.projection === "index" ? Promise.resolve([parent]) : filters.ids.includes(parent.id) ? pendingFailure : Promise.resolve([child]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(client.isFetching()).toBe(1));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(0);
+      await act(() => releaseRuns([failure]));
+      await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        ids: [parent.id], projection: "rows",
+      }), expect.anything()));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(0);
+      await act(() => releaseFailure([{ ...parent, interruption: {
+        intentId: "saved-input", responsibility: "system", state: "resolved", nextRetryAt: null,
+        canRetry: false, userAction: null, sourceRunIds: [failure.id], observedRunId: failure.id,
+      } }]));
+      await vi.waitFor(() => expect(container.textContent).toContain(child.title));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(1);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("keeps known missing-task failures visible while new failure context is pending", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const child = createIssue({ title: "Readable task", listProjection: "index" });
+    const first = createFailedRun({ id: "failure-a", issueId: "missing-a", agentId: "agent-a", responsibleUserId: "local-board" });
+    const second = createFailedRun({ id: "failure-b", issueId: "missing-b", agentId: "agent-b", responsibleUserId: "local-board" });
+    apiMocks.heartbeatRunsList.mockResolvedValue([first]);
+    let releaseFailures!: (rows: Issue[]) => void;
+    const pendingFailures = new Promise<Issue[]>(resolve => { releaseFailures = resolve; });
+    apiMocks.issuesList.mockImplementation((_company, filters) => !filters.ids ? Promise.resolve([child])
+      : filters.ids.includes(second.issueId) ? pendingFailures : Promise.resolve([]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.querySelector('a[href="/issues/missing-a"]')).not.toBeNull());
+      const node = container.querySelector('a[href="/issues/missing-a"]');
+      await act(() => { client.setQueriesData({ queryKey: queryKeys.heartbeats("company-1") }, [first, second]); });
+      await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        ids: [first.issueId, second.issueId], projection: "rows",
+      }), expect.anything()));
+      expect(container.querySelector('a[href="/issues/missing-a"]')).toBe(node);
+      expect(container.querySelector('a[href="/issues/missing-b"]')).toBeNull();
+      expect(container.textContent).toContain(child.title);
+      await act(() => releaseFailures([]));
+      await vi.waitFor(() => expect(container.querySelector('a[href="/issues/missing-b"]')).not.toBeNull());
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(3);
     } finally { await act(() => root.unmount()); client.clear(); }
   });
 
