@@ -2538,7 +2538,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect((await service.select(selectionInput)).grant.id).toBe(account.grantId);
   });
 
-  it.each([false, true])("validates runner account adoption in the inherited sandbox (inline: %s)", async (inline) => {
+  it.each([false, true])("validates legacy or task account adoption in the inherited sandbox (inline: %s)", async (inline) => {
     const { agentRoutes } = await import("../routes/agents.js");
     const { instanceSettingsService } = await import("../services/instance-settings.js");
     const targetModule = await import("../services/environment-execution-target.js");
@@ -2552,6 +2552,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
     const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: inline ? [] : [id], allAgents: false }, "fixture-adoption-key");
     await service.setDefault(companyId, "alice", account.grantId);
+    if (!inline) {
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+      await db.update(toolConnections).set({ healthStatus: "unknown", config: { ...connection.config, aiLegacyAdoption: true } })
+        .where(eq(toolConnections.id, account.connectionId));
+    }
     const tryDeliver = vi.fn(async (interactionId: string) => {
       // Dispatch observes committed adoption, never a partially saved choice.
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("accepted");
