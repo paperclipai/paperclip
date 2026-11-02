@@ -25,7 +25,7 @@ import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 import { resolveRunnerE2ESource } from "../source.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
 import { validateJourneyCollection } from "./collection.js";
-import { captureProductScreenshot } from "./product-screenshot.js";
+import { captureProductScreenshot, isProductScreenshotUrl } from "./product-screenshot.js";
 import { validateOnboardingArtifact } from "./artifact-evidence.js";
 
 const cleanupGraceMs = 600_000;
@@ -252,8 +252,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         // Retain failed product screens only after tenant setup, never login screens.
         if (ready && phase === "journey") {
           try {
-            const url = new URL(ready.page.url());
-            if (url.origin === ready.api.origin && /^\/[^/]+\/(issues|search)(\/|$)/.test(url.pathname)) {
+            if (isProductScreenshotUrl(ready.page.url(), ready.api.origin)) {
               const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
               await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
               await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}-failed.png`), deadlineAt);
