@@ -329,7 +329,12 @@ export function codexCustomProviderToml(
   const providers: Record<string, unknown> = {};
   for (const [providerId, entry] of Object.entries(parsed.providers)) {
     if (!isRecord(entry) || providerId.trim().length === 0) continue;
-    providers[providerId] = expandProviderEnvPlaceholders(entry, environment);
+    // `env_key` names an environment variable that Codex reads itself, so the
+    // value never has to appear here. Any other `{env:...}` reference would be
+    // written as a literal, or as a durable secret in an agent-readable file;
+    // drop those fields instead of copying credentials into the runtime config.
+    const sanitized = dropSecretPlaceholders(entry);
+    if (sanitized) providers[providerId] = sanitized;
   }
   if (Object.keys(providers).length === 0) return "";
   const document: Record<string, unknown> = { model_providers: providers };
@@ -340,27 +345,24 @@ export function codexCustomProviderToml(
   return `${stringifyToml(document)}\n`;
 }
 
-function expandProviderEnvPlaceholders(
-  value: unknown,
-  environment: Record<string, string | undefined> | undefined,
-): unknown {
-  if (typeof value === "string") {
-    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
-      const entry = environment?.[name];
-      return entry === undefined || entry.length === 0 ? match : entry;
-    });
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => expandProviderEnvPlaceholders(entry, environment));
-  }
-  if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value)) {
-      out[key] = expandProviderEnvPlaceholders(entry, environment);
+/**
+ * Remove fields whose value still contains an `{env:...}` reference. Codex
+ * cannot resolve the placeholder, and writing the referenced secret into
+ * `config.toml` would expose a durable key to task-controlled code.
+ */
+function dropSecretPlaceholders(entry: Record<string, unknown>): Record<string, unknown> | null {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(entry)) {
+    if (typeof value === "string" && /\{env:[A-Za-z_][A-Za-z0-9_]*\}/.test(value)) continue;
+    if (Array.isArray(value) && value.some((item) => typeof item === "string" && /\{env:/.test(item))) continue;
+    if (isRecord(value)) {
+      const nested = dropSecretPlaceholders(value);
+      if (nested && Object.keys(nested).length > 0) out[key] = nested;
+      continue;
     }
-    return out;
+    out[key] = value;
   }
-  return value;
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

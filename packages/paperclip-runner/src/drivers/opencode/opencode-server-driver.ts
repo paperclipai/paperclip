@@ -2278,7 +2278,13 @@ class OpenCodeHarnessSession implements HarnessSession {
 }
 
 /** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
-async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv) {
+async function startOpenCodeProviderProxy(
+  baseUrl: string,
+  key: string,
+  models: string | readonly string[],
+  environment: NodeJS.ProcessEnv,
+) {
+  const acceptedModels = new Set((Array.isArray(models) ? models : [models]).filter((entry) => entry.length > 0));
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
   const token = randomBytes(32).toString("base64url");
   // Agent-local settings keep one runtime's transport configuration out of other sessions.
@@ -2326,7 +2332,8 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       let payload: Record<string, unknown>;
       try { payload = JSON.parse(body.toString("utf8")); }
       catch { response.writeHead(400).end(); return; }
-      if (!payload || typeof payload !== "object" || payload.model !== model ||
+      if (!payload || typeof payload !== "object" || typeof payload.model !== "string" ||
+        !acceptedModels.has(payload.model) ||
         ["models", "route", "plugins", "transforms"].some(field => Object.hasOwn(payload, field))) {
         response.writeHead(400).end();
         return;
@@ -2458,11 +2465,35 @@ async function startRuntime(input: {
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
-  const { providers: customProviders, resolvedSecretValues: customProviderSecretValues } =
+  const { providers: parsedCustomProviders, credentials: customProviderCredentials } =
     parseOpenCodeCustomProviders(input.options.environment);
-  if (customProviderSecretValues.length > 0) {
-    sensitiveValues.push(...customProviderSecretValues);
-    input.trace?.addSensitiveValues(customProviderSecretValues);
+  const customProviders: Record<string, Record<string, unknown>> = { ...parsedCustomProviders };
+  const customProviderProxies: Array<{ close: () => Promise<void> }> = [];
+  if (customProviderCredentials.length > 0) {
+    sensitiveValues.push(...customProviderCredentials.map((entry) => entry.apiKey));
+    input.trace?.addSensitiveValues(customProviderCredentials.map((entry) => entry.apiKey));
+  }
+  for (const credential of customProviderCredentials) {
+    try {
+      const proxy = await startOpenCodeProviderProxy(
+        credential.baseUrl,
+        credential.apiKey,
+        credential.providerId === modelProvider
+          ? [...new Set([...credential.models, providerModelId])]
+          : credential.models,
+        providerEnvironment,
+      );
+      customProviderProxies.push(proxy);
+      sensitiveValues.push(proxy.token);
+      const current = record(customProviders[credential.providerId]);
+      customProviders[credential.providerId] = {
+        ...current,
+        options: { ...record(current.options), baseURL: proxy.baseURL, apiKey: proxy.token },
+      };
+    } catch (error) {
+      for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
+      throw error;
+    }
   }
   const providerRoute = modelProvider === "openrouter"
     ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
@@ -2605,7 +2636,7 @@ async function startRuntime(input: {
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
         ...performanceDiagnostics?.environment,
-        ...(providerProxy ? { NO_PROXY: [providerEnvironment.no_proxy ?? providerEnvironment.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
+        ...(providerProxy || customProviderProxies.length > 0 ? { NO_PROXY: [providerEnvironment.no_proxy ?? providerEnvironment.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
       },
     );
     const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
@@ -2705,6 +2736,7 @@ async function startRuntime(input: {
       performanceDiagnostics,
       close: async (closeInput = {}) => {
         await providerProxy?.close();
+        for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
         await bridge.close().catch(() => {});
         if (providerChild.exitCode === null && providerChild.signalCode === null && providerChild.pid) {
           try {
@@ -2739,6 +2771,7 @@ async function startRuntime(input: {
   } catch (error) {
     await performanceDiagnostics?.close().catch(() => {});
     await providerProxy?.close();
+    for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
     await bridge.close().catch(() => {});
     child?.kill("SIGKILL");
     if (child?.pid) await waitForExit(child, 2_000);
@@ -3201,55 +3234,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const OPENCODE_CUSTOM_PROVIDERS_ENV = "PAPERCLIP_OPENCODE_PROVIDERS";
 
-function expandEnvPlaceholders(
-  value: unknown,
-  resolve: (name: string) => string | undefined,
-  resolvedSecretValues: string[],
-): unknown {
-  if (typeof value === "string") {
-    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
-      const entry = resolve(name);
-      if (entry === undefined || entry.length === 0) return match;
-      resolvedSecretValues.push(entry);
-      return entry;
-    });
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => expandEnvPlaceholders(entry, resolve, resolvedSecretValues));
-  }
-  if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value)) {
-      out[key] = expandEnvPlaceholders(entry, resolve, resolvedSecretValues);
-    }
-    return out;
-  }
-  return value;
+export interface OpenCodeCustomProviderCredential {
+  providerId: string;
+  baseUrl: string;
+  apiKey: string;
+  /** Model ids the provider serves, so the proxy can accept exactly those. */
+  models: string[];
 }
 
+/**
+ * Read the custom provider table from the run environment.
+ *
+ * Provider credentials are never copied into the generated config: a durable
+ * key in an agent-readable `opencode.json` would let task-controlled code reuse
+ * it. The caller starts a loopback proxy per provider and writes only the
+ * short-lived proxy token, the same boundary the OpenRouter and Paperclip
+ * provider routes already use.
+ */
 export function parseOpenCodeCustomProviders(
   environment: Record<string, string | undefined> | undefined,
-): { providers: Record<string, Record<string, unknown>>; resolvedSecretValues: string[] } {
+): {
+  providers: Record<string, Record<string, unknown>>;
+  credentials: OpenCodeCustomProviderCredential[];
+} {
+  const empty = { providers: {}, credentials: [] };
   const raw = environment?.[OPENCODE_CUSTOM_PROVIDERS_ENV];
-  if (typeof raw !== "string" || raw.trim().length === 0) {
-    return { providers: {}, resolvedSecretValues: [] };
-  }
+  if (typeof raw !== "string" || raw.trim().length === 0) return empty;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { providers: {}, resolvedSecretValues: [] };
+    return empty;
   }
-  if (!isRecord(parsed)) return { providers: {}, resolvedSecretValues: [] };
-  const resolvedSecretValues: string[] = [];
+  if (!isRecord(parsed)) return empty;
   const resolve = (name: string) => environment?.[name];
   const providers: Record<string, Record<string, unknown>> = {};
+  const credentials: OpenCodeCustomProviderCredential[] = [];
   for (const [providerId, entry] of Object.entries(parsed)) {
     if (!isRecord(entry)) continue;
-    providers[providerId] = expandEnvPlaceholders(entry, resolve, resolvedSecretValues) as Record<string, unknown>;
+    const sanitized = structuredClone(entry);
+    const options = isRecord(sanitized.options) ? { ...sanitized.options } : {};
+    const baseUrl = typeof options.baseURL === "string" ? options.baseURL.trim() : "";
+    const rawKey = typeof options.apiKey === "string" ? options.apiKey.trim() : "";
+    delete options.apiKey;
+    sanitized.options = options;
+    providers[providerId] = sanitized;
+    const apiKey = resolveApiKeyReference(rawKey, resolve);
+    if (!baseUrl || !apiKey) continue;
+    const models = isRecord(sanitized.models) ? Object.keys(sanitized.models) : [];
+    credentials.push({ providerId, baseUrl, apiKey, models });
   }
-  return { providers, resolvedSecretValues };
+  return { providers, credentials };
 }
+
+function resolveApiKeyReference(raw: string, resolve: (name: string) => string | undefined): string {
+  if (!raw) return "";
+  const reference = /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(raw);
+  if (!reference) return raw;
+  return resolve(reference[1]!) ?? "";
+}
+
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }

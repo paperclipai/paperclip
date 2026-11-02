@@ -28,15 +28,25 @@ describe("codexCustomProviderToml", () => {
     expect(toml).not.toContain("sk-live");
   });
 
-  it("expands env placeholders inside provider fields", () => {
+  it("never copies a referenced secret into the config", () => {
     const toml = codexCustomProviderToml({
       PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
-        providers: { custom: { env_key: "{env:MY_KEY_NAME}" } },
+        providers: {
+          custom: {
+            base_url: "https://api.deepseek.com",
+            env_key: "OPENAI_COMPATIBLE_API_KEY",
+            http_headers: { Authorization: "Bearer {env:OPENAI_COMPATIBLE_API_KEY}" },
+          },
+        },
+        model_provider: "custom",
       }),
-      MY_KEY_NAME: "RESOLVED_KEY_NAME",
+      OPENAI_COMPATIBLE_API_KEY: "sk-live",
     });
 
-    expect(toml).toContain('env_key = "RESOLVED_KEY_NAME"');
+    expect(toml).toContain('env_key = "OPENAI_COMPATIBLE_API_KEY"');
+    // The placeholder field is dropped instead of being resolved into the file.
+    expect(toml).not.toContain("Authorization");
+    expect(toml).not.toContain("sk-live");
   });
 
   it("drops a selector that matches no emitted provider", () => {
