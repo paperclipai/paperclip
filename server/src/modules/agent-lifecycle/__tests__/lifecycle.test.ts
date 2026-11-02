@@ -414,6 +414,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
   });
 
+  it("releases an expired native owner whose stored expiry carries sub-millisecond precision", async () => {
+    const agent = await hire();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Cancelled native run" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, nativeIssueId: issue.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "native",
+      startedAt: new Date(), finishedAt: new Date(), processPid: 2_000_000_000 }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId: run.id,
+      phase: "executing", leaseOwner: "stopped-server", leaseExpiresAt: new Date(0), controllerPid: null });
+    await db.execute(sql`update native_run_finalizations
+      set lease_expires_at = date_trunc('milliseconds', now() - interval '1 hour') + interval '456 microseconds'
+      where run_id = ${run.id}`);
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
+  });
+
   it("does not advance termination while a cancelled process still runs", async () => {
     const agent = await hire();
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
