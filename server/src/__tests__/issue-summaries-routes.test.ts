@@ -50,7 +50,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
       expect(res.headers["cache-control"]).toBe("private, no-store");
       expect(res.body.map((row: { id: string }) => row.id)).toEqual([f.rows[1]!.id, f.rows[0]!.id]);
       expect(Object.keys(res.body[0]).sort()).toEqual([
-        "companyId", "externalConversationState", "id", "identifier", "status", "title", "updatedAt",
+        "companyId", "displayStatus", "externalConversationState", "id", "identifier", "status", "title", "updatedAt",
       ]);
       expect(res.body[0].externalConversationState).toBeNull();
       expect(forbiddenRead).not.toHaveBeenCalled();

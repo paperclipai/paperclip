@@ -1905,7 +1905,8 @@ for (const execution of executions) {
             .filter({ hasText: `PAPERCLIP_E2E_WARM_T${completedTurn}_${nonce}` }).last();
           await expect(turnReply).toBeVisible({ timeout: reviewUiTimeout() });
           const pendingReview = waitingState.interactions.find(isPendingWarmConfirmation)!;
-          const reviewCard = page.locator(`[id=${JSON.stringify(`interaction-${pendingReview.id}`)}]`);
+          const reviewCard = page.getByTestId("task-chat-interaction")
+            .and(page.locator(`[id=${JSON.stringify(`interaction-${pendingReview.id}`)}]`));
           await expect(reviewCard).toBeVisible({ timeout: reviewUiTimeout() });
           await expect(reviewCard.getByRole("button", { name: "Continue work", exact: true }))
             .toBeEnabled({ timeout: reviewUiTimeout() });

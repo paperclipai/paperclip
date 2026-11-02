@@ -11315,6 +11315,17 @@ registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
   method: "get",
+  path: "/api/companies/{companyId}/ai-connections/{connectionId}/identity",
+  tags: ["ai-connections"],
+  summary: "Read the selected authorized AI account's provider email and organization",
+  query: z.object({ grantId: z.string().uuid().optional() }),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:read",
+  method: "get",
   path: "/api/companies/{companyId}/ai-connections/{connectionId}/usage",
   tags: ["ai-connections"],
   summary: "Probe the selected AI account’s provider usage limits on demand",
