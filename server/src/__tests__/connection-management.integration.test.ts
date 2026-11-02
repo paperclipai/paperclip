@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
-import { createDb, authUsers, activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, toolRateLimitCounters, connectionGrants, connectionGrantMembers, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolApplications, toolConnections, toolConnectionInstalls, aiConnectionPools, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfiles, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
+import { createDb, authUsers, activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, toolRateLimitCounters, connectionGrants, connectionGrantMembers, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolApplications, toolConnections, toolConnectionInstalls, aiConnectionPools, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfileEntries, toolProfiles, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
 import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -406,6 +406,53 @@ describe("connection management with production default agents", () => {
     for (const id of profileIds) expect(await f.request("GET", `/tool-profiles/${id}/new-tools?connectionId=${first.body.id}`)).toMatchObject({ status: 403 });
     await server.db.update(principalPermissionGrants).set({ scope: { connectionIds: [first.body.id, second.body.id] } }).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_profiles")));
     for (const id of profileIds) expect(await f.request("GET", `/tool-profiles/${id}/new-tools?connectionId=${first.body.id}`)).toMatchObject({ status: 200 });
+  });
+
+  it("keeps connection profile configuration scoped and rechecks each profile against current personal access", async () => {
+    const f = await fixture();
+    const create = async (name: string) => {
+      const response = await f.request("POST", `/companies/${f.companyId}/tools/connections`, {
+        name, transport: "mcp_remote", authKind: "none", config: { url: "https://1.1.1.1/mcp" },
+      });
+      expect(response).toMatchObject({ status: 201 });
+      return response.body;
+    };
+    const owned = await create("Configuration owned"), privateConnection = await create("Configuration private");
+    const [app, intent] = await server.db.insert(toolProfiles).values([
+      { companyId: f.companyId, profileKey: `app:${owned.id}`, name: "App" },
+      { companyId: f.companyId, profileKey: `connection-intent:${owned.id}:${f.agentId}`, name: "Intent",
+        metadata: { source: "connection_intent", connectionId: owned.id, agentId: f.agentId } },
+    ]).returning();
+    await server.db.insert(toolProfileBindings).values({ companyId: f.companyId, profileId: intent.id, targetType: "agent", targetId: f.agentId });
+    await server.db.insert(toolProfileEntries).values([
+      { companyId: f.companyId, profileId: app.id, selectorType: "connection", connectionId: privateConnection.id },
+      { companyId: f.companyId, profileId: intent.id, selectorType: "connection", connectionId: owned.id },
+    ]);
+    const path = `/tool-connections/${owned.id}/profile-configuration`;
+    const uidResult = await f.request("GET", `/tool-connections/${encodeURIComponent(owned.uid)}/profile-configuration`);
+    expect(uidResult).toMatchObject({ status: 200 });
+    expect(uidResult.body.profiles.map((p: { id: string }) => p.id).sort()).toEqual([app.id, intent.id].sort());
+    const foreign = await fixture();
+    expect(await foreign.request("GET", `/tool-connections/${owned.id}/profile-configuration`)).toMatchObject({ status: 403 });
+    for (const token of [f.key.token, f.jwt]) {
+      const result = await f.request("GET", path, undefined, token);
+      expect(result).toMatchObject({ status: 200 });
+      expect(result.body.profiles.map((p: { id: string }) => p.id).sort()).toEqual([app.id, intent.id].sort());
+      expect(result.body.profiles.every((p: object) => !("summary" in p) && !("newToolsPendingCount" in p))).toBe(true);
+    }
+    // Seeing the displayed connection must not expose a profile spanning a
+    // second account after that account becomes private to another person.
+    await server.db.update(toolConnections).set({ credentialPolicy: "per_user", createdByUserId: randomUUID() }).where(eq(toolConnections.id, privateConnection.id));
+    for (const token of [f.key.token, f.jwt]) {
+      expect(await f.request("GET", path, undefined, token)).toMatchObject({ status: 200, body: { profiles: [expect.objectContaining({ id: intent.id })] } });
+      expect(await f.request("GET", `/tool-connections/${privateConnection.id}/profile-configuration`, undefined, token)).toMatchObject({ status: 403 });
+      expect(await f.request("GET", `/tool-connections/${randomUUID()}/profile-configuration`, undefined, token)).toMatchObject({ status: 404 });
+    }
+    await server.db.update(toolConnections).set({ createdByUserId: f.userId }).where(eq(toolConnections.id, privateConnection.id));
+    expect((await f.request("GET", path)).body.profiles).toHaveLength(2);
+    await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_profiles")));
+    expect(await f.request("GET", path)).toMatchObject({ status: 403 });
+    expect(await f.request("GET", path, undefined, f.jwt)).toMatchObject({ status: 403 });
   });
 
   it("rechecks authority after remote endpoint validation before committing a connection update", async () => {
