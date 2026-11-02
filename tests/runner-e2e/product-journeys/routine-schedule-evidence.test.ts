@@ -21,9 +21,9 @@ describe("scheduled routine evidence", () => {
     }
   });
   it("requires the paused trigger to span the next complete scheduler boundary after work", () => {
-    const good = { enabled: false, pausedAt: 65_000, completedAt: 130_000, observedUntil: 185_000, first: [run], final: [run] };
+    const good = { enabled: false, pausedAt: 65_000, completedAt: 130_000, observedUntil: 195_000, first: [run], final: [run] };
     expect(schedulePauseMatches(good)).toBe(true);
-    for (const patch of [{ enabled: true }, { enabled: undefined }, { observedUntil: 184_999 }, { final: [] },
+    for (const patch of [{ enabled: true }, { enabled: undefined }, { observedUntil: 194_999 }, { observedUntil: 185_000 }, { final: [] },
       { final: [run, run] }, { final: [{ ...run, id: "new" }] }, { final: [{ ...run, status: "issue_created" }] }]) {
       expect(schedulePauseMatches({ ...good, ...patch })).toBe(false);
     }
