@@ -35,6 +35,29 @@ function resolveHermesHome(config: Record<string, unknown>): string {
   return hermesHome ? path.resolve(hermesHome) : path.join(configuredHome ? path.resolve(configuredHome) : os.homedir(), ".hermes");
 }
 
+/**
+ * The Paperclip home that owns CLI install payloads and instance-managed
+ * skill roots. The shared skill-link helper uses it to tell a stale
+ * Paperclip-owned link (repaired) apart from a foreign installation (left
+ * alone).
+ */
+function resolvePaperclipHome(config: Record<string, unknown>): string {
+  const env =
+    typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+      ? (config.env as Record<string, unknown>)
+      : {};
+  const configured = asString(env.PAPERCLIP_HOME);
+  const home = asString(env.HOME);
+  if (configured) {
+    if (configured === "~") return os.homedir();
+    if (configured.startsWith("~/")) {
+      return path.join(home ? path.resolve(home) : os.homedir(), configured.slice(2));
+    }
+    return path.resolve(configured);
+  }
+  return path.join(home ? path.resolve(home) : os.homedir(), ".paperclip");
+}
+
 interface SkillFrontmatter {
   name?: string;
   description?: string;
@@ -233,7 +256,9 @@ export async function reconcileHermesPaperclipSkills(
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
     const target = path.join(skillsHome, entry.runtimeName);
-    await ensurePaperclipSkillSymlink(entry.source, target);
+    await ensurePaperclipSkillSymlink(entry.source, target, undefined, {
+      paperclipHome: resolvePaperclipHome(config),
+    });
     const linkedSource = await fs.readlink(target).catch(() => null);
     const resolvedSource = linkedSource
       ? path.resolve(path.dirname(target), linkedSource)
