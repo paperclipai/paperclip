@@ -288,6 +288,9 @@ function formatSqlValue(
   if (dataType === "json" || dataType === "jsonb") {
     return formatSqlLiteral(JSON.stringify(val));
   }
+  if (dataType === "bytea" && val instanceof Uint8Array) {
+    return `decode('${Buffer.from(val).toString("hex")}', 'hex')`;
+  }
   if (typeof val === "boolean") return val ? "true" : "false";
   if (typeof val === "number") return String(val);
   if (val instanceof Date) return formatSqlLiteral(val.toISOString());
