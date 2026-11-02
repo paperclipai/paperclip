@@ -64,7 +64,9 @@ terminal states. Inspect due/overdue copy separately; no runner is implied.
 
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 Filters → **Routine tasks** selects tasks created by routine runs. The
-`/issues?view=all&originKind=routine_execution` link opens that selection.
+`/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` link opens that selection with newest-created tasks first. Sort controls update
+`sortField` and `sortDir` in the URL. Reloads and task return links keep that order.
+Shared sort links also retain their order when opened in another task interface.
 
 ### `task-detail`
 
