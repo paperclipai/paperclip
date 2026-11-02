@@ -60,6 +60,7 @@ separate checks and are not claimed by these tests.
 | --- | --- | --- |
 | `server/src/services/native-runtime/setup-readiness.ts`, Codex source ownership check | Compares `stat.uid` directly with `process.getuid?.()`. On Windows these are `0` and `undefined`. | An existing Codex source credential is rejected before native readiness probing. |
 | `packages/adapters/codex-local/src/server/codex-home.ts`, `additionalFiles` staging | Requires Unix private mode bits even on Windows. A synthetic file created with `mode: 0o600` reports `0666` on Windows. | Staging an additional managed observability profile is rejected. |
+| `server/package.json`, `build` script | Still invokes `mkdir -p` and Unix `cp`; `where.exe cp` found no executable on the tested Windows host. | The full server packaging/build command still requires Unix shell tools; the targeted TypeScript build does not establish native Windows packaging support. |
 
 These observations used synthetic temporary files, not personal credentials.
 Repairs should use the existing platform-aware credential/file validation
