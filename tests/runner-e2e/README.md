@@ -854,7 +854,9 @@ the canonical bytes after every turn. Save receipts come from the latest
 `instruction_save` event in the complete, paginated run log. Missing receipts,
 later failed saves, or events from another run fail the check; a successful run
 summary cannot replace this evidence. Definition version 5 preserves earlier
-results under their original receipt lookup. Native checkpoint receipts must show only
+results under their original receipt lookup. Review actions target the actual
+interaction card by its test ID and interaction ID, so the request navigation
+button cannot make the locator ambiguous. Native checkpoint receipts must show only
 the changed memory file transferred on turns 2 and 3; the PID oracle remains strict.
 The journal stress cell retains fixed external instructions as a control. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
