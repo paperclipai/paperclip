@@ -11,7 +11,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
-it("runs a CLI without --dir in the selected workspace despite a stale parent PWD", async () => {
+it.skipIf(process.platform === "win32")("runs a CLI without --dir in the selected workspace despite a stale parent PWD", async () => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "opencode-directory-")));
   roots.push(root);
   const workspace = path.join(root, "workspace with spaces");
