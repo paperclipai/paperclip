@@ -625,7 +625,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               restartRecovery: runOptions.nativeRestartRecovery,
               onExecutionLeaseAcquired: runOptions.onNativeExecutionLeaseAcquired,
               backend:
-                options.nativeSessionBackendFactory?.(nativeExecution, { recoveryPurpose: stopCleanup ? "stop_cleanup" : "execution" }),
+                stopCleanup
+                  ? options.nativeSessionBackendFactory?.(nativeExecution, { recoveryPurpose: "stop_cleanup" })
+                  : options.nativeSessionBackendFactory?.(nativeExecution),
               useRunnerd: agent.adapterType === "paperclip_runner",
               adapterType: agent.adapterType,
               sessionGoalControl,

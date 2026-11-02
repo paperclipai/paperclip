@@ -6934,9 +6934,9 @@ describe("native startup restart detachment", () => {
   it.each(["authority", "questions"])("keeps a post-publication Stop owner through %s attachment and restart", async (seam) => {
     const restarting = structuredClone(execution);
     restarting.binding.runId = `restart-stop-after-publication-${seam}`;
-    let published!: () => void, releaseRead!: () => void, acknowledgeStop!: () => void;
+    let releaseRead!: () => void, acknowledgeStop!: () => void;
     let cleaning!: () => void, releaseCleanup!: () => void;
-    const publication = new Promise<void>(resolve => { published = resolve; });
+    const published = vi.fn();
     const read = new Promise<void>(resolve => { releaseRead = resolve; });
     const receipt = new Promise<void>(resolve => { acknowledgeStop = resolve; });
     const cleanupStarted = new Promise<void>(resolve => { cleaning = resolve; });
@@ -6946,12 +6946,20 @@ describe("native startup restart detachment", () => {
     const submit = vi.fn();
     const db = leaseDb(restarting);
     const select = db.select.bind(db);
+    let publishingSession = false;
     db.select = ((fields?: Record<string, unknown>) => {
-      if (seam === "authority" && fields && Object.keys(fields).length === 2 && "status" in fields && "resultJson" in fields) {
-        return { from: () => ({ where: () => ({ limit: () => {
-          published();
-          return read.then(() => [{ status: "running", resultJson: {} }]);
-        } }) }) };
+      if (seam === "authority" && !fields && publishingSession) {
+        const query = select();
+        return { from: (table: unknown) => {
+          const source = query.from(table as never);
+          return table === heartbeatRuns ? { where: (condition: never) => {
+            const filtered = source.where(condition);
+            return { limit: (count: number) => {
+              published();
+              return read.then(() => filtered.limit(count));
+            } };
+          } } : source;
+        } };
       }
       if (seam === "questions" && !fields) {
         const query = select();
@@ -6963,6 +6971,7 @@ describe("native startup restart detachment", () => {
     }) as typeof db.select;
     state.execute.mockReset().mockImplementationOnce(async options => {
       try {
+        publishingSession = true;
         await options.onSession({ detachControllerForRestart: detach, cancel, resolveRuntimeRequest: vi.fn() });
         submit();
       } finally {
@@ -6972,11 +6981,13 @@ describe("native startup restart detachment", () => {
       }
     });
     const outcome = executePaperclipNativeSession({ db, execution: restarting, runnerInstanceId: "runner" }).catch(error => error);
-    await publication;
-    const stopping = cancelNativeSession(restarting.binding.runId, "operator Stop after publication");
     const completed = vi.fn();
-    const shutdown = detachNativeSessionsForRestart([restarting.binding.runId]).then(completed);
+    let stopping: ReturnType<typeof cancelNativeSession> | undefined;
+    let shutdown: Promise<unknown> | undefined;
     try {
+      await vi.waitFor(() => expect(published).toHaveBeenCalled(), { timeout: 5_000 });
+      stopping = cancelNativeSession(restarting.binding.runId, "operator Stop after publication");
+      shutdown = detachNativeSessionsForRestart([restarting.binding.runId]).then(completed);
       releaseRead();
       await new Promise(resolve => setImmediate(resolve));
       expect(cancel).toHaveBeenCalledOnce();
