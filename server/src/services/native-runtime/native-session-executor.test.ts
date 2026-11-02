@@ -6982,7 +6982,7 @@ describe("native startup restart detachment", () => {
     });
     const outcome = executePaperclipNativeSession({ db, execution: restarting, runnerInstanceId: "runner" }).catch(error => error);
     const completed = vi.fn();
-    let stopping: ReturnType<typeof cancelNativeSession> | undefined;
+    let stopping: Promise<boolean> | undefined;
     let shutdown: Promise<unknown> | undefined;
     try {
       await vi.waitFor(() => expect(published).toHaveBeenCalled(), { timeout: 5_000 });
