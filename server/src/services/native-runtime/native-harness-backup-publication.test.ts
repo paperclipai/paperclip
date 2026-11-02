@@ -1,4 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,4 +53,72 @@ describe("native harness backup publication", () => {
     expect(await fs.readdir(backupRoot)).toEqual(["current"]);
     expect(changes).toEqual([{ companyId: input.companyId, scopeDigest: input.scopeDigest }]);
   });
+  it("serves an unrelated request while a retired backup is being removed", async () => {
+    const input = await fixture();
+    for (let index = 0; index < 40; index++) {
+      const directory = path.join(input.current, `skill-${index}`);
+      await fs.mkdir(directory);
+      await Promise.all(Array.from({ length: 50 }, (_, file) =>
+        fs.writeFile(path.join(directory, `file-${file}`), "retired instructions", { mode: 0o444 })));
+      await fs.chmod(directory, 0o555);
+    }
+    let publishing = false;
+    const server = createServer((_request, response) => {
+      response.setHeader("x-publication-active", publishing ? "1" : "0");
+      response.end("ok");
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("HTTP probe did not start");
+    const client = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { Agent, get } from "node:http";
+      const agent = new Agent({ keepAlive: true });
+      const request = () => new Promise((resolve, reject) => {
+        get({ hostname: "127.0.0.1", port: Number(process.argv[1]), agent }, response => {
+          response.resume();
+          response.on("end", () => resolve(response.headers["x-publication-active"]));
+        }).on("error", reject);
+      });
+      await request();
+      process.send({ kind: "ready" });
+      process.once("message", async () => {
+        const active = await request();
+        process.send({ kind: "result", active }, () => { agent.destroy(); process.disconnect(); });
+      });
+    `, String(address.port)], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+    const message = (kind: string) => new Promise<{ active?: string }>((resolve, reject) => {
+      const timer = setTimeout(() => { cleanup(); reject(new Error(`HTTP probe ${kind} timed out`)); }, 10_000);
+      const received = (value: { kind?: string; active?: string }) => {
+        if (value.kind === kind) { cleanup(); resolve(value); }
+      };
+      const failed = () => { cleanup(); reject(new Error(`HTTP probe exited before ${kind}`)); };
+      const cleanup = () => {
+        clearTimeout(timer); client.off("message", received); client.off("exit", failed); client.off("error", failed);
+      };
+      client.on("message", received); client.once("exit", failed); client.once("error", failed);
+    });
+    let publication: Promise<void> | undefined;
+    try {
+      await message("ready");
+      const response = message("result");
+      publishing = true;
+      client.send({ kind: "probe" });
+      publication = publishNativeHarnessBackup(input).finally(() => { publishing = false; });
+      const result = await response;
+      await publication;
+      expect(result.active).toBe("1");
+      expect(await fs.readdir(backupRoot)).toEqual(["current"]);
+      expect(await fs.readFile(path.join(input.current, "manifest.json"), "utf8")).toBe("replacement");
+    } finally {
+      try { await publication; }
+      finally {
+        client.kill();
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    }
+  }, 15_000);
 });
