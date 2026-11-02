@@ -1,5 +1,13 @@
 # Runner E2E security for a public repository
 
+The deployment-targeted `file-input-answer` journey uploads a small synthetic
+CSV through the normal task composer. Its reference and numeric inputs are
+generated per attempt and occur only in the file. The independent fixture and
+run/revision receipts remain in the private Cloud bundle; the public QA report
+exports only the existing closed checks and authenticated task screenshot.
+The `inbox-triage` journey creates and changes only its owned self-assigned task.
+It uses no model, no foreign user records, and no direct database writes.
+
 The explicit `remote-workspace-storage` cell snapshots only its synthetic
 projectless task folder in an owned disposable sandbox. Its prompt creates a
 small Python project, local Git history without a remote, and an untracked random

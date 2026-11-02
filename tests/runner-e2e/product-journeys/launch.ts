@@ -17,6 +17,8 @@ import { projectTaskContext } from "./project-context-flow.js";
 import { runAgentJourney } from "./agent-flows.js";
 import { runActiveFollowup } from "./active-followup-flow.js";
 import { runClarificationJourney } from "./clarification-flow.js";
+import { runInputFile } from "./input-file-flow.js";
+import { inboxTriage } from "./inbox-triage-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
 import type { RunnerE2EResult } from "../types.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
@@ -204,7 +206,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             result.provider = ready.agent.provider;
             result.model = ready.agent.model;
             result.runtimeMode = ready.agent.runtimeMode;
-            if (id === "ask-question") await askQuestion(ready, session!, campaignId, evidence);
+            if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "ask-question") await askQuestion(ready, session!, campaignId, evidence);
             else if (id === "followup-while-running") await runActiveFollowup(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "question-answer-resume") await runClarificationJourney(ready, session!, campaignId, evidence, { deadlineAt,
@@ -221,7 +225,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
                 await mkdir(directory, { recursive: true, mode: 0o700 });
                 await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file), deadlineAt);
               } });
-          } else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
+          } else if (id === "inbox-triage") await inboxTriage(ready, session!, campaignId, evidence);
+          else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
           else if (id === "task-document-persistence") await taskDocumentPersistence(ready, session!, campaignId, evidence);
           else if (id === "project-task-context") await projectTaskContext(ready, session!, campaignId, evidence);
           else if (id === "task-search-filter") await taskSearchFilter(ready, session!, campaignId, evidence);

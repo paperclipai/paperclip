@@ -67,6 +67,13 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Seed
 
 Automated: [archive routes](../../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. Reading, archiving, and navigating that page remain manual checks.
 
+The deployment-targeted [personal-triage journey](../../tests/runner-e2e/product-journeys/inbox-triage-flow.ts)
+drives Mark as read and Archive, reloads Unread and Mine, independently verifies
+unchanged task status, and observes a later Blocked transition resurface the item.
+It uses one owned self-assigned task and no agent work; its registration is
+separate from a measured Cloud pass. Other actors and company boundaries remain
+separate verification cases.
+
 Automated: [Issue service regressions](../../server/src/__tests__/issues-service.test.ts)
 cover exclusion of historical automatic read cleanup from user participation,
 unread counts, and activity timestamps while retaining explicit user decisions
