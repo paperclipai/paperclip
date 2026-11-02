@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
  * processes, routes JSON-RPC 2.0 calls over stdio, and handles lifecycle
@@ -811,6 +812,7 @@ export interface PluginWorkerManager {
   onConfigApplied(listener: () => void): () => void;
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
+    catalogGeneration?: string;
   }>;
   releaseIdleSleep?(): void;
   /**
@@ -3886,6 +3888,8 @@ export function createPluginWorkerManager(
     managerOptions?.maxConcurrentDuplexRoutes,
   );
 
+  const idleWorkerIdentities = new WeakMap<PluginWorkerHandle, string>();
+  let nextIdleWorkerIdentity = 0;
   return {
     onConfigApplied(listener) {
       configApplied.add(listener);
@@ -3900,7 +3904,12 @@ export function createPluginWorkerManager(
         return { backgroundWork: "unknown", pluginIds: [] };
       }
       const backgroundWork = results.includes("present") ? "present" : results.includes("unknown") ? "unknown" : "none";
-      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [] };
+      const catalogGeneration = createHash("sha256").update(JSON.stringify(snapshot.map(([id, worker]) => {
+        let identity = idleWorkerIdentities.get(worker);
+        if (!identity) { identity = String(++nextIdleWorkerIdentity); idleWorkerIdentities.set(worker, identity); }
+        return [id, identity];
+      }))).digest("hex");
+      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [], catalogGeneration };
     },
     releaseIdleSleep() {
       for (const worker of workers.values()) worker.releaseIdleSleep?.();

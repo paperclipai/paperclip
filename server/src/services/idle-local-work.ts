@@ -3,10 +3,13 @@ import path from "node:path";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 
+import type { VerifiedIdleCapabilities } from "./idle-incoming-wake-capability.js";
+
+export type IdleLocalWorkOptions = { backupCheckpoint?: boolean; deadlineCapability?: VerifiedIdleCapabilities };
 export type IdleLocalWork = "none" | "present" | "unknown";
 const spoolDirectories = new Set<string>();
-const localWorkProbes = new Set<() => IdleLocalWork>();
-export function registerIdleLocalWorkProbe(probe: () => IdleLocalWork): () => void {
+const localWorkProbes = new Set<(options: IdleLocalWorkOptions) => IdleLocalWork>();
+export function registerIdleLocalWorkProbe(probe: (options: IdleLocalWorkOptions) => IdleLocalWork): () => void {
   localWorkProbes.add(probe);
   return () => { localWorkProbes.delete(probe); };
 }
@@ -61,13 +64,13 @@ export async function inspectIdleQuotaRecovery(directory: string): Promise<IdleL
   }
 }
 
-export async function readIdleLocalWork(options: { backupCheckpoint?: boolean } = {}): Promise<IdleLocalWork> {
+export async function readIdleLocalWork(options: IdleLocalWorkOptions = {}): Promise<IdleLocalWork> {
   if (!startupComplete || !ingressTracked) return "unknown";
   // This exemption belongs only to a scan which will finish a new backup
   // under the same admission hold before it can return an empty report.
   if ((scheduledBackups && !options.backupCheckpoint) || idleWorkSnapshot().active !== 0) return "present";
   try {
-    const local = [...localWorkProbes].map(probe => probe());
+    const local = [...localWorkProbes].map(probe => probe(options));
     if (local.includes("unknown")) return "unknown";
     if (local.includes("present")) return "present";
   } catch { return "unknown"; }

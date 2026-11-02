@@ -1,3 +1,4 @@
+import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -35,10 +36,8 @@ import {
   isCompletedOnboardingHandoffWake,
 } from "../chat-completion-delivery.js";
 import {
-  compareCents,
   hasWorkspaceRestoreFailure,
 } from "@paperclipai/shared";
-import { nonIdleSlackIssueCondition } from "../slack-conversation-state.js";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isConversation,
@@ -85,15 +84,12 @@ import {
   gte,
   inArray,
   isNull,
-  lt,
   lte,
   ne,
-  notInArray,
   or,
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 import {
   agents,
   caseHandoffs,
@@ -103,7 +99,6 @@ import {
   chatConversations,
   chatEndpoints,
   companies,
-  costEvents,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -128,8 +123,6 @@ import {
 } from "../issue-queued-comment-queue.js";
 import {
   parseObject,
-  asBoolean,
-  asNumber,
 } from "../../adapters/utils.js";
 import { isExternalChatWaitAuthorizationContention } from "../native-runtime/chat-attachment-reuse.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
@@ -174,7 +167,7 @@ import {
   shouldCancelRunsForNonInvokableAgent,
   type AgentOrgRow,
 } from "../agent-invokability.js";
-import { isHeartbeatWakeOnDemandEnabled, supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
+import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
 
@@ -234,11 +227,8 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   formatIssueIdentifierLink: (identifier: string | null, fallback: string) => string;
 }
 
-const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 
-const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 
-const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 
 export const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -248,7 +238,6 @@ export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "scheduled_retry",
 ] as const;
 
-const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 
 export class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
@@ -265,16 +254,6 @@ const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "issue_recovery_action_restored",
 ]);
 
-function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(
-    asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT),
-  );
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
-  return Math.max(
-    HEARTBEAT_MAX_CONCURRENT_RUNS_MIN,
-    Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed),
-  );
-}
 
 export function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -415,137 +394,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     filterZombieCoalesceTarget,
   } = dependencies;
 
-  function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    const heartbeat = parseObject(runtimeConfig.heartbeat);
-
-    return {
-      enabled: asBoolean(heartbeat.enabled, false),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
-      // A Dot binding has one external turn. Competing assignments must retain
-      // their queue position instead of claiming a second run that cannot bind.
-      maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
-        ["openai_dot", "grok_bot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
-        ? 1 : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
-      skipTimerWhenNoActionableWork: asBoolean(
-        heartbeat.skipTimerWhenNoActionableWork ??
-          heartbeat.requireActionableTimerWork ??
-          heartbeat.issueOnlyTimer,
-        false,
-      ),
-      maxDailyRuns: normalizeOptionalNonNegativeInteger(
-        heartbeat.maxDailyRuns ??
-          heartbeat.dailyRunLimit ??
-          heartbeat.dailyRunCap ??
-          heartbeat.maxRunsPerDay,
-      ),
-      maxDailyCostCents: normalizeOptionalNonNegativeInteger(
-        heartbeat.maxDailyCostCents ??
-          heartbeat.dailyCostCentsLimit ??
-          heartbeat.dailySpendCentsLimit ??
-          heartbeat.dailyBudgetCents,
-      ),
-    };
-  }
-
-  function normalizeOptionalNonNegativeInteger(value: unknown) {
-    if (value === null || value === undefined || value === "") return null;
-    const normalized = Math.floor(asNumber(value, 0));
-    return normalized >= 0 ? normalized : null;
-  }
-
-  function currentUtcDayWindow(now = new Date()) {
-    const start = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate(),
-        0,
-        0,
-        0,
-        0,
-      ),
-    );
-    const end = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() + 1,
-        0,
-        0,
-        0,
-        0,
-      ),
-    );
-    return { start, end };
-  }
-
-  async function getHeartbeatDailyCapBlock(
-    agent: typeof agents.$inferSelect,
-    policy: ReturnType<typeof parseHeartbeatPolicy>,
-    options: {
-      checkRunCap?: boolean;
-      checkCostCap?: boolean;
-      excludeRunId?: string | null;
-      now?: Date;
-    } = {},
-    client: Pick<Db, "select"> = db,
-  ) {
-    const checkRunCap = options.checkRunCap ?? true;
-    const checkCostCap = options.checkCostCap ?? true;
-    const { start, end } = currentUtcDayWindow(options.now);
-    if (checkRunCap && policy.maxDailyRuns !== null) {
-      const conditions = [
-        eq(heartbeatRuns.companyId, agent.companyId),
-        eq(heartbeatRuns.agentId, agent.id),
-        gte(heartbeatRuns.startedAt, start),
-        lt(heartbeatRuns.startedAt, end),
-        notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
-      ];
-      if (options.excludeRunId) {
-        conditions.push(sql`${heartbeatRuns.id} <> ${options.excludeRunId}`);
-      }
-      const [row] = await client
-        .select({ total: sql<number>`count(*)::integer` })
-        .from(heartbeatRuns)
-        .where(and(...conditions));
-      const observed = Number(row?.total ?? 0);
-      if (observed >= policy.maxDailyRuns) {
-        return {
-          reason: "heartbeat.daily_run_limit",
-          observed,
-          limit: policy.maxDailyRuns,
-        };
-      }
-    }
-
-    if (checkCostCap && policy.maxDailyCostCents !== null) {
-      const [row] = await client
-        .select({
-          total: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
-        })
-        .from(costEvents)
-        .where(
-          and(
-            eq(costEvents.companyId, agent.companyId),
-            eq(costEvents.agentId, agent.id),
-            gte(costEvents.occurredAt, start),
-            lt(costEvents.occurredAt, end),
-          ),
-        );
-      const observed = Number(row?.total ?? 0);
-      if (compareCents(String(row?.total ?? 0), policy.maxDailyCostCents) >= 0) {
-        return {
-          reason: "heartbeat.daily_cost_limit",
-          observed,
-          limit: policy.maxDailyCostCents,
-        };
-      }
-    }
-
-    return null;
-  }
+  const { parseHeartbeatPolicy, getHeartbeatDailyCapBlock, hasActionableTimerWork, nextTimerHeartbeatAt } = createHeartbeatTimerPolicy(db);
 
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
@@ -595,38 +444,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
 
     return cancelled;
-  }
-
-  async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
-    const row = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, agent.companyId),
-          eq(issues.assigneeAgentId, agent.id),
-          isNull(issues.assigneeUserId),
-          isNull(issues.hiddenAt),
-          inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
-          isNull(issues.conversationAgentId),
-          nonIdleSlackIssueCondition(),
-        ),
-      )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    return Boolean(row);
-  }
-
-  async function nextTimerHeartbeatAt(agent: typeof agents.$inferSelect, now = new Date()): Promise<number | null> {
-    const policy = parseHeartbeatPolicy(agent);
-    if (!policy.enabled || policy.intervalSec <= 0) return null;
-
-    if (policy.maxDailyRuns === 0 || policy.maxDailyCostCents === 0) return null;
-    if (policy.skipTimerWhenNoActionableWork && !(await hasActionableTimerWork(agent))) return null;
-    const dueAt = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime() + policy.intervalSec * 1000;
-    const cap = await getHeartbeatDailyCapBlock(agent, policy, { now });
-    if (!cap) return dueAt;
-    return Math.max(dueAt, currentUtcDayWindow(now).end.getTime());
   }
 
   async function markTimerHeartbeatChecked(
