@@ -1,0 +1,128 @@
+import type { ChildProcess } from "node:child_process";
+
+export type TestPostgresInstance = {
+  initialise(): Promise<void>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  process?: ChildProcess;
+};
+
+type Owner = { stop(): Promise<void>; interrupt(): void };
+export class TestPostgresShutdownError extends Error {}
+const owners = new Set<Owner>();
+let shuttingDown = false;
+let hooksInstalled = false;
+
+function interruptOwnedServers(): void {
+  for (const owner of owners) owner.interrupt();
+}
+
+async function shutdown(signal: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> {
+  if (shuttingDown) { interruptOwnedServers(); return; }
+  shuttingDown = true;
+  const results = await Promise.allSettled([...owners].map((owner) => owner.stop()));
+  for (const result of results) {
+    if (result.status === "rejected") console.error(result.reason);
+  }
+  process.exit(128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[signal]);
+}
+
+const onInterrupt = () => { void shutdown("SIGINT"); };
+const onTerminate = () => { void shutdown("SIGTERM"); };
+const onHangup = () => { void shutdown("SIGHUP"); };
+
+function updateHooks(): void {
+  if (owners.size > 0 && !hooksInstalled) {
+    hooksInstalled = true;
+    process.on("exit", interruptOwnedServers);
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
+    process.on("SIGHUP", onHangup);
+  } else if (owners.size === 0) {
+    hooksInstalled = false;
+    process.removeListener("exit", interruptOwnedServers);
+    process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("SIGTERM", onTerminate);
+    process.removeListener("SIGHUP", onHangup);
+  }
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function ownTestPostgres(instance: TestPostgresInstance): TestPostgresInstance {
+  let pending: Promise<void> | null = null;
+  let stopPromise: Promise<void> | null = null;
+  let stopped = false;
+
+  async function run(operation: () => Promise<void>): Promise<void> {
+    if (stopped || stopPromise) throw new Error("Test PostgreSQL is shutting down");
+    const running = operation();
+    pending = running;
+    try { await running; }
+    finally { if (pending === running) pending = null; }
+  }
+
+  const owner: Owner = {
+    interrupt() {
+      const child = instance.process;
+      if (process.platform !== "win32" && child && child.exitCode === null && child.signalCode === null) {
+        try { child.kill("SIGQUIT"); } catch {}
+      }
+    },
+    stop() {
+      if (stopped) return Promise.resolve();
+      if (stopPromise) return stopPromise;
+      stopPromise = (async () => {
+        if (pending && !await settlesWithin(pending.catch(() => {}), 30_000)) {
+          throw new TestPostgresShutdownError("Test PostgreSQL startup did not settle before shutdown; its data directory is retained");
+        }
+        const child = instance.process;
+        if (!child || (process.platform === "win32" && child.exitCode === null && child.signalCode === null)) {
+          if (!await settlesWithin(instance.stop(), 10_000)) {
+            throw new TestPostgresShutdownError("Test PostgreSQL shutdown timed out; its data directory is retained");
+          }
+        } else if (child.exitCode === null && child.signalCode === null) {
+          let onExit: () => void;
+          const exited = new Promise<void>((resolve) => { onExit = resolve; child.once("exit", onExit); });
+          try {
+            child.kill("SIGINT");
+            if (!await settlesWithin(exited, 5_000)) {
+              child.kill("SIGQUIT");
+              if (!await settlesWithin(exited, 5_000)) {
+                throw new TestPostgresShutdownError("Test PostgreSQL did not exit after fast and immediate shutdown; its data directory is retained");
+              }
+            }
+          } finally {
+            child.removeListener("exit", onExit!);
+          }
+        }
+        instance.process = undefined;
+        stopped = true;
+        owners.delete(owner);
+        updateHooks();
+      })().catch((error) => {
+        stopPromise = null;
+        if (error instanceof TestPostgresShutdownError) throw error;
+        throw new TestPostgresShutdownError("Test PostgreSQL shutdown failed; its data directory is retained", { cause: error });
+      });
+      return stopPromise;
+    },
+  };
+  owners.add(owner);
+  if (owners.size === 1) updateHooks();
+  return {
+    initialise: () => run(() => instance.initialise()),
+    start: () => run(() => instance.start()),
+    stop: () => owner.stop(),
+  };
+}
