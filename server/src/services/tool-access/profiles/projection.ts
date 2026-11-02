@@ -103,6 +103,24 @@ export function profileEntryMatchesCatalog(
   return false;
 }
 
+export function profileCatalogMatcher(entries: ProfileEntryMatch[]) {
+  const applications = new Set<string | null>();
+  const connections = new Set<string | null>();
+  const catalogIds = new Set<string | null>();
+  const toolNames = new Set<string | null>();
+  const risks = new Set<string | null>();
+  for (const entry of entries) {
+    if (entry.selectorType === "application") applications.add(entry.applicationId);
+    else if (entry.selectorType === "connection") connections.add(entry.connectionId);
+    else if (entry.selectorType === "catalog_entry") catalogIds.add(entry.catalogEntryId);
+    else if (entry.selectorType === "tool_name") toolNames.add(entry.toolName);
+    else if (entry.selectorType === "risk_level") risks.add(entry.riskLevel);
+  }
+  return (entry: ProfileCatalogMatch) => applications.has(entry.applicationId)
+    || connections.has(entry.connectionId) || catalogIds.has(entry.id)
+    || toolNames.has(entry.toolName) || risks.has(entry.riskLevel);
+}
+
 export function summarizeProfile(input: {
   profile: typeof toolProfiles.$inferSelect;
   entries: Array<typeof toolProfileEntries.$inferSelect>;
@@ -203,32 +221,28 @@ export function pendingNewToolsForProfile(input: {
     return [];
   const watermark = input.profile.newToolsReviewedAt ?? input.profile.createdAt;
   const catalogById = new Map(input.catalog.map((entry) => [entry.id, entry]));
-  const scopedIncludes = input.entries.filter(
-    (entry) =>
-      entry.effect === "include" &&
-      (entry.selectorType === "application" ||
-        entry.selectorType === "connection" ||
-        entry.selectorType === "catalog_entry"),
-  );
-  if (scopedIncludes.length === 0) return [];
+  const coveredApplications = new Set<string | null>();
+  const coveredConnections = new Set<string | null>();
+  for (const entry of input.entries) {
+    if (entry.effect !== "include") continue;
+    if (entry.selectorType === "application") coveredApplications.add(entry.applicationId);
+    else if (entry.selectorType === "connection") coveredConnections.add(entry.connectionId);
+    else if (entry.selectorType === "catalog_entry" && entry.catalogEntryId) {
+      const scopedEntry = catalogById.get(entry.catalogEntryId);
+      if (!scopedEntry) continue;
+      coveredConnections.add(scopedEntry.connectionId);
+      if (scopedEntry.applicationId) coveredApplications.add(scopedEntry.applicationId);
+    }
+  }
+  if (coveredApplications.size === 0 && coveredConnections.size === 0) return [];
+  const explicitlyReviewed = profileCatalogMatcher(input.entries);
 
   return input.catalog
-    .filter(
-      (catalogEntry) =>
-        catalogEntry.status === "active" ||
-        catalogEntry.status === "quarantined",
-    )
-    .filter((catalogEntry) => catalogEntry.firstSeenAt > watermark)
     .filter((catalogEntry) =>
-      scopedIncludes.some((entry) =>
-        profileCoversCatalogScope({ entry, catalogEntry, catalogById }),
-      ),
-    )
-    .filter(
-      (catalogEntry) =>
-        !input.entries.some((entry) =>
-          profileEntryMatchesCatalog(entry, catalogEntry),
-        ),
+      (catalogEntry.status === "active" || catalogEntry.status === "quarantined")
+      && catalogEntry.firstSeenAt > watermark
+      && (coveredApplications.has(catalogEntry.applicationId) || coveredConnections.has(catalogEntry.connectionId))
+      && !explicitlyReviewed(catalogEntry),
     )
     .map((catalogEntry) => ({
       catalogEntryId: catalogEntry.id,

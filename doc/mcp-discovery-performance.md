@@ -25,6 +25,41 @@ The stateless gateway and runtime-tools MCP endpoints return HTTP 405 with
 The runtime-tools endpoint still validates its caller before that response.
 See the [MCP transport contract](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports).
 
+## New-tool review projection
+
+Pending-tool review builds covered application and connection sets from each
+profile's include rules. An included catalog entry covers its connection and its
+non-null application only while that entry exists in the supplied catalog.
+Explicit application selectors retain null application matching. A second index
+records all exact selectors, including exclusions, so already reviewed tools do
+not appear as new. The catalog filter retains its order, status check, strict
+review watermark, and returned metadata.
+
+The indexes live only for one projection. Profile listings, new-tool review, and
+app attention still read current company-scoped database state on each request.
+This replaces nested catalog-by-rule scans with linear indexing and filtering.
+It changes neither database query counts nor response contracts.
+
+The PostgreSQL reproduction uses 200 selected profiles, 1,900 active tools, and
+76,000 rules. Profiles alternate between 65 and 695 rules. Half reference 695
+removed catalog entries, while half select current tools. This exercises both
+scope checks and explicit-review checks. It compares complete ordered results
+from the real profile listing and app-attention services before timing them.
+
+Save baseline `profiles/projection.ts`, `profiles/service.ts`, and
+`catalog/attention.ts` beside their current versions as `.baseline-projection.ts`,
+`.baseline-service.ts`, and `.baseline-attention.ts`. Change the two baseline
+consumers' projection imports to `.baseline-projection.js` with the same relative
+path. Then run from `server/`:
+
+```sh
+node --expose-gc --import tsx scripts/benchmark-profile-review-projection.ts --baseline-profiles "$PWD/src/services/tool-access/profiles/.baseline-service.ts" --baseline-attention "$PWD/src/services/tool-access/catalog/.baseline-attention.ts"
+```
+
+Remove the three baseline files after the comparison. The probe alternates five
+samples per implementation and reports process CPU, elapsed time, actual query
+count, and returned rows. No provider calls or hosted traffic are generated.
+
 ## Reproduce the measurements
 
 Build workspace dependencies, then run from `server/`:
