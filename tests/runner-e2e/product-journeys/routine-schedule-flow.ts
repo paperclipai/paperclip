@@ -9,6 +9,15 @@ import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSes
 
 type Row = Record<string, any>;
 const journeyId = "routine-scheduled-run" as const;
+type RoutineUiStep = "open_composer" | "select_responsible" | "select_project" | "fill_instructions" | "submit" | "enable_trigger" | "pause_trigger" | "open_history" | "reopen_result";
+export async function routineUiStep<T>(step: RoutineUiStep, action: () => Promise<T>): Promise<T> {
+  try { return await action(); }
+  catch (error) {
+    if (error instanceof JourneyError) throw error;
+    // Browser failures can contain form values and URLs. Retain only this closed step code.
+    throw new JourneyError("failed", `routine_${step}_failed`);
+  }
+}
 export async function runScheduledRoutine(context: JourneyContext, session: TargetSession, campaignId: string,
   evidence: JourneyEvidence, options: { deadlineAt: number; directory: string }) {
   const { api, page, company, user, agent } = context;
@@ -28,22 +37,33 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     const prompt = `Prepare the scheduled status check. Save a task document with key ${key} and title Scheduled check. `
       + `Its body must contain exactly these two lines: ${marker} followed by Schedule check complete. `
       + "Then finish the task. Do not create other tasks or agents.";
-    await page.goto(`${api.origin}/${company.issuePrefix}/routines`, { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Create routine", exact: true }).first().click();
+    await routineUiStep("open_composer", async () => {
+      await page.goto(`${api.origin}/${company.issuePrefix}/routines`, { waitUntil: "domcontentloaded" });
+      await page.getByRole("button", { name: "Create routine", exact: true }).first().click();
+    });
     const dialog = page.getByRole("dialog");
-    await dialog.getByPlaceholder("Routine title", { exact: true }).fill(title);
-    await dialog.getByRole("button", { name: "Responsible", exact: true }).click();
-    await page.getByPlaceholder("Search responsible...", { exact: true }).fill(agent.name);
-    await page.getByRole("button", { name: agent.name, exact: true }).click();
-    await dialog.getByRole("button", { name: "Project", exact: true }).click();
-    await page.getByPlaceholder("Search projects...", { exact: true }).fill(projectName);
-    await page.getByRole("button", { name: projectName, exact: true }).click();
-    await dialog.locator('[contenteditable="true"]').fill(prompt);
+    await routineUiStep("select_responsible", async () => {
+      await dialog.getByPlaceholder("Routine title", { exact: true }).fill(title);
+      await dialog.getByRole("button", { name: "Responsible", exact: true }).click();
+      await page.getByPlaceholder("Search responsible...", { exact: true }).fill(agent.name);
+      await page.getByRole("button", { name: agent.name, exact: true }).click();
+    });
+    await routineUiStep("select_project", async () => {
+      // Selecting Responsible focuses Project and opens its picker. Clicking
+      // its trigger again closes the picker before the search field can fill.
+      const projectSearch = page.getByPlaceholder("Search projects...", { exact: true });
+      await expect(projectSearch).toBeVisible();
+      await projectSearch.fill(projectName);
+      await page.getByRole("button", { name: projectName, exact: true }).click();
+    });
+    await routineUiStep("fill_instructions", () => dialog.locator('[contenteditable="true"]').fill(prompt));
     await session.own({ kind: "routine", name: title, journeyId });
     const responsePromise = page.waitForResponse(response => response.request().method() === "POST"
       && new URL(response.url()).pathname === `/api/companies/${company.id}/routines`);
-    await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
-    const response = await responsePromise;
+    const response = await routineUiStep("submit", async () => {
+      await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
+      return await responsePromise;
+    });
     if (response.status() !== 201) throw new JourneyError("failed", "routine_ui_creation_failed");
     const routine = await response.json();
     if (typeof routine.id !== "string") throw new JourneyError("failed", "routine_creation_receipt_missing");
@@ -74,11 +94,13 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     const runs = () => readObserved<ScheduledInvocation[]>(`${route}/runs`);
     let pausedAt = 0;
     try {
-      await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/triggers`, { waitUntil: "domcontentloaded" });
-      const enabling = page.waitForResponse(response => response.request().method() === "PATCH"
-        && new URL(response.url()).pathname === triggerRoute);
-      await page.getByRole("button", { name: "Enable trigger", exact: true }).click();
-      const enabledResponse = await enabling;
+      const enabledResponse = await routineUiStep("enable_trigger", async () => {
+        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/triggers`, { waitUntil: "domcontentloaded" });
+        const enabling = page.waitForResponse(response => response.request().method() === "PATCH"
+          && new URL(response.url()).pathname === triggerRoute);
+        await page.getByRole("button", { name: "Enable trigger", exact: true }).click();
+        return await enabling;
+      });
       if (enabledResponse.status() !== 200) throw new JourneyError("failed", "routine_schedule_enable_failed");
       const enabledTrigger = await enabledResponse.json();
       const enabledAt = Date.parse(enabledTrigger?.updatedAt);
@@ -86,7 +108,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
         || enabledTrigger.enabled !== true || !Number.isFinite(enabledAt)) throw new JourneyError("failed", "routine_schedule_enable_receipt_missing");
       await expect.poll(async () => (await readTrigger()).enabled).toBe(true);
       const first = await waitFor(options.deadlineAt, runs, rows => rows.length > 0 && Boolean(rows[0]?.linkedIssueId), "scheduled_invocation_missing");
-      await page.getByRole("button", { name: "Pause trigger", exact: true }).click();
+      await routineUiStep("pause_trigger", () => page.getByRole("button", { name: "Pause trigger", exact: true }).click());
       await expect.poll(async () => (await readTrigger()).enabled).toBe(false);
       pausedAt = performance.now();
       const task = await readObserved<ScheduledTask & { title: string }>(`/api/issues/${first[0]!.linkedIssueId}`);
@@ -114,9 +136,11 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
         && revision.documentId === document.id && revision.body?.trim() === expectedBody && revision.createdByAgentId === agent.id
         && revision.createdByRunId === state.taskRuns[0]!.id);
       if (typeof state.currentIssue.identifier !== "string" || !state.currentIssue.identifier) throw new JourneyError("failed", "routine_task_identifier_missing");
-      await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/runs`, { waitUntil: "domcontentloaded" });
-      await page.reload();
-      await expect(page.getByRole("link", { name: state.currentIssue.identifier, exact: false }).first()).toBeVisible();
+      await routineUiStep("open_history", async () => {
+        await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/runs`, { waitUntil: "domcontentloaded" });
+        await page.reload();
+        await expect(page.getByRole("link", { name: state.currentIssue.identifier, exact: false }).first()).toBeVisible();
+      });
       const final = await waitFor(options.deadlineAt, async () => ({ rows: await runs(), now: performance.now() }), value => {
         if (value.rows.length !== 1) throw new JourneyError("failed", "routine_duplicate_invocation");
         return value.rows[0]?.status === "completed" && value.now >= Math.max(pausedAt, completedAt) + schedulePauseObservationMs;
@@ -124,10 +148,12 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       check("routine-history-preserved", scheduledInvocationMatches(final.rows, await readObserved(taskRoute), expected));
       check("routine-pause-prevented-next-run", schedulePauseMatches({ enabled: (await readTrigger()).enabled,
         pausedAt, completedAt, observedUntil: final.now, first, final: final.rows }));
-      await page.goto(`${api.origin}/${company.issuePrefix}/issues/${state.currentIssue.identifier}`, { waitUntil: "domcontentloaded" });
-      await page.reload();
-      await openDocumentAuthoring(context);
-      await expect(page.locator(`#document-${key}`)).toContainText(marker);
+      await routineUiStep("reopen_result", async () => {
+        await page.goto(`${api.origin}/${company.issuePrefix}/issues/${state.currentIssue.identifier}`, { waitUntil: "domcontentloaded" });
+        await page.reload();
+        await openDocumentAuthoring(context);
+        await expect(page.locator(`#document-${key}`)).toContainText(marker);
+      });
       check("routine-result-reopened", (await readObserved<Row>(`${taskRoute}/documents/${key}`)).latestRevisionId === document.latestRevisionId);
       check("configured-model-and-environment", true);
       await mkdir(options.directory, { recursive: true, mode: 0o700 });
