@@ -5,6 +5,7 @@ import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { type Db, mcpAttachmentUploads, mcpFileTickets, mcpOauthGrants, issues } from "@paperclipai/db";
 import { z } from "zod";
 import { MAX_ATTACHMENT_BYTES, isAllowedContentType } from "../../attachment-types.js";
+import { logger } from "../../middleware/logger.js";
 import type { StorageService } from "../../storage/types.js";
 import { authorizationService } from "../authorization.js";
 import { issueService } from "../issues.js";
@@ -90,9 +91,16 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
       )).limit(20).for("update", { skipLocked: true });
       for (const upload of abandoned) {
         if (upload.storageProvider !== storage.provider) continue;
-        await storage.deleteObject(upload.companyId, upload.objectKey);
-        if ((await storage.headObject(upload.companyId, upload.objectKey)).exists !== false) {
-          throw new Error("MCP upload storage cleanup could not be confirmed");
+        try {
+          await storage.deleteObject(upload.companyId, upload.objectKey);
+          if ((await storage.headObject(upload.companyId, upload.objectKey)).exists !== false) {
+            throw new Error("MCP upload storage cleanup could not be confirmed");
+          }
+        } catch {
+          // Cleanup is opportunistic across companies. Retain this uncertainty
+          // without denying an unrelated caller's authorized file transfer.
+          logger.warn({ companyId: upload.companyId, uploadId: upload.id }, "MCP upload cleanup remains unverified");
+          continue;
         }
         const verifiedAt = new Date();
         await tx.update(mcpAttachmentUploads).set({ cleanedAt: verifiedAt, cleanupVerifiedAt: verifiedAt }).where(eq(mcpAttachmentUploads.id, upload.id));

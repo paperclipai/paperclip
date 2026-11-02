@@ -440,6 +440,83 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     } finally { await p.cleanup(); }
   }, 60_000);
 
+  it.each(["delete_failed", "object_survived", "head_failed"] as const)("isolates orphan cleanup failure from another company's actual file transfers: %s", async failure => {
+    const { createPublicMcpTransfers } = await import("../services/public-mcp/file-transfers.js");
+    const { default: express } = await import("express");
+    const { default: request } = await import("supertest");
+    const f = await seed(), p = await connectedMcp(f), other = await seed(), q = await connectedMcp(other);
+    const originalDelete = p.storage.deleteObject, originalHead = p.storage.headObject, originalGet = p.storage.getObject;
+    try {
+      const principal = await p.oauth.authenticate(p.token), unrelated = await q.oauth.authenticate(q.token);
+      const transfers = createPublicMcpTransfers(db, p.oauth, p.api, p.storage);
+      const app = express(); app.use(transfers.router);
+      const bytes = Buffer.from("authorized bytes survive unrelated cleanup failure");
+      const args = (owner: typeof f) => ({ companyId: owner.companyId, taskId: owner.issueId, requestId: randomUUID(),
+        filename: "result.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+      const put = async (link: { url?: unknown }) => {
+        const url = new URL(String(link.url));
+        return request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
+          .timeout({ response: 5000, deadline: 10_000 });
+      };
+      const badLink = await transfers.getUploadUrl(principal, args(f));
+      const badResult = await put(badLink); expect(badResult.status).toBe(200);
+      const goodLink = await transfers.getUploadUrl(unrelated, args(other));
+      const goodResult = await put(goodLink); expect(goodResult.status).toBe(200);
+      const [bad] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(badLink.uploadId)));
+      const abandonedLink = await transfers.getUploadUrl(unrelated, args(other));
+      const [abandoned] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(abandonedLink.uploadId)));
+      await p.storage.putFile({ companyId: other.companyId, namespace: "mcp-transfers", objectKey: abandoned.objectKey,
+        originalFilename: "result.txt", contentType: "text/plain", body: bytes });
+      p.storage.deleteObject = async (companyId, objectKey) => {
+        if (companyId === f.companyId && objectKey === bad.objectKey) {
+          if (failure === "delete_failed") throw new Error("controlled old object DELETE failure");
+          if (failure === "object_survived") return;
+        }
+        return originalDelete(companyId, objectKey);
+      };
+      p.storage.headObject = async (companyId, objectKey) => {
+        if (companyId === f.companyId && objectKey === bad.objectKey && failure === "head_failed") {
+          throw new Error("controlled old object HEAD failure");
+        }
+        return originalHead(companyId, objectKey);
+      };
+      expect(await p.api(principal, "DELETE", `/attachments/${badResult.body.attachment.id}`)).toEqual({ ok: true });
+      await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0) })
+        .where(sql`${tables.mcpAttachmentUploads.id} IN (${bad.id}, ${abandoned.id})`);
+      const [uncertain] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, bad.id));
+      expect(uncertain).toMatchObject({ attachmentId: badResult.body.attachment.id, cleanedAt: null, cleanupVerifiedAt: null });
+      // The old owner fails in this sweep, but the unrelated link and another
+      // object's verified cleanup must commit independently of that failure.
+      const download = await transfers.getDownloadUrl(unrelated, goodResult.body.attachment.id);
+      const downloadUrl = new URL(download.url);
+      const response = await request(app).get(downloadUrl.pathname + downloadUrl.search).timeout({ response: 5000, deadline: 10_000 });
+      expect(response.status).toBe(200); expect(response.body).toEqual(bytes);
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, bad.id)))[0]).toEqual(uncertain);
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, abandoned.id)))[0])
+        .toMatchObject({ cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
+      expect(await originalHead(other.companyId, abandoned.objectKey)).toEqual({ exists: false });
+      const next = await transfers.getUploadUrl(unrelated, args(other));
+      expect((await put(next)).status).toBe(200);
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      await expect(transfers.getDownloadUrl(principal, goodResult.body.attachment.id)).rejects.toThrow();
+      await expect(transfers.getUploadUrl(principal, args(other))).rejects.toThrow();
+      p.storage.deleteObject = originalDelete; p.storage.headObject = originalHead;
+      await transfers.getDownloadUrl(unrelated, goodResult.body.attachment.id);
+      expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, bad.id)))[0])
+        .toMatchObject({ attachmentId: uncertain.attachmentId, cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
+      expect(await originalHead(f.companyId, bad.objectKey)).toEqual({ exists: false });
+      expect(await blocked("mcp_attachment_uploads")).toBe(false);
+      // Only opportunistic cleanup errors are isolated. The caller's own
+      // transfer storage failure still reaches the existing route error path.
+      p.storage.getObject = async () => { throw new Error("controlled requested object GET failure"); };
+      expect((await request(app).get(downloadUrl.pathname + downloadUrl.search)
+        .timeout({ response: 5000, deadline: 10_000 })).status).toBe(503);
+    } finally {
+      p.storage.deleteObject = originalDelete; p.storage.headObject = originalHead; p.storage.getObject = originalGet;
+      await p.cleanup(); await q.cleanup();
+    }
+  }, 60_000);
+
   it.each(["delete_failed", "object_survived", "head_failed"] as const)("retains MCP cleanup uncertainty after actual attachment removal: %s", async failure => {
     const { createPublicMcpTransfers } = await import("../services/public-mcp/file-transfers.js");
     const { default: express } = await import("express");
