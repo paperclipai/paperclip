@@ -233,6 +233,17 @@ describe("deployment journey contracts", () => {
       { runtimeMode: "native" }, { runtimeMode: "legacy" }];
     for (const work of forbidden) expect(()=>validateRetainedRunnerResult({ ...browser, ...work })).toThrow("result.browserOnly");
   });
+  it("rejects collected runs and nonempty usage on a saved passing access result", () => {
+    const browser = result(); browser.caseId = "company-access-isolation";
+    browser.executionId = "product-journeys.local-qa.local.company-access-isolation";
+    browser.productJourney!.checks = journeyRequiredChecks[browser.caseId]!.map(id => ({ id, passed: true }));
+    expect(() => validateRetainedRunnerResult(browser)).not.toThrow();
+    const collected = validateJourneyCollection({ journeyId: "company-access-isolation", runIds: ["collected-run"], usage: { runs: [{ runId: "collected-run", usage: { inputTokens: 1 } }] } });
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: collected.runIds, usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: [], usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { inputTokens: 1 } })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { runs: [] } })).not.toThrow();
+  });
   it("keeps browser-only reporting free of invented model calls and rejects public publication", () => {
     const value=result();
     expect(summarizeExecutionBilling(value)).toMatchObject({llm:{runCount:0,reportedCostUsd:0},runtime:{agentRunDurationMs:0}});

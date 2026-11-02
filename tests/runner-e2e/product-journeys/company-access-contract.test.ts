@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isolationEntryMatches, isolationTaskMatches, restrictedCreateAllowed, restrictedForeignDenied, restrictedPositiveControl, workspacePairMatches, type IsolationTask } from "./company-access-contract.js";
+import { isolationAgentRunSnapshot, isolationEntryMatches, isolationTaskMatches, restrictedCreateAllowed, restrictedForeignDenied, restrictedPositiveControl, workspacePairMatches, type IsolationTask } from "./company-access-contract.js";
 
 const primary = { stackId: "qa-one", stackSlug: "one", companyId: "company-one", origin: "https://one.test.paperclip.app", displayName: "One", issuePrefix: "ONE" };
 const secondary = { stackId: "qa-two", stackSlug: "two", companyId: "company-two", origin: "https://two.test.paperclip.app", displayName: "Two", issuePrefix: "TWO" };
@@ -50,4 +50,16 @@ describe("Cloud company isolation evidence", () => {
     expect(restrictedForeignDenied({ ...denied, contentLeaked: true }, denied, task, task)).toBe(false);
     expect(restrictedForeignDenied({ status: 403, contentLeaked: false, task }, denied, task, task)).toBe(false);
   });
+});
+
+it("accepts only a complete, bound, settled actor run snapshot", () => {
+  const actor = { id: "actor", companyId: "company" };
+  const row = { id: "past", agentId: actor.id, companyId: actor.companyId, status: "succeeded" };
+  expect(isolationAgentRunSnapshot([row], actor)).toEqual(["past"]);
+  expect(isolationAgentRunSnapshot([], actor)).toEqual([]);
+  for (const patch of [{ agentId: "other" }, { companyId: "other" }, { status: "running" }, { nativePhase: "retryable_failure" }, { runId: "different" }])
+    expect(isolationAgentRunSnapshot([{ ...row, ...patch }], actor)).toBeNull();
+  expect(isolationAgentRunSnapshot([row, row], actor)).toBeNull();
+  expect(isolationAgentRunSnapshot(Array.from({ length: 100 }, (_, id) => ({ ...row, id: String(id) })), actor)).toBeNull();
+  expect(isolationAgentRunSnapshot(null, actor)).toBeNull();
 });

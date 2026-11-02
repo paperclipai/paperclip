@@ -31,7 +31,11 @@ agent identity; it does not establish human membership-role policy.
 
 The secondary credential belongs to a disposable HTTP-adapter agent paused
 before key creation. It has no model connection, no model budget and no scheduled
-heartbeat. The case requires zero task and agent heartbeat runs. Credentials
+heartbeat. The case requires zero task and secondary-agent heartbeat runs. It
+compares complete, settled primary-agent history snapshots and rejects any new
+primary run, including work outside the owned tasks. A busy or incomplete
+primary baseline cannot qualify. Saved passes also reject collected runs or
+nonempty model usage. Credentials
 stay private to the provider. Both keys must be revoked, and each old key must
 return 401 on a previously successful read. Cleanup terminates the owned
 secondary agent and retains only cancelled owned task history.

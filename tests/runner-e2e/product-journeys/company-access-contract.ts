@@ -69,3 +69,18 @@ export function restrictedCreateAllowed(input: {
   return correct(response.task) && correct(canonical) && after[0]?.id === response.task.id
     && after[0].companyId === expected.companyId && after[0].title === expected.title;
 }
+
+/** A bounded complete history can contain settled earlier work, never active work. */
+export function isolationAgentRunSnapshot(value: unknown, actor: { id: string; companyId: string }): string[] | null {
+  if (!Array.isArray(value) || value.length >= 100) return null;
+  const ids = new Set<string>();
+  for (const row of value) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+    const id = row.runId ?? row.id;
+    if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(id) || (row.id != null && row.id !== id || row.runId != null && row.runId !== id)
+      || ids.has(id) || row.companyId !== actor.companyId || row.agentId !== actor.id
+      || !["succeeded", "failed", "cancelled", "timed_out"].includes(row.status) || row.nativePhase === "retryable_failure") return null;
+    ids.add(id);
+  }
+  return [...ids].sort();
+}

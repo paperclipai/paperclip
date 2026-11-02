@@ -1,5 +1,5 @@
 import { expect } from "@playwright/test";
-import { isolationEntryMatches, isolationTaskMatches, restrictedCreateAllowed, restrictedForeignDenied, restrictedPositiveControl, workspacePairMatches, type CreatedIsolationTask, type IsolationTask, type IsolationWorkspace } from "./company-access-contract.js";
+import { isolationAgentRunSnapshot, isolationEntryMatches, isolationTaskMatches, restrictedCreateAllowed, restrictedForeignDenied, restrictedPositiveControl, workspacePairMatches, type CreatedIsolationTask, type IsolationTask, type IsolationWorkspace } from "./company-access-contract.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 /** Real Cloud workspace switching plus a company-scoped agent credential boundary. */
@@ -11,6 +11,9 @@ export async function companyAccessIsolation(context: JourneyContext, session: T
     || fixture.restrictedActors.secondary.kind !== "agent" || fixture.restrictedActors.secondary.companyId !== fixture.secondary.companyId
     || !fixture.restrictedActors.secondary.id) throw new JourneyError("unsupported", "company_access_fixture_required");
   const { page, api, company } = context;
+  const primaryHistory = () => api.get<unknown[]>(`/api/companies/${company.id}/heartbeat-runs?agentId=${fixture.restrictedActors.primary.id}&limit=100`);
+  const primaryBefore = isolationAgentRunSnapshot(await primaryHistory(), fixture.restrictedActors.primary);
+  if (!primaryBefore) throw new JourneyError("blocked", "isolation_primary_run_baseline_unproven");
   const homeTitle = `Journey QA isolation primary ${campaignId}`, foreignTitle = `Journey QA isolation secondary ${campaignId}`;
   const original = `Owned isolation sentinel ${campaignId}`;
   // These tasks have no assignee, so neither setup nor the write control starts agent work.
@@ -100,7 +103,9 @@ export async function companyAccessIsolation(context: JourneyContext, session: T
   const revoked = await fixture.revokeCredentials();
   check("isolation-credential-revoked", revoked.revoked && revoked.deniedStatuses.primary === 401 && revoked.deniedStatuses.secondary === 401);
   const createdRuns = await Promise.all(created.map(task => (task.companyId === company.id ? api : fixture.secondaryApi).get<unknown[]>(`/api/issues/${task.id}/runs`)));
-  check("no-agent-work", createdRuns.every(runs => runs.length === 0) && (await api.get<unknown[]>(`/api/issues/${home.id}/runs`)).length === 0
+  const primaryAfter = isolationAgentRunSnapshot(await primaryHistory(), fixture.restrictedActors.primary);
+  const primaryUnchanged = primaryAfter !== null && primaryBefore.length === primaryAfter.length && primaryBefore.every((id, index) => id === primaryAfter[index]);
+  check("no-agent-work", primaryUnchanged && createdRuns.every(runs => runs.length === 0) && (await api.get<unknown[]>(`/api/issues/${home.id}/runs`)).length === 0
     && (await fixture.secondaryApi.get<unknown[]>(`/api/issues/${foreign.id}/runs`)).length === 0
     && (await fixture.secondaryApi.get<unknown[]>(`/api/companies/${fixture.secondary.companyId}/heartbeat-runs?agentId=${fixture.restrictedActors.secondary.id}&limit=100`)).length === 0);
   await page.reload();
