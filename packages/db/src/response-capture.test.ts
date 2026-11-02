@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { integer, pgTable } from "drizzle-orm/pg-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseResponseCapture, databaseResponseCaptureFromEnv, installDatabaseResponseCapture, publicDatabaseCallers, responseCaptureWindow, withDatabaseOperation } from "./response-capture.js";
@@ -177,6 +178,22 @@ describe("bounded database response capture", () => {
     capture.flush();
     expect(events[0]).toMatchObject({ owner: "started.before.window", calls: 1, rows: 1 });
     expect(events.at(-1)).toMatchObject({ startedQueries: 1, completedQueries: 1 });
+  });
+  it("keeps overlapping capture scopes but clears retained owners when the last capture closes", () => {
+    const first = fixture(), second = fixture();
+    let destination = second.capture;
+    const retained = withDatabaseOperation("previous.capture", () => AsyncLocalStorage.bind(() =>
+      destination.execute(() => driverRows([[1]]), metadata)));
+    first.capture.flush();
+    retained();
+    second.capture.flush();
+    expect(second.events[0]).toMatchObject({ owner: "previous.capture", calls: 1 });
+    const later = fixture();
+    destination = later.capture;
+    withDatabaseOperation("new.capture", () => destination.execute(() => driverRows([[2]]), metadata));
+    retained();
+    later.capture.flush();
+    expect(later.events.slice(0, -1).map(event => event.owner).sort()).toEqual(["new.capture", "unattributed"]);
   });
   it("does not alter synchronous or asynchronous errors or retry them", async () => {
     const f = fixture(), error = new Error("sentinel-private-error");

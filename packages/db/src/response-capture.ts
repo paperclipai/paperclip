@@ -15,7 +15,7 @@ const MAX_SAMPLE_CELLS = 256;
 const MAX_SAMPLE_STRING_LENGTH = 16_384;
 const MAX_SAMPLE_STRING_UNITS = 65_536;
 const MAX_SAMPLE_BYTES = 65_536;
-const operationScope = new AsyncLocalStorage<string>();
+let operationScope = new AsyncLocalStorage<string>();
 const captureWindows = new Set<() => boolean>();
 
 export function withDatabaseOperation<T>(owner: string, action: () => T): T {
@@ -103,6 +103,10 @@ export function createDatabaseResponseCapture(
     closed = true;
     clearTimeout(timer);
     captureWindows.delete(armed);
+    if (captureWindows.size === 0) {
+      operationScope.disable();
+      operationScope = new AsyncLocalStorage<string>();
+    }
     scope.disable();
     const ordered = [...entries.values()].sort((a, b) => b.calls - a.calls);
     for (const [groupIndex, entry] of ordered.entries()) send({ event: "paperclip.db_response_capture.entry.v2", captureId: id,
