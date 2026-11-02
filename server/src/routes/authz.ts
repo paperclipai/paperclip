@@ -82,12 +82,32 @@ export function isCompanyClientReachable(req: Request, companyId: string): boole
 
 /**
  * True when the actor's own membership in `companyId` is a `client`
- * membership. Every board actor source populates `actor.memberships`
- * (`session`, `board_key`, `mcp_oauth`, `cloud_tenant`); `local_implicit` is
- * the on-box CLI and is never a company member, so it is excluded before we
- * look. If memberships are absent we report `false`, which preserves today's
- * behavior exactly for the four staff roles rather than denying an actor we
- * cannot classify.
+ * membership.
+ *
+ * This reads `actor.memberships`, so the deny is only as good as that data.
+ * Six actor sources can produce a `board` actor. Four of them can carry a
+ * company membership, and each populates `memberships` *including*
+ * `membershipRole`:
+ *
+ *   - `session`      middleware/auth.ts, via loadActiveUserCompanyMemberships
+ *   - `board_key`    middleware/auth.ts, via boardAuth.resolveBoardAccess
+ *   - `cloud_tenant` middleware/auth.ts
+ *   - `mcp_oauth`    services/public-mcp/oauth.ts
+ *
+ * The other two are never company members, so they carry no memberships and
+ * are not classifiable as clients: `local_implicit` is the on-box CLI, and
+ * `cloud_control` is the Cloud control plane assertion (instance admin, user
+ * id `paperclip-cloud`). `local_implicit` is excluded below explicitly;
+ * `cloud_control` falls through to the absent-memberships case.
+ *
+ * That case reports `false` -- it fails *open*, preserving today's behavior
+ * for the four staff roles rather than denying an actor we cannot classify.
+ * The cost is that incomplete membership data silently disables the deny: a
+ * membership row selected without `membershipRole` reads as staff, which is
+ * exactly how the per-event gate in live-events-ws.ts leaked before review
+ * caught it. "the board actor sources classify a client membership" in
+ * client-role-deny-by-default.test.ts pins the source list so a new source
+ * cannot be added without deciding which half it belongs to.
  */
 export function isClientMembership(req: Request, companyId: string): boolean {
   if (req.actor.type !== "board") return false;

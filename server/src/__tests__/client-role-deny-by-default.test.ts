@@ -16,6 +16,7 @@ import {
   filterStaffCompanyIds,
   grantsForHumanRole,
   hasActiveStaffMembership,
+  hasClientMembershipFor,
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
@@ -714,5 +715,148 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     expect(TESTS_ROLE_AGAINST_VIEWER.test(
       "eq(companyMemberships.membershipRole, \"owner\")",
     )).toBe(false);
+  });
+});
+
+/**
+ * A third class of hazard, found by auditing the two sweeps above.
+ *
+ * Both sweeps look at *consumers*: sweep 1 at modules that read an actor's
+ * `companyIds`, sweep 2 at modules that compare a role against `viewer`.
+ * Neither looks at the *producer*. The deny reads `actor.memberships`, and
+ * `isClientMembership` fails open when that data is missing or has no
+ * `membershipRole` -- so an actor source that forgets it disables the deny for
+ * every route that source can reach, with both sweeps green.
+ *
+ * That is not hypothetical. The per-event gate in `live-events-ws.ts` leaked
+ * exactly this way: it re-read the membership but selected only the id and
+ * status, never the role.
+ *
+ * So the producer side needs its own pin: the set of actor sources, split by
+ * whether a source can carry a company membership, and a static check that
+ * each membership-bearing source really does select the role column.
+ */
+describe("the board actor sources classify a client membership", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const serverSrc = join(here, "..");
+
+  /**
+   * Sources whose actor can hold a company membership. Each must populate
+   * `actor.memberships` including `membershipRole`, or the deny fails open.
+   * The value is the module that builds that actor.
+   */
+  const MEMBERSHIP_BEARING_SOURCES: Record<string, string> = {
+    session: "middleware/auth.ts",
+    board_key: "middleware/auth.ts",
+    cloud_tenant: "middleware/auth.ts",
+    mcp_oauth: "services/public-mcp/oauth.ts",
+  };
+
+  /**
+   * The modules that read `membership_role` out of the database and hand it to
+   * an actor. The four sources above all draw from one of these: `session` and
+   * `cloud_tenant` from `loadActiveUserCompanyMemberships` in `auth.ts`,
+   * `board_key` and `mcp_oauth` from `resolveBoardAccess` in `board-auth.ts`.
+   */
+  const ROLE_SUPPLYING_MODULES = [
+    "middleware/auth.ts",
+    "services/board-auth.ts",
+  ] as const;
+
+  /** Sources that are never a company member, with the reason. */
+  const NON_MEMBER_SOURCES: Record<string, string> = {
+    local_implicit: "on-box CLI; excluded in isClientMembership before the look",
+    cloud_control: "Cloud control plane assertion; instance admin, user paperclip-cloud",
+    agent_key: "agent actor, not a human membership",
+    agent_jwt: "agent actor, not a human membership",
+    none: "unauthenticated",
+  };
+
+  function declaredSources(): string[] {
+    const source = readFileSync(join(serverSrc, "types/express.d.ts"), "utf8");
+    const line = source.split("\n").find((text) => /\bsource\?:/.test(text));
+    expect(line, "types/express.d.ts should declare the actor source union").toBeTruthy();
+    return [...(line as string).matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
+  }
+
+  it("classifies every declared actor source", () => {
+    const unclassified = declaredSources().filter(
+      (name) => !(name in MEMBERSHIP_BEARING_SOURCES) && !(name in NON_MEMBER_SOURCES),
+    );
+
+    expect(unclassified, [
+      "A new actor source was added. Decide whether its actor can hold a company",
+      "membership. If it can, populate `memberships` including `membershipRole`",
+      "where the actor is built and list it in MEMBERSHIP_BEARING_SOURCES;",
+      "if it cannot, list it in NON_MEMBER_SOURCES with the reason.",
+    ].join(" ")).toEqual([]);
+  });
+
+  it("does not pin a source that no longer exists", () => {
+    const declared = new Set(declaredSources());
+    const stale = [
+      ...Object.keys(MEMBERSHIP_BEARING_SOURCES),
+      ...Object.keys(NON_MEMBER_SOURCES),
+    ].filter((name) => !declared.has(name));
+
+    expect(stale, "these pinned sources are gone from the union").toEqual([]);
+  });
+
+  /**
+   * What this asserts, and what it does not: it checks that every module which
+   * supplies membership data selects the role column, and that every actor
+   * source is classified. It does *not* prove which supplier feeds which
+   * source -- a regex cannot follow that, and pretending otherwise would be
+   * worse than saying so. A human classified the four above; the source-union
+   * pin is what forces that classification to be redone when a source arrives.
+   */
+  it("selects the membership role in every module that supplies it", () => {
+    const missing = ROLE_SUPPLYING_MODULES.filter((module) => {
+      const text = readFileSync(join(serverSrc, module), "utf8");
+      // The role has to come out of the database, not be defaulted in code.
+      return !/membershipRole:\s*companyMemberships\.membershipRole/.test(text);
+    });
+
+    expect(missing, [
+      "These modules hand membership data to an actor without selecting",
+      "`membershipRole`. A membership row without a role reads as staff, so the",
+      "client deny silently stops applying for every source they feed.",
+    ].join(" ")).toEqual([]);
+  });
+
+  it("builds each membership-bearing actor from a role-supplying module", () => {
+    const unsourced: string[] = [];
+    for (const [sourceName, module] of Object.entries(MEMBERSHIP_BEARING_SOURCES)) {
+      const text = readFileSync(join(serverSrc, module), "utf8");
+      const suppliesItself = /membershipRole:\s*companyMemberships\.membershipRole/.test(text);
+      // board-auth is reached as a service, so match the call rather than an import path.
+      const drawsFromSupplier = /resolveBoardAccess\s*\(/.test(text);
+      if (!suppliesItself && !drawsFromSupplier) unsourced.push(`${sourceName} (${module})`);
+    }
+
+    expect(unsourced, [
+      "These modules build a membership-bearing actor without either selecting",
+      "the role themselves or drawing it from a role-supplying module.",
+    ].join(" ")).toEqual([]);
+  });
+
+  /**
+   * The fail-open branches, asserted rather than left to be discovered. Both
+   * are deliberate -- they keep the four staff roles behaving exactly as they
+   * do today -- but they are the reason the pins above have to exist.
+   */
+  it("treats unclassifiable membership data as staff, not as a client", () => {
+    expect(hasClientMembershipFor(undefined, "company-1")).toBe(false);
+    expect(hasClientMembershipFor([], "company-1")).toBe(false);
+    // A row selected without the role column: the live-events-ws shape.
+    expect(hasClientMembershipFor(
+      [{ companyId: "company-1", status: "active" }],
+      "company-1",
+    )).toBe(false);
+    // And the case that must still be caught.
+    expect(hasClientMembershipFor(
+      [{ companyId: "company-1", membershipRole: "client", status: "active" }],
+      "company-1",
+    )).toBe(true);
   });
 });

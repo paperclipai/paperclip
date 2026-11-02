@@ -63,15 +63,6 @@ export function hasClientMembershipFor(
 }
 
 /**
- * True when at least one active membership is a staff membership. Used by the
- * org-level gate: a principal whose only memberships are `client` memberships
- * is not staff anywhere and has no org surface.
- *
- * Absent or empty membership data returns true, which preserves the historical
- * behavior of gating purely on a non-empty company list rather than denying an
- * actor we cannot classify.
- */
-/**
  * Narrow a company-id scope to the companies where the actor is staff.
  *
  * For list/scope decisions that are company-scoped but do not run through
@@ -87,6 +78,15 @@ export function filterStaffCompanyIds(
   return ids.filter((companyId) => !hasClientMembershipFor(memberships, companyId));
 }
 
+/**
+ * True when at least one active membership is a staff membership. Used by the
+ * org-level gate: a principal whose only memberships are `client` memberships
+ * is not staff anywhere and has no org surface.
+ *
+ * Absent or empty membership data returns true, which preserves the historical
+ * behavior of gating purely on a non-empty company list rather than denying an
+ * actor we cannot classify.
+ */
 export function hasActiveStaffMembership(
   memberships: MembershipRoleSummary[] | undefined,
 ): boolean {
