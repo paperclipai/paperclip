@@ -1,3 +1,4 @@
+import { verifiedIdleCapabilities } from "../middleware/cloud-control.js";
 import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
 import { companies, type Db } from "@paperclipai/db";
@@ -319,7 +320,12 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       // The report covers every company in this process. Ordinary company
       // members may read process counters, but not instance-wide work state.
       assertCanManageInstanceSettings(req);
-      const scheduledIssueMonitors = req.query.scheduledWake === "2";
+      const domainDeadlines = req.query.scheduledWake === "domain-deadlines-v1";
+      const capabilities = verifiedIdleCapabilities(req);
+      if (domainDeadlines && capabilities?.deadlineCatalog !== "domain_deadlines_v1") {
+        throw forbidden("Domain deadline reports require the signed Cloud deadline catalog");
+      }
+      const scheduledIssueMonitors = req.query.scheduledWake === "2" || domainDeadlines;
       const scheduledRoutines = req.query.scheduledWake === "1" || scheduledIssueMonitors;
       if (scheduledRoutines && req.actor.source !== "cloud_control") {
         throw forbidden("Scheduled wake reports require Cloud control authority");
@@ -334,8 +340,11 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       }
       const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
         typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
-        () => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup) }),
-        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors);
+        diagnostic => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup), diagnostic,
+          deadlineCapability: domainDeadlines ? capabilities : undefined }),
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
+        { incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
+          ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }
