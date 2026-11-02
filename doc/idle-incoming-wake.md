@@ -13,7 +13,7 @@ Older Cloud/app combinations retain their conservative behavior.
 
 ## Supported profiles
 
-`tenant-api-http-v1` allows saved agent and board API key rows to remain while
+`tenant-api-http-v2` allows saved agent and board API key rows to remain while
 sleeping. Cloud resolves the target from its verified host registry, coalesces a
 bounded wake, waits for tenant readiness, refreshes routing, then forwards the
 original HTTP request once. Ordinary `/api/instance` administration routes are
@@ -23,9 +23,10 @@ DELETE do not gain this wake path.
 
 The Cloud capability authenticates the **host's ability to receive work**. Opaque
 tenant keys are authenticated only by the awakened tenant, under current key,
-expiry, user, membership, company, agent and resource permissions. No private
-credential registry is copied into Cloud. Unknown/revoked keys can cause a
-bounded wake and then receive a normal denial; they cannot execute work.
+expiry, user, membership, company, agent and resource permissions. No raw key or original
+credential hash is copied into Cloud. A signed final-drain projection supplies
+only per-cycle derived wake fingerprints. Unknown inputs cannot consume
+provider-start quota. Tenant authentication still rejects any later revocation.
 
 Successful current board/agent key authentication followed by a successful HTTP
 response retains ten minutes of local API activity, measured with a monotonic
@@ -93,3 +94,10 @@ The source/loopback/PostgreSQL tests establish the exercised protocol boundaries
 they do not establish a fleet deployment, actual provider/Neon suspension,
 provider startup latency or cost savings. Deployed combined qualification remains
 separate and must include every enabled transport.
+
+
+## Pre-wake API admission
+
+The v2 API profile requires an authenticated per-sleep-cycle key projection before compute stops. The signed challenge is derived from the newly random owned idle hold and stack. In the same read-only snapshot, the app projects up to 1000 active key rows into domain-separated salted fingerprints; original key hashes and raw keys stay private. Board-key expiry is carried and enforced before wake. Unknown, duplicate, malformed or overflow projection fails closed. The complete initial and final receipts must match; changing a credential or challenge refuses stop.
+
+Cloud stores the final receipt in one internal stack column under the sleep operation lock. Unknown requests cannot consume provider-start quota. Possession of a matching snapshot key only admits a bounded wake; tenant authentication and current permissions still run on delivery. A key revoked after the snapshot can therefore receive no tenant authority, even if it once qualified for wake. Wake claims recheck the exact cycle, matching key and expiry atomically. Normal next sleep re-reads revocations. Successful wake, manual/archive/delete or a known sleep abort clears the receipt; uncertain stop and a same-cycle failed wake retain recovery. A restarted host reads the durable receipt. No global TTL strands nonexpiring saved keys during long sleep, and no periodic credential refresh worker is added.

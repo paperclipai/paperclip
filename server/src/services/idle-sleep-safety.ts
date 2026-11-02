@@ -1,6 +1,7 @@
 import { readIdleDeadlineProof, deadlineWorkReplacement, type IdleDeadlineProof } from "./idle-deadline-proof.js";
 import type { DomainScheduledWake, IdleDeadlineReceipt } from "./idle-deadline-types.js";
 import type { IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
+import type { ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { readIdleIncomingWakeProof, incomingWakeWorkQuery, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
 import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
 import { idleWorkSnapshot } from "./task-admission.js";
@@ -32,6 +33,7 @@ export interface IdleSleepSafety {
   diagnostics?: IdleSleepDiagnostics;
   incomingWake?: IdleIncomingWakeCapability;
   deadlineProof?: IdleDeadlineReceipt;
+  apiWakeAdmission?: ApiWakeAdmission;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
@@ -311,7 +313,8 @@ export async function readIdleSleepSafety(
     if (backgroundWork === "none" && deadlines && (!deadlineProof || deadlineProof.blocked || !deadlineProof.generation)) backgroundWork = "unknown";
     const wake = deadlineProof ? deadlineProof.scheduledWake : scheduledWake;
     return { version: backgroundWork === "none" && (incomingProof || deadlineProof) ? 3 : backgroundWork === "none" && wake ? 2 : 1, backgroundWork,
-      ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability } : {}),
+      ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability,
+        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}) } : {}),
       ...(backgroundWork === "none" && deadlineProof?.generation ? { deadlineProof: {
         catalog: "domain_deadlines_v1" as const, generation: deadlineProof.generation } } : {}),
       ...(backgroundWork === "none" && wake ? { scheduledWake: wake } : {}),

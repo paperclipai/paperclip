@@ -3,7 +3,8 @@ export interface IdleIncomingWakeCapability {
   version: 1;
   ownerId: string;
   generation: string;
-  routes: ("tenant-api-http-v1" | "github-broker-events-v1")[];
+  routes: ("tenant-api-http-v2" | "github-broker-events-v1")[];
+  apiKeyProof?: { version: 1; challenge: string };
   githubBroker?: { instanceId: string; bindingsFingerprint: string };
 }
 export interface IdleCapabilities {
@@ -38,6 +39,7 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
         "generation",
         "routes",
         "githubBroker",
+        "apiKeyProof",
       ]) ||
       v.version !== 1 ||
       typeof v.ownerId !== "string" ||
@@ -49,12 +51,17 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
       v.routes.length < 1 ||
       v.routes.length > 2 ||
       v.routes.some(
-        (r) => !["tenant-api-http-v1", "github-broker-events-v1"].includes(r),
+        (r) => !["tenant-api-http-v2", "github-broker-events-v1"].includes(r),
       ) ||
       new Set(v.routes).size !== v.routes.length ||
       [...v.routes].sort().join() !== v.routes.join()
     )
       throw new Error("Invalid incoming wake capability");
+    if (v.routes.includes("tenant-api-http-v2")) {
+      const proof = v.apiKeyProof;
+      if (!object(proof) || Object.keys(proof).length !== 2 || !exact(proof, ["version", "challenge"])
+        || proof.version !== 1 || !digest(proof.challenge)) throw new Error("Invalid API wake challenge");
+    } else if (v.apiKeyProof !== undefined) throw new Error("Unexpected API wake challenge");
     if (v.routes.includes("github-broker-events-v1")) {
       const b = v.githubBroker;
       if (
@@ -72,6 +79,7 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
   const parsed = JSON.parse(JSON.stringify(value)) as IdleCapabilities;
   if (parsed.incomingWake) {
     Object.freeze(parsed.incomingWake.routes);
+    if (parsed.incomingWake.apiKeyProof) Object.freeze(parsed.incomingWake.apiKeyProof);
     if (parsed.incomingWake.githubBroker)
       Object.freeze(parsed.incomingWake.githubBroker);
     Object.freeze(parsed.incomingWake);
