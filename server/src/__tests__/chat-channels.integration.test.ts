@@ -62931,7 +62931,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const commentsBeforeDisabledLifecycle = await db
       .select({ id: issueComments.id })
       .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId));
+      .where(eq(issueComments.issueId, conversation.issueId))
+      .orderBy(issueComments.id);
     const priorLifecycleIds = new Set(
       (
         await db
@@ -63011,7 +63012,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       db
         .select({ id: issueComments.id })
         .from(issueComments)
-        .where(eq(issueComments.issueId, conversation.issueId)),
+        .where(eq(issueComments.issueId, conversation.issueId))
+        .orderBy(issueComments.id),
     ).resolves.toEqual(commentsBeforeDisabledLifecycle);
     await service.shutdown();
   });
@@ -64286,6 +64288,57 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       } finally { await f.service.shutdown(); }
     });
+
+  it.each(["issue.comment.reopen", "boardMessageRetry"] as const)(
+    "resumes saved GitHub input after a successful board turn: %s", async origin => {
+      const f = await successfulGitHubQueuedInputFixture();
+      try {
+        const [previous] = await readHeartbeatRunsById(f.runId);
+        await db.update(heartbeatRuns).set({ responsibleUserId: f.input.actorId, contextSnapshot: {
+          ...previous.contextSnapshot, ...(origin === "boardMessageRetry" ? { boardMessageRetry: true } : { source: origin }),
+        } }).where(eq(heartbeatRuns.id, f.runId));
+        const before = (await readHeartbeatRunsById(f.runId))[0];
+        const retry = await requestTaskRetry(f.input);
+        await reconcileTaskChatRetryReceipts(db, { companyId: f.fixture.companyId, requestId: retry.requestId! });
+        const [saved] = await readAgentWakeupRequestsById(f.pending!.id);
+        expect(saved.runId).toBeTruthy();
+        expect((await readHeartbeatRunsById(saved.runId!))[0]).toMatchObject({ retryOfRunId: null,
+          contextSnapshot: { source: "chat:github", wakeCommentIds: [f.pending!.payload.commentId] } });
+        expect((await readHeartbeatRunsById(f.runId))[0]).toEqual(before);
+      } finally { await f.service.shutdown(); }
+    });
+
+  it("keeps a board message queued separately when saved GitHub Retry resumes after cleanup", async () => {
+    const f = await successfulGitHubQueuedInputFixture();
+    try {
+      const companyId = f.fixture.companyId;
+      const lease = { id: randomUUID(), companyId, issueId: f.issue.id, heartbeatRunId: f.runId,
+        provider: "daytona", providerLeaseId: randomUUID(), leasePolicy: "ephemeral" };
+      await db.insert(environmentLeases).values({ ...lease, status: "pending_cleanup" });
+      await db.update(issues).set({ status: "in_review", executionRunId: f.runId }).where(eq(issues.id, f.issue.id));
+      const retry = await requestTaskRetry(f.input);
+      await reconcileTaskChatRetryReceipts(db, { companyId, requestId: retry.requestId! });
+      expect((await readAgentWakeupRequestsById(f.pending!.id))[0].runId).toBeNull();
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId: f.issue.id,
+        authorType: "user", authorUserId: f.input.actorId, body: "A separate board follow-up" }).returning();
+      const [board] = await db.insert(agentWakeupRequests).values({ companyId, agentId: f.fixture.assignedAgentId,
+        source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: f.input.actorId,
+        payload: withQueuedCommentIdsInWakePayload({ issueId: f.issue.id, commentId: comment.id,
+          _paperclipWakeContext: { issueId: f.issue.id, source: "issue.comment.reopen", wakeReason: "issue_commented" },
+        }, [comment.id]),
+      }).returning();
+      await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date(),
+        metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }) },
+      }).where(eq(environmentLeases.id, lease.id));
+      await reconcileTaskChatRetryReceipts(db, { companyId, requestId: retry.requestId! });
+      const [saved] = await readAgentWakeupRequestsById(f.pending!.id);
+      expect(saved.runId).toBeTruthy();
+      expect((await readHeartbeatRunsById(saved.runId!))[0]).toMatchObject({ status: "queued",
+        contextSnapshot: { wakeCommentIds: [f.pending!.payload.commentId] } });
+      expect((await readAgentWakeupRequestsById(board.id))[0]).toEqual(board);
+    } finally { await f.service.shutdown(); }
+  });
 
   it("dispatches saved input through the task Retry HTTP endpoint and survives a repeated click", async () => {
     const f = await successfulGitHubQueuedInputFixture();

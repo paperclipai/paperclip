@@ -309,7 +309,7 @@ export async function requestTaskRetry(input: {
         await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: id });
       }
     }
-    if (chat && !active && !busy && !boardMessageOrigin && (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
+    if (chat && !active && !busy && !boardMessageOrigin && !intent.queuedChatRequestId && (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
         latest.responsibleUserId === input.actorId) {
       throw conflict("This saved message cannot be retried safely. Send a new message on the task to continue from saved work.",
         { code: "chat_failed_run_retry_not_authorized", reason: "saved_board_message_not_replayable" });
