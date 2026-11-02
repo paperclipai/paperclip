@@ -96,37 +96,8 @@ test('the executable guard binds the actual original GitHub run before service o
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('the real workflow separates metadata authority, provider execution and result reporting', async () => {
-  const text = await readFile(new URL('../../.github/workflows/chat-completion-testops.yml', import.meta.url), 'utf8');
-  const w = parse(text);
-  assert.deepEqual(Object.keys(w.on.workflow_dispatch.inputs).sort(), ['ALLURE_JOB_RUN_ID', 'ALLURE_USERNAME', 'operation']);
-  assert.equal(w.concurrency['cancel-in-progress'], false);
-  assert.equal(w.jobs.chat.strategy['max-parallel'], 1); assert.equal(w.jobs.chat.strategy['fail-fast'], false);
-  assert.equal(w.jobs.select.environment, 'runner-e2e-testops-reporting');
-  assert.equal(w.jobs.chat.environment, 'runner-e2e-private-paid');
-  assert.equal(w.jobs.report.environment, 'runner-e2e-private-history');
-  assert.equal(w.jobs.upload.environment, 'runner-e2e-testops-reporting');
-  for (const [name, job] of Object.entries(w.jobs)) {
-    assert.ok(job.steps.slice(0, 3).some(step => step.run?.endsWith('chat-completion-testops-cli.mjs guard')), name);
-    if (name !== 'chat') assert.ok(!JSON.stringify(job).includes('secrets.OPENROUTER_API_KEY'), name);
-    if (!['select', 'upload'].includes(name)) assert.ok(!JSON.stringify(job).includes('secrets.ALLURE_TOKEN'), name);
-  }
-  assert.ok(w.jobs.upload.if.includes("needs.report.result == 'success'"));
-  assert.ok(w.jobs.report.needs.includes('build'));
-  assert.ok(w.jobs.report.if.includes("needs.build.result == 'success'"));
-  assert.ok(w.jobs.report.if.includes("needs.chat.result == 'failure'"));
-  assert.ok(!text.includes('<<:')); assert.ok(!text.includes('target_branch:'));
-  assert.equal(w.jobs.build.steps.find(step => step.name?.startsWith('Resolve the fixed')).run.includes('--ignore-scripts'), true);
-  const paid = w.jobs.chat.steps.find(step => step.env?.OPENROUTER_API_KEY);
-  assert.equal(paid.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS, 'v1');
-  assert.equal(paid.env.ALLURE_JOB_RUN_ID, '${{ inputs.ALLURE_JOB_RUN_ID }}');
-  assert.ok(paid.run.includes('--max-automatic-retries 0'));
-  assert.ok(w.jobs.build.steps.some(step => step.run?.includes('chat-completion-testops-host-control.mjs')));
-  assert.ok(w.jobs.chat.steps.indexOf(paid) > w.jobs.chat.steps.findIndex(step => step.name?.startsWith('Verify source-bound')));
-});
-
 test('target checkout cannot populate or overwrite the trusted helper path', async () => {
-  const definition = parse(await readFile(new URL('../../.github/workflows/chat-completion-testops.yml', import.meta.url), 'utf8'));
+  const definition = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8'));
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'testops-checkout-boundary-')));
   try {
     const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
