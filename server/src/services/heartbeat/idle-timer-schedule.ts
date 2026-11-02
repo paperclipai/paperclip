@@ -6,7 +6,6 @@ import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import { createHeartbeatTimerPolicy, heartbeatTimerPolicyIsWellFormed } from "./timer-policy.js";
 import { idleDeadlineRowLimit, isFutureIdleDeadline, type IdleDeadlineSnapshot } from "../idle-deadline-types.js";
 
-/** Normal Cloud scheduling only. Worktree overrides/restore are not a transferable execution authority. */
 export async function readIdleAgentTimerSchedule(tx: Pick<Db, "select">, now: number,
   env: Record<string, string | undefined> = process.env, checkBudget: () => void = () => {}): Promise<IdleDeadlineSnapshot> {
   const rows = await tx.select({ agent: getTableColumns(agents), companyStatus: companies.status,
@@ -32,8 +31,6 @@ export async function readIdleAgentTimerSchedule(tx: Pick<Db, "select">, now: nu
     const policy = owner.parseHeartbeatPolicy(agent);
     if (!Number.isFinite(policy.intervalSec)) return blocked();
     if (!policy.enabled || policy.intervalSec <= 0 || !supportsUnscopedTimerHeartbeat(agent)) continue;
-    // Org-chain evaluation belongs to its owner. Bound its candidate count
-    // even when every timer needs no additional SQL (for example zero caps).
     if (++inspectedTimers > 128) return blocked();
     const invokability = evaluateAgentInvokability(agent, byCompany.get(agent.companyId)!);
     if (!invokability.invokable) {

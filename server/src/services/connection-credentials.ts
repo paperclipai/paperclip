@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
-import { companySecrets, companySecretProposals, managedAgentProfiles, routineTriggers, userSecretDefinitions, type connectionGrants, type toolConnections } from "@paperclipai/db";
+import { companySecrets, companySecretVersions, companySecretProposals, managedAgentProfiles, routineTriggers, userSecretDefinitions, type Db, type connectionGrants, type toolConnections } from "@paperclipai/db";
 import type { ToolCredentialSecretRef } from "@paperclipai/shared";
 import { connectionCredentialConfigPath } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
@@ -119,7 +119,7 @@ export async function writeConnectionCredential(
 
 /** Validate metadata without reading secret values, including for connection pickers. */
 export async function validateConnectionGrantSecretOwnership(
-  db: CredentialDb,
+  db: Pick<Db, "select">,
   connection: Pick<typeof toolConnections.$inferSelect, "id" | "companyId">,
   grant: Pick<typeof connectionGrants.$inferSelect, "id" | "companyId" | "connectionId" | "kind" | "subjectUserId">,
   ref: ToolCredentialSecretRef,
@@ -164,4 +164,40 @@ export async function resolveConnectionGrantSecret(
     code: "user_secret_missing", connectionId: connection.id, grantId: grant.id, credential: ref.configPath,
   });
   return { value: resolved.value, latestVersion: secret.latestVersion };
+}
+
+export async function readConnectionGrantCredentialState(
+  db: Pick<Db, "select">,
+  connection: Pick<typeof toolConnections.$inferSelect, "id" | "companyId">,
+  grant: Pick<typeof connectionGrants.$inferSelect, "id" | "companyId" | "connectionId" | "kind" | "subjectUserId" | "credentialSecretRefs">,
+): Promise<unknown[] | undefined> {
+  const refs = grant.credentialSecretRefs.filter(ref => ["oauth.access_token", "oauth.refresh_token"].includes(ref.configPath));
+  if (refs.filter(ref => ref.configPath === "oauth.access_token").length !== 1
+    || new Set(refs.map(ref => ref.configPath)).size !== refs.length) return;
+  const state: unknown[] = [];
+  for (const ref of refs) {
+    let secret;
+    try { secret = await validateConnectionGrantSecretOwnership(db, connection, grant, ref); }
+    catch (error) {
+      if (error && typeof error === "object" && "status" in error && error.status === 422) return;
+      throw error;
+    }
+    if (secret.status !== "active" || secret.deletedAt || !Number.isSafeInteger(secret.latestVersion) || secret.latestVersion <= 0) return;
+    let definitionState: unknown;
+    if (secret.scope === "user") {
+      const [definition] = await db.select({ id: userSecretDefinitions.id, companyId: userSecretDefinitions.companyId,
+        status: userSecretDefinitions.status, deletedAt: userSecretDefinitions.deletedAt, updatedAt: userSecretDefinitions.updatedAt })
+        .from(userSecretDefinitions).where(eq(userSecretDefinitions.id, secret.userSecretDefinitionId!)).limit(1);
+      if (!definition || definition.companyId !== connection.companyId || definition.status !== "active" || definition.deletedAt) return;
+      definitionState = definition;
+    }
+    const version = ref.versionSelector === undefined || ref.versionSelector === "latest" ? secret.latestVersion : ref.versionSelector;
+    if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) return;
+    const [saved] = await db.select({ id: companySecretVersions.id, version: companySecretVersions.version,
+      status: companySecretVersions.status, revokedAt: companySecretVersions.revokedAt })
+      .from(companySecretVersions).where(and(eq(companySecretVersions.secretId, secret.id), eq(companySecretVersions.version, version))).limit(1);
+    if (!saved || saved.status !== "current" || saved.revokedAt) return;
+    state.push([ref.configPath, secret.id, secret.scope, secret.ownerUserId, secret.latestVersion, secret.updatedAt, definitionState, saved]);
+  }
+  return state;
 }

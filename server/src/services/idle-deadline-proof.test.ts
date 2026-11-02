@@ -9,7 +9,6 @@ import { projectIdleProviderTraceSchedule, type IdleProviderTraceRow } from "./p
 import { projectIdleGitHubGrantContinuity } from "./tool-access/github-grant-continuity.js";
 
 const now = Date.parse("2099-01-01T00:00:00Z");
-// The caller's authentication boundary has its own real signed-capability suite.
 const verifiedCapability = { deadlineCatalog: "domain_deadlines_v1" } as VerifiedIdleCapabilities;
 const options: IdleDeadlineProofOptions = { now, verifiedCapability, quietPluginIds: [] };
 const hold = { ownerId: "owned", expiresAt: now + 300_000 };

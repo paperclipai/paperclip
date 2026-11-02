@@ -1,5 +1,8 @@
-/** Closed negotiated catalog; in-process scheduler entries are not wake proofs. */
 export const IDLE_DEADLINE_CATALOG = "domain_deadlines_v1" as const;
+export interface IdleDeadlineReceipt {
+  catalog: typeof IDLE_DEADLINE_CATALOG;
+  generation: string;
+}
 export interface DomainScheduledWake {
   version: 2;
   kind: "domain_deadlines";
@@ -9,8 +12,7 @@ export interface DomainScheduledWake {
 }
 export interface IdleDeadlineSnapshot {
   blocked: boolean;
-  /** Exact durable state inspected by the domain; hashed, never returned to callers. */
-  state: unknown;
+    state: unknown;
   deadlines: number[];
 }
 export const idleDeadlineRowLimit = 10_000;

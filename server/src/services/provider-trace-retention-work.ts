@@ -16,8 +16,6 @@ export function registerProviderTraceRetentionWork(
   const unregister = registerIdleLocalWorkProbe(options => {
     if (deadline === undefined) return "unknown";
     if (deadline === null) return "none";
-    // Only a full negotiated durable scan may transfer a future retention
-    // obligation. Due cleanup and failed/unknown reconciliation remain work.
     return options.deadlineCapability?.deadlineCatalog === "domain_deadlines_v1" && deadline > Date.now()
       ? "none" : "present";
   });

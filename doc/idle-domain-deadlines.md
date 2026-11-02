@@ -6,7 +6,12 @@ Cloud requests `scheduledWake=domain-deadlines-v1` and signs the fixed catalog i
 A query parameter or an ordinary credential cannot grant this capability.
 The response uses idle-safety version 3 with a scheduled proof of version 2,
 kind `domain_deadlines`, catalog `domain_deadlines_v1`, opaque generation and
-canonical UTC `nextWakeAt`. Legacy requests and versions keep their prior rules.
+canonical UTC `nextWakeAt`. Every requested catalog also returns an outer
+`deadlineProof: { catalog: "domain_deadlines_v1", generation }`, including when
+there is no future alarm. Any scheduled proof must use that same generation.
+Cloud rejects an omitted receipt, an older ingress-only version 3 response, and
+a changed no-alarm generation on the final read. Legacy requests and versions
+keep their prior rules.
 
 The proof combines existing routine and issue-monitor obligations with:
 
@@ -25,8 +30,10 @@ The proof combines existing routine and issue-monitor obligations with:
 - Personal GitHub grant continuity, using the owner's token-expiry-minus-one-hour
   and 30-day access-refresh rules. Broker enrollment alone is insufficient:
   exact ingress binding and actual grant deadline must both be proven. Missing
-  credentials, refresh leases, binding synchronization and unresolved retry
-  records remain blockers.
+  credentials, inactive/missing owner-scoped vault definitions or current token
+  versions, refresh leases, binding synchronization and unresolved retry records
+  remain blockers. Inspection reads credential ownership/version metadata and
+  never resolves plaintext token material.
 
 Pending watchdog first-run grace (15 seconds) and automatic merge-confirmation
 checks (five minutes) remain awake. They provide no useful safe sleep window
@@ -45,12 +52,15 @@ ordinary routine/monitor proof, exact domain rows and plugin worker identities.
 Any changed state, cancellation, moved deadline, owner replacement or restart
 invalidates the old proof. Unknown or malformed states fail closed.
 
-The additional domain projection is bounded to 64 SQL reads, two seconds of
-monotonic inspection time, 128 eligible timer candidates and 10,000 rows per
+The additional domain projection is bounded to 64 data reads, a two-second monotonic budget for
+starting further reads, 128 eligible timer candidates and 10,000 rows per
 family, while reserving 60 seconds of hold headroom. Overflow refuses sleep;
 it never truncates the proof or changes a schedule. These limits supplement the
-transaction's statement timeout. A query already in progress remains bounded
-by that timeout, and no subsequent query starts after budget exhaustion.
+transaction's statement timeout. A query already in progress may still take its five-second statement timeout;
+SQL execution can therefore finish about seven seconds after the projection
+starts, plus bounded local projection/driver overhead. No subsequent data query
+starts after budget exhaustion. This is not a strict two-second wall-clock
+promise. The final hold and generation checks remain mandatory.
 
 Cloud persists one existing registry alarm under its current sleep lease before
 final proof validation and provider stop. It compares every proof field on the

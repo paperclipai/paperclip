@@ -19,8 +19,6 @@ export function projectIdleProviderTraceSchedule(rows: IdleProviderTraceRow[], n
     }
     const objectRef = objectProviderTraceRef(trace.traceRef);
     const localRef = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.ndjson$/.test(trace.traceRef);
-    // Local remove writes its tombstone only after both sidecars are absent.
-    // Object remove instead persists debt first and needs the cleanup marker.
     if (localRef && trace.status === "deleted" && trace.deletedAt) continue;
     if (importingProviderTraceRef(trace.traceRef) || (objectRef && (objectRef[1] !== trace.companyId || objectRef[2] !== trace.runId))
       || (!objectRef && !localRef)

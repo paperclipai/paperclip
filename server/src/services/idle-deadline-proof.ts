@@ -11,7 +11,6 @@ import { readIdleGitHubGrantContinuity } from "./tool-access/github-grant-contin
 
 const processGeneration = randomUUID();
 export class IdleDeadlineInspectionBudgetExceeded extends Error {}
-/** Global bounds supplement the transaction's per-statement timeout. */
 export function createIdleDeadlineInspectionBudget(now: number, expiresAt: number,
   monotonicNow: () => number = () => performance.now()) {
   const started = monotonicNow();
@@ -43,7 +42,6 @@ export type IdleDeadlineProofOptions = {
 };
 const generation = (state: unknown) => createHash("sha256").update(JSON.stringify(state)).digest("hex");
 
-/** Proof composition only. Domain ownership, durable reads and execution stay with their services. */
 export function composeIdleDeadlineProof(hold: { ownerId: string; expiresAt: number }, options: IdleDeadlineProofOptions,
   snapshots: { timers: IdleDeadlineSnapshot; jobs: IdleDeadlineSnapshot; traces: IdleDeadlineSnapshot;
     github: IdleDeadlineSnapshot & { connectionIds: string[] } }): IdleDeadlineProof {
@@ -73,7 +71,6 @@ export async function readIdleDeadlineProof(tx: Pick<Db, "select">, hold: { owne
     return Reflect.apply(tx.select, tx, args);
   } } as Pick<Db, "select">;
   try {
-    // Sequential reads share the caller's snapshot and statement timeout.
     const timers = await readIdleAgentTimerSchedule(guarded, options.now, process.env, budget.check);
     budget.check();
     if (timers.blocked) return { blocked: true };
@@ -85,14 +82,15 @@ export async function readIdleDeadlineProof(tx: Pick<Db, "select">, hold: { owne
     if (traces.blocked) return { blocked: true };
     const github = await readIdleGitHubGrantContinuity(guarded, options.now);
     budget.check();
-    return composeIdleDeadlineProof(hold, options, { timers, jobs, traces, github });
+    const proof = composeIdleDeadlineProof(hold, options, { timers, jobs, traces, github });
+    budget.check();
+    return proof;
   } catch (error) {
     if (error instanceof IdleDeadlineInspectionBudgetExceeded) return { blocked: true };
     throw error;
   }
 }
 
-/** Caller retains the original reason identity and applies this only after complete proof. */
 export function deadlineWorkReplacement(reason: string): string | undefined {
   if (reason === "agents.execution_or_timer") return `SELECT 1 FROM agents WHERE status = 'running'`;
   if (reason === "plugin_jobs") return `SELECT 1 FROM plugin_jobs WHERE status NOT IN ('active', 'paused')`;

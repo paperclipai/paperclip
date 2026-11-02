@@ -1,5 +1,5 @@
 import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
  * processes, routes JSON-RPC 2.0 calls over stdio, and handles lifecycle
@@ -21,7 +21,6 @@ import { createHash } from "node:crypto";
  */
 
 import { fork, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { beginIdleTrackedWork, readTaskDrain, trackIdleWork } from "./task-admission.js";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";

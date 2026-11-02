@@ -41,7 +41,6 @@ export function projectIdlePluginJobSchedule(rows: IdlePluginJobRow[], quietPlug
     const declaration = declarations.get(job.jobKey);
     if (!declaration) return blocked();
     if ((declaration.schedule ?? "") !== job.schedule) return blocked();
-    // An explicitly unscheduled declaration is manual-only, not a missing timer.
     if (!job.schedule && job.nextRunAt === null) continue;
     const at = job.nextRunAt?.getTime() ?? NaN;
     if (validateCron(job.schedule) || !isFutureIdleDeadline(at, now)) return blocked();

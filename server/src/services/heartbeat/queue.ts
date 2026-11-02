@@ -35,9 +35,7 @@ import {
   CHAT_COMPLETION_WAKE_REASON,
   isCompletedOnboardingHandoffWake,
 } from "../chat-completion-delivery.js";
-import {
-  hasWorkspaceRestoreFailure,
-} from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isConversation,
@@ -121,9 +119,7 @@ import {
   withQueuedCommentIdsInWakePayload,
   withQueuedCommentIdsInRunContext,
 } from "../issue-queued-comment-queue.js";
-import {
-  parseObject,
-} from "../../adapters/utils.js";
+import { parseObject } from "../../adapters/utils.js";
 import { isExternalChatWaitAuthorizationContention } from "../native-runtime/chat-attachment-reuse.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import {
@@ -343,7 +339,6 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-/** Exact durable timer claim used by ordinary dispatch and restart qualification. */
 export async function claimDueTimerHeartbeatForAgent(
   db: Db,
   agent: typeof agents.$inferSelect,
@@ -372,7 +367,7 @@ export async function claimDueTimerHeartbeatForAgent(
 }
 
 
-/** Queue admission and dispatch share lifecycle callbacks and execution ownership. */
+/** Queue admission and dispatch share the service lifecycle callbacks and execution ownership. */
 export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDependencies) {
   const {
     setRunStatus,

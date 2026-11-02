@@ -1,3 +1,4 @@
+import { readConnectionGrantCredentialState } from "../connection-credentials.js";
 import { randomUUID } from "node:crypto";
 import { notifyGitHubCredentialChange } from "../github-connection-notifications.js";
 import type { ActorInfo } from "./types.js";
@@ -396,14 +397,23 @@ export function githubContinuityRevision(grant: Pick<typeof connectionGrants.$in
     grant.providerTenant?.github?.lastAccessRefreshAt, grant.providerTenant?.github?.bindingSync?.id]);
 }
 
-/** Same owner projection as the awake scheduler; this never refreshes or repairs a grant. */
 export async function readIdleGitHubGrantContinuity(tx: Pick<Db, "select">, now: number) {
   const rows = await tx.select({ grant: connectionGrants, connection: toolConnections, companyStatus: companies.status })
     .from(connectionGrants).leftJoin(toolConnections, eq(toolConnections.id, connectionGrants.connectionId))
     .leftJoin(companies, eq(companies.id, connectionGrants.companyId))
     .where(and(eq(connectionGrants.status, "active"), sql`${connectionGrants.providerTenant}->'github' IS NOT NULL`))
     .orderBy(connectionGrants.id).limit(10_001);
-  return projectIdleGitHubGrantContinuity(rows, now);
+  const proof = projectIdleGitHubGrantContinuity(rows, now);
+  if (proof.blocked) return proof;
+  const credentials: unknown[] = [];
+  const eligible = new Set(proof.connectionIds);
+  for (const row of rows) {
+    if (!row.connection || !eligible.has(row.connection.id)) continue;
+    const state = await readConnectionGrantCredentialState(tx, row.connection, row.grant);
+    if (!state) return { ...proof, blocked: true, connectionIds: [], deadlines: [] };
+    credentials.push([row.grant.id, state]);
+  }
+  return { ...proof, state: [rows, credentials] };
 }
 export function projectIdleGitHubGrantContinuity(rows: {
   grant: typeof connectionGrants.$inferSelect;
