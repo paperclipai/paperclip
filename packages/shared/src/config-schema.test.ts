@@ -245,8 +245,23 @@ describe("paperclip config schema", () => {
     const formatted = formatSectionOptions(dbSection!);
     expect(formatted).toContain("database.mode: 'embedded-postgres' | 'postgres'");
 
+    const metaSection = getConfigSection("meta");
+    expect(metaSection).toBeDefined();
+    expect(getConfigSection("$meta")).toBeDefined();
+    expect(metaSection?.options.some((opt) => opt.key === "$meta.version")).toBe(true);
+
+    const loggingSection = getConfigSection("logging");
+    const loggingModeOpt = loggingSection?.options.find((opt) => opt.key === "logging.mode");
+    expect(loggingModeOpt?.default).toBeUndefined();
+
+
+    const serverSection = getConfigSection("server");
+    const serverBindOpt = serverSection?.options.find((opt) => opt.key === "server.bind");
+    expect(serverBindOpt?.default).toBeUndefined();
+    expect(serverBindOpt?.description).toContain("server.host");
     const allFormatted = formatAllConfigOptions();
     expect(allFormatted).toContain("Section: database");
     expect(allFormatted).toContain("Section: server");
+    expect(allFormatted).toContain("Section: meta");
   });
 });

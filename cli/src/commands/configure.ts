@@ -127,7 +127,8 @@ export async function configure(opts: {
   if (opts.validate) {
     const result = validateConfigFile(opts.config);
     if (opts.json) {
-      console.log(JSON.stringify(result, null, 2));
+      const { data: _omitted, ...safeResult } = result;
+      console.log(JSON.stringify(safeResult, null, 2));
     } else {
       if (!result.exists) {
         p.log.error(`No config file found at ${result.filePath}.`);
