@@ -95,6 +95,7 @@ import type {
 import { nativeMcpLaunchBinding } from "../drivers/native-mcp.js";
 import {
   prepareIsolatedCodexHome,
+  prepareIsolatedCodexRecoveryHome,
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
@@ -6055,23 +6056,28 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (provider === "aws_agentcore" && preparesProviderLaunch)
       mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-    if (preparesProviderLaunch && provider === "codex" && this.options.homeMode !== "preconfigured" && this.#sourceRecoveryIdentity === null) {
-      await releaseMaterializedNativeRuntimeSkills(
-        resolve(localCodexHome, "skills"),
-      );
-      this.#assertStartupOpen();
-      await prepareIsolatedCodexHome({
-        context: sourceRuntimeContext,
+    if (preparesProviderLaunch && provider === "codex" && this.options.homeMode !== "preconfigured") {
+      const auth = {
         codexHome: localCodexHome,
-        observability: this.options.observability,
-        sourceCodexHome:
-          this.options.sourceCodexHome ??
-          resolveSourceCodexHome(this.options.environment),
-        apiKey:
-          this.options.environment?.CODEX_API_KEY ??
-          this.options.environment?.OPENAI_API_KEY,
-        nativeMcp: nativeMcpLaunchBinding(this.options.environment),
-      });
+        sourceCodexHome: this.options.sourceCodexHome ?? resolveSourceCodexHome(this.options.environment),
+        apiKey: this.options.environment?.CODEX_API_KEY ?? this.options.environment?.OPENAI_API_KEY,
+      };
+      if (this.#sourceRecoveryIdentity !== null) {
+        await prepareIsolatedCodexRecoveryHome({
+          ...auth,
+          observability: this.options.observability,
+          nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        });
+      } else {
+        await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
+        this.#assertStartupOpen();
+        await prepareIsolatedCodexHome({
+          ...auth,
+          context: sourceRuntimeContext,
+          observability: this.options.observability,
+          nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        });
+      }
     }
     const adoptedRunner = this.options.adoptExistingRunner;
     if (warmRecovery) {
