@@ -4,8 +4,16 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export async function withBrowserEvent<T>(observe: () => Promise<T>, action: () => Promise<unknown>): Promise<T> {
   // Attach both rejection handlers before the action can fail or the event can
   // time out. A synchronous action failure must own the pending event too.
-  const [event] = await Promise.all([observe(), Promise.resolve().then(action)]);
-  return event;
+  const observed = observe(), initiated = Promise.resolve().then(action);
+  try {
+    const [event] = await Promise.all([observed, initiated]);
+    return event;
+  } catch (error) {
+    // A failed observation must not let a late click mutate owned resources
+    // after normal cleanup has begun. Keep the first failure and settle both.
+    await Promise.allSettled([observed, initiated]);
+    throw error;
+  }
 }
 
 /** Rich editors interpret pasted Markdown; fill inserts literal paragraph text. */

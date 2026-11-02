@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { withBrowserEvent } from "./user-actions.js";
 
@@ -31,6 +32,25 @@ describe("browser event ownership", () => {
     { encoding: "utf8", timeout: 10_000 });
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
+  });
+  it("settles a late initiating action before failure cleanup can start", async () => {
+    const order: string[] = [], original = new Error("event_timeout");
+    let actionStarted!: () => void, releaseAction!: () => void;
+    const started = new Promise<void>(resolve => { actionStarted = resolve; });
+    const held = new Promise<void>(resolve => { releaseAction = resolve; });
+    const completed = withBrowserEvent(async () => { await started; throw original; }, async () => {
+      actionStarted();
+      await held;
+      order.push("late-mutation");
+    }).catch(error => { order.push("cleanup"); return error; });
+    await started;
+    try {
+      // Let the observation rejection propagate while the action is still held.
+      await nextTurn();
+      expect(order).toEqual([]);
+    } finally { releaseAction(); }
+    expect(await completed).toBe(original);
+    expect(order).toEqual(["late-mutation", "cleanup"]);
   });
   it("returns the original event after its single initiating action completes", async () => {
     const order: string[] = [], response = { status: 201 };
