@@ -878,6 +878,15 @@ The task thread exposes the guarded Retry action for failed or timed-out convers
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
+A successful connected run can still have newer admitted input waiting behind it.
+Task Retry resumes that input's existing durable chat receipt through the inbound
+owner, instead of replaying the successful run as a failed attempt. The original
+actor, source, result, and publication history remain intact. Duplicate clicks
+follow one canonical receipt. Current board permission, task ownership, source
+authorization, and prior execution cleanup are rechecked before normal admission;
+pause, budget, approval, and dependency gates remain effective. Completion or
+newer execution supersedes an unadmitted retry.
+
 A valid recovery action must name:
 
 - the source issue and company
