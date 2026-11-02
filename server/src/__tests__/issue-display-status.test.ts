@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import request from "supertest";
-import { agents, heartbeatRuns, issueRecoveryActions, issues, statusCards } from "@paperclipai/db";
+import { agents, heartbeatRuns, issueRecoveryActions, issueRelations, issues, statusCards } from "@paperclipai/db";
 import { companySearchQuerySchema, createIssueSchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "../services/issue-display-status.js";
 import { issueService } from "../services/issues.js";
@@ -67,6 +67,17 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
     expect(await svc.list(f.companyId, { displayStatus: "monitoring", limit: 1, offset: 1 })).toEqual([]);
     expect(await svc.count(f.companyId, { displayStatus: "in_progress" })).toBe(1);
     expect(await svc.count(f.companyId, { status: "in_progress" })).toBe(2);
+  });
+
+  it("shows the same wait indicator in list blocker summaries and task detail relations", async () => {
+    const f = await fixture();
+    const [dependent] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Ship after deployment", status: "blocked" }).returning();
+    await ctx.db.insert(issueRelations).values({ companyId: f.companyId, issueId: f.issueId, relatedIssueId: dependent!.id, type: "blocks" });
+    const svc = issueService(ctx.db);
+    const list = await svc.list(f.companyId, { includeBlockedBy: true });
+    expect(list.find(row => row.id === dependent!.id)?.blockedBy).toEqual([expect.objectContaining({ id: f.issueId, displayStatus: "monitoring" })]);
+    const detail = await request(routeApp(ctx.db, f.actor, issueRoutes)).get(`/api/issues/${dependent!.id}`).expect(200);
+    expect(detail.body.blockedBy).toEqual([expect.objectContaining({ id: f.issueId, displayStatus: "monitoring" })]);
   });
 
   it("returns to In Progress during the check and Monitoring after another yield, then Done", async () => {

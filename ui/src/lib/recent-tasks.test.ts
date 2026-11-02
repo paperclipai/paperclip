@@ -102,6 +102,14 @@ describe("recent task persistence", () => {
     window.removeEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
   });
 
+  it("records a new display status without a task edit or newer activity", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, displayStatus: "monitoring" as const };
+    recordRecentTask(task, "user-1");
+    recordRecentTask({ ...task, displayStatus: "in_progress" }, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.displayStatus).toBe("in_progress");
+  });
+
   it("prunes unavailable tasks and refreshes stored snapshots", () => {
     recordRecentTask(issue("1"), "user-1", 1);
     recordRecentTask(issue("2"), "user-1", 2);

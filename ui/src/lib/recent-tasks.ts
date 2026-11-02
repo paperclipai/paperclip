@@ -166,6 +166,7 @@ export function recordRecentTask(
     && existing.title === entry.title
     && existing.identifier === entry.identifier
     && existing.status === entry.status
+    && existing.displayStatus === entry.displayStatus
     && existing.externalConversationState === entry.externalConversationState
     && existing.recordedAt === entry.recordedAt
     && existing.snapshotUpdatedAt === entry.snapshotUpdatedAt
