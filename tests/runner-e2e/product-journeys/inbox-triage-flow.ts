@@ -28,6 +28,13 @@ export async function inboxTriage(context: JourneyContext, session: TargetSessio
     const search = page.getByPlaceholder(/^Search (?:inbox|tasks)(?:…|\.\.\.)$/i);
     await expect(search).toBeVisible();
     await search.fill(filter ? title : "");
+    if (!filter) {
+      // Absence is meaningful only after this tab has rendered its list or
+      // its correct empty state. A loading skeleton cannot prove exclusion.
+      await expect(page.getByRole("status", { name: "Loading tasks", exact: true })).toHaveCount(0);
+      const empty = page.getByText(view === "mine" ? "Inbox zero." : "No new inbox items.", { exact: true });
+      await expect(page.locator("#main-content [data-inbox-item]").or(empty).first()).toBeVisible();
+    }
   };
   const row = page.locator(`[data-issue-row-details="${issue.id}"]`).first();
   // A real external author supplies unread activity without any model run.
