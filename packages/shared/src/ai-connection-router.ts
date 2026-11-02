@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { aiConnectionBindingSchema, type AiConnectionBinding } from "./ai-connections.js";
 import type { AiConnectionUsage } from "./ai-connection-usage.js";
+import { AI_ROUTING_MODEL_ID_MAX_LENGTH } from "./ai-provider-routing.js";
 
 export const aiConnectionRouterBindingSchema = z.object({
   mode: z.literal("router"),
@@ -15,7 +16,7 @@ export const aiConnectionPoolMemberSchema = z.object({
   profile: z.object({
     provider: z.enum(["codex", "acpx", "opencode"]),
     acpxAgent: z.enum(["claude", "grok"]).optional(),
-    model: z.string().trim().min(1).max(256),
+    model: z.string().trim().min(1).max(AI_ROUTING_MODEL_ID_MAX_LENGTH),
     effort: z.string().trim().min(1).max(32).optional(),
   }).strict(),
 }).strict();

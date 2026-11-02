@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb } from "@paperclipai/db";
+import { agents, aiConnectionRouterCursors, aiConnectionTaskPins, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb, environments, plugins } from "@paperclipai/db";
+import type { AiConnectionPoolMember, AiConnectionRouterRequest, PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import * as agentRunnerSelection from "../services/agent-runner-selection.js";
+import * as aiRuntime from "../services/ai-connection-runtime.js";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { agentHarnessVerificationService } from "../services/agent-harness-verification.js";
 import * as environmentTests from "../services/agent-environment-test.js";
@@ -76,6 +81,46 @@ describePostgres("saved harness account preflight", () => {
     await database?.cleanup();
     vi.unstubAllEnvs();
     if (home) await rm(home, { recursive: true, force: true });
+  });
+
+  it.each([false, true])("filters unsupported plugin pool members before lifecycle allocation (mixed=%s)", async mixed => {
+    const pluginKey = `fixture.lifecycle-${agent.companyId}`;
+    const manifest: PaperclipPluginManifestV1 = { id: pluginKey, apiVersion: 1, version: "0.1.0", displayName: "Pool", description: "Fixture", author: "Tests", categories: ["connector"], capabilities: ["ai.connections.route"], aiConnectionRouter: { name: "Pool", description: "Fixture" }, entrypoints: { worker: "worker.js" } };
+    await db.insert(plugins).values({ pluginKey, packageName: pluginKey, version: "0.1.0", manifestJson: manifest, status: "ready" });
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const [environment] = await db.insert(environments).values({ name: `Lifecycle target ${agent.id}`, driver: "plugin", status: "active", config: { pluginKey: "fixture.environment", driverKey: "runner" } }).returning();
+    const accounts = aiConnectionService(db);
+    const gateway = await accounts.save(agent.companyId, userId, { provider: "openai", method: "api_key", ownership: "personal", name: "Gateway", apiKey: "fixture", allAgents: true, agentIds: [], routing: { kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [] } }, "fixture");
+    const direct = await accounts.save(agent.companyId, userId, { provider: "openai", method: "api_key", ownership: "personal", name: "Direct", apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture");
+    const gatewayMember: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...gateway }, profile: { provider: "opencode", model: "qwen" } };
+    const directMember: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...direct }, profile: { provider: "codex", model: "gpt-5.6-sol" } };
+    const pool = await aiConnectionRouterService(db).save(pluginKey, { companyId: agent.companyId, config: { name: "Lifecycle pool", enabled: true, mode: "round_robin", thresholdPercent: 90, members: mixed ? [gatewayMember, directMember] : [gatewayMember] } }, userId);
+    [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", defaultEnvironmentId: environment.id,
+      adapterConfig: { provider: "opencode", model: "paperclip/qwen" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } },
+      lifecycleOperation: { id: randomUUID(), hostComplete: true, completedPluginIds: [], attempts: 0, responsibleUserId: userId },
+    }).where(eq(agents.id, agent.id)).returning();
+    vi.mocked(environmentTests.agentEnvironmentTestService).mockImplementation((database, manager) => ({
+      ...realEnvironmentTests(database, manager), resolveAdapterTestExecutionContext: allocate, testManagedEnvironment: probe,
+    }));
+    vi.spyOn(agentRunnerSelection, "pluginEnvironmentRunnerTaskDriver").mockResolvedValue({ driverKey: "runner", supportsTasks: true } as NonNullable<Awaited<ReturnType<typeof agentRunnerSelection.pluginEnvironmentRunnerTaskDriver>>>);
+    const managed = vi.spyOn(aiRuntime, "withManagedAiProbe").mockRejectedValue(new Error("Reached supported credential preparation"));
+    const call = vi.fn(async (_id: string, _method: string, request: AiConnectionRouterRequest) => request.candidates[0]
+      ? { kind: "selected", memberId: request.candidates[0].member.id } : { kind: "unavailable", skipped: {} });
+    const manager = { isRunning: () => true, call } as unknown as PluginWorkerManager;
+    const service = agentHarnessVerificationService(db, manager);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(service.verify(agent)).rejects.toThrow(mixed ? "Reached supported credential preparation" : "No pool account");
+      expect(call.mock.calls[attempt]?.[2].candidates.map(candidate => candidate.member.id)).toEqual(mixed ? [directMember.id] : []);
+      const pins = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id));
+      expect(pins).toHaveLength(mixed ? 1 : 0);
+      if (mixed) expect(pins[0]?.selection).toMatchObject({ memberId: directMember.id, binding: directMember.binding, runtimeConfig: { provider: "codex" } });
+      expect((await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id)))[0]?.version).toBe(mixed ? 1 : 0);
+    }
+    expect(allocate).toHaveBeenCalledTimes(mixed ? 2 : 0);
+    expect(managed).toHaveBeenCalledTimes(mixed ? 2 : 0);
+    expect(probe).not.toHaveBeenCalled();
+    if (mixed) expect(release).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("rejects a missing default before allocating a target", async () => {

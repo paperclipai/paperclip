@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ExternalLink, Loader2, MoreHorizontal, Plus, Search, Trash2, X } from "lucide-react";
-import { aiConnectionRouterAppDefinition, type AiConnectionPool, type AiConnectionPoolConfig, type AiConnectionPoolMember, type AiManagedConnectionSummary, type ToolConnection } from "@paperclipai/shared";
+import { AI_PROVIDER_MODEL_ID_MAX_LENGTH, AI_ROUTING_MODEL_ID_MAX_LENGTH, aiConnectionPoolConfigSchema, aiConnectionRouterAppDefinition, type AiConnectionPool, type AiConnectionPoolConfig, type AiConnectionPoolMember, type AiManagedConnectionSummary, type ToolConnection } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { aiConnectionPoolsApi, type PoolInspection } from "@/api/ai-connection-pools";
 import { toolsApi } from "@/api/tools";
@@ -26,8 +26,13 @@ import { AI_PROVIDERS, aiMethodLabel } from "./model";
 
 const configOf = ({ name, enabled, members, mode, thresholdPercent }: AiConnectionPoolConfig): AiConnectionPoolConfig => ({ name, enabled, members, mode, thresholdPercent });
 const emptyConfig = (): AiConnectionPoolConfig => ({ name: "AI connection pool", enabled: false, members: [], mode: "round_robin", thresholdPercent: 90 });
-function memberOf(account: AiManagedConnectionSummary): AiConnectionPoolMember {
-  const profile: AiConnectionPoolMember["profile"] = account.provider === "openai" ? { provider: "codex", model: "gpt-5.6-sol" }
+export function memberOf(account: AiManagedConnectionSummary): AiConnectionPoolMember {
+  const routing = account.routing?.kind === "gateway" || account.routing?.kind === "local" ? account.routing : undefined;
+  const model = routing?.models[0]?.id;
+  const profile: AiConnectionPoolMember["profile"] = routing?.protocol === "chat" ? { provider: "opencode", model: model ?? "" }
+    : routing?.protocol === "responses" ? { provider: "codex", model: model ?? "gpt-5.6-sol" }
+    : routing?.protocol === "messages" ? { provider: "acpx", acpxAgent: "claude", model: model ?? "claude-sonnet-5" }
+    : account.provider === "openai" ? { provider: "codex", model: "gpt-5.6-sol" }
     : account.provider === "anthropic" ? { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }
     : account.provider === "xai" ? { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }
     : { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" };
@@ -60,6 +65,12 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
   const [inspectionError, setInspectionError] = useState("");
   const [inspection, setInspection] = useState<PoolInspection>({});
   const accounts = accountsQuery.data?.connections ?? [];
+  function validConfig(config: AiConnectionPoolConfig) {
+    return aiConnectionPoolConfigSchema.safeParse(config).success && config.members.every(member => {
+      const routing = accounts.find(account => account.id === member.binding.connectionId && account.grantId === member.binding.grantId)?.routing;
+      return (routing?.kind !== "gateway" && routing?.kind !== "local") || member.profile.model.trim().length <= AI_PROVIDER_MODEL_ID_MAX_LENGTH;
+    });
+  }
   const entry = galleryQuery.data?.apps.find(app => app.aiConnectionRouter?.pluginKey === pluginKey);
   const unavailable = galleryQuery.isSuccess && (!entry || entry.availability?.available === false);
   const canManage = Boolean(accountsQuery.data?.canManageConnections);
@@ -91,6 +102,7 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
     ]);
   }
   async function save(config = draft) {
+    if (!validConfig(config)) { setError("Check the pool settings and enter a valid model for each connection."); return; }
     setBusy(true); setError("");
     try {
       const saved = await aiConnectionPoolsApi.save(companyId, { pluginKey, ...(editing ? { id: editing.id, expectedRevision: editing.revision } : {}), config });
@@ -125,7 +137,7 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
       return <li key={member.id} className="flex items-center gap-3 px-4 py-3">
         <span className="w-4 text-center text-xs text-muted-foreground">{index + 1}</span>
         <AppLogo name={provider.name} logoUrl={provider.logo} size={32} />
-        <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{account?.name ?? "Connection unavailable"}</p><p className="text-xs text-muted-foreground">{account ? aiMethodLabel(account.provider, account.method) : "Restore access to this connection."}</p>{connection && draft.mode === "usage_aware" && account && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">Usage</summary><div className="pt-3">{inspectionError ? <p role="status">{inspectionError}</p> : <AiConnectionUsagePanel account={account} cachedOnly observation={inspection[member.id]?.usage} />}</div></details>}</div>
+        <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{account?.name ?? "Connection unavailable"}</p><p className="text-xs text-muted-foreground">{account ? aiMethodLabel(account.provider, account.method) : "Restore access to this connection."}</p>{(account?.routing?.kind === "gateway" || account?.routing?.kind === "local") && account.routing.protocol === "chat" && <label className="mt-2 block space-y-1 text-xs text-muted-foreground">Model<Input aria-label={`Model for connection ${index + 1}`} maxLength={AI_PROVIDER_MODEL_ID_MAX_LENGTH} value={member.profile.model} disabled={disabled} onChange={event => setDraft({ ...draft, members: draft.members.map(row => row.id === member.id ? { ...row, profile: { ...row.profile, model: event.target.value } } : row) })} />{!member.profile.model.trim() ? <span>Enter a model ID for this connection.</span> : member.profile.model.trim().length > AI_PROVIDER_MODEL_ID_MAX_LENGTH ? <span>Model IDs must be at most 256 characters.</span> : null}</label>}{connection && draft.mode === "usage_aware" && account && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">Usage</summary><div className="pt-3">{inspectionError ? <p role="status">{inspectionError}</p> : <AiConnectionUsagePanel account={account} cachedOnly observation={inspection[member.id]?.usage} />}</div></details>}</div>
         <div className="flex shrink-0 items-center gap-1">
           <Button type="button" variant="ghost" size="icon-sm" disabled={disabled || index === 0} aria-label={`Move ${account?.name ?? "connection"} up`} onClick={() => move(index, -1)}><ArrowUp className="size-4" /></Button>
           <Button type="button" variant="ghost" size="icon-sm" disabled={disabled || index === draft.members.length - 1} aria-label={`Move ${account?.name ?? "connection"} down`} onClick={() => move(index, 1)}><ArrowDown className="size-4" /></Button>
@@ -148,11 +160,11 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
       {orderedMembers}
       <p className="text-xs text-muted-foreground">{connection ? "Order changes apply to new tasks." : "Created paused. Enable it when you’re ready."}</p>
       {connection && <>
-        <label className="flex items-center gap-2 text-sm"><Checkbox checked={draft.enabled} disabled={disabled} onCheckedChange={checked => setDraft({ ...draft, enabled: checked === true })} />Enable this pool</label>
+        <label className="flex items-center gap-2 text-sm"><Checkbox checked={draft.enabled} disabled={disabled || (!draft.enabled && !validConfig(draft))} onCheckedChange={checked => setDraft({ ...draft, enabled: checked === true })} />Enable this pool</label>
         <details className="rounded-lg border border-border"><summary className="cursor-pointer px-4 py-3 text-sm font-medium">Advanced</summary><fieldset disabled={disabled} className="space-y-4 border-t border-border p-4">
           <label className="flex items-center gap-2 text-sm"><Checkbox checked={draft.mode === "usage_aware"} onCheckedChange={checked => setDraft({ ...draft, mode: checked ? "usage_aware" : "round_robin" })} />Skip connections near their usage limit</label>
           {draft.mode === "usage_aware" && <label className="flex items-center gap-3 text-sm">Skip at<Input className="w-20" aria-label="Usage threshold" type="number" min={1} max={100} step={1} value={draft.thresholdPercent} onChange={event => setDraft({ ...draft, thresholdPercent: Number(event.target.value) })} />% usage</label>}
-          {draft.members.map((member, index) => <div key={member.id} className="space-y-2"><p className="text-sm font-medium">{accounts.find(account => account.id === member.binding.connectionId)?.name ?? "Connection unavailable"}</p><div className="grid gap-3 sm:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Model<Input aria-label={`Model for connection ${index + 1}`} value={member.profile.model} onChange={event => setDraft({ ...draft, members: draft.members.map(row => row.id === member.id ? { ...row, profile: { ...row.profile, model: event.target.value } } : row) })} /></label><label className="space-y-1 text-xs text-muted-foreground">Effort (optional)<Input aria-label={`Effort for connection ${index + 1}`} value={member.profile.effort ?? ""} onChange={event => { const { effort: _old, ...profile } = member.profile; setDraft({ ...draft, members: draft.members.map(row => row.id === member.id ? { ...row, profile: { ...profile, ...(event.target.value.trim() ? { effort: event.target.value.trim() } : {}) } } : row) }); }} /></label></div></div>)}
+          {draft.members.map((member, index) => <div key={member.id} className="space-y-2"><p className="text-sm font-medium">{accounts.find(account => account.id === member.binding.connectionId)?.name ?? "Connection unavailable"}</p><div className="grid gap-3 sm:grid-cols-2"><label className="space-y-1 text-xs text-muted-foreground">Model<Input aria-label={`Advanced model for connection ${index + 1}`} maxLength={AI_ROUTING_MODEL_ID_MAX_LENGTH} value={member.profile.model} onChange={event => setDraft({ ...draft, members: draft.members.map(row => row.id === member.id ? { ...row, profile: { ...row.profile, model: event.target.value } } : row) })} /></label><label className="space-y-1 text-xs text-muted-foreground">Effort (optional)<Input aria-label={`Effort for connection ${index + 1}`} value={member.profile.effort ?? ""} onChange={event => { const { effort: _old, ...profile } = member.profile; setDraft({ ...draft, members: draft.members.map(row => row.id === member.id ? { ...row, profile: { ...profile, ...(event.target.value.trim() ? { effort: event.target.value.trim() } : {}) } } : row) }); }} /></label></div></div>)}
         </fieldset></details>
         <section aria-labelledby="pool-used-by" className="space-y-3">
           <h2 id="pool-used-by" className="text-sm font-semibold">Used by</h2>
@@ -165,7 +177,7 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
     </div>}
     <div className="mt-6 flex items-center justify-between gap-3 border-t border-border pt-4">
       <Button variant="ghost" disabled={busy} onClick={() => connection ? navigate("/apps") : step ? setStep(0) : navigate("/apps")}>{!connection && step ? "Back" : "Cancel"}</Button>
-      <Button disabled={disabled || draft.members.length === 0 || !Number.isInteger(draft.thresholdPercent) || draft.thresholdPercent < 1 || draft.thresholdPercent > 100} onClick={() => !connection && step === 0 ? setStep(1) : void save()}>{busy && <Loader2 className="size-4 animate-spin" />}{busy ? "Saving…" : connection ? "Save changes" : step ? "Create pool" : "Continue"}</Button>
+      <Button disabled={disabled || (!connection && step === 0 ? draft.members.length === 0 : !validConfig(draft))} onClick={() => !connection && step === 0 ? setStep(1) : void save()}>{busy && <Loader2 className="size-4 animate-spin" />}{busy ? "Saving…" : connection ? "Save changes" : step ? "Create pool" : "Continue"}</Button>
     </div>
     <Dialog open={pickerOpen} onOpenChange={setPickerOpen}><DialogContent className="sm:max-w-2xl"><DialogHeader><DialogTitle>Add connections</DialogTitle><DialogDescription>Choose connections you already use.</DialogDescription></DialogHeader><ConnectionPicker accounts={accounts} selected={pickerMembers} disabled={disabled} onChange={setPickerMembers} onRefresh={() => void accountsQuery.refetch()} /><div className="flex items-center justify-between gap-3"><Button variant="ghost" onClick={() => setPickerOpen(false)}>Cancel</Button><Button onClick={() => { setDraft({ ...draft, members: pickerMembers }); setPickerOpen(false); }}>Done</Button></div></DialogContent></Dialog>
     <AlertDialog open={removing} onOpenChange={open => { if (!busy) setRemoving(open); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Remove {draft.name}?</AlertDialogTitle><AlertDialogDescription>The connections in this pool are kept.</AlertDialogDescription></AlertDialogHeader>{error && <p role="alert" className="text-sm text-destructive">{error}</p>}<AlertDialogFooter className="sm:justify-between"><AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={busy} onClick={event => { event.preventDefault(); void remove(); }}>{busy ? "Removing…" : "Remove connection"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
