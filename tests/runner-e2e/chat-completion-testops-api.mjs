@@ -49,6 +49,7 @@ export function isWorkflowUrl(url, workflowId, context = {}) {
   const { workflow } = catalogDefinition(context);
   return url === `https://github.com/paperclipai/paperclip/actions/workflows/${workflow.split('/').at(-1)}`
     || positive(workflowId) && url === `https://github.com/paperclipai/paperclip/actions/workflows/${workflowId}`
+    || context.catalog === 'full' && url === `https://github.com/paperclipai/paperclip/blob/master/${workflow}`
     || url === (context.catalog === 'full' ? 'https://github.com/paperclipai/paperclip/actions?query=workflow%3A%22Chat+catalog+TestOps%22' : 'https://github.com/paperclipai/paperclip/actions?query=workflow%3A%22Chat+completion+TestOps%22');
 }
 function assertCase(actual, expected) {
