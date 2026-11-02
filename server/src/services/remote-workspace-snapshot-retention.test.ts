@@ -328,7 +328,10 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
       const resolved = await issueRecoveryActionService(db).resolveActiveForIssue({ companyId: f.companyId, sourceIssueId: f.issueId,
         status: "resolved", outcome: "restored", resolutionNote: "Verified saved files" });
       expect(resolved?.status).toBe("resolved");
-      await vi.waitFor(async () => expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false));
+      await vi.waitFor(async () => {
+        expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false);
+        expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id)))[0]!.status).toBe("deleted");
+      });
       expect(await owner.nextDeadlineAt()).toBeNull();
     } finally { await worker.stop(); await coordinator.stop(); }
   });

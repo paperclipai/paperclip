@@ -493,6 +493,32 @@ export function ProjectDetail() {
     },
   });
 
+  const deleteProject = useMutation({
+    mutationFn: (deleteFiles: boolean) =>
+      projectsApi.remove(projectLookupRef, {
+        companyId: resolvedCompanyId ?? lookupCompanyId,
+        deleteFiles,
+      }),
+    onSuccess: (deletedProject) => {
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
+      }
+      if (deletedProject.fileCleanup === "failed") {
+        pushToast({
+          title: `"${deletedProject.name}" was deleted, but file cleanup failed`,
+          body: "Some Paperclip-managed project files may need to be removed manually.",
+          tone: "warn",
+        });
+      } else {
+        pushToast({ title: `"${deletedProject.name}" has been deleted`, tone: "success" });
+      }
+      navigate("/projects");
+    },
+    onError: (error) => {
+      pushToast({ title: "Failed to delete project", body: error instanceof Error ? error.message : undefined, tone: "error" });
+    },
+  });
+
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No organization selected");
@@ -920,6 +946,8 @@ export function ProjectDetail() {
             getFieldSaveState={(field) => fieldSaveStates[field] ?? "idle"}
             onArchive={(archived) => archiveProject.mutate(archived)}
             archivePending={archiveProject.isPending}
+            onDelete={(deleteFiles) => deleteProject.mutate(deleteFiles)}
+            deletePending={deleteProject.isPending}
           />
         </div>
       )}
