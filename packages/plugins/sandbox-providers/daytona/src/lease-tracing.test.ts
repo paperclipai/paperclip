@@ -24,8 +24,10 @@ type Receipt = {
 
 function sandbox(id = "fixture-sandbox", state = "archived") {
   return {
-    id, state, target: "us", recoverable: true,
+    id, state, target: "us", recoverable: true, errorReason: null as string | null,
     start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    refreshData: vi.fn().mockResolvedValue(undefined),
     recover: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
     getWorkDir: vi.fn().mockResolvedValue("/home/daytona"),
@@ -140,6 +142,65 @@ describe("Daytona lease worker tracing", () => {
       expect(slow.start).toHaveBeenCalledTimes(1);
       expect(failed.start).toHaveBeenCalledTimes(1);
     } finally { release(); worker.close(); }
+  });
+
+  it("waits for a pending teardown and records the wait under the resume worker", async () => {
+    const resource = sandbox("fixture-sandbox", "started"); get.mockResolvedValue(resource);
+    let release!: () => void, stopping!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { stopping = resolve; });
+    resource.stop.mockImplementation(async () => { stopping(); await waiting; resource.state = "stopped"; });
+    const worker = workerHarness();
+    try {
+      await worker.initialize();
+      const teardown = worker.call("environmentReleaseLease", params, invocation("release"));
+      await entered;
+      let settled = false;
+      const resume = worker.call("environmentResumeLease", params, invocation("resume"))
+        .then(result => { settled = true; return result; });
+      // Process the resume request while the actual provider stop is held open.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(resource.start).not.toHaveBeenCalled();
+      release();
+      await teardown;
+      expect(await resume).toMatchObject({ providerLeaseId: resource.id });
+      const root = worker.receipts.find(receipt => receipt.invocationId === "resume")!.span;
+      expect(root.name).toBe("plugin.worker");
+      expect(root.children.filter(span => span.name === "lease.wait_for_teardown")).toHaveLength(1);
+      expect(root.children[0].name).toBe("lease.wait_for_teardown");
+      expect(root.children[0].endTimeMs).toBeLessThanOrEqual(root.children[1].startTimeMs);
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(resource.start).toHaveBeenCalledTimes(1);
+    } finally { release(); worker.close(); }
+  });
+
+  it.each([false, true])("records missing-container confirmation and preserves refresh failures: %s", async fails => {
+    const resource = sandbox("fixture-sandbox", "error");
+    resource.recoverable = false;
+    resource.errorReason = `not found: failed to inspect sandbox container ${resource.id}: Error response from daemon: No such container: ${resource.id}`;
+    get.mockResolvedValue(resource);
+    resource.refreshData.mockImplementation(async () => {
+      if (fails) throw new Error("private-refresh-failure");
+      resource.state = "started";
+    });
+    const worker = workerHarness();
+    try {
+      await worker.initialize();
+      const result = worker.call("environmentResumeLease", params, invocation("resume"));
+      if (fails) await expect(result).rejects.toThrow("private-refresh-failure");
+      else expect(await result).toMatchObject({ providerLeaseId: resource.id });
+      expect(resource.refreshData).toHaveBeenCalledTimes(1);
+      const root = worker.receipts[0].span;
+      expect(root.children.map(span => span.name)).toEqual(fails
+        ? ["lease.lookup", "lease.refresh"] : ["lease.lookup", "lease.refresh", "lease.verify"]);
+      expect(root.children[1].status).toEqual(fails ? { code: 2 } : undefined);
+      expect(resource.start).not.toHaveBeenCalled();
+      expect(resource.delete).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      expect(JSON.stringify(worker.receipts)).not.toContain("private-refresh-failure");
+    } finally { worker.close(); }
   });
 
   it.each(["started", "error"])("traces a %s sandbox without adding a provider start", async state => {

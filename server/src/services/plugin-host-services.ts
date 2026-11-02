@@ -567,7 +567,7 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
   SPAN_ATTRS.transferDirection,
-  "paperclip.sandbox.startup.state",
+  SPAN_ATTRS.state,
   "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count",
 ]);
 
@@ -599,7 +599,7 @@ export function clampProviderSpanAttributes(
   if (!raw) return clamped;
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
-    if (key === "paperclip.sandbox.startup.state") {
+    if (key === SPAN_ATTRS.state) {
       if (typeof value === "string" && ["started", "stopped", "archived", "error", "other"].includes(value)) clamped[key] = value;
       continue;
     }
