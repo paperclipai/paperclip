@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
@@ -202,7 +202,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     if (fallback) await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
       const response = await request(app(f.companyId, "queue-owner", undefined, observed))
@@ -238,7 +238,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     }).where(eq(heartbeatRuns.companyId, f.companyId));
     const [before] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
     const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { agentWakeupRequests, heartbeatRuns }, capture);
     try {
       const response = await request(app(f.companyId, "queue-owner", undefined, observed)).get(path).expect(200);
@@ -275,7 +275,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       })),
     ]);
     const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { agentWakeupRequests }, capture);
     try {
       const response = await request(app(f.companyId, "queue-owner", undefined, observed)).get(path).expect(200);

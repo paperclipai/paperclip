@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { agents, companies, createDb, issueRecoveryActions, issues } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -60,7 +60,7 @@ describe.skipIf(!support.supported)("recovery issue state reads", () => {
     const service = recoveryService(db, { enqueueWakeup });
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { issues, issueRecoveryActions }, capture);
     try {
       await service.reconcileStrandedAssignedIssues();
@@ -100,7 +100,7 @@ describe.skipIf(!support.supported)("recovery issue state reads", () => {
     const service = recoveryService(db, { enqueueWakeup });
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { agents, issues, issueRecoveryActions }, capture);
     try {
       expect(await service.reconcileStrandedAssignedIssues()).toMatchObject({ skipped: 1 });
