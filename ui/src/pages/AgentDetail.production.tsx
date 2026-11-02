@@ -850,7 +850,7 @@ export function AgentDetail() {
             onBeforeNavigate={prepareAgentNavigation}
             onActionError={setActionError}
             onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
-            hideTerminate={Boolean(builtInState)}
+            hideTerminate={Boolean(builtInState) || Boolean(urlRunId)}
             pauseConfirm={
               builtInState
                 ? {
