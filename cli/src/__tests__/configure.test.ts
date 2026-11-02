@@ -230,6 +230,7 @@ describe("configure command", () => {
         const result = JSON.parse(logs.join("\n"));
         expect(result.valid).toBe(true);
         expect(result.filePath).toBe(path.resolve(configPath));
+        expect(result.data).toBeUndefined();
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }

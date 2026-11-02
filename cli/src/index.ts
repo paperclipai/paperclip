@@ -172,7 +172,7 @@ program
   .description("Update configuration sections")
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
-  .option("-s, --section <section>", "Section to configure (llm, database, logging, server, storage, secrets, auth, telemetry, updates)")
+  .option("-s, --section <section>", "Section to configure (llm, database, logging, server, storage, secrets); --list-options also supports auth, telemetry, updates, meta")
   .option("--list-options", "Display valid configuration options and exit")
   .option("--validate", "Validate configuration file against schema and exit")
   .option("--json", "Output in JSON format (when used with --list-options or --validate)")
