@@ -31,6 +31,8 @@ interface ReviewedInstructionFile extends InstructionBundleFile {
 }
 
 const CONTENT_HASH_PATTERN = /^[a-f0-9]{64}$/;
+// Paths are interpolated into the apply task's markdown, so control characters and backticks are rejected
+const UNSAFE_PATH_CHARS = /[\u0000-\u001f\u007f`]/;
 
 export interface CreateInstructionApplyTaskInput {
   companyId: string;
@@ -63,6 +65,12 @@ function parseBundleFiles(payload: Record<string, unknown>): InstructionBundleFi
     if (typeof entry !== "object" || entry === null) return null;
     const { path, content, baseHash } = entry as Record<string, unknown>;
     if (typeof path !== "string" || !path.trim() || typeof content !== "string") return null;
+    if (UNSAFE_PATH_CHARS.test(path)) return null;
+    try {
+      instructionPath(path);
+    } catch {
+      return null;
+    }
     if (baseHash === undefined) {
       files.push({ path, content });
     } else if (baseHash === null || (typeof baseHash === "string" && CONTENT_HASH_PATTERN.test(baseHash))) {
@@ -98,7 +106,11 @@ async function currentContentHash(
   }
 }
 
-/** Stable fingerprint of an approved bundle: same agent + same file set = same fingerprint. */
+/**
+ * Stable fingerprint of an approved bundle: same agent + same files + same reviewed
+ * bases = same fingerprint. Bases are part of the key so re-approving the same content
+ * against a newer base (after a 409) yields a fresh task instead of the stale one.
+ */
 export function computeInstructionBundleFingerprint(
   agentId: string,
   files: InstructionBundleFile[],
@@ -107,7 +119,7 @@ export function computeInstructionBundleFingerprint(
     agentId,
     files: [...files]
       .sort((a, b) => a.path.localeCompare(b.path))
-      .map((file) => ({ path: file.path, content: file.content })),
+      .map((file) => ({ path: file.path, content: file.content, baseHash: file.baseHash ?? null })),
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
@@ -115,6 +127,19 @@ export function computeInstructionBundleFingerprint(
 /** Matches the `contentHash` the instructions-bundle file routes return (sha256 of the UTF-8 bytes). */
 function contentSha256(content: string): string {
   return createHash("sha256").update(Buffer.from(content, "utf8")).digest("hex");
+}
+
+/** Fence longer than any backtick run inside the content, so the content cannot close it early. */
+function codeFence(content: string): string {
+  const longestBacktickRun = content
+    .match(/`+/g)
+    ?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+  return "`".repeat(Math.max(4, longestBacktickRun + 1));
+}
+
+function fenced(content: string, info: string): string {
+  const fence = codeFence(content);
+  return fence + info + "\n" + content + (content.endsWith("\n") ? "" : "\n") + fence;
 }
 
 function buildApplyTaskDescription(input: {
@@ -127,33 +152,19 @@ function buildApplyTaskDescription(input: {
 }): string {
   const { agentId, agentName, approvalId, fingerprint, files, note } = input;
   const fileSections = files
-    .map((file) => {
-      // Fence must be longer than any backtick run inside the content or it closes early
-      const longestBacktickRun = file.content
-        .match(/`+/g)
-        ?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
-      const fence = "`".repeat(Math.max(4, longestBacktickRun + 1));
-      return (
+    .map(
+      (file) =>
         `### \`${file.path}\`\n\n` +
         `Reviewed base: ${file.baseHash === null ? "`null` (new file)" : `\`${file.baseHash}\``}\n\n` +
         `Expected \`contentHash\` after the write: \`${contentSha256(file.content)}\`\n\n` +
-        fence +
-        "markdown\n" +
-        file.content +
-        (file.content.endsWith("\n") ? "" : "\n") +
-        fence
-      );
-    })
+        fenced(file.content, "markdown"),
+    )
     .join("\n\n");
 
   return [
     `Board-authenticated apply task auto-created from instruction-generation approval \`${approvalId}\` for agent **${agentName}** (\`${agentId}\`).`,
-    note
-      ? note
-          .split("\n")
-          .map((line) => `> ${line}`)
-          .join("\n")
-      : null,
+    // The note is approval-payload text: fence it so it reads as data, not task instructions
+    note ? `Approval note (as submitted):\n\n${fenced(note, "text")}` : null,
     "## How to execute (board-authenticated callers only)",
     [
       `For each approved file below, \`PUT /api/agents/${agentId}/instructions-bundle/file\` with JSON body \`{ "path": "<path>", "content": "<approved content>", "baseHash": <reviewed base listed under that file> }\`.`,
@@ -238,7 +249,7 @@ export async function createInstructionApplyTask(
       })),
     );
 
-    const fingerprint = computeInstructionBundleFingerprint(agentId, files);
+    const fingerprint = computeInstructionBundleFingerprint(agentId, reviewedFiles);
     const note = typeof payload.note === "string" && payload.note.trim() ? payload.note.trim() : null;
 
     // Lookup and insert share one lock so concurrent approvals of the same bundle yield one task.

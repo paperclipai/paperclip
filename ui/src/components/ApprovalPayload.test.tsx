@@ -184,6 +184,47 @@ describe("ApprovalPayloadRenderer", () => {
     }
   });
 
+  it("renders every instruction_generation file and the note, not just the summary", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="instruction_generation"
+            payload={{
+              title: "Routine docs cleanup",
+              description: "Minor wording fix",
+              agentId: "agent-target-1",
+              note: "Hidden note text",
+              bundle: {
+                files: [
+                  { path: "AGENTS.md", content: "# Entry body", baseHash: null },
+                  { path: "docs/TOOLS.md", content: "Tools body" },
+                ],
+              },
+            }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Routine docs cleanup");
+    expect(text).toContain("agent-target-1");
+    expect(text).toContain("Hidden note text");
+    expect(text).toContain("AGENTS.md");
+    expect(text).toContain("# Entry body");
+    expect(text).toContain("Reviewed base: new file");
+    expect(text).toContain("docs/TOOLS.md");
+    expect(text).toContain("Tools body");
+    expect(text).toContain("Reviewed base: not recorded (pinned at approval)");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("can hide the repeated title when the card header already shows it", () => {
     const root = createRoot(container);
 

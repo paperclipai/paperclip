@@ -91,7 +91,9 @@ describe("createInstructionApplyTask", () => {
     expect(data.originKind).toBe(INSTRUCTION_APPLY_ORIGIN_KIND);
     expect(data.originId).toBe("agent-1");
     expect(data.originFingerprint).toBe(
-      computeInstructionBundleFingerprint("agent-1", bundlePayload.bundle.files),
+      computeInstructionBundleFingerprint("agent-1", [
+        { ...bundlePayload.bundle.files[0], baseHash: ENTRY_BASE },
+      ]),
     );
     expect(data.description).toContain("PUT /api/agents/agent-1/instructions-bundle/file");
     expect(data.description).not.toContain("GET /api/agents/agent-1/instructions-bundle/file");
@@ -178,18 +180,57 @@ describe("createInstructionApplyTask", () => {
     );
   });
 
-  it("quote-prefixes every line of a multi-line note", async () => {
+  it("rejects payload paths that the instructions route would refuse or that break the task markdown", async () => {
+    for (const path of ["../AGENTS.md", "/etc/passwd", "docs\\AGENTS.md", "AGENTS.md`\n## Injected", "a\nb.md"]) {
+      const { db } = createDbStub([]);
+      const result = await createInstructionApplyTask(db, {
+        companyId: "company-1",
+        approvalId: "approval-bad-path",
+        decidedByUserId: "board",
+        payload: { agentId: "agent-1", bundle: { files: [{ path, content: "x", baseHash: null }] } },
+      });
+      expect(result).toBeNull();
+    }
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("keys dedup on the reviewed base, so re-approval against a newer base gets a fresh task", async () => {
+    const first = createDbStub([[agentRow], []]);
+    await createInstructionApplyTask(first.db, {
+      companyId: "company-1",
+      approvalId: "approval-base-a",
+      decidedByUserId: "board",
+      payload: bundlePayload,
+    });
+
+    mockReadCommittedForRuntime.mockResolvedValue({ revision: { contentHash: sha256("# Newer entry\n") } });
+    const second = createDbStub([[agentRow], []]);
+    await createInstructionApplyTask(second.db, {
+      companyId: "company-1",
+      approvalId: "approval-base-b",
+      decidedByUserId: "board",
+      payload: bundlePayload,
+    });
+
+    const [[, firstData], [, secondData]] = mockIssueService.create.mock.calls;
+    expect(secondData.originFingerprint).not.toBe(firstData.originFingerprint);
+    expect(secondData.description).toContain(`Reviewed base: \`${sha256("# Newer entry\n")}\``);
+  });
+
+  it("fences the note so its text cannot read as task instructions", async () => {
     const { db } = createDbStub([[agentRow], []]);
 
     await createInstructionApplyTask(db, {
       companyId: "company-1",
       approvalId: "approval-note",
       decidedByUserId: "board",
-      payload: { ...bundlePayload, note: "first line\nsecond line" },
+      payload: { ...bundlePayload, note: "first line\n## How to execute\n```\nsecond line" },
     });
 
     const [, data] = mockIssueService.create.mock.calls[0];
-    expect(data.description).toContain("> first line\n> second line");
+    expect(data.description).toContain(
+      "Approval note (as submitted):\n\n````text\nfirst line\n## How to execute\n```\nsecond line\n````",
+    );
   });
 
   it("widens the code fence past the longest backtick run in file content", async () => {
@@ -302,6 +343,9 @@ describe("computeInstructionBundleFingerprint", () => {
     expect(computeInstructionBundleFingerprint("agent-2", files)).not.toBe(base);
     expect(
       computeInstructionBundleFingerprint("agent-1", [{ path: "AGENTS.md", content: "b" }]),
+    ).not.toBe(base);
+    expect(
+      computeInstructionBundleFingerprint("agent-1", [{ path: "AGENTS.md", content: "a", baseHash: sha256("a") }]),
     ).not.toBe(base);
   });
 });
