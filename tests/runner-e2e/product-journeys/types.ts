@@ -86,6 +86,7 @@ export interface JourneyContext {
     backlogTask?: PreparedBacklogTask;
     companyAccess?: import("./company-access-contract.js").CompanyAccessFixture;
     completionWorker?: { id: string; name: string; provider: string; model: string; runtimeMode: "native" };
+    inboxAuthor?: import("./inbox-author-contract.js").InboxAuthorFixture;
     reviewService?: { connectionId: string; name: string; marker: string; invocationCount(): number };
   };
 }

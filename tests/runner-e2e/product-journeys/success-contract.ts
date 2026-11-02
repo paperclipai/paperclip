@@ -13,7 +13,7 @@ export const journeyRequiredChecks: Record<string, readonly string[]> = {
   "completion-delivery": ["completion-delegated-task-attributed", "completion-worker-output-attributed", "completion-one-user-request", "completion-three-bound-turns", "completion-worker-done", "completion-output-saved", "completion-source-response", "completion-source-correlated", "completion-result-access", "completion-result-reopened", "configured-model-and-environment"],
   "repository-continuation": ["repository-configured-source-bound", "repository-first-commit-verified", "repository-original-files-saved", "repository-followup-stored-once", "repository-same-workspace-retained", "repository-second-commit-verified", "repository-original-and-result-reopened", "configured-model-and-environment"],
   "routine-scheduled-run": ["routine-browser-created", "routine-scheduler-created-execution", "routine-result-attributed", "routine-history-preserved", "routine-pause-prevented-next-run", "routine-result-reopened", "configured-model-and-environment"],
-  "inbox-triage": ["inbox-read-persisted", "inbox-archive-persisted", "inbox-archive-preserved-task-status", "inbox-relevant-activity-resurfaced", "no-agent-work"],
+  "inbox-triage": ["inbox-external-human-activity", "inbox-read-persisted", "inbox-archive-persisted", "inbox-archive-preserved-task-status", "inbox-relevant-activity-resurfaced", "no-agent-work"],
   "file-input-answer": ["input-upload-bytes-preserved", "input-content-used-correctly", "input-result-attributed-to-run", "input-result-reopened", "original-input-retained", "configured-model-and-environment"],
   "task-properties": ["assignment-persisted", "no-agent-work"],
   "task-create": ["browser-created-task-persisted", "no-agent-work"],
