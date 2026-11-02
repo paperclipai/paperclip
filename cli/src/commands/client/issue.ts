@@ -185,7 +185,9 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const params = new URLSearchParams();
-          if (opts.status) params.set("status", opts.status);
+          for (const status of new Set(parseCsv(opts.status))) {
+            params.append("status", status);
+          }
           if (opts.assigneeAgentId) params.set("assigneeAgentId", opts.assigneeAgentId);
           if (opts.projectId) params.set("projectId", opts.projectId);
 

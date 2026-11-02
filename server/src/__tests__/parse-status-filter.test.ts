@@ -16,6 +16,16 @@ import { parseStatusFilter } from "../services/issues.ts";
  */
 
 describe("parseStatusFilter", () => {
+  it.each([
+    [["todo", "todo", "done"], ["todo", "done"]],
+    ["blocked,blocked,in_review", ["blocked", "in_review"]],
+    [["done,in_review", "done"], ["done", "in_review"]],
+    [[" todo ,done", "todo", " done "], ["todo", "done"]],
+    [["todo", "todo"], ["todo"]],
+  ])("deduplicates %j in first occurrence order", (input, expected) => {
+    expect(parseStatusFilter(input)).toEqual(expected);
+  });
+
   it("returns [] for undefined", () => {
     expect(parseStatusFilter(undefined)).toEqual([]);
   });
