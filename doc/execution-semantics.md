@@ -1037,6 +1037,18 @@ does not reset the provider-attempt budget.
 
 Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. Historical ambiguous runs are never automatically replayed after an upgrade.
 
+A deferred wake without a claim or run id has a bounded wait after a legacy
+`execution_finalization_deadline_exceeded` failure. Once both the request and
+that failure are at least five minutes old, the control sweep marks the wake
+`failed` with `post_finalization_deferred_wake_expired`. Each sweep handles at
+most 50 eligible receipts and skips locked issues. Database or lock contention
+leaves receipts for a later sweep. An execution lock, checkout lock, or newer
+issue run prevents expiry. The receipt retains its payload, and the task and
+saved work remain unchanged. This is failure visibility, not replay permission:
+verify the stopped provider and reconcile uncertain actions before explicitly
+continuing. Native failures and other legacy failure causes retain their own
+recovery rules.
+
 Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
 
 ### Interrupted conversation continuation

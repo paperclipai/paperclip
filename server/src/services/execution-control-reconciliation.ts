@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
-import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   agents,
   heartbeatRuns,
   issues,
@@ -12,6 +13,57 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
+
+// A failed finalizer cannot authorize another provider turn. Give its deferred
+// receipts five minutes to be adopted by an explicit, reconciled continuation,
+// then expose failure instead of leaving them in an apparently healthy queue.
+const POST_FINALIZATION_DEFERRED_WAKE_GRACE_MS = 5 * 60_000;
+
+async function failPostFinalizationDeferredWakes(db: Db, now: Date) {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`);
+    const candidates = await tx.select({ wake: agentWakeupRequests, issue: issues })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`))
+      // Filter on the latest run before LIMIT: unrelated/native queues must
+      // not consume every slot and starve the legacy finalization cohort.
+      .innerJoin(heartbeatRuns, sql`${heartbeatRuns.id} = (select h.id from heartbeat_runs h
+        where h.company_id = ${issues.companyId}
+          and (h.native_issue_id = ${issues.id} or h.context_snapshot->>'issueId' = ${issues.id}::text)
+        order by h.created_at desc, h.id desc limit 1)`)
+      .where(and(
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        isNull(agentWakeupRequests.runId), isNull(agentWakeupRequests.claimedAt),
+        isNull(issues.executionRunId), isNull(issues.checkoutRunId),
+        lte(agentWakeupRequests.requestedAt, new Date(now.getTime() - POST_FINALIZATION_DEFERRED_WAKE_GRACE_MS)),
+        eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "failed"),
+        eq(heartbeatRuns.errorCode, "execution_finalization_deadline_exceeded"),
+        lte(heartbeatRuns.finishedAt, new Date(now.getTime() - POST_FINALIZATION_DEFERRED_WAKE_GRACE_MS)),
+      ))
+      .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id))
+      .limit(50)
+      .for("update", { of: issues, skipLocked: true });
+    for (const { wake, issue } of candidates) {
+      // Re-read after acquiring the issue lock. A queued successor owns these
+      // messages even before it acquires executionRunId; never retire its input.
+      const [latest] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, issue.companyId),
+        or(eq(heartbeatRuns.nativeIssueId, issue.id), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
+      )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+      if (!latest || latest.runtimeMode !== "legacy" || latest.status !== "failed" ||
+          latest.errorCode !== "execution_finalization_deadline_exceeded" ||
+          !latest.finishedAt || latest.finishedAt.getTime() > now.getTime() - POST_FINALIZATION_DEFERRED_WAKE_GRACE_MS)
+        continue;
+      await tx.update(agentWakeupRequests).set({
+        status: "failed", finishedAt: now, updatedAt: now,
+        error: `post_finalization_deferred_wake_expired: Run ${latest.id} exceeded its finalization deadline. The five-minute deferred-wake retry horizon expired. Verify the provider has stopped and reconcile uncertain external actions before explicitly continuing. Saved input is retained; no work was replayed.`,
+      }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, issue.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        isNull(agentWakeupRequests.runId), isNull(agentWakeupRequests.claimedAt)));
+    }
+  });
+}
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -262,5 +314,10 @@ export async function reconcileAbandonedExecutionControl(
       }
     }
   }));
+  try {
+    await failPostFinalizationDeferredWakes(db, now);
+  } catch (err) {
+    logger.warn({ err }, "Post-finalization deferred wake expiry remains pending");
+  }
   return { scanned: due.length, surfaced };
 }

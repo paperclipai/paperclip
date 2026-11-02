@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueRecoveryActions, issueThreadInteractions, nativeRunResults, statusDecisions, workAssessments } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueRecoveryActions, issueThreadInteractions, nativeRunResults, statusDecisions, workAssessments } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -73,6 +73,62 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
 
     return { companyId, agentId, issueId, runId };
   }
+
+  it("terminalizes a stranded post-finalization legacy wake without replaying external work", async () => {
+    const { companyId, agentId, issueId, runId } = await seedAbandonedRunFixture();
+    const now = new Date();
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", status: "failed",
+      errorCode: "execution_finalization_deadline_exceeded",
+      executionControlDeadlineAt: null, finishedAt: new Date(now.getTime() - 60 * 60_000),
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status: "todo", executionRunId: null, checkoutRunId: null })
+      .where(eq(issues.id, issueId));
+    const payload = { issueId, _paperclipWakeContext: { wakeReason: "issue_commented" } };
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", reason: "issue_commented",
+      status: "deferred_issue_execution", payload,
+      requestedAt: new Date(now.getTime() - 10 * 60_000),
+    }).returning();
+
+    await reconcileAbandonedExecutionControl(db, now);
+
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    expect(receipt).toMatchObject({ status: "failed", runId: null, claimedAt: null, payload });
+    expect(receipt.error).toContain("post_finalization_deferred_wake_expired");
+    expect(receipt.finishedAt).toEqual(now);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "todo", executionRunId: null, checkoutRunId: null });
+  });
+
+  it.each(["young_wake", "young_failure", "native", "other_failure", "execution_lock", "checkout_lock", "queued_successor"])(
+    "preserves deferred input outside the post-finalization expiry boundary (%s)", async (scenario) => {
+      const { companyId, agentId, issueId, runId } = await seedAbandonedRunFixture();
+      const now = new Date();
+      const old = new Date(now.getTime() - 10 * 60_000);
+      await db.update(heartbeatRuns).set({ runtimeMode: scenario === "native" ? "native" : "legacy",
+        status: "failed", executionControlDeadlineAt: null,
+        errorCode: scenario === "other_failure" ? "provider_error" : "execution_finalization_deadline_exceeded",
+        finishedAt: scenario === "young_failure" ? now : old,
+      }).where(eq(heartbeatRuns.id, runId));
+      await db.update(issues).set({ status: "todo",
+        executionRunId: scenario === "execution_lock" ? runId : null,
+        checkoutRunId: scenario === "checkout_lock" ? runId : null,
+      }).where(eq(issues.id, issueId));
+      if (scenario === "queued_successor") await db.insert(heartbeatRuns).values({
+        companyId, agentId, status: "queued", contextSnapshot: { issueId },
+        createdAt: new Date(now.getTime() + 1),
+      });
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        payload: { issueId }, requestedAt: scenario === "young_wake" ? now : old,
+      }).returning();
+      await reconcileAbandonedExecutionControl(db, now);
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+      expect(receipt).toMatchObject({ status: "deferred_issue_execution", finishedAt: null, runId: null, claimedAt: null });
+    },
+  );
 
   it("reports exactly one Sentry event for a genuine finalization-deadline failure", async () => {
     const { runId } = await seedAbandonedRunFixture();
