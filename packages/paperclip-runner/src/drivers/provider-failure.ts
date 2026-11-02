@@ -2,11 +2,11 @@ import { readProviderFailure, type ProviderFailure } from "../contracts/provider
 import { redactProviderDiagnostic } from "./diagnostic-redaction.js";
 
 export function providerFailureMessage(message: string, environment: NodeJS.ProcessEnv = {}): string {
-  for (const [key, value] of Object.entries(environment)) {
-    if (!value || !/token|secret|password|api[_-]?key|authorization|credential|otlp.*headers/i.test(key)) continue;
-    for (const secret of [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]) {
-      if (secret) message = message.replaceAll(secret, "[REDACTED]");
-    }
+  const secrets = Object.entries(environment).flatMap(([key, value]) =>
+    value && /token|secret|password|api[_-]?key|authorization|credential|otlp.*headers/i.test(key)
+      ? [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)] : []).sort((left, right) => right.length - left.length);
+  for (const secret of secrets) {
+    if (secret) message = message.replaceAll(secret, "[REDACTED]");
   }
   return [...redactProviderDiagnostic(message)
     .replace(/\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]+)\b/g, "[REDACTED]")

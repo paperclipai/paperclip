@@ -21,7 +21,7 @@ pub(crate) fn codex_startup_failure(error: &Value) -> Option<Value> {
         .flatten()
         .unwrap_or(Value::Null);
     let detail = response.get("error").unwrap_or(error);
-    let secrets: Vec<String> = std::env::vars()
+    let mut secrets: Vec<String> = std::env::vars()
         .filter(|(key, value)| {
             let key = key.to_ascii_lowercase();
             !value.is_empty()
@@ -52,6 +52,7 @@ pub(crate) fn codex_startup_failure(error: &Value) -> Option<Value> {
             vec![value, escaped[1..escaped.len() - 1].to_owned(), encoded]
         })
         .collect();
+    secrets.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
     let sanitize = |text: &str| -> String {
         let mut text = text.to_owned();
         for secret in &secrets {

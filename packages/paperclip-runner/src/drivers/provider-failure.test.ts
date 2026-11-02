@@ -57,6 +57,11 @@ describe("provider failure boundary", () => {
     expect(readProviderFailure(JSON.parse(JSON.stringify(long)))).toEqual(long);
   });
 
+  it("redacts overlapping environment secrets without leaving a credential suffix", () => {
+    expect(createProviderFailure({ provider: "openai", phase: "startup", message: "fixture-long-private-value",
+      environment: { FIRST_TOKEN: "fixture", SECOND_TOKEN: "fixture-long-private-value" } })?.message).toBe("[REDACTED]");
+  });
+
   it("carries only the selected fields and rejects malformed persisted causes", () => {
     const failure = createProviderFailure({ provider: "openai", phase: "turn", message: "Upstream failure." })!;
     expect(readProviderFailure({ ...failure, headers: { authorization: "secret" } })).toEqual(failure);
