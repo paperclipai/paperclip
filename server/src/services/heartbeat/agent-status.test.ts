@@ -113,10 +113,9 @@ describePostgres("heartbeat agent status", () => {
     expect(await reconcile()).toEqual([]);
   });
 
-  it.each(["missing_finish", "accounting", "retry", "controller", "local_execution"])("retains unfinished %s work", async hold => {
+  it.each(["missing_finish", "retry", "controller", "local_execution"])("retains unfinished %s work", async hold => {
     const { runId } = await seed();
     const patch = hold === "missing_finish" ? { finishedAt: null }
-      : hold === "accounting" ? { costAccountingPending: true }
       : hold === "retry" ? { scheduledRetryAt: new Date() }
       : hold === "controller" ? { controllerLeaseExpiresAt: new Date(Date.now() + 60_000) } : {};
     await db.update(heartbeatRuns).set({ ...patch, updatedAt: old() }).where(eq(heartbeatRuns.id, runId));
@@ -229,6 +228,39 @@ describePostgres("heartbeat agent status", () => {
     for (let i = 0; i < 27; i++) await seed();
     expect(await reconcile()).toHaveLength(25);
     expect(await reconcile()).toHaveLength(2);
+  });
+
+  it("reconciles an agent stuck running behind a cancelled never-started scheduled retry", async () => {
+    const { agentId, runId } = await seed();
+    await db.update(heartbeatRuns).set({
+      status: "cancelled",
+      startedAt: null,
+      finishedAt: old(),
+      scheduledRetryAt: new Date(Date.now() + 60 * 60_000),
+      scheduledRetryAttempt: 1,
+      costAccountingPending: false,
+    }).where(eq(heartbeatRuns.id, runId));
+    expect(await reconcile()).toEqual([agentId]);
+    expect((await agent(agentId)).status).toBe("idle");
+    expect(await db.select().from(activityLog)).toEqual([expect.objectContaining({
+      entityId: agentId,
+      action: "agent.status_reconciled",
+      details: { previousStatus: "running", nextStatus: "idle", reason: "no_unsettled_execution" },
+    })]);
+  });
+
+  it("reconciles an agent stuck running behind an orphaned run with pending cost accounting", async () => {
+    const { agentId, runId } = await seed();
+    await db.update(heartbeatRuns).set({
+      status: "interrupted",
+      startedAt: old(),
+      finishedAt: old(),
+      errorCode: "orphaned_running_run",
+      scheduledRetryAt: null,
+      costAccountingPending: true,
+    }).where(eq(heartbeatRuns.id, runId));
+    expect(await reconcile()).toEqual([agentId]);
+    expect((await agent(agentId)).status).toBe("idle");
   });
 
   it("rolls the correction back when the audit write fails", async () => {

@@ -50,7 +50,7 @@ export function settledAgentWorkCondition(liveRunIds: ReadonlySet<string>, now: 
         AND r.status IN ('running', 'queued'))
     AND NOT EXISTS (SELECT 1 FROM heartbeat_runs r
       WHERE r.company_id = ${agents.companyId} AND r.agent_id = ${agents.id}
-        AND ((${sql.raw(finishedIdleRun("r"))}) IS NOT TRUE
+        AND ((${sql.raw(finishedIdleRun("r", { ignoreCostAccounting: true, settledCancelledRetry: true }))}) IS NOT TRUE
           OR r.controller_lease_expires_at > ${now.toISOString()}::timestamptz))
     ${localRuns}
     AND NOT EXISTS (SELECT 1 FROM native_run_finalizations f
