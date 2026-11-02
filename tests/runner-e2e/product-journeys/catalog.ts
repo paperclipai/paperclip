@@ -2,6 +2,7 @@ import { agentJourneyRuns } from "./success-contract.js";
 export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
+  { id: "company-access-isolation", label: "Switch QA workspaces and verify restricted agent isolation", requires: ["company", "board-user", "task-write", "company-access"], capabilities: ["companies/selection", "access/resources"], paid: false },
   { id: "completion-delivery", label: "Receive delegated completion in the originating chat", requires: ["company", "board-user", "task-write", "agent", "completion-worker"], capabilities: ["documents-artifacts/documents", "tasks/completion"], paid: true },
   { id: "repository-continuation", label: "Continue repository work with the same saved workspace", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["projects/task-context", "documents-artifacts/attachments"], paid: true },
   { id: "routine-scheduled-run", label: "Run a scheduled routine once and verify pause and saved history", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["routines/definition", "routines/triggers", "routines/history", "routines/management"], paid: true },

@@ -152,3 +152,5 @@ Verify benign code reaches a gateway caller, malicious instructions are blocked,
 provider failure records regex fallback, and disabling makes no model call.
 Root results with concealed instruction text use `input_redaction_mismatch`
 fallback without model dispatch.
+
+The Product E2E journey `company-access-isolation` uses two registered Cloud test workspaces, the ordinary tenant workspace menu, and real company-bound agent credentials. It verifies allowed reads and task creation plus denied foreign reads and creation in both directions, including exact creator evidence. It does not certify human membership roles. Source: `tests/runner-e2e/product-journeys/company-access-flow.ts`. Registration is not proof of a deployed pass.
