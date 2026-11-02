@@ -93,8 +93,9 @@ describe("portable remote workspace archives", () => {
     };
     const snapshot = await capture(cwd);
     archiveIo.beforeOpen = undefined;
-    expect(await fs.readFile(path.join(await restore(snapshot), "work.bin"))).toEqual(payload);
-    expect(await fs.readFile(path.join(cwd, "work.bin"))).toEqual(payload);
+    const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+    expect(digest(await fs.readFile(path.join(await restore(snapshot), "work.bin")))).toBe(digest(payload));
+    expect(digest(await fs.readFile(path.join(cwd, "work.bin")))).toBe(digest(payload));
   });
   it.each(["content", "symlink", "added-file"])("rejects a concurrent %s change and removes its incomplete archive", async change => {
     const cwd = await source(), file = path.join(cwd, "work.txt"), archivePath = path.join(root, "snapshot.pcws");
@@ -124,6 +125,21 @@ describe("portable remote workspace archives", () => {
     await expect(capture(cwd)).rejects.toMatchObject({ code: "EEXIST" });
     expect(await fs.readFile(archivePath, "utf8")).toBe("existing archive\n");
     expect(await fs.readFile(path.join(cwd, "file"), "utf8")).toBe("retained\n");
+  });
+  it("rejects Git reference changes during archive output and keeps the new reference", async () => {
+    const cwd = await source(), archivePath = path.join(root, "snapshot.pcws");
+    await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "file"), "retained\n");
+    await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+    const head = await git(cwd, "rev-parse", "HEAD");
+    archiveIo.beforeOpen = async target => {
+      if (target !== archivePath) return;
+      archiveIo.beforeOpen = undefined;
+      await git(cwd, "update-ref", "refs/heads/later-work", head);
+    };
+    await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_changed");
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(cwd, "rev-parse", "refs/heads/later-work")).toBe(head);
   });
   it("rejects a Files entry limit before extraction while ordinary restores keep their full contents", async () => {
     const cwd = await source(); await fs.writeFile(path.join(cwd, "first.txt"), "first\n"); await fs.writeFile(path.join(cwd, "second.txt"), "second\n");
