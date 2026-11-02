@@ -1,5 +1,5 @@
 import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } from "@/lib/task-list";
-import { useDeferredValue, useEffect, useRef } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListChecks, SearchX } from "lucide-react";
@@ -48,13 +48,12 @@ export function CoordinatorTasks() {
   const listRef = useRef<HTMLElement>(null);
   const location = useLocation();
   const [params, setParams] = useSearchParams();
+  const [layout, setLayout] = useState<"list" | "board">("list");
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
   const urlStatuses = JSON.stringify(params.getAll("status"));
   const urlView = params.get("view");
   const sort = readTaskListSortParams(params);
   const includeBlockedBy = sort?.column === "workflow";
-  const serverSortField = sort?.column === "created" ? "created" : "updated";
-  const serverSortDir = (sort?.column === "created" || sort?.column === "lastUpdated") && sort.direction === "ascending" ? "asc" : "desc";
   const setSort = (nextSort: TaskListSort | undefined) => setParams(current => {
     const next = new URLSearchParams(current);
     if (nextSort) {
@@ -76,6 +75,9 @@ export function CoordinatorTasks() {
   const needsAttention = params.get("view") === "needs_attention";
   const query = params.get("q") ?? "";
   const deferredQuery = useDeferredValue(query.trim());
+  const useListSort = layout === "list" && !deferredQuery;
+  const serverSortField = useListSort && sort?.column === "created" ? "created" : "updated";
+  const serverSortDir = useListSort && (sort?.column === "created" || sort?.column === "lastUpdated") && sort.direction === "ascending" ? "asc" : "desc";
   const participantAgentId = params.get("participantAgentId") ?? undefined;
   const workspaces = params.getAll("workspace").filter(Boolean);
   const workspaceIds = [...new Set(workspaces.length ? workspaces : params.getAll("workspaceId").filter(Boolean))];
@@ -96,7 +98,7 @@ export function CoordinatorTasks() {
     queryFn: async ({ pageParam, signal }) => {
       const pages = await Promise.all((workspaceIds.length ? workspaceIds : [undefined]).map(workspaceId => issuesApi.listCompact(companyId!, {
       projection: "index", limit: pageSize, offset: pageParam, includeAgentCreatedTasks: true, includeRoutineExecutions: true,
-      sortField: deferredQuery ? "updated" : serverSortField, sortDir: deferredQuery ? "desc" : serverSortDir,
+      sortField: serverSortField, sortDir: serverSortDir,
       includeBlockedBy: includeBlockedBy || undefined, q: deferredQuery || undefined, participantAgentId, workspaceId, originKind,
       }, { signal })));
       return { items: pages.flat(), hasNextPage: pages.some(page => page.length === pageSize) };
@@ -144,6 +146,7 @@ export function CoordinatorTasks() {
     assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
   }));
   const collection = useTaskListCollection({ items, companyId, userId, query, onQueryChange: setQuery, view: "all",
+    layout, onLayoutChange: setLayout,
     searchMode: "server",
     liveIssueIds: collectLiveIssueIds(liveRuns.data, records),
     viewStorageKey: taskListViewStorageKey("coordinator", userId ?? "local-board"),
