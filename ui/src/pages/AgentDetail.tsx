@@ -872,7 +872,7 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <header className="flex items-center gap-4">
+      <header className="flex flex-wrap items-center gap-4 sm:flex-nowrap">
         <div role="img" aria-label={t("oct6Beta.dynamic092", { v0: agent.name })} className="shrink-0" style={{ zoom: "var(--agent-detail-portrait-zoom)" }}>
           <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
         </div>
@@ -916,6 +916,7 @@ export function AgentDetail() {
           <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
         </div>
         <AgentActionButtons
+          className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto sm:justify-start"
           agent={currentAgent}
           companyId={resolvedCompanyId}
           assignLabel={t("nov2Pages.agent.assignTask", { defaultValue: "Assign task" })}
