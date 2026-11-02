@@ -1518,7 +1518,7 @@ export function TaskChatComposer({
               onGoal={!queuedEdit && !conversationMode && attachments.length === 0 &&
                 runnerGoalCapability?.availability === "available" && onRunnerGoalCommand
                 ? prepareGoal : undefined}
-              disabled={disabled || !!uncertainSubmission}
+              disabled={disabled || !!uncertainSubmission || Boolean(creation?.readOnly)}
               mobile={mobile}
               triggerTestId="task-chat-composer-add"
               menuTestId="task-chat-composer-add-menu"

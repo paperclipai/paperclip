@@ -1334,7 +1334,7 @@ describe("TaskChatComposer", () => {
     expect(row.querySelector('img')?.getAttribute("src")).toMatch(/^blob:/);
     expect(row.compareDocumentPosition(editable()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(editable().textContent).toBe("Review this image");
-    expect(mdxEditorMockState.imagePluginOptions).toBeNull();
+    expect(mdxEditorMockState.imagePluginOptions?.imageUploadHandler).toBeUndefined();
     flushSync(() => sendButton().click());
     await flushAsync();
     expect(onAdd.mock.calls[0]?.[0]).toBe("Review this image\n\n![shot.png](/attachments/shot.png)");
@@ -1363,9 +1363,12 @@ describe("TaskChatComposer", () => {
     expect(onAdd.mock.calls[0]?.[0]).toBe("Keep the caption\n\n![retry.png](/attachments/retried.png)");
   });
 
-  it("does not register the image plugin without an upload handler", () => {
-    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
-    expect(mdxEditorMockState.imagePluginOptions).toBeNull();
+  it("keeps existing image Markdown editable without an inline upload handler", () => {
+    localStorage.setItem("image-draft", "Caption\n\n![old image](/api/attachments/old/content)");
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey="image-draft" />);
+    expect(editable().textContent).toContain("![old image](/api/attachments/old/content)");
+    expect(mdxEditorMockState.imagePluginOptions).not.toBeNull();
+    expect(mdxEditorMockState.imagePluginOptions?.imageUploadHandler).toBeUndefined();
   });
 
   it("attaches pasted non-image files to the chip row and posts a link reference", async () => {
