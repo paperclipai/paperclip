@@ -74,6 +74,14 @@ without a controller checkout fallback. Current authorization and responsible-us
 checks still apply;
 read-only cross-project referenced folders and explicitly concurrent shared
 writers are rejected. Managed mutable same-project repositories are supported.
+An inherited isolated workspace or operator branch can be reserved through the
+task's current persisted binding. The original source task remains provenance.
+Reservation checks task/run, binding, trust, and retained source visibility before
+claiming the single writer; an unbound task cannot claim that workspace.
+The [reservation tests](../../server/src/services/remote-workspace-reservation.test.ts)
+exercise that service boundary with real PostgreSQL, including competing children,
+private sources, foreign companies, and closed records. This is automated evidence,
+not live agent qualification.
 Importing an existing local task folder is an operator source-checkout command,
 not an agent API or tool: see the
 [dry-run/apply runbook](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).

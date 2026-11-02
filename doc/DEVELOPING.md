@@ -1699,6 +1699,14 @@ workspace; separate workspaces can run concurrently. The Files panel identifies
 **Live workspace** and **Saved copy** with its save time. An unavailable dirty
 allocation is not silently replaced with an older saved copy.
 
+A child or follow-up task can use a remote workspace inherited through its
+persisted task binding, including an isolated workspace or operator branch.
+Reservation checks current task/run access and all retained workspace sources.
+The original `sourceIssueId` remains provenance; it does not prevent authorized
+bound tasks from continuing saved work. Explicitly selected roots follow the
+same binding contract and the filesystem access boundary below. Task-assignment
+grants are not filesystem permissions. The single-writer fence still applies.
+
 Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
 for storage, import, retention, and lifecycle regression checks. These checks do
 not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
