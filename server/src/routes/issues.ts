@@ -14708,7 +14708,10 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForTerminalization = await resolveActiveIssueRun(existing);
+        const runToStopForTerminalization = goalStopAction ||
+          (req.actor.type === "board" && existing.executionRunId)
+          ? await resolveActiveIssueRun(existing)
+          : null;
         // Closing a native task revokes its tool binding. Retire the board's
         // active executor before releasing that binding, even without a goal.
         const mustStopNativeRun = req.actor.type === "board" &&

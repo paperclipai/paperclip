@@ -395,6 +395,20 @@ describe("issue update comment wakeups", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("does not inspect agent runs when closing a task without an execution owner", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: null });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done" });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getActiveRunForAgent).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
   it("preserves legacy completion without a native goal", async () => {
     const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null, executionRunId: SOURCE_RUN_ID });
