@@ -2544,6 +2544,7 @@ async function startRuntime(input: {
       // This runs before the outer cleanup scope, so release what this step
       // already created instead of leaking the isolated home to the next run.
       for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
+      await bridge.close().catch(() => {});
       await removeIsolatedHome(isolatedHome).catch(() => {});
       throw error;
     }
@@ -3361,7 +3362,12 @@ export function parseOpenCodeCustomProviders(
     sanitized.options = options;
     providers[providerId] = sanitized;
     const apiKey = resolveApiKeyReference(rawKey, resolve);
-    if (!apiKey) continue;
+    // A provider that overrides a built-in one keeps no endpoint of its own, so
+    // it cannot be fronted by a proxy. Leave it in the config untouched.
+    if (!baseUrl) continue;
+    // A proxy is only useful when it carries a credential: a key or an
+    // environment-backed header.
+    if (!apiKey && Object.keys(headers).length === 0) continue;
     const models = isRecord(sanitized.models) ? Object.keys(sanitized.models) : [];
     credentials.push({ providerId, baseUrl, apiKey, headers, models });
   }

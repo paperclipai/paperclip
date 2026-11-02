@@ -71,7 +71,7 @@ describe("codexCustomProviderToml", () => {
   });
 
   it("keeps the managed selector when the custom table declares none", () => {
-    const toml = codexProviderToml(
+    const { toml } = codexProviderToml(
       codexCustomProviders({
         PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: { extra: { base_url: "https://extra.test" } } }),
       }),
@@ -84,7 +84,7 @@ describe("codexCustomProviderToml", () => {
   });
 
   it("keeps the managed route when the custom table is unusable", () => {
-    const toml = codexProviderToml(
+    const { toml } = codexProviderToml(
       codexCustomProviders({ PAPERCLIP_CODEX_PROVIDERS: "{not json" }),
       { providers: { paperclip: { base_url: "https://managed.test" } }, modelProvider: "paperclip" },
     );
@@ -94,7 +94,7 @@ describe("codexCustomProviderToml", () => {
   });
 
   it("prefers the custom selector when it names an emitted table", () => {
-    const toml = codexProviderToml(
+    const { toml } = codexProviderToml(
       codexCustomProviders({
         PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
           providers: { custom: { base_url: "https://api.deepseek.com" }, paperclip: { base_url: "https://managed.test" } },
@@ -106,5 +106,18 @@ describe("codexCustomProviderToml", () => {
 
     expect(toml).toContain('model_provider = "custom"');
     expect(toml).toContain("[model_providers.custom]");
+  });
+
+  it("reports the selector so the caller keeps the auth fallback", () => {
+    const selection = codexProviderToml(
+      codexCustomProviders({
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: { extra: { base_url: "https://extra.test" } } }),
+      }),
+      null,
+    );
+
+    // The table is written, but Codex still uses its default provider.
+    expect(selection.toml).toContain("[model_providers.extra]");
+    expect(selection.modelProvider).toBeNull();
   });
 });

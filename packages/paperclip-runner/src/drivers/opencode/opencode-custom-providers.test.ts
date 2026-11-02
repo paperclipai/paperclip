@@ -144,4 +144,42 @@ describe("parseOpenCodeCustomProviders", () => {
 
     expect(Object.keys(parsed.providers)).toEqual(["good"]);
   });
+
+  it("creates a proxy for header-only authentication", () => {
+    const parsed = parseOpenCodeCustomProviders({
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        gateway: {
+          options: {
+            baseURL: "https://gateway.test/v1",
+            headers: { "X-API-Key": "{env:GATEWAY_KEY}" },
+          },
+        },
+      }),
+      GATEWAY_KEY: "gateway-key",
+    });
+
+    expect(parsed.providers.gateway?.options).toEqual({ baseURL: "https://gateway.test/v1" });
+    expect(parsed.credentials).toEqual([
+      {
+        providerId: "gateway",
+        baseUrl: "https://gateway.test/v1",
+        apiKey: "",
+        headers: { "X-API-Key": "gateway-key" },
+        models: [],
+      },
+    ]);
+  });
+
+  it("keeps an override of a built-in provider without a proxy", () => {
+    const parsed = parseOpenCodeCustomProviders({
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        openai: { options: { apiKey: "{env:OPENAI_KEY}" }, models: { "gpt-x": { name: "X" } } },
+      }),
+      OPENAI_KEY: "openai-key",
+    });
+
+    // No endpoint means no proxy; the override stays exactly as declared.
+    expect(parsed.providers.openai?.options).toEqual({});
+    expect(parsed.credentials).toEqual([]);
+  });
 });

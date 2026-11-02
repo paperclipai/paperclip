@@ -417,15 +417,16 @@ async function managedCodexProviders(sourceHome?: string | null): Promise<{
 export function codexProviderToml(
   custom: { providers: Record<string, unknown>; modelProvider: string | null },
   managed: { providers: Record<string, unknown>; modelProvider: string } | null,
-): string {
+): { toml: string; modelProvider: string | null } {
   const providers = { ...(managed?.providers ?? {}), ...custom.providers };
-  if (Object.keys(providers).length === 0) return "";
+  if (Object.keys(providers).length === 0) return { toml: "", modelProvider: null };
   const document: Record<string, unknown> = { model_providers: providers };
   // A custom selector wins; otherwise keep the managed one so a custom table
   // that declares no selector cannot disable an existing working route.
   const selected = custom.modelProvider ?? managed?.modelProvider ?? null;
-  if (selected && selected in providers) document.model_provider = selected;
-  return `${stringifyToml(document)}\n`;
+  const modelProvider = selected && selected in providers ? selected : null;
+  if (modelProvider) document.model_provider = modelProvider;
+  return { toml: `${stringifyToml(document)}\n`, modelProvider };
 }
 
 export async function prepareIsolatedCodexHome(input: {
@@ -446,8 +447,13 @@ export async function prepareIsolatedCodexHome(input: {
   // contract the Codex harness probe reads. Merge it with the managed
   // projection so declaring an unused provider cannot remove a working route.
   const customProviders = codexCustomProviders(input.environment);
-  const managedProviders = await managedCodexProviders(input.sourceCodexHome);
-  const providerConfig = codexProviderToml(customProviders, managedProviders);
+  // A selected custom provider owns routing for this run. Reading the source
+  // home then could reject a stale managed entry the run never uses.
+  const managedProviders = customProviders.modelProvider
+    ? null
+    : await managedCodexProviders(input.sourceCodexHome);
+  const { toml: providerConfig, modelProvider: selectedProvider } =
+    codexProviderToml(customProviders, managedProviders);
   const configPath = join(input.codexHome, "config.toml");
   await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   await chmod(input.codexHome, 0o700);
@@ -481,7 +487,10 @@ export async function prepareIsolatedCodexHome(input: {
 
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
-  if (providerConfig) return;
+  // Only a selected provider replaces the auth fallback. A table that overrides
+  // a built-in provider keeps Codex on its default provider, which still needs
+  // the API key or the copied auth file.
+  if (selectedProvider) return;
   const apiKey = input.apiKey?.trim();
   if (apiKey) {
     // The pinned Codex app-server authenticates API-key automation through its
