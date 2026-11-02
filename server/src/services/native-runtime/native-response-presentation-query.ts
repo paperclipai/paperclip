@@ -48,8 +48,13 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
                 sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
                 sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}' ~ '[^[:space:]]'`,
               ))))),
-          sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'done'`,
-          sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'done'`),
+          or(
+            and(sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'done'`,
+              sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'done'`),
+            and(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
+              sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'needs_review'`,
+              sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'needs_review'`),
+          )),
         and(sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'yielded'`,
           sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'yielded'`,
           sql`jsonb_typeof(${nativeRunResults.resultJson} #> '{result,summary}') = 'string'

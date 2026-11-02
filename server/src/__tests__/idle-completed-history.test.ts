@@ -142,6 +142,97 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     expect(await read()).toEqual({ version: 1, backgroundWork: "none" });
   });
 
+  it.each([false, true])("keeps real sandbox creation uncertainty blocked through owned cleanup, manualRemaining=%s", async manualRemaining => {
+    const { createOwnedSandbox, recoverSandboxCreations, recordSandboxCreationResource } = await import("../services/sandbox-creation-operations.js");
+    const { environmentRuntimeService } = await import("../services/environment-runtime.js");
+    const { heartbeatService } = await import("../services/heartbeat.js");
+    const { nextEnvironmentCleanupAt } = await import("../services/environment-cleanup-state.js");
+    const f = await seed(), environmentId = randomUUID();
+    const directory = await mkdtemp(path.join(tmpdir(), "history-sandbox-creation-"));
+    await db.insert(tables.environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    const snapshot = () => readIdleSleepSafety(db, hold, Date.now, ownerId, async () => "none",
+      undefined, undefined, false, false, { collectDiagnostics: true });
+    const reason = async (key: string) => (await snapshot()).diagnostics!.checks.find(check => check.reason === key)!.state;
+    const uncertain = async (contextual: boolean) => {
+      const providerLeaseId = randomUUID();
+      const result = await createOwnedSandbox(db, { companyId: f.companyId, environmentId, heartbeatRunId: f.runId,
+        provider: "history-fixture", driverKey: "history-fixture", config: {}, requestKey: providerLeaseId,
+        metadata: { driver: "sandbox", ...(contextual ? { runnerTaskLease: true, runnerTaskCreationContextId: randomUUID() } : {}) } },
+      async () => {
+        await writeFile(path.join(directory, providerLeaseId), "owned provider resource");
+        return { providerLeaseId };
+      });
+      const id = String(result.metadata!.creationOperationId);
+      // Advance the actual creation owner's saved deadline, not its status.
+      await db.update(tables.sandboxCreationOperations).set({ nextAttemptAt: new Date(0) })
+        .where(eq(tables.sandboxCreationOperations.id, id));
+      await recoverSandboxCreations(db, async () => null);
+      return { id, providerLeaseId };
+    };
+    try {
+      expect(await read()).toEqual({ version: 1, backgroundWork: "none" });
+      const contextual = await uncertain(true);
+      const current = async (id: string) => (await db.select().from(tables.sandboxCreationOperations)
+        .where(eq(tables.sandboxCreationOperations.id, id)))[0];
+      expect(await current(contextual.id)).toMatchObject({ state: "needs_reconciliation", leaseId: null });
+      // Isolated RED for the old pending-only catalog: there is no live run,
+      // finalization, lease, local worker, or other durable blocker to mask it.
+      expect(await read()).toEqual({ version: 1, backgroundWork: "present" });
+      expect(await reason("sandbox_creation_operations")).toBe("present");
+      await recordSandboxCreationResource(db, { id: contextual.id, companyId: f.companyId, environmentId,
+        providerLeaseId: contextual.providerLeaseId });
+      expect(await nextEnvironmentCleanupAt(db)).not.toBeNull();
+      expect(await reason("sandbox_creation_operations")).toBe("present");
+      await recoverSandboxCreations(db, async () => { throw new Error("Known late resource must use its exact owner"); });
+      const pending = await current(contextual.id);
+      expect(pending).toMatchObject({ state: "cleanup_pending", leaseId: expect.any(String) });
+      expect(await reason("sandbox_creation_operations")).toBe("none");
+      expect(await reason("environment_leases")).toBe("present");
+      expect(await read()).toEqual({ version: 1, backgroundWork: "present" });
+      const manual = manualRemaining ? await uncertain(false) : undefined;
+      if (manual) {
+        expect(await current(manual.id)).toMatchObject({ state: "needs_reconciliation", leaseId: null });
+        expect(await reason("sandbox_creation_operations")).toBe("present");
+      }
+      let destroyed = 0;
+      const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
+        acquireRunLease: async () => { throw new Error("Unexpected provider acquire"); },
+        releaseRunLease: async () => { throw new Error("Unexpected provider release"); },
+        resolveCapabilities: async () => { throw new Error("Unexpected capability resolution"); },
+        retryPendingSandboxTeardown: async ({ lease }: { lease: { providerLeaseId: string | null } }) => {
+          expect(lease.providerLeaseId).toBe(contextual.providerLeaseId);
+          const resource = path.join(directory, lease.providerLeaseId!);
+          expect(await readFile(resource, "utf8")).toBe("owned provider resource");
+          await rm(resource);
+          await expect(readFile(resource)).rejects.toMatchObject({ code: "ENOENT" });
+          destroyed++;
+          return { providerLeaseId: lease.providerLeaseId, state: "destroyed" as const };
+        } }] });
+      await heartbeatService(db, { environmentRuntime: runtime }).sweepPendingCleanupLeases({ backoffMs: 0 });
+      expect(destroyed).toBe(1);
+      expect(await current(contextual.id)).toMatchObject({ state: "resolved", leaseId: pending.leaseId });
+      expect(await reason("environment_leases")).toBe("none");
+      expect(await reason("sandbox_creation_operations")).toBe(manual ? "present" : "none");
+      expect(await read()).toEqual({ version: 1, backgroundWork: manual ? "present" : "none" });
+      if (manual) {
+        expect(await current(manual.id)).toMatchObject({ state: "needs_reconciliation", leaseId: null });
+        expect(await readFile(path.join(directory, manual.providerLeaseId), "utf8")).toBe("owned provider resource");
+      }
+      // A different creation is still real pending work after this one settles.
+      await createOwnedSandbox(db, { companyId: f.companyId, environmentId, provider: "history-fixture",
+        driverKey: "history-fixture", config: {}, metadata: {} }, async () => {
+          const providerLeaseId = randomUUID();
+          await writeFile(path.join(directory, providerLeaseId), "another pending provider resource");
+          return { providerLeaseId };
+        });
+      expect(await read()).toEqual({ version: 1, backgroundWork: "present" });
+    } finally {
+      await db.delete(tables.sandboxCreationOperations).where(eq(tables.sandboxCreationOperations.companyId, f.companyId));
+      await db.delete(tables.environments).where(eq(tables.environments.id, environmentId));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["completed", "cancelled"] as const)("retains a %s transfer without hiding its actual spool", async status => {
     const f = await seed();
     const result = await companyTransferRunService.resumeOrCreate(db, { companyId: f.companyId, direction: "import",

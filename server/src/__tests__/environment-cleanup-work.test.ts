@@ -1,5 +1,5 @@
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
-import { createOwnedSandbox } from "../services/sandbox-creation-operations.js";
+import { createOwnedSandbox, recordSandboxCreationResource } from "../services/sandbox-creation-operations.js";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,8 +32,8 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
   const errors: unknown[] = [], disposers: Array<() => void> = [];
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("environment-cleanup-work-");
-    db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
-    await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+    db = createDb(external ?? database!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    await Promise.all(Array.from({ length: 4 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
   beforeEach(async () => {
     await db.execute(sql`TRUNCATE sandbox_creation_operations, companies, environments CASCADE`);
@@ -48,6 +48,9 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
   afterEach(async () => {
     worker?.stop(); await coordinator?.stop(); coordinator = undefined; worker = undefined;
     for (const stop of disposers.splice(0)) stop();
+    // Creation ownership intentionally survives company deletion; company
+    // cascades therefore cannot isolate this case from the next test suite.
+    await db.delete(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId, companyId));
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
@@ -116,15 +119,18 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     ]));
     await quiet();
   });
-  it("settles a deleted-company creation as manual history across restart without idle polling", async () => {
+  it.each([false, true])("retains deleted-company creation uncertainty across a quiet worker restart (contextual=%s)", async contextual => {
     await start(); await quiet();
-    await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {}, metadata: {} },
+    const created = await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {},
+      metadata: contextual ? { runnerTaskLease: true, runnerTaskCreationContextId: randomUUID() } : {} },
       async () => ({ providerLeaseId: "fixture-deleted-company" }));
     await db.delete(companies).where(eq(companies.id, companyId));
     await settle(31 * 60_000);
     await vi.waitFor(async () => expect(await db.select().from(sandboxCreationOperations)).toEqual([
       expect.objectContaining({ state: "needs_reconciliation", metadata: expect.objectContaining({ creationReconciliationReason: "company_deleted" }) }),
     ]));
+    if (contextual) await recordSandboxCreationResource(db, { id: String(created.metadata!.creationOperationId), companyId, environmentId,
+      providerLeaseId: created.providerLeaseId });
     await quiet();
     worker!.stop(); await coordinator!.stop();
     await start(); await quiet();
@@ -132,7 +138,7 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     const ownerId = randomUUID();
     const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000), expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
     expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none"))
-      .toEqual({ version: 1, backgroundWork: "none" });
+      .toEqual({ version: 1, backgroundWork: "present" });
     await quiet();
   });
   it("verifies ordinary cleanup carrying creation provenance and stops provider polling", async () => {

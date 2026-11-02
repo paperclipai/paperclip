@@ -36,7 +36,8 @@ export function unreconciledNativeExportPredicate() {
       and ${heartbeatRuns.nativeIssueId} = ${issueRecoveryActions.sourceIssueId}
       and ${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'
       and ${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
-      and ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared')`,
+      and (${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+        or ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared'))`,
   );
 }
 

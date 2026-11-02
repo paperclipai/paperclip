@@ -25,6 +25,41 @@ The stateless gateway and runtime-tools MCP endpoints return HTTP 405 with
 The runtime-tools endpoint still validates its caller before that response.
 See the [MCP transport contract](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports).
 
+## New-tool review projection
+
+Pending-tool review builds covered application and connection sets from each
+profile's include rules. An included catalog entry covers its connection and its
+non-null application only while that entry exists in the supplied catalog.
+Explicit application selectors retain null application matching. A second index
+records all exact selectors, including exclusions, so already reviewed tools do
+not appear as new. The catalog filter retains its order, status check, strict
+review watermark, and returned metadata.
+
+The indexes live only for one projection. Profile listings, new-tool review, and
+app attention still read current company-scoped database state on each request.
+This replaces nested catalog-by-rule scans with linear indexing and filtering.
+It changes neither database query counts nor response contracts.
+
+The PostgreSQL reproduction uses 200 selected profiles, 1,900 active tools, and
+76,000 rules. Profiles alternate between 65 and 695 rules. Half reference 695
+removed catalog entries, while half select current tools. This exercises both
+scope checks and explicit-review checks. It compares complete ordered results
+from the real profile listing and app-attention services before timing them.
+
+Save baseline `profiles/projection.ts`, `profiles/service.ts`, and
+`catalog/attention.ts` beside their current versions as `.baseline-projection.ts`,
+`.baseline-service.ts`, and `.baseline-attention.ts`. Change the two baseline
+consumers' projection imports to `.baseline-projection.js` with the same relative
+path. Then run from `server/`:
+
+```sh
+node --expose-gc --import tsx scripts/benchmark-profile-review-projection.ts --baseline-profiles "$PWD/src/services/tool-access/profiles/.baseline-service.ts" --baseline-attention "$PWD/src/services/tool-access/catalog/.baseline-attention.ts"
+```
+
+Remove the three baseline files after the comparison. The probe alternates five
+samples per implementation and reports process CPU, elapsed time, actual query
+count, and returned rows. No provider calls or hosted traffic are generated.
+
 ## Reproduce the measurements
 
 Build workspace dependencies, then run from `server/`:
@@ -71,3 +106,35 @@ Catalog payload memory and policy-matching CPU still grow with the catalog.
 The measurements do not establish a safe production heap limit or the share of
 active installations affected. Verify restart bursts and sustained traffic on the
 actual deployment before reducing its temporary heap allowance.
+
+## Profile selector matching
+
+Effective profile resolution and profile summaries index each profile's include
+and exclude selectors once per decision. Catalog rows then use exact set
+membership checks for application, connection, catalog entry, tool name, and
+risk level. Exclusions still take precedence within a profile; effective profiles
+still contribute the union of their allowed tools. Null application selectors
+retain their exact-match behavior.
+
+These indexes live only for the current computation. Each resolver call still
+reads current company-scoped bindings, profiles, and rules. Query counts and
+returned database rows are unchanged. This reduces JavaScript matching work when
+a profile selects many individual tools; it does not cache authorization or
+remove the runtime assignment digest check.
+
+For a real PostgreSQL comparison, save `projection.ts` and `resolution.ts` from
+the baseline commit beside their current versions as `.baseline-projection.ts`
+and `.baseline-resolution.ts`. Change only the baseline resolver's projection
+import to `./.baseline-projection.js`. Then run from `server/`:
+
+```sh
+node --import tsx scripts/benchmark-tool-profile-matching.ts --baseline "$PWD/src/services/tool-access/profiles/.baseline-resolution.ts"
+```
+
+Remove the two baseline files afterward. The probe uses 1,890 catalog tools,
+1,575 individual include/exclude rules, one effective profile, and 12 agents. It
+checks full assignment-result equality, warms both versions, and alternates
+seven samples of ten resolutions. It reports actual query and returned-row
+counts, process CPU, and elapsed time. The installation dependency returns an
+empty list for this fixture, which has no installed connections. It does not
+measure provider work, whole-run latency, or hosted performance.
