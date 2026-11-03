@@ -19,7 +19,7 @@ function allowedScope(value: unknown, agentId: unknown, read: unknown, write: un
 }
 /** A test reports an observed access result; it does not qualify a future runtime. */
 export function appTestReport(reply: string, marker: string) {
-  const deniedAccess = /\bMorgan(?:['’]s)?\b[^.!?;\n]{0,45}\b(?:cannot|can't|could not|couldn't|is unable to|was unable to|is not allowed to|does not have)\b[^.!?;\n]{0,35}\b(?:read|access)\b/i.test(reply);
+  const deniedAccess = /\bMorgan(?:['’]s)?\b[^.!?;\n]{0,45}\b(?:cannot|can't|could not|couldn't|is unable to|was unable to|is not allowed to|does not have|doesn't have|has no|lacks)\b[^.!?;\n]{0,35}\b(?:read|access)\b/i.test(reply);
   const failedTest = /\b(?:test|read|access check)\s+(?:(?:has|had|was|is|did|returned|result|request)\s+){0,3}(?:failed|denied|unsuccessful|an? error|not succeed|not successful)\b/i.test(reply);
   return /Morgan/i.test(reply) && /read|page|launch_read/i.test(reply)
     && (/succeed|success|passed|allowed|can read|able to read|readable|has (?:read )?access|verified|retrieved|fetched/i.test(reply) || reply.includes(marker))

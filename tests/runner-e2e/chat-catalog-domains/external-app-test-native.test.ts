@@ -37,6 +37,8 @@ it.each([
   "Morgan cannot read the page; the test returned an error.",
   "Morgan cannot read the sample page, although this test succeeded.",
   "Morgan's read test failed; access was not verified.",
+  "Morgan has no read access to the page, although the test passed.",
+  "Morgan doesn't have read access to the page, although the test passed.",
 ])("rejects contradictory access/test outcome despite retaining all real successful read proof: %s", reply => {
   const o = authorizedTestObservation(); o.reply = reply; o.phaseReplies[0]!.body = reply;
   expect(o.state.decisions[0]!.invocation.status).toBe("succeeded");
