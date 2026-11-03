@@ -404,8 +404,8 @@ describe("PaperclipControlPlanePort conformance", () => {
   });
 
   it.each([
-    ["checkpoint", "detach"], ["result", "detach"], ["event", "detach"],
-    ["checkpoint", "abort"], ["result", "abort"], ["event", "abort"],
+    ["checkpoint", "detach"], ["result", "detach"], ["event", "detach"], ["batch", "detach"],
+    ["checkpoint", "abort"], ["result", "abort"], ["event", "abort"], ["batch", "abort"],
   ] as const)("revokes an in-flight %s on %s", async (operation, reason) => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
@@ -424,12 +424,16 @@ describe("PaperclipControlPlanePort conformance", () => {
       assertControllerActive: () => { if (detached) throw new Error("controller_detached"); },
     });
     await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
-    const mutate = () => operation === "event" ? port.appendEvent({
+    const nativeEvent: PrpEvent = {
       schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
       sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
       normalizedSessionId: identity.sessionId, eventType: "turn.interrupted", schemaVersion: 1,
       priority: 0, emittedAt: new Date().toISOString(), payload: { reason: "governed_wait" },
-    }, { signal: controller.signal }) : operation === "checkpoint"
+    };
+    const mutate = () => operation === "batch" ? port.appendEvents([1, 2].map(sourceSeq => ({
+      ...nativeEvent, sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      eventType: "item.delta", priority: 1, payload: { kind: "agentMessage", text: `chunk-${sourceSeq}` },
+    })), { signal: controller.signal }) : operation === "event" ? port.appendEvent(nativeEvent, { signal: controller.signal }) : operation === "checkpoint"
       ? port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity }, { signal: controller.signal })
       : port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }, { signal: controller.signal });
     let pending: Promise<unknown> | undefined;
@@ -462,6 +466,114 @@ describe("PaperclipControlPlanePort conformance", () => {
     await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
     await expect(replacement.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL })).resolves.toBeUndefined();
+  });
+
+  it("commits text batches before ordered callbacks and preserves redaction and duplicate receipts", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const privateKeyPem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const keyBody = privateKeyPem.split("\n")[1]!;
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha });
+    const observed: PrpEvent[] = [], duplicates: string[] = [], commitSizes: number[] = [];
+    const port = new PaperclipControlPlanePort(db, { ...identity, completionContractId: contractId,
+      completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `batch-${identity.runId}` }, {
+      privateKeyPem,
+      onCommittedEvent: async event => {
+        const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+        commitSizes.push(rows.length);
+        observed.push(event);
+      },
+      onDuplicateEvent: async event => { duplicates.push(event.sourceEventId); },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const events: PrpEvent[] = [keyBody.slice(0, 31), keyBody.slice(31), "after\u0000text"].map((text, index) => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${index + 1}`, sourceSeq: index + 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+      turnId: "batch-turn", itemId: "batch-item", eventType: "item.delta", schemaVersion: 1, priority: 1,
+      emittedAt: "2026-11-03T00:00:00.000Z", payload: { kind: "agentMessage", text },
+    }));
+    const notifications: string[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(identity.companyId, event => {
+      if (event.type === "heartbeat.run.event" && event.payload.runId === identity.runId) notifications.push(String(event.payload.seq));
+    });
+    try {
+      expect(await port.appendEvents(events)).toEqual([1, 2, 3].map(cursor => ({ cursor,
+        highestContiguousSourceSeq: 3, disposition: "committed" })));
+      expect(await port.appendEvents(events)).toEqual([1, 2, 3].map(cursor => ({ cursor,
+        highestContiguousSourceSeq: 3, disposition: "duplicate" })));
+    } finally { unsubscribe(); }
+    expect(commitSizes).toEqual([3, 3, 3]);
+    expect(observed.map(event => event.sourceEventId)).toEqual(events.map(event => event.sourceEventId));
+    expect(duplicates).toEqual(events.map(event => event.sourceEventId));
+    expect(notifications).toEqual(["1", "2", "3"]);
+    const saved = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(heartbeatRunEvents.seq);
+    expect(saved.map(row => row.payload?.prpEvent)).toEqual(observed);
+    expect(observed.map(event => event.payload.text).join("")).toContain("***REDACTED***");
+    expect(JSON.stringify(saved)).not.toContain(keyBody);
+    expect(JSON.stringify(saved)).toContain("after\\u0000text");
+    await expect(port.appendEvents([{ ...events[2]!, payload: { kind: "agentMessage", text: "changed" } }])).rejects.toThrow();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId)))[0]!.nextEventSeq).toBe(4);
+    const control: PrpEvent = { ...events[0]!, sourceKind: "control_plane", sourceInstanceId: `batch-${identity.runId}`,
+      sourceEventId: `batch-${identity.runId}:1`, payload: { kind: "agentMessage", text: "accepted evidence", evidenceOutcome: "accepted" } };
+    await expect(port.appendEvents([control])).rejects.toThrow("native_event_batch_invalid");
+    // A control-plane evidence event retains the singleton notification path.
+    await expect(port.appendEvent(control)).resolves.toEqual({ cursor: 4, highestContiguousSourceSeq: 1, disposition: "committed" });
+  });
+
+  it.each([false, true])("handles redaction expansion of an exact-size text batch atomically (later conflict=%s)", async conflict => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const privateKeyPem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const prefix = privateKeyPem.split("\n")[1]![0]!;
+    expect(prefix).toBe("M");
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `batch-size-${identity.runId}` };
+    const observed: PrpEvent[] = [], callbackRowCounts: number[] = [];
+    const port = new PaperclipControlPlanePort(db, binding, { privateKeyPem,
+      onCommittedEvent: async event => {
+        observed.push(event);
+        callbackRowCounts.push((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId))).length);
+      } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const textEvent = (sourceSeq: number, text: string): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+      turnId: "sized-turn", itemId: "sized-item", eventType: "item.delta", priority: 1,
+      emittedAt: "2026-11-03T00:00:00.000Z", payload: { kind: "agentMessage", text },
+    });
+    await port.appendEvent(textEvent(1, prefix)); // The redactor holds this possible secret prefix.
+    const batch = [textEvent(2, ""), textEvent(3, "")];
+    const overhead = batch.reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)), 0);
+    const padding = 64 * 1024 - overhead;
+    batch[0]!.payload.text = "x".repeat(Math.floor(padding / 2));
+    batch[1]!.payload.text = "x".repeat(padding - Math.floor(padding / 2));
+    expect(batch.reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)), 0)).toBe(64 * 1024);
+    if (conflict) {
+      const older = new PaperclipControlPlanePort(db, binding);
+      await older.appendEvent({ ...batch[1]!, payload: { ...batch[1]!.payload, text: "different stored payload" } });
+    }
+    const beforeRows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(heartbeatRunEvents.seq);
+    const [beforeRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    observed.length = 0; callbackRowCounts.length = 0;
+    if (conflict) {
+      await expect(port.appendEvents(batch)).rejects.toThrow("native_event_replay_conflict");
+      expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(heartbeatRunEvents.seq)).toEqual(beforeRows);
+      const [afterRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+      expect(afterRun.nextEventSeq).toBe(beforeRun.nextEventSeq);
+      expect(afterRun.eventCursorProjectionSeq).toBe(beforeRun.eventCursorProjectionSeq);
+      expect(observed).toEqual([]);
+    } else {
+      expect((await port.appendEvents(batch)).map(receipt => receipt.disposition)).toEqual(["committed", "committed"]);
+      expect(observed.map(event => event.sourceSeq)).toEqual([2, 3]);
+      expect(callbackRowCounts).toEqual([3, 3]);
+      expect(observed[0]!.payload.text).toBe(prefix + batch[0]!.payload.text);
+      expect(observed.reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)), 0)).toBe(64 * 1024 + 1);
+    }
   });
 
   it("persists panel activation under the authenticated run and recovers it across source replay", async () => {
