@@ -1,3 +1,6 @@
+import { readIdleDeadlineProof, deadlineWorkReplacement, type IdleDeadlineProof } from "./idle-deadline-proof.js";
+import type { DomainScheduledWake, IdleDeadlineReceipt } from "./idle-deadline-types.js";
+import type { IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import type { ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { readIdleIncomingWakeProof, incomingWakeWorkQuery, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
 import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
@@ -43,15 +46,18 @@ export interface IdleSleepDrainStatus {
 export interface IdleSleepSafety {
   version: 1 | 2 | 3;
   backgroundWork: "none" | "present" | "unknown";
-  scheduledWake?: ScheduledWake;
+  scheduledWake?: ScheduledWake | DomainScheduledWake;
   diagnostics?: IdleSleepDiagnostics;
   incomingWake?: IdleIncomingWakeCapability;
+  deadlineProof?: IdleDeadlineReceipt;
   apiWakeAdmission?: ApiWakeAdmission;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
   backgroundWork: "none" | "present" | "unknown";
   pluginIds: string[];
+  catalogGeneration?: string;
+  catalog?: IdlePluginCatalogEntry[];
 }>;
 
 // A failed turn may have successfully torn down its ephemeral allocation. A
@@ -290,7 +296,7 @@ export async function readIdleSleepSafety(
   now: () => number = Date.now,
   ownerId?: string,
   inspectLocalWork: (diagnostic?: IdleSleepDiagnosticSink) => Promise<IdleLocalWork> =
-    diagnostic => readIdleLocalWork({ diagnostic }),
+    diagnostic => readIdleLocalWork({ diagnostic, deadlineCapability: options.deadlineCapability }),
   inspectPlugins?: InspectIdlePlugins,
   prepareBackup?: () => Promise<boolean>,
   scheduledRoutines = false,
@@ -298,15 +304,21 @@ export async function readIdleSleepSafety(
   options: IdleSleepSafetyOptions = {},
 ): Promise<IdleSleepSafety> {
   let incomingProof: IdleIncomingWakeProof | undefined;
+  let deadlineProof: IdleDeadlineProof | undefined;
+  const deadlines = options.deadlineCapability?.deadlineCatalog === "domain_deadlines_v1";
   const diagnostic = options.collectDiagnostics ? createIdleSleepDiagnostics() : undefined;
   const report = (backgroundWork: IdleLocalWork, scheduledWake?: ScheduledWake): IdleSleepSafety => {
     const diagnostics = diagnostic?.report();
     if (backgroundWork === "none" && diagnostics?.checks.some(check =>
       check.state === "unknown" || check.state === "not_checked")) backgroundWork = "unknown";
-    return { version: backgroundWork === "none" && incomingProof ? 3 : backgroundWork === "none" && scheduledWake ? 2 : 1, backgroundWork,
+    if (backgroundWork === "none" && deadlines && (!deadlineProof || deadlineProof.blocked || !deadlineProof.generation)) backgroundWork = "unknown";
+    const wake = deadlineProof ? deadlineProof.scheduledWake : scheduledWake;
+    return { version: backgroundWork === "none" && (incomingProof || deadlineProof) ? 3 : backgroundWork === "none" && wake ? 2 : 1, backgroundWork,
       ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability,
         ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}) } : {}),
-      ...(backgroundWork === "none" && scheduledWake ? { scheduledWake } : {}),
+      ...(backgroundWork === "none" && deadlineProof?.generation ? { deadlineProof: {
+        catalog: "domain_deadlines_v1" as const, generation: deadlineProof.generation } } : {}),
+      ...(backgroundWork === "none" && wake ? { scheduledWake: wake } : {}),
       ...(diagnostics ? { diagnostics } : {}) };
   };
   const before = getDrainStatus();
@@ -324,6 +336,8 @@ export async function readIdleSleepSafety(
     diagnostic?.record("local.inspection", localFirst);
     if (localFirst !== "none" && !diagnostic) return report(localFirst);
     let quietPlugins: string[] = [];
+    let quietPluginGeneration: string | undefined;
+    let quietPluginCatalog: IdlePluginCatalogEntry[] | undefined;
     let pluginState: IdleLocalWork = "none";
     if (inspectPlugins) {
       const currentLocal = diagnostic ? idleWorkSnapshot() : localBefore;
@@ -338,7 +352,11 @@ export async function readIdleSleepSafety(
         pluginState = pluginWork.backgroundWork;
         diagnostic?.record("plugins.runtime_drain", pluginState);
         if (pluginState !== "none" && !diagnostic) return report(pluginState);
-        if (pluginState === "none") quietPlugins = pluginWork.pluginIds;
+        if (pluginState === "none") {
+          quietPlugins = pluginWork.pluginIds;
+          quietPluginGeneration = pluginWork.catalogGeneration;
+          quietPluginCatalog = pluginWork.catalog;
+        }
       }
     }
     if (diagnostic && !sameQuietHold(before, getDrainStatus(), now())) {
@@ -354,10 +372,35 @@ export async function readIdleSleepSafety(
         if (!ownerId || ownerId !== before.ownerId) return undefined;
         incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db });
       }
+      if (deadlines) {
+        if (!owned() || !scheduledRoutines || !scheduledIssueMonitors) return undefined;
+        const routine = await readIdleRoutineSchedule(tx, ownerId!, now());
+        const issue = await readIdleIssueSchedule(tx, ownerId!, now());
+        diagnostic?.record("routines.schedule", routine.inspectionComplete === false ? "unknown" : routine.blocked ? "present" : "none");
+        diagnostic?.record("issues.schedule", issue.inspectionComplete === false ? "unknown" : issue.blocked ? "present" : "none");
+        diagnostic?.expect(["deadlines.catalog"]);
+        failureReason = "deadlines.catalog";
+        if (routine.blocked || issue.blocked) deadlineProof = { blocked: true };
+        else {
+          scheduledWake = combineIdleSchedules(routine.scheduledWake, issue.scheduledWake, issue.generation);
+          deadlineProof = await readIdleDeadlineProof(tx, { ownerId: ownerId!, expiresAt: before.expiresAt!.getTime() }, {
+            now: now(), verifiedCapability: options.deadlineCapability,
+            quietPluginIds: quietPlugins, quietPluginGeneration, quietPluginCatalog,
+            scheduledWake, passiveGeneration: issue.generation,
+          });
+        }
+        diagnostic?.record("deadlines.catalog", deadlineProof.blocked ? "present" : "none");
+        if (deadlineProof.blocked && !diagnostic) return true;
+      }
+      failureReason = "durable.snapshot";
       const checks = WORK_CHECKS.filter(check =>
         (!scheduledRoutines || check.reason !== "routines")
         && (!scheduledIssueMonitors || check.reason !== "issues"))
-        .map(check => ({ ...check, query: incomingWakeWorkQuery(check.reason, incomingProof) ?? check.query }));
+        .map(check => {
+          const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
+          return { ...check, query: incomingWakeWorkQuery(check.reason, incomingProof,
+            deadlineProof?.githubContinuity?.connectionIds) ?? (replacement ? sql.raw(replacement) : check.query) };
+        });
       checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()}`));
       checks.push(workCheck("heartbeat_runs.budget_cancellation", sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`));
@@ -382,8 +425,9 @@ export async function readIdleSleepSafety(
         if (rows.length !== 1 || typeof rows[0]?.blocked !== "boolean") return undefined;
         found = rows[0].blocked;
       }
+      found ||= deadlineProof?.blocked ?? false;
       if (found && !diagnostic) return true;
-      if (scheduledRoutines) {
+      if (scheduledRoutines && !deadlines) {
         if (!owned()) return undefined;
         const schedule = await readIdleRoutineSchedule(tx, ownerId!, now());
         diagnostic?.record("routines.schedule", schedule.inspectionComplete === false ? "unknown" : schedule.blocked ? "present" : "none");
@@ -391,7 +435,7 @@ export async function readIdleSleepSafety(
         found ||= schedule.blocked && schedule.inspectionComplete !== false;
         scheduledWake = schedule.scheduledWake;
       }
-      if (scheduledIssueMonitors) {
+      if (scheduledIssueMonitors && !deadlines) {
         if (!scheduledRoutines || !owned()) return undefined;
         const schedule = await readIdleIssueSchedule(tx, ownerId!, now());
         diagnostic?.record("issues.schedule", schedule.inspectionComplete === false ? "unknown" : schedule.blocked ? "present" : "none");
@@ -438,13 +482,14 @@ export async function readIdleSleepSafety(
     diagnostic?.record("inspection.generation", "none");
     if (diagnostic && (localFirst === "unknown" || local === "unknown" || pluginState === "unknown")) return report("unknown");
     if (diagnostic && (blocked || localFirst === "present" || pluginState === "present")) return report("present");
-    if (local === "none" && scheduledWake && Date.parse(scheduledWake.nextWakeAt) <= now()) {
+    const finalWake = deadlineProof ? deadlineProof.scheduledWake : scheduledWake;
+    if (local === "none" && finalWake && Date.parse(finalWake.nextWakeAt) <= now()) {
       diagnostic?.record("inspection.hold", "unknown");
       return report("present");
     }
     // Legacy alarm kinds cannot be silently combined with a new ingress proof.
     // The negotiated deadline catalog supplies the composed v3 alarm separately.
-    if (incomingProof && scheduledWake) return report("unknown");
+    if (incomingProof && scheduledWake && !deadlineProof) return report("unknown");
     return report(local, scheduledWake);
   } catch {
     // Missing migrations, unknown state, malformed configuration, timeouts and
