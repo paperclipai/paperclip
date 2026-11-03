@@ -322,6 +322,13 @@ export function createChatPublicationFailures(db: Db, options: PublicationFailur
           publicationId: publication.id,
           error: failure,
           disposition: disposition.kind,
+          ...(providerAccepted
+            ? {
+                cause: redactSensitiveText(
+                  error instanceof Error ? error.message : String(error),
+                ).slice(0, MAX_ERROR_TEXT),
+              }
+            : {}),
         },
         "chat publication failed",
       );
