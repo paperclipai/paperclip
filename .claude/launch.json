@@ -41,6 +41,24 @@
         "cd ui && export ARTIFACT_DIRECTIONS_OUT_DIR=node_modules/.artifact-directions-dist && npx vite build --config vite.artifact-directions.config.mjs && npx vite preview --config vite.artifact-directions.config.mjs --port 5190 --strictPort"
       ],
       "port": 5190
+    },
+    {
+      "name": "needs-you-directions-dev",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd ui && npx vite --config vite.needs-you-directions.config.mjs --port 5200 --strictPort"
+      ],
+      "port": 5200
+    },
+    {
+      "name": "needs-you-directions",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd ui && export NEEDS_YOU_DIRECTIONS_OUT_DIR=node_modules/.needs-you-directions-dist && npx vite build --config vite.needs-you-directions.config.mjs && npx vite preview --config vite.needs-you-directions.config.mjs --port 5210 --strictPort"
+      ],
+      "port": 5210
     }
   ]
 }

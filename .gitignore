@@ -5,6 +5,7 @@ node_modules/
 dist/
 dist-preview/
 dist-flow-preview/
+ui/dist-needs-you-directions/
 server/ui-dist/
 server/dist-runtime/
 packages/paperclip-runner/runner/target/
