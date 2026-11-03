@@ -416,6 +416,11 @@ jobs:
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
 
+      - name: Typecheck the server in low-memory layers
+        env:
+          PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
+        run: pnpm --filter @paperclipai/server typecheck
+
       - name: Verify repository-wide CLI guidance safety
         run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
 
