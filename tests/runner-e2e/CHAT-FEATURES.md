@@ -217,7 +217,7 @@ overlap. Exact requirements and limitations appear in each case's preconditions.
 A declared credential does not establish whether its runtime reference exists.
 
 This lane runs the app and fixtures from candidate
-`36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383`. It retains the evaluated app from
+`43c44ccc823a8c972b247fa7159281887e6f5255`. It retains the evaluated app from
 `3b66c3c144360ddf32714a0742fd774b8ceafb16`. The first repair source added:
 owned SDK staging, public membership for three incidental human fixtures,
 company settings observation inside its original case deadline, and exact
@@ -227,7 +227,7 @@ secret, Morgan-only binding and privacy checks remain required.
 
 The manifest retains the original `de0941835cc8f0d01c982574ee258e110babdbeb`
 definition provenance and records each changed row field in `source.repairMetadata`.
-Case limits and models remain unchanged. The later repair source records its
+Case clocks and the controller model remain unchanged. Source3's explicit Studio144 native-accounting revision is described below. The later repair source records its
 query and outcome changes explicitly; see Repair source 2 below.
 Original failed measurements stay historical. Trusted selection, evidence transfer
 and publishing use the workflow's immutable master revision. Each result records
@@ -296,10 +296,20 @@ reach only cases that declare them. External inputs use the existing selected-ca
 private-input owner, disposable-resource checks and oracle commitments.
 Unconfigured inputs remain setup blockers.
 
-### Repair source 2 (candidate only)
+### Historical repair source 2 (2026-11-03)
 
-The catalog now pins candidate `36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383`, succeeding `9ab0f951a5b5990c266ef4456610e0a0775aa334`. It carries the reviewed fixture, scoped observation, version-readback and evidence-readiness repairs. The checked static descriptor snapshot is byte-exact to this candidate and its digest is verified. Runtime descriptors are synchronized with the actual declarations; all 242 lazy factories must pass the real no-callback consistency check, together with the two legacy-cell controls, before each new repair-batch GO. The previous candidate's mismatched metadata caused launch 1690 to be cancelled before case/model work; it is an operational attempt, not a feature result.
+On 2026-11-03, repair source 2 pinned candidate `36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383`, succeeding `9ab0f951a5b5990c266ef4456610e0a0775aa334`. It carries the reviewed fixture, scoped observation, version-readback and evidence-readiness repairs. The checked static descriptor snapshot is byte-exact to this candidate and its digest is verified. Runtime descriptors are synchronized with the actual declarations; all 242 lazy factories must pass the real no-callback consistency check, together with the two legacy-cell controls, before each new repair-batch GO. The previous candidate's mismatched metadata caused launch 1690 to be cancelled before case/model work; it is an operational attempt, not a feature result.
 
 The manifest keeps the original definition source and values, with explicit scoped changes: Fast response names the requested product feature; goal-tree and authored-skill outcomes use the product-supported optional-owner and ordinary navigation contracts; question delivery/validation and company-secret setup declare their reviewed oracle versions. Each new measurement binds this candidate and the exact changed definition; earlier grades and the 244-case gate are unchanged. SDK scan-audit capture improves private failure diagnosis only: rejection, evidence requirements and privacy bounds remain in force, and the other SDK cases stay held until the finding is understood.
 
 Workflow, model, case clocks, native-run bounds, credentials, protected reporting and case identities do not change. The full harness TypeScript graph has not been qualified by local pure tests; source import/admission and the existing credential-free remote Runner build remain required before native queries. Static TestOps descriptions may still show the original definition until a separate idempotent metadata reconciliation at a safe source boundary.
+
+### Repair source 3 (2026-11-03; candidate only)
+
+The current target is the canonical revision above. It adds the reviewed skill import guidance, version-aware Studio sample checks, scoped app review/test and team-auth prerequisites, and the synthetic announcement-dismissal input. The core guidance PR remains unmerged; candidate-owned catalogs carry that explicit runtime/tool-description change. App testing declares its changed setup context and outcome. The exact human query is preserved.
+
+Studio test 144 alone changes native accounting from minimum/maximum 2/2 to 2/3. Acceptance requires all three genuine settled turns: initial CEO, actual Studio worker, and exactly one source-bound completion delivery. The original 540-second case clock, controller, one human request and all other case limits remain fixed. The manifest records each previous/current field against the original definition source; no old grade or catalog pass gate is rewritten.
+
+The SDK public-input registry is generated from the committed candidate tree. Compiler, parser, Zod, lock runtime identities, scanner and canary build certificates are unchanged. This does not establish the original SDK detector or a plugin pass. Plugin 558 remains held until genuine canary build evidence is reauthenticated. The public announcement fixture is one reviewed synthetic 443-byte JSON under an isolated staging prefix; production announcements and the global index are untouched. Each original worker process still selects one case, so only the dismissal case enables that input.
+
+The full-catalog private evidence policy binds the launcher digest from the same reviewed manifest as the immutable candidate target. Every final GO reads `launch.ts` from that exact Git object and validates its digest against every selected singleton policy before submission. The legacy pilot launcher digest remains separately pinned.

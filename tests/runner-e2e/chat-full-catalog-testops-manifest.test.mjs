@@ -23,12 +23,11 @@ test('the manifest joins all244 source YAML scenarios without importing a domain
   for (const scenario of scenarios) {
     const actual = row(scenario.id);
     const override = field => manifest.source.repairMetadata.changedFields.find(change => change.key === scenario.id && change.field === field);
-    for (const [field, original] of [['originalQuery', scenario.query], ['expectedOutcome', scenario.expected_outcome]]) {
+    for (const [field, original] of [['originalQuery', scenario.query], ['originalContext', scenario.context], ['expectedOutcome', scenario.expected_outcome]]) {
       const change = override(field);
       if (change) { assert.equal(change.previous, original); assert.equal(actual[field], change.current); }
       else assert.equal(actual[field], original);
     }
-    assert.equal(actual.originalContext, scenario.context);
     assert.ok(!Object.hasOwn(actual, 'status') && !Object.hasOwn(actual, 'passed'));
   }
 });
@@ -103,8 +102,8 @@ test('foreign identity, duplicated case and changed run-bound metadata are rejec
 test('repair source metadata binds the corrected candidate and explicit changed definitions', () => {
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
-  assert.equal(repair.previousTargetSha, '9ab0f951a5b5990c266ef4456610e0a0775aa334');
-  assert.equal(manifest.targetSha, '36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383');
+  assert.equal(repair.previousTargetSha, '36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383');
+  assert.equal(manifest.targetSha, '43c44ccc823a8c972b247fa7159281887e6f5255');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -113,24 +112,138 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(declarations.length, 242);
   assert.equal(new Set(declarations.map(value => value.scenarioId)).size, 242);
   assert.deepEqual(repair.changedFields.map(value => [value.key, value.field]), [
-    ['agents.choose-primary', 'sourceFiles'],
-    ['companies.agent-observability', 'sourceFiles'], ['companies.configure-decision-model', 'sourceFiles'],
-    ['companies.fast-responses', 'sourceFiles'], ['companies.fast-responses', 'originalQuery'],
-    ['companies.prompt-injection-guard', 'sourceFiles'],
-    ['goals.create-goal-tree', 'oracleVersion'], ['goals.create-goal-tree', 'expectedOutcome'],
-    ['questions-and-approvals.duplicate-answer', 'oracleVersion'], ['questions-and-approvals.multi-part-question', 'oracleVersion'],
-    ['secrets.configure-company-secret', 'oracleVersion'],
-    ['skills.author-skill', 'sourceFiles'], ['skills.author-skill', 'oracleVersion'], ['skills.author-skill', 'expectedOutcome'],
-    ['skills.enable-for-agent', 'sourceFiles'], ['skills.explicit-restriction', 'sourceFiles'],
-    ['skills.find-and-install', 'sourceFiles'], ['skills.fork-read-only', 'sourceFiles'], ['skills.review-update', 'sourceFiles'],
-  ]);
+  [
+    "agents.choose-primary",
+    "sourceFiles"
+  ],
+  [
+    "app-permissions.ask-before-action",
+    "sourceFiles"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "sourceFiles"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "oracleVersion"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "originalContext"
+  ],
+  [
+    "app-permissions.test-as-agent",
+    "expectedOutcome"
+  ],
+  [
+    "companies.agent-observability",
+    "sourceFiles"
+  ],
+  [
+    "companies.configure-decision-model",
+    "sourceFiles"
+  ],
+  [
+    "companies.fast-responses",
+    "sourceFiles"
+  ],
+  [
+    "companies.fast-responses",
+    "originalQuery"
+  ],
+  [
+    "companies.prompt-injection-guard",
+    "sourceFiles"
+  ],
+  [
+    "goals.create-goal-tree",
+    "oracleVersion"
+  ],
+  [
+    "goals.create-goal-tree",
+    "expectedOutcome"
+  ],
+  [
+    "navigation-preferences.dismiss-announcement",
+    "sourceFiles"
+  ],
+  [
+    "navigation-preferences.dismiss-announcement",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.duplicate-answer",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.multi-part-question",
+    "oracleVersion"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "oracleVersion"
+  ],
+  [
+    "skills.author-skill",
+    "sourceFiles"
+  ],
+  [
+    "skills.author-skill",
+    "oracleVersion"
+  ],
+  [
+    "skills.author-skill",
+    "expectedOutcome"
+  ],
+  [
+    "skills.enable-for-agent",
+    "sourceFiles"
+  ],
+  [
+    "skills.explicit-restriction",
+    "sourceFiles"
+  ],
+  [
+    "skills.find-and-install",
+    "sourceFiles"
+  ],
+  [
+    "skills.fork-read-only",
+    "sourceFiles"
+  ],
+  [
+    "skills.review-update",
+    "sourceFiles"
+  ],
+  [
+    "skills.studio-test",
+    "sourceFiles"
+  ],
+  [
+    "skills.studio-test",
+    "oracleVersion"
+  ],
+  [
+    "skills.studio-test",
+    "maximumRuns"
+  ],
+  [
+    "teams.configure-team",
+    "sourceFiles"
+  ],
+  [
+    "teams.configure-team",
+    "oracleVersion"
+  ]
+]);
   for (const change of repair.changedFields) {
     assert.deepEqual(row(change.key)[change.field], change.current);
     assert.notDeepEqual(change.current, change.previous);
   }
-  assert.equal(repair.descriptorChanges.length, 19);
-  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 18);
-  assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['oracleVersion', 'setupPolicy', 'sourceFiles']);
+  assert.equal(repair.descriptorChanges.length, 30);
+  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 23);
+  assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
     assert.notDeepEqual(change.current, change.previous);
     const declaration = declarations.find(value => value.scenarioId === change.key);
@@ -139,7 +252,21 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     if (Object.hasOwn(row(change.key), change.field)) assert.deepEqual(row(change.key)[change.field], change.current);
   }
   assert.deepEqual(repair.changedDefinitionFiles.map(value => value.path), [
-    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml',
+    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml', 'tests/runner-e2e/chat-scenarios/app-permissions.yaml',
   ]);
   assert.ok(repair.changedDefinitionFiles.every(value => /^[a-f0-9]{64}$/.test(value.sha256)));
+  for (const declaration of declarations) {
+    const value = row(declaration.scenarioId);
+    assert.deepEqual(value.sourceFiles, declaration.sourceFiles);
+    assert.equal(value.oracleVersion, declaration.oracleVersion);
+    assert.equal(value.minimumRuns, declaration.minimumRunCount ?? declaration.expectedRunCount);
+    assert.equal(value.maximumRuns, declaration.expectedRunCount);
+    assert.equal(value.declaredTurnTimeoutMs, declaration.turnTimeoutMs);
+    assert.equal(value.attemptTimeoutMs, declaration.attemptTimeoutMs);
+  }
+  assert.deepEqual(repair.changedFields.filter(change => ['minimumRuns', 'maximumRuns'].includes(change.field)), [{ key: 'skills.studio-test', field: 'maximumRuns', previous: 2, current: 3 }]);
+  assert.deepEqual(repair.runtimeConditions.studio144Accounting, { key: 'skills.studio-test', previousMinimumRuns: 2, previousMaximumRuns: 2, minimumRuns: 2, maximumRuns: 3, requiredActualAcceptedRuns: 3, originalAttemptTimeoutMs: 540000, humanMessages: 1, condition: 'Initial CEO + real Studio worker + exactly one source-bound completion delivery;2-run no-delivery positive is rejected.' });
+  assert.equal(repair.runtimeConditions.toolGuidance106.corePRUnmerged, true);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.scannerAndCanaryCertificatesUnchanged, true);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.plugin558StillHeld, true);
 });
