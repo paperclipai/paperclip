@@ -44,6 +44,12 @@ export interface OpenCodeMcpBridge {
   close(): Promise<void>;
 }
 
+type FinishInputRejection = {
+  input: unknown;
+  callId: string;
+  validationCategory: "root" | "continuation" | "other";
+};
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 // Native app results/pages are capped at 500 KB before reaching this bridge.
@@ -71,14 +77,17 @@ export async function startOpenCodeMcpBridge(
   const finishSchemaSha256 = finishSchema && options.onDiagnostic
     ? createHash("sha256").update(JSON.stringify(finishSchema)).digest("hex") : undefined;
   let rejectionDiagnostics = 0;
-  const diagnoseFinishInput = (stage: "offered" | "input_rejected", input?: unknown) => {
+  const diagnoseFinishInput = (rejection?: FinishInputRejection) => {
     if (!finishSchemaSha256 || !options.onDiagnostic) return;
-    if (stage === "input_rejected" && rejectionDiagnostics++ >= 8) return;
+    if (rejection && rejectionDiagnostics++ >= 8) return;
     const diagnostic = {
-      schema: "paperclip.opencode.finish-input-diagnostic/v1", stage, schemaSha256: finishSchemaSha256,
-      ...(stage === "input_rejected" ? {
-        rootShape: inputShape(input),
-        continuationShape: inputShape(isRecord(input) ? input.continuation : undefined),
+      schema: "paperclip.opencode.finish-input-diagnostic/v1",
+      stage: rejection ? "input_rejected" : "offered", schemaSha256: finishSchemaSha256,
+      ...(rejection ? {
+        callIdSha256: createHash("sha256").update(rejection.callId).digest("hex"),
+        validationCategory: rejection.validationCategory,
+        rootShape: inputShape(rejection.input),
+        continuationShape: inputShape(isRecord(rejection.input) ? rejection.input.continuation : undefined),
       } : {}),
     };
     try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
@@ -113,7 +122,7 @@ export async function startOpenCodeMcpBridge(
     await closeServer(server);
     throw new Error("OpenCode MCP bridge failed to bind a loopback port");
   }
-  diagnoseFinishInput("offered");
+  diagnoseFinishInput();
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     secret,
@@ -181,7 +190,7 @@ async function handleRequest(
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
-    diagnoseFinishInput: (stage: "offered" | "input_rejected", input?: unknown) => void;
+    diagnoseFinishInput: (rejection?: FinishInputRejection) => void;
   },
 ): Promise<void> {
   setSecurityHeaders(response);
@@ -267,7 +276,12 @@ async function handleRequest(
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
-    if (tool === PRP_COMPLETION_TOOL_NAME) context.diagnoseFinishInput("input_rejected", params.arguments);
+    if (tool === PRP_COMPLETION_TOOL_NAME) {
+      const errors = validator?.errors ?? [];
+      const validationCategory = errors.some(error => error.instancePath === "/continuation" || error.instancePath.startsWith("/continuation/"))
+        ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
+      context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
+    }
     const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
     writeRpc(response, id, {
       isError: true,
