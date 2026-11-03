@@ -38,8 +38,6 @@ export function EmailConnectionAccess({
   const grantsView = useQueryView(grants);
   const installsView = useQueryView(installs);
   const failedView = [grantsView, installsView].find((view) => view.kind === "error");
-  if (grants.isLoading || installs.isLoading || grantsView.kind === "reconnecting" || installsView.kind === "reconnecting")
-    return <p className="text-sm text-muted-foreground">Loading access…</p>;
   if (failedView)
     return (
       <QueryErrorState
@@ -49,6 +47,8 @@ export function EmailConnectionAccess({
         retrying={failedView.isFetching}
       />
     );
+  if (grants.isLoading || installs.isLoading || grantsView.kind === "reconnecting" || installsView.kind === "reconnecting")
+    return <p className="text-sm text-muted-foreground">Loading access…</p>;
   const active = grants.data?.grants.filter((g) => g.status === "active") ?? [];
   const everyone = active.some((g) => g.kind === "organization");
   const personal = active.find((g) => g.kind === "user");

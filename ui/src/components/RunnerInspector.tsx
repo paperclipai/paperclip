@@ -736,7 +736,7 @@ export function RunnerInspector({
         loadAllRunEvents(runId),
       ]);
       // Superseded by a newer denial or deletion: do not read the raw trace.
-      if (rawTraceAccessEpochRef.current !== loadEpoch) return null;
+      if (rawTraceAccessEpochRef.current !== loadEpoch || rawTraceAccessRef.current?.phase === "deleting") return null;
       const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
       const trace = canRaw
         ? await heartbeatsApi.providerTrace(runId)
@@ -744,7 +744,7 @@ export function RunnerInspector({
       return { loadEpoch, canRaw, trace, events: nextEvents };
     },
     onSuccess: (result) => {
-      if (!result || rawTraceAccessEpochRef.current !== result.loadEpoch) return;
+      if (!result || rawTraceAccessEpochRef.current !== result.loadEpoch || rawTraceAccessRef.current?.phase === "deleting") return;
       const access: RawTraceAccess = {
         runId,
         allowed: result.canRaw,

@@ -723,6 +723,31 @@ describe("RunnerInspector disconnect handling", () => {
     vi.clearAllMocks();
   });
 
+  it("does not grant trace controls when a recovery read starts during deletion", async () => {
+    traceMock.mockResolvedValue(traceInspection("run-1", "retained-redacted-frame"));
+    const pendingDelete = deferred<void>();
+    deleteMock.mockReturnValue(pendingDelete.promise);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(); await flush();
+    expect(container.textContent).toContain("Reveal exact frame");
+    const traceReads = traceMock.mock.calls.length;
+    const eventReads = eventsMock.mock.calls.length;
+    flushSync(() => [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Delete trace"))!.click());
+    expect(deleteMock).toHaveBeenCalledWith("run-1");
+    probe.mockResolvedValue({ reachable: false, retryAfterMs: null });
+    store.reportError(unavailable()); await flush();
+    probe.mockResolvedValue({ reachable: true, retryAfterMs: null });
+    store.probeNow(); await flush();
+    expect(store.getSnapshot().status).toBe("online");
+    expect(eventsMock.mock.calls.length).toBeGreaterThan(eventReads);
+    expect(traceMock).toHaveBeenCalledTimes(traceReads);
+    expect(container.textContent).not.toContain("Reveal exact frame");
+    expect(container.textContent).not.toContain("Download exact trace");
+    expect(container.textContent).not.toContain("Delete trace");
+    pendingDelete.resolve(); await flush();
+    expect(container.textContent).not.toContain("retained-redacted-frame");
+  });
+
   it("keeps the loaded inspection on screen when the refetch after an outage fails transiently", async () => {
     eventsMock.mockResolvedValue([event("run-1", 9)]);
     traceMock.mockResolvedValue(traceInspection("run-1", "run-1-redacted"));
