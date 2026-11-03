@@ -4,7 +4,7 @@ import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notificati
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { and, desc, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, DrizzleQueryError, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueRecoveryActions, workspaceOperations } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
@@ -116,7 +116,9 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
 }
 
 function isUniqueRecoveryActionConflict(error: unknown) {
-  const maybe = error as { code?: string; constraint?: string; message?: string } | null;
+  const maybe = (error instanceof DrizzleQueryError ? error.cause : error) as {
+    code?: string; constraint?: string; message?: string;
+  } | null;
   return Boolean(
     maybe &&
       maybe.code === "23505" &&
