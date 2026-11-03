@@ -1208,6 +1208,34 @@ slows `tsc` by up to 20 times when the live heap goes above the limit.
 Docker image sets `PAPERCLIP_TSC_EMIT_ONLY=1` for that build, which emits
 JavaScript without checks or declarations.
 
+Test projects outside `pnpm -r` import server source through relative paths. Each
+project's `tsconfig.layers.json` reads that source as layer declarations. This
+command builds the declarations and then checks every project:
+
+```sh
+node scripts/typecheck-test-projects.mjs
+```
+
+Name a project to check only that project. `pnpm test:e2e:runner:typecheck` and
+`pnpm test:lifecycle-baseline:typecheck` do this for their projects. If the memory
+available to the task is limited, add `--low-memory`, or set
+`PAPERCLIP_TYPECHECK_LOW_MEMORY=1` for the pnpm commands.
+
+The command fails if a project loads server source, because that is what makes
+these programs large. It does not limit memory. CI runs it with
+`--reuse-declarations` straight after the server typecheck, so it does not build
+the declarations again. Do not use that option when the declarations can be stale.
+
+Add each new test project that imports server source to `PROJECTS` in
+`scripts/typecheck-test-projects.mjs`.
+
+Keep the project references out of each project's `tsconfig.json`. Vitest reads
+that file, and it fails when a referenced config does not exist yet. The
+`tsconfig.json` files remain single programs for editors, and
+`tests/runner-e2e/native-completion-checks.mjs` still checks that project as one
+program. That program peaks at about 15 GiB at default settings and about 8 GiB on
+one thread.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its
