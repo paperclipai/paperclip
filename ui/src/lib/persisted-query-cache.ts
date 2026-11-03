@@ -54,18 +54,20 @@ function browserStorage(): CacheStorage | null {
   try { return typeof window === "undefined" ? null : window.localStorage; } catch { return null; }
 }
 
+// Native Storage can change enumeration order after a deletion.
+const storageKeys = (storage: CacheStorage) => Array.from({ length: storage.length }, (_, i) => storage.key(i))
+  .filter((key): key is string => key !== null);
+
 function removeRecords(storage: CacheStorage) {
-  for (let i = storage.length - 1; i >= 0; i -= 1) {
-    const key = storage.key(i);
-    if (key?.startsWith(QUERY_CACHE_PREFIX)) storage.removeItem(key);
+  for (const key of storageKeys(storage)) {
+    if (key.startsWith(QUERY_CACHE_PREFIX)) storage.removeItem(key);
   }
 }
 
 function removeUserRecords(storage: CacheStorage, userId: string, keepRevision?: string | null) {
   const prefix = `${QUERY_CACHE_PREFIX}${encodeURIComponent(userId)}:`;
-  for (let i = storage.length - 1; i >= 0; i -= 1) {
-    const key = storage.key(i);
-    if (!key?.startsWith(prefix)) continue;
+  for (const key of storageKeys(storage)) {
+    if (!key.startsWith(prefix)) continue;
     if (keepRevision !== undefined) {
       try { if ((JSON.parse(storage.getItem(key) ?? "null")?.revision ?? null) === keepRevision) continue; } catch {}
     }
@@ -304,12 +306,13 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         if (serialized.length <= MAX_RECORD_BYTES) storage.setItem(key, serialized);
         else storage.removeItem(key);
       }
-      for (let i = storage.length - 1; i >= 0; i -= 1) {
-        const key = storage.key(i);
-        if (key?.startsWith(QUERY_CACHE_PREFIX) && !expected.has(key)) storage.removeItem(key);
+      const userPrefix = `${QUERY_CACHE_PREFIX}${encodeURIComponent(userId)}:`;
+      for (const key of storageKeys(storage)) {
+        if (key.startsWith(userPrefix) && !expected.has(key)) storage.removeItem(key);
       }
-      if (ownerRevision !== revisionFor(userId)) { suspendAccount(); return; }
-      storage.setItem(QUERY_CACHE_ACTIVE, userId);
+      const active = storage.getItem(QUERY_CACHE_ACTIVE);
+      if (ownerRevision !== revisionFor(userId) || (active && active !== userId)) { suspendAccount(); return; }
+      if (active !== userId) storage.setItem(QUERY_CACHE_ACTIVE, userId);
     } catch {}
   };
   const unsubscribe = client.getQueryCache().subscribe(event => {

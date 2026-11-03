@@ -37,6 +37,63 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
+  it("preserves another account published while this tab is flushing", () => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    const write = first.storage.setItem.bind(first.storage);
+    const bobKey = `${QUERY_CACHE_PREFIX}bob:root`;
+    const bobRecord = JSON.stringify({ userId: "bob", revision: null, state: { queries: [] } });
+    let published = false;
+    vi.spyOn(first.storage, "setItem").mockImplementation((key, value) => {
+      write(key, value);
+      if (!published && key === `${QUERY_CACHE_PREFIX}alice:root`) {
+        published = true;
+        write(bobKey, bobRecord);
+        write(QUERY_CACHE_ACTIVE, "bob");
+      }
+    });
+    first.handle.flush();
+    expect(first.storage.getItem(bobKey)).toBe(bobRecord);
+    expect(first.storage.getItem(QUERY_CACHE_ACTIVE)).toBe("bob");
+    expect(first.client.getQueryData(queryKeys.auth.session)).toBeNull();
+    expect(first.client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+  });
+
+  it("removes every saved account record when native storage reorders keys during deletion", () => {
+    const storage = new MemoryStorage();
+    const remove = storage.removeItem.bind(storage);
+    vi.spyOn(storage, "removeItem").mockImplementation(key => {
+      remove(key);
+      const entries = [...storage.values.entries()];
+      if (entries.length > 1) entries.push(entries.shift()!);
+      storage.values = new Map(entries);
+    });
+    const first = setup(storage); seed(first.client);
+    first.client.setQueryData(queryKeys.companies.list("alice"), { companies: Array.from({ length: 8 }, (_, i) => ({ id: `company-${i}` })) });
+    first.handle.flush();
+    expect([...storage.values.keys()].filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toHaveLength(10);
+    first.handle.clear();
+    expect([...storage.values.keys()].filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toEqual([]);
+    expect(storage.getItem(QUERY_CACHE_CLEARED)).toContain('"alice"');
+  });
+
+  it("refetches an active session after rejecting a pre-sign-out response without restoring saved reads", async () => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    const second = setup(first.storage);
+    let release!: (value: ReturnType<typeof session>) => void;
+    const lookup = vi.fn().mockImplementationOnce(() => new Promise<ReturnType<typeof session>>(resolve => { release = resolve; })).mockResolvedValue(null);
+    const observer = new QueryObserver(second.client, { queryKey: queryKeys.auth.session, queryFn: lookup, staleTime: 0, retry: false });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      first.handle.clear();
+      release(session());
+      await vi.waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => { expect(observer.getCurrentResult().data).toBeNull(); expect(observer.getCurrentResult().isFetching).toBe(false); });
+      second.handle.flush();
+      expect(second.client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+      expect([...first.storage.values.keys()].filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toEqual([]);
+    } finally { unsubscribe(); }
+  });
+
   it.each(["sign-out", "session-ended", "local-sign-out", "revision-only"])("rejects an older session response delivered before the %s storage event", async ended => {
     const first = setup(); seed(first.client); first.handle.flush();
     const second = ended === "local-sign-out" ? first : setup(first.storage);
