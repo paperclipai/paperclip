@@ -120,7 +120,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
           throw error;
         }
         // Setup-only owner settling never substitutes for the later full quiet window.
-        await server.settled();
+        await server.settled(500, 0, { managedSetupRecovery: true });
         const earlyDrain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));
         try {
           const earlyCapabilities = { incomingWake: await broker.capability(earlyDrain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };

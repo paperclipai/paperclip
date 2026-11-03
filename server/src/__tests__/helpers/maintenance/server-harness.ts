@@ -272,14 +272,18 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       },
       freeze: () => request<Snapshot>("freeze"),
       get output() { return output; },
-      async settled(quietMs = 500, deferredStartupHolds = 0) {
+      async settled(quietMs = 500, deferredStartupHolds = 0, settleOptions: { managedSetupRecovery?: true } = {}) {
+        // Actual managed recovery reconstructs scoped writes on its existing 30s
+        // cadence. Setup needs that interval + 500ms quiet + 500ms observation
+        // margin; this option does not alter worker timing or idle admission.
+        const settleTimeoutMs = settleOptions.managedSetupRecovery ? 31_000 : 30_000;
         const diagnostic = options.captureIdleWork ? (await import('./idle-work-capture.js')).createSettledWorkSamples(
           () => [...captureSources!].map(([id, callers]) => ({ id, callers }))) : undefined;
         const diagnosticId = diagnostic ? ++settledDiagnosticId : undefined;
         let failure: { error: unknown } | undefined;
         let previous = -1, quietSince = Date.now();
         try {
-          for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+          for (const deadline = Date.now() + settleTimeoutMs; Date.now() < deadline;) {
             const snapshot = await request<Snapshot>("snapshot");
             diagnostic?.sample(snapshot, proxy.queries.length, proxy.pending);
             if (proxy.errors.length) throw new AggregateError(proxy.errors, "PostgreSQL observer failed");
@@ -292,11 +296,11 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
           }
           const snapshot = await request<Snapshot>("snapshot");
           diagnostic?.sample(snapshot, proxy.queries.length, proxy.pending);
-          throw new Error(`Maintenance did not settle: ${JSON.stringify({ queries: proxy.queries.length, pending: proxy.pending, snapshot })}\n${output.slice(-12_000)}`);
+          throw new Error(`Maintenance did not settle: ${JSON.stringify({ timeoutMs: settleTimeoutMs, quietMs, queries: proxy.queries.length, pending: proxy.pending, snapshot })}\n${output.slice(-12_000)}`);
         } catch (error) { failure = { error }; throw error; }
         finally {
           if (diagnostic) {
-            try { await writeFile(path.join(directory, `idle-work-settled-samples-${diagnosticId}.json`), JSON.stringify(diagnostic.report(), null, 2)); }
+            try { await writeFile(path.join(directory, `idle-work-settled-samples-${diagnosticId}.json`), JSON.stringify({ ...diagnostic.report(), settleDeadlineMs: settleTimeoutMs }, null, 2)); }
             catch (error) { if (failure) throw new AggregateError([failure.error, error], 'Original settling and passive evidence failed'); throw error; }
           }
         }

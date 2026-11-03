@@ -60,7 +60,7 @@ describe.skipIf(!requested)('actual managed fixture preflight (no browser, coold
           const activity = await server.snapshot();
           await writeFile(path.join(server.directory, 'managed-preflight-setup.json'), JSON.stringify({ company, agentId: agent.id, keyId: key.id, issueId: issue.id, executions: executions.count, activity, s3: s3.snapshot() }, null, 2));
           expect(activity.managed?.apiActivityActive).toBe(true);
-          await server.settled();
+          await server.settled(500, 0, { managedSetupRecovery: true });
           const drain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));
           try {
             const capabilities = { incomingWake: await broker.capability(drain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };
