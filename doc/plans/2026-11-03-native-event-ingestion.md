@@ -6,8 +6,9 @@ dependent batching PR, each with correctness and measured incremental evidence.
 
 ## Fixed workload and measurement contract
 
-- B0 is `2e37c73c05fe84aead1883b72fdf6b1653b58c2a`; B1 contains only the cursor
-  change; B2 adds batching. Record exact tested commits and dirty-file hashes.
+- Fresh B0 is `83b5f7d486e70e484acd9a41bc957054f4e10175`; B1 contains only the
+  cursor change; B2 adds batching. The original `2e37c73c` control remains
+  historical calibration evidence. Record exact tested commits and dirty hashes.
 - Use the actual append service with disposable PostgreSQL and 1k, 10k and 100k
   histories. Include singleton writes, duplicate replay, sparse sequences and
   late gap closure. Setup and warmup are outside measured intervals.
@@ -58,12 +59,15 @@ Baseline SQL-only investigation: PostgreSQL 18.1, Node 26.4.0, five warm samples
 per size. The current count/max query examined 1k / 10k / 100k index entries, with
 median execution times 0.063 / 0.504 / 5.243 ms. This is mechanism evidence only.
 
-Current state: implementation in progress. No candidate speedup has been
-established. The compiled B0 browser fixture passed functional qualification;
-paired performance and live-provider acceptance remain outstanding. Dependencies
-are installed and the additive migration was
-generated with the repository command. The lead owns integration and measurement
-windows; workers own cursor services, benchmark harness and isolated runtime work.
+Current state: the full real-PostgreSQL cursor comparison passed its frozen
+performance and correctness gates. All six 10k/100k timing cases beat observed
+baseline noise in five of five pairs; the 1k cases pass nonregression. The
+[measurement report](../benchmarks/2026-11-03-native-event-ingestion.md) retains
+all paired samples, units, SQL plans and the small-history gap-closure tradeoff.
+The live-provider browser journey passed separately. Application performance,
+batching performance and assembled diagnostic qualification remain outstanding.
+The additive migration was generated with the repository command. The lead owns
+integration and quiet measurement windows.
 
 Before delivery: run focused PostgreSQL/runtime tests, migration checks, required
 typecheck/test/build gates, then the real browser native-run/tool/result/reload
