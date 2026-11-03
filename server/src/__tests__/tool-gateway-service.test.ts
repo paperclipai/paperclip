@@ -2790,6 +2790,60 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(requests[1]?.status).toBe("pending");
   });
 
+  it.each(["success", "failure"] as const)("reports a saved unknown outcome after a stopped test call returns %s", async mode => {
+    const { company, agent } = await createRunFixture(db);
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "board", status: "active", membershipRole: "owner" });
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow test reads"));
+    let entered!: () => void, resume!: () => void;
+    const sent = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      const payload = JSON.parse(String(init.body)); entered(); await gate;
+      if (mode === "failure") throw new Error("fictional provider failure");
+      return Response.json({ jsonrpc: "2.0", id: payload.id, result: { content: [{ type: "text", text: "fictional" }] } });
+    } });
+    const attempt = gateway.executeTestCall({ companyId: company.id, connectionId: connection.id, agentId: agent.id,
+      userId: "board", toolName: "needs_input", parameters: {} });
+    try {
+      await Promise.race([sent, attempt.then(result => { throw new Error(`Test call finished before provider: ${JSON.stringify(result)}`); })]);
+      const [invocation] = await db.select().from(toolInvocations);
+      await db.update(toolInvocations).set({ status: "failed", errorCode: "tool_execution_outcome_unknown" })
+        .where(eq(toolInvocations.id, invocation.id));
+    } finally { resume(); }
+    expect(await attempt).toMatchObject({ error: { reasonCode: "tool_execution_outcome_unknown" } });
+    expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.eventType, "call_completed"))).toHaveLength(0);
+  });
+
+  it("settles a run-bound invocation awaiting approval when no request was created", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const [pending] = await db.insert(toolInvocations).values({
+      companyId: company.id, agentId: agent.id, actorType: "agent", actorId: agent.id,
+      runId: run.id, toolName: "fixture:write", status: "awaiting_approval", approvalState: "pending",
+    }).returning();
+    await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+    const [saved] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.id));
+    expect(saved).toMatchObject({ status: "cancelled", errorCode: "originating_run_cancelled" });
+    expect(await db.select().from(toolActionRequests)).toHaveLength(0);
+  });
+
+  it("does not present an unknown plugin replay as a successful result", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow fictional write",
+      policyType: "allow", selectors: { toolName: "fixture:delete_everything" } });
+    const dispatcher = fakePluginDispatcher();
+    const execute = vi.fn(dispatcher.executeTool);
+    dispatcher.executeTool = execute;
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const input = { actor: { type: "agent" as const, companyId: company.id, agentId: agent.id, runId: run.id },
+      tool: "fixture:delete_everything", parameters: { target: "fictional" }, runContext: runSessionInput(company, agent, run) };
+    await gateway.executePluginTool(input);
+    const [saved] = await db.select().from(toolInvocations);
+    await db.update(toolInvocations).set({ status: "failed", errorCode: "tool_execution_outcome_unknown" }).where(eq(toolInvocations.id, saved.id));
+    await expect(gateway.executePluginTool(input)).rejects.toMatchObject({ reasonCode: "tool_execution_outcome_unknown" });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it("does not dispatch an approved call when cancellation wins after its claim", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Review fictional tool",

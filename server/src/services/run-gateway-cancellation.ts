@@ -18,7 +18,7 @@ export async function cancelGatewayActionsForRun(tx: Db, companyId: string, runI
       eq(toolActionRequests.companyId, companyId), eq(toolActionRequests.invocationId, invocation.id),
       inArray(toolActionRequests.status, ["pending", "approved", "executing"]),
     )).orderBy(asc(toolActionRequests.id)).for("update");
-    if (requests.length === 0 && ["authorized", "executing"].includes(invocation.status)) {
+    if (requests.length === 0 && ["awaiting_approval", "authorized", "executing"].includes(invocation.status)) {
       const uncertain = invocation.startedAt !== null;
       const now = new Date();
       await tx.update(toolInvocations).set({ status: uncertain ? "failed" : "cancelled",

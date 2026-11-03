@@ -7660,6 +7660,18 @@ export function createToolGatewayService(
       },
     });
 
+    const unsettledOutcome = async () => {
+      const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
+        .where(eq(toolInvocations.id, args.invocationId));
+      const unknown = saved?.errorCode === "tool_execution_outcome_unknown";
+      return {
+        decision: "allowed" as const,
+        invocationId: args.invocationId,
+        error: unknown
+          ? { message: "The external outcome is unknown; inspect the provider before retrying.", reasonCode: "tool_execution_outcome_unknown" }
+          : { message: "Tool action execution claim is no longer current.", reasonCode: "action_already_consumed" },
+      };
+    };
     const startedAt = Date.now();
     let connectedMcpExecution: Awaited<ReturnType<typeof executeRemoteHttpTool>> | Awaited<ReturnType<typeof executeLocalStdioTool>> | null;
     let resultValidation: Awaited<ReturnType<typeof validateToolContent>>;
@@ -7725,10 +7737,11 @@ export function createToolGatewayService(
             ? err.reasonCode
             : "tool_execution_failed";
       const message = err instanceof Error ? err.message : String(err);
-      await persistToolTestOutcome(db, args.invocationId, {
+      const settled = await persistToolTestOutcome(db, args.invocationId, {
         status: status === 504 ? "timed_out" : status === 429 ? "rate_limited" : "failed",
         errorCode: reasonCode, errorMessage: message,
       }, args.approvedClaim);
+      if (!settled) return unsettledOutcome();
       void emitConnectionInvoked(db, args.invocationId);
       await writeToolCallEvent({
         invocationId: args.invocationId,
@@ -7787,9 +7800,10 @@ export function createToolGatewayService(
           : {}),
       };
     }
-    await persistToolTestOutcome(db, args.invocationId, {
+    const settled = await persistToolTestOutcome(db, args.invocationId, {
       status: "succeeded", result: resultValidation.summary,
     }, args.approvedClaim);
+    if (!settled) return unsettledOutcome();
     await writeToolCallEvent({
       invocationId: args.invocationId,
       session: args.session,
@@ -11578,6 +11592,9 @@ export function createToolGatewayService(
       invocationId = recorded.invocation.id;
 
       if (recorded.replayed) {
+        if (recorded.invocation.errorCode === "tool_execution_outcome_unknown") {
+          throw new ToolGatewayHttpError(409, "The previous external outcome is unknown; inspect the provider before taking further action", "tool_execution_outcome_unknown");
+        }
         return recorded.invocation.resultSummary;
       }
 
