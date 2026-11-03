@@ -12,6 +12,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { redactRegisteredSecretValues } from "../run-secret-redaction.js";
 import { nativeSha256 } from "./canonical.js";
+import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
 import { PaperclipControlPlanePort, type PaperclipControlPlaneBinding } from "./paperclip-control-plane-port.js";
 import { nativeTaskSessionPublicationHandled, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
@@ -113,6 +114,30 @@ describe("accepted native task session publication", () => {
     expect(repeated.filter(query => /agent_task_sessions|native_run_results/i.test(query))).toHaveLength(0);
     expect(repeated.filter(query => /^begin\b/i.test(query.trim()))).toHaveLength(1);
     expect(repeated.filter(query => /^update /i.test(query.trim()))).toHaveLength(1);
+  });
+
+  it("publishes a fresh authorized retry after a different provider session owned the goal epoch", async () => {
+    const f = await fixture();
+    const priorRunId = randomUUID(), priorSessionId = randomUUID(), priorRunnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: priorRunId, companyId: f.binding.companyId,
+      agentId: f.binding.agentId, nativeIssueId: f.binding.issueId, nativeSessionId: priorSessionId,
+      runnerInstanceId: priorRunnerId, runtimeMode: "native", status: "failed",
+      createdAt: new Date(Date.now() - 10_000), finishedAt: new Date(Date.now() - 5_000) });
+    await db.update(agentTaskSessions).set({ lastRunId: priorRunId,
+      sessionParamsJson: { sessionId: priorSessionId }, sessionDisplayId: "prior-provider-thread",
+      goalSourceId: `${priorRunnerId}:${priorRunId}`, goalSourceCursor: 1_000,
+    }).where(eq(agentTaskSessions.taskKey, f.binding.issueId));
+
+    await applyRunnerGoalPrpEvent(db, { ...f.binding, adapterType: f.context.adapterType }, {
+      eventType: "session.goal.snapshot", sourceInstanceId: f.binding.sourceInstanceId,
+      sourceRunId: f.binding.runId, sourceSeq: 1, payload: { goal: null, workingNow: false },
+    });
+    await f.port.checkpointSession(f.snapshot);
+    const { run, session } = await f.read();
+    expect(session).toMatchObject({ lastRunId: f.binding.runId,
+      sessionParamsJson: { ...f.context.sessionParamsJson, sessionId: f.binding.sessionId },
+      sessionDisplayId: "provider-thread", goalSourceId: `${f.binding.sourceInstanceId}:${f.binding.runId}` });
+    expect(run.runnerProfileJson?.nativeTaskSessionPublication).toMatchObject({ outcome: "published" });
   });
 
   it("persists a pre-acceptance terminal observation and publishes only at the existing accepted checkpoint", async () => {
