@@ -371,6 +371,7 @@ own file so those real-clock waits overlap other files in the existing pool.
 
 Exact-source release verification uses the post-merge AWS fleet on the first
 attempt. Reruns of its verification and chaos jobs use GitHub-hosted runners.
+Exact-source cloud-migrator planning and package builds use the same policy.
 This gives interrupted jobs an independent recovery path. It keeps the same
 source, commands, assertions and required gates. A failed test still needs a fix;
 a successful rerun does not explain an earlier failure.

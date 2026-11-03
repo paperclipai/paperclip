@@ -57,13 +57,12 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
     if (release) {
       cases.push({ name: "preview of master", inputs: { channel: "preview" } });
       cases.push({ name: "stable release", inputs: { channel: "stable" } });
-    } else {
-      cases.push({ name: "first attempt as a string", github: { run_attempt: "1" }, expected: fleet });
-      cases.push({ name: "rerun after runner interruption", github: { run_attempt: 2 } });
-      cases.push({ name: "later rerun", github: { run_attempt: 3 } });
-      cases.push({ name: "rerun attempt as a string", github: { run_attempt: "2" } });
-      cases.push({ name: "missing attempt", github: { run_attempt: undefined } });
     }
+    cases.push({ name: "first attempt as a string", github: { run_attempt: "1" }, expected: fleet });
+    cases.push({ name: "rerun after runner interruption", github: { run_attempt: 2 } });
+    cases.push({ name: "later rerun", github: { run_attempt: 3 } });
+    cases.push({ name: "rerun attempt as a string", github: { run_attempt: "2" } });
+    cases.push({ name: "missing attempt", github: { run_attempt: undefined } });
     for (const { name, github = {}, inputs: overrides = {}, enabled = "true", expected = "ubuntu-latest" } of cases) {
       test(`${file}/${job}: ${name}`, () => {
         const context = { github: { ...defaultContext, ...github }, inputs: { ...inputs, ...overrides }, vars: { AWS_POST_MERGE_CI_ENABLED: enabled } };
