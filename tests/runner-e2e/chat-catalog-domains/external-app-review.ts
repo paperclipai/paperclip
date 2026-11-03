@@ -11,7 +11,9 @@ import {
   startNotesProvider,
   type NotesProvider,
 } from "./external-provider.js";
-import { openStandingChat, probeAgentPermission } from "./identity-support.js";
+import { probeReviewApproval } from "./external-app-review-probe.js";
+import { reviewOutcomeReply } from "./external-app-review-outcomes.js";
+import { openStandingChat } from "./identity-support.js";
 import {
   definition,
   root,
@@ -88,42 +90,8 @@ export function appReviewProposal(value: unknown) {
   } catch { return undefined; }
 }
 
-export function reviewOutcomeReply(reply: string, kind: Phase["kind"]) {
-  const clauses = reply.split(/[.!?;\n]+|\b(?:but|and)\b/i),
-    affirmative = clauses.some(
-      (clause) =>
-        /\b(?:added|saved|written|wrote|updated|applied|succeeded)\b/i.test(
-          clause,
-        ) &&
-        !/\b(?:not|never|no|nothing|cannot|can't|couldn't|could not|wasn't|failed|will|would|before|after|once)\b/i.test(
-          clause,
-        ),
-    );
-  if (kind === "rejected")
-    return (
-      !affirmative &&
-      /declin|reject|not approved|not authorized|no (?:write|change|update)|did not (?:write|add|update)/i.test(
-        reply,
-      )
-    );
-  if (kind === "failed")
-    return !affirmative && /fail|error|could not|couldn't|unable/i.test(reply);
-  return (
-    affirmative &&
-    !clauses.some(
-      (clause) =>
-        /\b(?:failed|error|unable)\b/i.test(clause) &&
-        !/\b(?:not|no|never|prior|earlier|previous)\b/i.test(clause),
-    ) &&
-    !clauses.some(
-      (clause) =>
-        /all agents|every action|all actions|all connections|company.?wide/i.test(
-          clause,
-        ) &&
-        !/\b(?:not|never|no|doesn't|does not|don't|do not)\b/i.test(clause),
-    )
-  );
-}
+export { reviewOutcomeReply } from "./external-app-review-outcomes.js";
+
 export function exactReviewedTrust(
   rule: TrustRule,
   phase: Phase,
@@ -190,6 +158,8 @@ export function gradeAppReview(value: unknown) {
       new Set(phases?.map((row) => row.requestRunId)).size === 3 &&
       new Set(phases?.map((row) => row.replyRunId)).size === 3 &&
       o.state.agentApproveStatus === 403 &&
+      o.state.agentApproveCode === "interaction_governed_action_denied" &&
+      o.state.agentProbeBoundaryUnchanged === true && o.state.agentProbeKeyRevoked === true &&
       reviewQueriesMatch(o.humanQueries, o.state.originalQuery, o.state.factualContextAttachment) &&
       o.state.factualContextVerified === true,
     "Each unchanged explicit human request gets one distinct actual action review; the agent cannot approve its own request.",
@@ -376,7 +346,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.app-review.v2",
+      oracleVersion: "paperclip.chat-catalog.app-review.v3",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
@@ -384,6 +354,9 @@ export const appReviewExternalCases = [
       attemptTimeoutMs: 1140000,
       sourceFiles: [
         "chat-catalog-domains/external-app-review.ts",
+        "chat-catalog-domains/external-app-review-outcomes.ts",
+        "chat-catalog-domains/external-app-review-probe.ts",
+        "../../packages/shared/src/validators/issue.ts",
         "chat-catalog-domains/external-provider.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/external-secret-scan.ts",
@@ -513,12 +486,40 @@ export const appReviewExternalCases = [
             throw new Error("Normal review disclosure must expose this exact immutable full proposal and hash");
           phase.proposalVisible = true;
           if (index === 0) {
-            state.agentApproveStatus = await probeAgentPermission(
-              ctx,
-              `/api/issues/${state.sourceId}/interactions/${card.id}/accept`,
-              "POST",
-              { rememberAction: true },
-            );
+            const probe = await probeReviewApproval({
+              baseURL: ctx.input.api.baseURL, companyId: state.companyId as string,
+              agentId: state.leadId as string, issueId: state.sourceId as string,
+              interaction: card, run: newRuns[0]!, invocation: intended.invocation,
+              privateSecrets: ctx.input.privateSecrets!,
+              createKey: () => ctx.input.api.postSensitive<{ id: string; token: string }>(`/api/agents/${state.leadId}/keys`, { name: `chat-review-probe-${ctx.input.nonce}` }),
+              revokeKey: id => ctx.input.api.delete(`/api/agents/${state.leadId}/keys/${id}`),
+              boundary: async () => {
+                const [currentCards, current, rules] = await Promise.all([
+                  ctx.input.api.get<RequestConfirmationInteraction[]>(`/api/issues/${state.sourceId}/interactions`),
+                  ctx.input.api.get<ToolRunDecisionLookup>(`${root(ctx)}/tools/runs/${card.sourceRunId}/decisions`),
+                  ctx.input.api.get<{ trustRules: TrustRule[] }>(`${root(ctx)}/tools/trust-rules`),
+                ]);
+                const owned = current.decisions.find(row => row.invocation.id === action.invocationId);
+                const ownedCard = currentCards.find(row => row.id === card.id);
+                if (!owned || current.runId !== card.sourceRunId || ownedCard?.sourceRunId !== card.sourceRunId
+                  || owned?.invocation.companyId !== state.companyId || owned.invocation.agentId !== state.leadId
+                  || owned.invocation.issueId !== state.sourceId || owned.invocation.runId !== card.sourceRunId
+                  || owned.invocation.argumentsHash !== proposal.hash || owned.actionRequest?.id !== action.actionRequestId
+                  || owned.actionRequest.canonicalArgumentsHash !== proposal.hash)
+                  throw new Error("Approval probe changed the owned pending source or immutable proposal");
+                return { interactionStatus: ownedCard?.status ?? "missing",
+                  invocationStatus: owned?.invocation.status ?? "missing", actionStatus: owned?.actionRequest?.status ?? "missing",
+                  providerWrites: provider.calls.filter(row => row.name === "launch_update").length,
+                  trustRuleIds: rules.trustRules.map(row => row.id) };
+              },
+            });
+            state.agentApproveStatus = probe.status;
+            state.agentApproveCode = probe.code;
+            state.agentProbeBoundaryUnchanged = probe.boundaryUnchanged;
+            state.agentProbeKeyRevoked = probe.keyRevoked;
+            await ctx.input.evidence("app-review-agent-approval-probe.json", probe);
+            if (probe.status !== 403 || probe.code !== "interaction_governed_action_denied" || !probe.boundaryUnchanged || !probe.keyRevoked)
+              throw new Error(`Agent approval probe did not prove governed-action authorization: ${probe.status}/${probe.code}`);
             await view
               .getByRole("button", { name: "Decline", exact: true })
               .click();
