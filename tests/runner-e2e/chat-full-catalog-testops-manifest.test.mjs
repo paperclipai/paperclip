@@ -106,7 +106,12 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(repair.previousTargetSha, '9ab0f951a5b5990c266ef4456610e0a0775aa334');
   assert.equal(manifest.targetSha, '36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
-  assert.equal(repair.candidateDescriptorSha256, '5b098a30ed54c6021698b33b434145ca2e934ff2bb9c1e0738a8d8e5dc622797');
+  assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
+  const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
+  assert.equal(createHash('sha256').update(descriptorBytes).digest('hex'), repair.candidateDescriptorSha256);
+  const declarations = JSON.parse(descriptorBytes);
+  assert.equal(declarations.length, 242);
+  assert.equal(new Set(declarations.map(value => value.scenarioId)).size, 242);
   assert.deepEqual(repair.changedFields.map(value => [value.key, value.field]), [
     ['agents.choose-primary', 'sourceFiles'],
     ['companies.agent-observability', 'sourceFiles'], ['companies.configure-decision-model', 'sourceFiles'],
@@ -128,7 +133,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
     assert.notDeepEqual(change.current, change.previous);
-    if (change.field !== 'setupPolicy') assert.deepEqual(row(change.key)[change.field], change.current);
+    const declaration = declarations.find(value => value.scenarioId === change.key);
+    assert.ok(declaration);
+    assert.deepEqual(change.current, declaration[change.field]);
+    if (Object.hasOwn(row(change.key), change.field)) assert.deepEqual(row(change.key)[change.field], change.current);
   }
   assert.deepEqual(repair.changedDefinitionFiles.map(value => value.path), [
     'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml',

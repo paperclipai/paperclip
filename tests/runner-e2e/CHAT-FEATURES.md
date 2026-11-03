@@ -217,8 +217,8 @@ overlap. Exact requirements and limitations appear in each case's preconditions.
 A declared credential does not establish whether its runtime reference exists.
 
 This lane runs the app and fixtures from candidate
-`9ab0f951a5b5990c266ef4456610e0a0775aa334`. It retains the evaluated app from
-`3b66c3c144360ddf32714a0742fd774b8ceafb16` with four bounded fixture repairs:
+`36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383`. It retains the evaluated app from
+`3b66c3c144360ddf32714a0742fd774b8ceafb16`. The first repair source added:
 owned SDK staging, public membership for three incidental human fixtures,
 company settings observation inside its original case deadline, and exact
 controller-secret baseline handling for secure human entry. The last repair
@@ -227,7 +227,8 @@ secret, Morgan-only binding and privacy checks remain required.
 
 The manifest retains the original `de0941835cc8f0d01c982574ee258e110babdbeb`
 definition provenance and records each changed row field in `source.repairMetadata`.
-Queries, case limits, models and the other feature predicates remain unchanged.
+Case limits and models remain unchanged. The later repair source records its
+query and outcome changes explicitly; see Repair source 2 below.
 Original failed measurements stay historical. Trusted selection, evidence transfer
 and publishing use the workflow's immutable master revision. Each result records
 both revisions.
@@ -297,7 +298,7 @@ Unconfigured inputs remain setup blockers.
 
 ### Repair source 2 (candidate only)
 
-The catalog now pins candidate `36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383`, succeeding `9ab0f951a5b5990c266ef4456610e0a0775aa334`. It carries the reviewed fixture, scoped observation, version-readback and evidence-readiness repairs. Static runtime descriptors are synchronized with the actual declarations; all 242 lazy factories must pass the real no-callback consistency check, together with the two legacy-cell controls, before each new repair-batch GO. The previous candidate's mismatched metadata caused launch 1690 to be cancelled before case/model work; it is an operational attempt, not a feature result.
+The catalog now pins candidate `36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383`, succeeding `9ab0f951a5b5990c266ef4456610e0a0775aa334`. It carries the reviewed fixture, scoped observation, version-readback and evidence-readiness repairs. The checked static descriptor snapshot is byte-exact to this candidate and its digest is verified. Runtime descriptors are synchronized with the actual declarations; all 242 lazy factories must pass the real no-callback consistency check, together with the two legacy-cell controls, before each new repair-batch GO. The previous candidate's mismatched metadata caused launch 1690 to be cancelled before case/model work; it is an operational attempt, not a feature result.
 
 The manifest keeps the original definition source and values, with explicit scoped changes: Fast response names the requested product feature; goal-tree and authored-skill outcomes use the product-supported optional-owner and ordinary navigation contracts; question delivery/validation and company-secret setup declare their reviewed oracle versions. Each new measurement binds this candidate and the exact changed definition; earlier grades and the 244-case gate are unchanged. SDK scan-audit capture improves private failure diagnosis only: rejection, evidence requirements and privacy bounds remain in force, and the other SDK cases stay held until the finding is understood.
 

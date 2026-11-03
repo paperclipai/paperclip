@@ -752,7 +752,8 @@
             ]
           }
         }
-      ]
+      ],
+      "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json"
     }
   },
   "cases": [
