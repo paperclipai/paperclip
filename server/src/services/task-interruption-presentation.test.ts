@@ -7,6 +7,17 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+it("preserves the actual workspace preparation error without changing retry authority", () => {
+  const failedRun = { ...run, errorCode: "workspace_validation_failed",
+    error: "The selected project has no repository source for a remote workspace.", resultJson: null };
+  expect(projectTaskInterruption(issue, { run: failedRun, agent, paused: false, approval: false }))
+    .toMatchObject({ state: "failed", canRetry: true, workspaceFailure: { message: failedRun.error } });
+  for (const status of ["done", "cancelled"]) expect(projectTaskInterruption({ ...issue, status },
+    { run: failedRun, agent, paused: false, approval: false })).not.toHaveProperty("workspaceFailure");
+  expect(projectTaskInterruption(issue, { run: { ...failedRun, errorCode: "unrelated_failure" }, agent, paused: false, approval: false }))
+    .not.toHaveProperty("workspaceFailure");
+});
+
 function operatorStoppedRun() {
   return { ...run, status: "cancelled", runtimeMode: "native" as const, companyId: issue.companyId,
     nativeIssueId: issue.id, errorCode: "cancelled", resultJson: {
