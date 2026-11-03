@@ -1,5 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { deferredProducer, requestDeferredProducer, sourceAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
 const repository = "paperclipai/paperclip";
 const workflowPath = ".github/workflows/cloud-readiness.yml";
@@ -11,6 +12,7 @@ export class SourceVerificationFailed extends Error {
     this.attempt = run.run_attempt;
   }
 }
+export class SourceVerificationDeferred extends Error {}
 
 function assertSha(sha) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "")) throw new Error("A full lowercase source SHA is required.");
@@ -76,6 +78,7 @@ export async function readSourceVerification(sha, api, { failFast = false, onJob
   if (job?.status === "completed" || run.status === "completed") {
     const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
     if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
+    if (deferredProducer(jobs, run, sourceAdmissionJob)) throw new SourceVerificationDeferred("Source checks are deferred until release admission.");
     throw new SourceVerificationFailed(`Cloud source verification did not pass for ${sha} (run ${run.id}, attempt ${run.run_attempt}). Rerun Cloud readiness before retrying the release.`, run);
   }
   return undefined;
@@ -157,14 +160,20 @@ export function createActionsReader({
 
 export async function waitForSourceVerification(sha, {
   api, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  timeoutMs = 45 * 60_000, intervalMs = 30_000, log = console.log,
+  timeoutMs = 45 * 60_000, intervalMs = 30_000, log = console.log, rerun,
 } = {}) {
   assertSha(sha);
   const deadline = now() + timeoutMs;
+  const requested = new Set();
   log(`Waiting for ${sourceVerificationJob} for ${sha}.`);
   while (now() < deadline) {
-    const result = await readSourceVerification(sha, api);
-    if (result) return result;
+    try {
+      const result = await readSourceVerification(sha, api);
+      if (result) return result;
+    } catch (error) {
+      if (!(error instanceof SourceVerificationDeferred) || !rerun) throw error;
+      await requestDeferredProducer({ file: "cloud-readiness.yml", sha, admissionJob: sourceAdmissionJob, api, rerun, requested });
+    }
     const remaining = deadline - now();
     if (remaining > 0) await sleep(Math.min(intervalMs, remaining));
   }
@@ -179,7 +188,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const timeoutMs = 45 * 60_000;
     const deadline = Date.now() + timeoutMs;
     const api = createActionsReader({ token: process.env.GITHUB_TOKEN, deadlineAt: () => deadline });
-    const proof = await waitForSourceVerification(process.argv[2], { api, timeoutMs });
+    const rerun = process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master" ? createReleaseRerunner(process.env.GITHUB_TOKEN) : undefined;
+    const proof = await waitForSourceVerification(process.argv[2], { api, timeoutMs, rerun });
     const message = `Source verification passed for ${proof.sha}: https://github.com/${repository}/actions/runs/${proof.runId}/attempts/${proof.attempt} (job ${proof.jobId}).`;
     console.log(message);
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);

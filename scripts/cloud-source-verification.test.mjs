@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
-import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification } from "./cloud-source-verification.mjs";
+import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
+
+import { releaseAdmitted, deferredProducer, requestDeferredProducer, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
 import { cancelImageRun, runnerWaits, watchReleaseSource } from "./watch-release-source.mjs";
 
@@ -332,5 +334,189 @@ describe("image build source monitor", () => {
     await watchReleaseSource({ ...f, now: () => Date.parse("2020-01-01T00:02:00Z") });
     assert.ok(f.messages.some(message => message.startsWith("::warning") && message.includes("120s")));
     assert.ok(f.messages.some(message => message.includes("Release runner wait: amd64")));
+  });
+});
+
+describe("release candidate admission", () => {
+  const repository = { id: 1170821064, full_name: "paperclipai/paperclip" };
+  const ids = { "docker.yml": 101, "release.yml": 102, "cloud-readiness.yml": 123, "cloud-migrator-artifacts.yml": 124 };
+  function run(file, change = {}) {
+    return { id: ids[file] + 1000, workflow_id: ids[file], path: `.github/workflows/${file}`,
+      repository, head_repository: repository, head_sha: sha, head_branch: "master", event: "push",
+      run_attempt: 1, status: "in_progress", conclusion: null, ...change };
+  }
+  function job(run, name, conclusion = "skipped") {
+    return { id: 789, run_id: run.id, run_attempt: run.run_attempt, head_sha: run.head_sha,
+      name, status: "completed", conclusion };
+  }
+  function fixture(file = "cloud-readiness.yml", change = {}) {
+    const producer = run(file, { status: "completed", conclusion: "success", ...change });
+    const admission = file === "cloud-migrator-artifacts.yml" ? migratorAdmissionJob : sourceAdmissionJob;
+    const f = { runs: { [file]: [producer] }, jobs: { [producer.id]: [job(producer, admission, "success"), job(producer, sourceVerificationJob)] },
+      current: {}, writes: [], calls: [], requested: new Set(), file, sha, admissionJob: admission };
+    f.api = async path => {
+      f.calls.push(path);
+      const url = new URL(`https://api.github.com${path}`);
+      const fileMatch = path.match(/\/workflows\/([^/?]+\.yml)$/);
+      if (fileMatch) return { id: ids[fileMatch[1]], path: `.github/workflows/${fileMatch[1]}` };
+      const listMatch = path.match(/\/workflows\/(\d+)\/runs\?/);
+      if (listMatch) {
+        const name = Object.keys(ids).find(file => ids[file] === Number(listMatch[1]));
+        const runs = f.runs[name] ?? [];
+        return { workflow_runs: runs, total_count: f.total ?? runs.length };
+      }
+      const jobMatch = path.match(/\/runs\/(\d+)\/attempts\/(\d+)\/jobs\?/);
+      if (jobMatch) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return { jobs: (f.jobs[Number(jobMatch[1])] ?? []).slice((page - 1) * 100, page * 100) };
+      }
+      const currentMatch = path.match(/\/runs\/(\d+)$/);
+      if (currentMatch) return f.current[Number(currentMatch[1])] ?? Object.values(f.runs).flat().find(run => run.id === Number(currentMatch[1]));
+      throw new Error(`Unexpected admission API path: ${path}`);
+    };
+    f.rerun = async path => f.writes.push(path);
+    return f;
+  }
+
+  test("only a running image or npm release admits a normal push", async () => {
+    for (const file of ["docker.yml", "release.yml"]) {
+      const f = fixture();
+      assert.equal(await releaseAdmitted(sha, f), false);
+      f.runs[file] = [run(file)];
+      assert.equal(await releaseAdmitted(sha, f), true);
+      assert.equal(await releaseAdmitted(sha, { ...f, imageOnly: true }), file === "docker.yml");
+      for (const status of ["queued", "pending", "completed"]) {
+        f.runs[file] = [run(file, { status })];
+        assert.equal(await releaseAdmitted(sha, f), false, status);
+      }
+    }
+  });
+
+  test("manual and retry requests admit exact source without consumer discovery", async () => {
+    const api = () => assert.fail("explicit request needs no discovery");
+    assert.equal(await releaseAdmitted(sha, { api, event: "workflow_dispatch" }), true);
+    assert.equal(await releaseAdmitted(sha, { api, attempt: 2 }), true);
+    assert.equal(await releaseAdmitted(sha, { api, event: "pull_request", attempt: 2 }), false);
+    for (const attempt of [0, "2"]) {
+      await assert.rejects(releaseAdmitted(sha, { api, attempt }), /Invalid release attempt/);
+    }
+  });
+
+  test("forks, stale identities, tags, and non-push consumers do not admit work", async () => {
+    for (const change of [{ repository: { ...repository, id: 2 } }, { head_repository: { ...repository, id: 2 } },
+      { repository: { ...repository, full_name: "fork/paperclip" } }, { path: ".github/workflows/pr.yml" },
+      { workflow_id: 999 }, { head_sha: "b".repeat(40) }, { head_branch: "v1" }, { event: "workflow_dispatch" },
+      { id: 0 }, { run_attempt: 0 }]) {
+      const f = fixture();
+      f.runs["docker.yml"] = [run("docker.yml", change)];
+      assert.equal(await releaseAdmitted(sha, f), false, JSON.stringify(change));
+    }
+    const f = fixture();
+    const active = run("docker.yml");
+    f.runs["docker.yml"] = [active];
+    f.current[active.id] = { ...active, run_attempt: 2 };
+    assert.equal(await releaseAdmitted(sha, f), false);
+  });
+
+  test("incomplete discovery and transport failure fail closed", async () => {
+    for (const total of [1, 101, -1]) {
+      const f = fixture();
+      f.total = total;
+      await assert.rejects(releaseAdmitted(sha, f), /Incomplete/);
+      assert.deepEqual(f.writes, []);
+    }
+    await assert.rejects(releaseAdmitted(sha, { api: async () => { throw new Error("API unavailable"); } }), /unavailable/);
+    await assert.rejects(releaseAdmitted("master", { api: () => assert.fail() }), /full source SHA/);
+  });
+
+  test("a selected consumer restarts only a strictly deferred producer, once", async () => {
+    for (const file of ["cloud-readiness.yml", "cloud-migrator-artifacts.yml"]) {
+      const f = fixture(file);
+      assert.equal(await requestDeferredProducer(f), "pending");
+      assert.deepEqual(f.writes, [`/repos/paperclipai/paperclip/actions/runs/${ids[file] + 1000}/rerun`]);
+      await requestDeferredProducer(f);
+      assert.equal(f.writes.length, 1);
+    }
+  });
+
+  test("failed, incomplete, ambiguous, or mismatched work is never automatically retried", async () => {
+    for (const change of [jobs => { jobs[1].conclusion = "failure"; }, jobs => { jobs[0].conclusion = "failure"; },
+      jobs => { jobs[1].run_attempt = 2; }, jobs => { jobs[1].head_sha = "b".repeat(40); },
+      jobs => { jobs[1].run_id = 2; }, jobs => { jobs[1].status = "queued"; },
+      jobs => { jobs.push({ ...jobs[0] }); }, jobs => { jobs.splice(1); }]) {
+      const f = fixture();
+      change(f.jobs[1123]);
+      assert.equal(await requestDeferredProducer(f), "finished");
+      assert.deepEqual(f.writes, []);
+    }
+    const f = fixture();
+    for (const change of [{ run_attempt: 2 }, { status: "in_progress" }, { head_sha: "b".repeat(40) }, { id: 2 }]) {
+      f.current[1123] = { ...f.runs[f.file][0], ...change };
+      assert.equal(await requestDeferredProducer(f), "pending");
+      assert.deepEqual(f.writes, []);
+    }
+  });
+
+  test("an explicitly cancelled or failed producer cannot be restarted by admission", async () => {
+    for (const conclusion of ["cancelled", "failure", "timed_out"]) {
+      const f = fixture("cloud-readiness.yml", { conclusion });
+      assert.equal(await requestDeferredProducer(f), "finished");
+      assert.deepEqual(f.writes, []);
+    }
+  });
+
+  test("producer retries reject arbitrary workflow and admission contracts", async () => {
+    const f = fixture();
+    for (const change of [{ file: "docker.yml" }, { admissionJob: migratorAdmissionJob }]) {
+      await assert.rejects(requestDeferredProducer({ ...f, ...change }), /Unknown deferred/);
+    }
+    assert.deepEqual(f.calls, []);
+  });
+
+  test("source proof waits for admission, restarts it, and accepts only the new attempt", async () => {
+    const f = fixture();
+    await assert.rejects(readSourceVerification(sha, f.api), SourceVerificationDeferred);
+    let time = 0;
+    const proof = await waitForSourceVerification(sha, { ...f, now: () => time, intervalMs: 10, timeoutMs: 30, log: () => {},
+      sleep: async ms => {
+        time += ms;
+        const selected = run(f.file, { run_attempt: 2 });
+        f.runs[f.file] = [selected];
+        f.jobs[selected.id] = [job(selected, sourceAdmissionJob, "success"), job(selected, sourceVerificationJob, "success")];
+      } });
+    assert.equal(proof.attempt, 2);
+    assert.equal(time, 10);
+    assert.equal(f.writes.length, 1);
+  });
+
+  test("the image monitor admits a late migrator even when source proof is ready", async () => {
+    const f = fixture("cloud-migrator-artifacts.yml");
+    const source = run("cloud-readiness.yml");
+    f.runs["cloud-readiness.yml"] = [source];
+    f.jobs[source.id] = [job(source, sourceVerificationJob, "success")];
+    const image = run("docker.yml");
+    f.runs["docker.yml"] = [image];
+    f.jobs[image.id] = [];
+    let time = 0;
+    const proof = await watchReleaseSource({ ...f, runId: image.id, attempt: 1, cancel: () => assert.fail("must not cancel"),
+      now: () => time, intervalMs: 10, timeoutMs: 30, log: () => {}, summary: async () => {}, sleep: async ms => {
+        time += ms;
+        const selected = run(f.file, { run_attempt: 2 });
+        f.runs[f.file] = [selected];
+        f.jobs[selected.id] = [{ ...job(selected, "Build migrator", null), status: "in_progress", labels: ["cloud-release-32"] }];
+      } });
+    assert.equal(proof.sha, sha);
+    assert.equal(time, 10);
+    assert.equal(f.writes.length, 1);
+  });
+
+  test("the retry transport is a bounded POST to a canonical run", async () => {
+    const calls = [];
+    const rerun = createReleaseRerunner("fixture", async (url, options) => { calls.push({ url, options }); return { ok: true }; });
+    await assert.rejects(rerun("/repos/fork/paperclip/actions/runs/1/rerun"), /Invalid release retry/);
+    await rerun("/repos/paperclipai/paperclip/actions/runs/1/rerun");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, "POST");
+    assert.equal(calls[0].options.redirect, "error");
   });
 });

@@ -1,10 +1,21 @@
 # Cloud build readiness
 
-The `Cloud readiness` workflow starts for every master push and retains the
-versioned `Cloud source verified v1` job. It calls the full `Release Verify`
-workflow for that exact commit, including typecheck, builds, general and
-serialized tests, and Runner verification. The source proof depends on every
-source check and fails closed if verification fails, is cancelled, or is skipped.
+The `Cloud readiness` workflow starts a small admission check for each master
+push. Full verification starts only when the exact source has a running master
+Docker or automatic npm release workflow. Superseded pending sources avoid the
+full test matrix. The migrator producer similarly waits for image admission.
+
+A selected consumer restarts a previously deferred push run, preserving its
+original source and push identity. This restarts only a successful admission
+job followed entirely by skipped jobs. A failed check, cancelled job, incomplete
+listing, or identity mismatch cannot trigger this automatic retry. Explicit
+manual runs and whole-workflow retries request full verification directly.
+
+Admitted source runs retain the versioned `Cloud source verified v1` job. They
+call the full `Release Verify` workflow for that exact commit, including
+typecheck, builds, general and serialized tests, and Runner verification. The
+proof depends on every source check and fails closed if verification fails, is
+cancelled, or is skipped. Consumers accept only the latest attempt's proof.
 
 The recurring public `-cloud` publisher and its `Cloud deployable v1` gate are
 retired. The workflow no longer builds a legacy image or waits for one.
@@ -177,14 +188,15 @@ Prepared AWS image disks skip the standard hosted runner's disk cleanup. Native
 architecture builds, digest publication, the orphan-reaping smoke test, and
 attestation remain required. The source monitor has Actions write permission to cancel its own canonical
 master Docker run and failed exact-source verification siblings. It never
-automatically retries a failed source check. It checks run, attempt, SHA,
+automatically retries a failed source check. Its guarded retry permission can
+restart only an exact-source producer deferred before full admission. It checks run, attempt, SHA,
 repository, ref, and workflow identity before cancellation. Image jobs retain
 their existing package permissions.
 
 The monitor emits an Actions warning and step summary when an image or source job waits
 more than 60 seconds for a runner. This measures runner assignment, not image
 execution. Compare automatic merge-to-ready and merge-to-healthy-target timings;
-a manual dispatch or warm pool count alone does not prove deployment latency.
+a manual dispatch alone does not prove deployment latency.
 
 ### Typecheck Rust dependency cache
 

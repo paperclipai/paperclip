@@ -10,7 +10,7 @@ const base = {
   ref: "refs/heads/master", event_name: "push", sha, run_attempt: 1,
 };
 const expectedJobs = {
-  "cloud-readiness.yml": ["source_verified"],
+  "cloud-readiness.yml": ["admission", "source_verified"],
   "cloud-migrator-artifacts.yml": [],
   "release-verify.yml": ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"],
   "runner-chaos-evals.yml": ["chaos_and_recovery"],
@@ -59,9 +59,9 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
       cases.push({ name: "stable release", inputs: { channel: "stable" } });
     }
     cases.push({ name: "first attempt as a string", github: { run_attempt: "1" }, expected: fleet });
-    cases.push({ name: "rerun after runner interruption", github: { run_attempt: 2 } });
-    cases.push({ name: "later rerun", github: { run_attempt: 3 } });
-    cases.push({ name: "rerun attempt as a string", github: { run_attempt: "2" } });
+    cases.push({ name: "admitted retry", github: { run_attempt: 2 }, expected: release ? "ubuntu-latest" : fleet });
+    cases.push({ name: "later retry", github: { run_attempt: 3 }, expected: release ? "ubuntu-latest" : fleet });
+    cases.push({ name: "retry attempt as a string", github: { run_attempt: "2" }, expected: release ? "ubuntu-latest" : fleet });
     cases.push({ name: "missing attempt", github: { run_attempt: undefined } });
     for (const { name, github = {}, inputs: overrides = {}, enabled = "true", expected = "ubuntu-latest" } of cases) {
       test(`${file}/${job}: ${name}`, () => {
