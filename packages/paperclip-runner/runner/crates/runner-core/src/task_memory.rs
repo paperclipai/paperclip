@@ -38,8 +38,8 @@ fn read_limit(task_cgroup: &Path) -> Option<u64> {
     content.trim().parse().ok().filter(|limit| *limit > 0)
 }
 
-/// The kernel counts a limit kill in the victim's cgroup, so this is specific to
-/// the task even though the limit is shared.
+/// The kernel counts an out-of-memory kill in the victim's cgroup, so this is
+/// specific to the task even though the limit is shared.
 fn read_kills(task_cgroup: &Path) -> Option<u64> {
     fs::read_to_string(task_cgroup.join("memory.events"))
         .ok()?
@@ -64,7 +64,8 @@ fn memory_note(limit_bytes: u64, task_cgroup: &Path) -> Option<String> {
         "All task processes on this computer share a {limit} memory limit, and memory used by a \
          concurrent task counts toward it. Above the limit, the kernel kills a process with \
          SIGKILL, usually the largest, and the shell reports exit code 137. Other causes can also \
-         produce that exit code. To check, read the oom_kill count in {task}/memory.events. Read \
+         produce that exit code. To check for a memory kill, read the oom_kill count in \
+         {task}/memory.events. Read \
          {shared}/memory.current and {shared}/memory.peak for the shared use. After such a kill, \
          the same command will probably fail again, so reduce its memory use or split the work. \
          If the work cannot fit, report that as a blocker.",
@@ -176,9 +177,6 @@ impl TaskMemoryMonitor {
         store: &DurableStateStore,
     ) -> Result<(), DurableRunnerError> {
         let new_kills = total - self.reported;
-        let limit = read_limit(&self.task_cgroup)
-            .map(|limit| format!("{} ", format_limit(limit)))
-            .unwrap_or_default();
         let killed = if new_kills == 1 {
             "a process".to_owned()
         } else {
@@ -193,12 +191,13 @@ impl TaskMemoryMonitor {
                 "schema": "paperclip.provider.notice.v1",
                 "noticeId": format!("task-memory-kill-{total}"),
                 "severity": "warning",
-                "category": "task_memory_limit",
+                "category": "task_out_of_memory_kill",
                 "scope": "environment",
                 "recoverable": true,
                 "userActionable": false,
+                // The count also rises for a VM-wide kill, so it does not prove the limit caused it.
                 "summary": format!(
-                    "The {limit}task memory limit killed {killed} in this task ({total} so far)."
+                    "The kernel's out-of-memory killer killed {killed} in this task ({total} so far)."
                 ),
             }),
         )?;
@@ -385,11 +384,11 @@ mod tests {
         assert_eq!(notices[0]["scope"], "environment");
         assert_eq!(
             notices[0]["summary"],
-            "The 6 GiB task memory limit killed a process in this task (1 so far)."
+            "The kernel's out-of-memory killer killed a process in this task (1 so far)."
         );
         assert_eq!(
             notices[1]["summary"],
-            "The 6 GiB task memory limit killed 3 processes in this task (4 so far)."
+            "The kernel's out-of-memory killer killed 3 processes in this task (4 so far)."
         );
     }
 
@@ -405,7 +404,7 @@ mod tests {
         poll_for_notices(&mut monitor, &config, &mut state, &store, 1);
         assert_eq!(
             notices(&state)[0]["summary"],
-            "The 6 GiB task memory limit killed a process in this task (6 so far)."
+            "The kernel's out-of-memory killer killed a process in this task (6 so far)."
         );
     }
 
