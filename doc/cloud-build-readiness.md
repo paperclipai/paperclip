@@ -121,16 +121,16 @@ excluded or sleeping targets, retries, and failures with the fleet result. Recor
 runner queue conditions and cache state; one warm or cold run is a sample, not a
 latency guarantee.
 
-## Reserved AWS verification capacity
+## Dedicated AWS verification capacity
 
 `AWS_POST_MERGE_CI_ENABLED=true` routes cloud source verification and
 exact-master migrator preparation to the
 `paperclip-post-merge` runner group. The separate Fleet label is
 `runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. The protected fleet uses
-separate 8-vCPU, 32-GiB On-Demand workers and 32 hot standby machines. Its current
-72-job ceiling and public PR capacity are managed independently. Hot workers
-are fresh instances, not machines reused between jobs. Quota ceilings alone do
-not reserve hardware; verify actual ready standby inventory and runner timings.
+separate 8-vCPU, 32-GiB Spot workers that launch only when jobs arrive. Its
+72-job ceiling and public PR capacity are managed independently. There are no
+hot or stopped pools. Quota ceilings do not reserve hardware; measure cold
+launch and runner assignment times as well as job duration.
 
 Every selector checks the canonical repository name and ID, master ref, and a
 push or manual event. Reusable verification also requires `inputs.ref` to equal
@@ -165,8 +165,8 @@ shared infrastructure ownership separately before removing those resources.
 
 `CORE_RELEASE_AWS_ENABLED=true` routes canonical master image jobs to native
 `paperclip-core-image-x64` and `paperclip-core-image-arm64` fleets. Each has two
-32-vCPU / 128-GiB On-Demand slots and hot standby workers, for four large image
-workers in total. The `paperclip-core-release` runner group permits only
+32-vCPU / 128-GiB Spot slots, for four large image jobs in total. Workers
+launch for jobs and terminate afterward; no idle pool is maintained. The `paperclip-core-release` runner group permits only
 Core's `docker.yml@refs/heads/master`. PRs, branches, and tag releases keep their
 existing GitHub-hosted placement. Disable the switch and rerun the whole image
 workflow to restore hosted placement.

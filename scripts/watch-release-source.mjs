@@ -36,7 +36,7 @@ async function cancelFailedVerification({ api, cancel, sha }, failure) {
 
 export async function watchReleaseSource({ sha, runId, attempt, api, cancel, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = console.log,
-  timeoutMs = 45 * 60_000, intervalMs = 15_000, summary = async () => {} }) {
+  timeoutMs = 40 * 60_000, intervalMs = 15_000, summary = async () => {} }) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "") || !Number.isSafeInteger(runId) || runId < 1 ||
       !Number.isSafeInteger(attempt) || attempt < 1) throw new Error("Invalid release identity.");
   const deadline = now() + timeoutMs;

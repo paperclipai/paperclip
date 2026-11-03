@@ -10,7 +10,7 @@ const base = {
   ref: "refs/heads/master", event_name: "push", sha, run_attempt: 1,
 };
 const expectedJobs = {
-  "cloud-readiness.yml": [],
+  "cloud-readiness.yml": ["source_verified"],
   "cloud-migrator-artifacts.yml": [],
   "release-verify.yml": ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"],
   "runner-chaos-evals.yml": ["chaos_and_recovery"],
@@ -88,7 +88,7 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
 }
 
 
-test("Cloud readiness bookkeeping never waits for the AWS verification fleet", () => {
+test("Cloud source proof keeps source-only gating on protected verification capacity", () => {
   const workflow = readFileSync(new URL("../../workflows/cloud-readiness.yml", import.meta.url), "utf8");
   const bodies = new Map();
   for (const [name, needs] of [
@@ -97,7 +97,7 @@ test("Cloud readiness bookkeeping never waits for the AWS verification fleet", (
     const body = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z_]+:|(?![\\s\\S]))`, "m"))?.[1];
     assert.ok(body, `missing ${name} job`);
     bodies.set(name, body);
-    assert.match(body, /^    runs-on: ubuntu-latest$/m);
+    assert.match(body, /runs-on:.*paperclip-post-merge-x64/);
     assert.doesNotMatch(body, /^ +continue-on-error:|^ +if:.*always\(\)/m);
     assert.match(body, /^    if: github.repository == 'paperclipai\/paperclip' && github.ref == 'refs\/heads\/master'$/m);
     assert.match(body, /^ +SOURCE_SHA: \$\{\{ github.sha \}\}$/m);

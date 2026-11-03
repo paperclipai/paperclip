@@ -37,7 +37,7 @@ jobs:
     name: Watch exact-source verification
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
-    timeout-minutes: 50
+    timeout-minutes: 44
     permissions:
       contents: read
       actions: write
@@ -121,10 +121,9 @@ jobs:
             runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && format('runs-on/fleet=paperclip-core-image-{0}/env=public-ci', matrix.arch == 'amd64' && 'x64' || 'arm64') || matrix.runner }}
-    # Native builds land well inside this; it is a backstop, not a budget.
-    # (The interim fix while this PR landed raised the single QEMU job's cap
-    # to 120 minutes; native per-arch legs make that headroom unnecessary.)
-    timeout-minutes: 60
+    # Stop before the AWS worker's 45-minute maximum lifetime. Hosted tag
+    # builds retain their existing limit.
+    timeout-minutes: ${{ vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && 40 || 60 }}
     permissions:
       contents: read
       packages: write
