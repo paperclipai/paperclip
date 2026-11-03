@@ -1336,7 +1336,7 @@ fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
 
 #[test]
 #[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
-fn acpx_control_failure_keeps_its_cause_in_the_durable_terminal() {
+fn acpx_control_failure_keeps_its_classification_in_the_durable_terminal() {
     let directory = temporary_directory("acpx-control-failure");
     let mode = "turns-tool-resolution-rejected";
     let config = acpx_config(&directory, mode);
@@ -1385,10 +1385,7 @@ fn acpx_control_failure_keeps_its_cause_in_the_durable_terminal() {
         .as_str()
         .unwrap()
         .contains("classification=provider_tool_call_retired"));
-    assert_eq!(
-        failure.payload["error"]["providerFailure"]["message"],
-        "The provider retired this tool call."
-    );
+    assert!(failure.payload["error"]["providerFailure"].is_null());
     assert_eq!(failure.payload["error"]["recoverable"], false);
     assert_eq!(failure.payload["providerTerminalObserved"], false);
     let retained = executor.retained_events().unwrap();

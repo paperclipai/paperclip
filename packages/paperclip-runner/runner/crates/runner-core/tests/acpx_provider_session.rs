@@ -162,7 +162,7 @@ fn retains_the_first_failed_control_after_closing_the_session() {
         .to_string()
         .contains("classification=provider_tool_call_retired"));
     assert!(!first.to_string().contains("private-provider-token-canary"));
-    assert!(first.provider_failure().is_some());
+    assert!(first.provider_failure().is_none());
     assert!(session.state().pending_tool("call-1").is_some());
     assert_eq!(session.poll_event(Duration::ZERO).unwrap_err(), first);
     assert_eq!(session.deliver_tool_result(&result).unwrap_err(), first);

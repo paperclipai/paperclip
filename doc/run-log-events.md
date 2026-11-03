@@ -106,8 +106,8 @@ classification. Startup receipts retain the cause across controller restart befo
 any provider turn exists.
 
 When a failed ACPX control closes the session before polling, the resulting
-`turn.failed` event retains that control's closed-code error and validated
-`providerFailure`. A later closed-session check does not replace the first cause.
+`turn.failed` event retains that control's closed-code error. A later closed-session
+check does not replace it, and a closed code does not infer a provider explanation.
 The terminal still reports `recoverable: false` and no observed provider terminal;
 it does not prove termination or authorize replay.
 

@@ -356,11 +356,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         &json!({
                             "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                             "id":id,"ok":false,"error":{
-                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false,
-                                "providerFailure":{
-                                    "schema":"paperclip.provider-failure.v1", "provider":"claude", "phase":"turn",
-                                    "category":"unknown", "message":"The provider retired this tool call.", "retryability":"unknown"
-                                }
+                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false
                             }
                         }),
                     )?;
