@@ -17,7 +17,7 @@ import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspac
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
-const blockerProfileKeys = ["adapterDispatch", "nativeExecutionInput", "nativeWorkspaceSync", "remoteWorkspace"] as const;
+const blockerProfileKeys = ["adapterDispatch", "nativeExecutionInput", "nativeWorkspaceSync", "remoteWorkspace", "legacyWorkspaceRecoveryMigration"] as const;
 const blockerContextColumn = sql<Record<string, unknown> | null>`case
   when ${heartbeatRuns.contextSnapshot} is null then null else (
     select coalesce(jsonb_object_agg(field.key, field.value), '{}'::jsonb)

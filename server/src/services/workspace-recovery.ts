@@ -206,7 +206,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             continue;
           }
         }
-        let reference = source.reference;
+        let reference = source.preservationOnly ? null : source.reference;
         if (reference) {
           try { await readNativeWorkspaceSyncLocalCwd({ runId: input.runId, companyId: input.companyId,
             workspaceId: reference.workspaceId, reference }); }
