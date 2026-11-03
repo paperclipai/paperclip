@@ -486,3 +486,44 @@ test('singleton destination uses trusted run naming; the admitted producer remai
     }
   }
 });
+
+test('the unchanged upload CLI real publication and once files validate after a named singleton download', async t => {
+  const selected = { ...selection, cases: [current] };
+  const actual = { ...context, operation: 'evaluate', actorId: 42, triggeringActorId: 42, workflowId: 99 };
+  const f = await downloaded(t, selected, 1, actual), bundle = path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0');
+  const preparedFile = path.join(bundle, 'prepared.json'), prepared = JSON.parse(await readFile(preparedFile));
+  const selectionRoot = path.join(f.base, 'chat-completion-testops-selection');
+  await mkdir(selectionRoot); await writeFile(path.join(selectionRoot, 'testops-pilot-selection.json'), JSON.stringify(selected));
+  const event = { repository: { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' },
+    ref: 'refs/heads/master', sender: { id: 42 }, inputs: { operation: 'evaluate', ALLURE_JOB_RUN_ID: '77' } };
+  const eventPath = path.join(f.base, 'event.json'); await writeFile(eventPath, JSON.stringify(event));
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REPOSITORY: event.repository.full_name,
+    GITHUB_REF: event.ref, GITHUB_WORKFLOW_REF: 'paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master',
+    GITHUB_SHA: context.workflowSha, GITHUB_RUN_ATTEMPT: '1', GITHUB_RUN_ID: '123', GITHUB_ACTOR_ID: '42',
+    TESTOPS_ALLOWED_ACTOR_IDS: '[42]', GITHUB_RUN_NUMBER: '1', GITHUB_EVENT_PATH: eventPath,
+    GH_TOKEN: 'SYNTHETIC_GITHUB_SECRET', RUNNER_TEMP: f.base, GITHUB_WORKSPACE: f.base, ALLURE_JOB_RUN_ID: '77',
+    ALLURE_TOKEN: 'SYNTHETIC_REPORT_TOKEN', EXPECTED_SELECTION_SHA256: f.digest,
+    ALLURE_RESULTS: path.join(bundle, 'allure'), CHAT_TESTOPS_PREPARED_FILE: preparedFile, CHAT_TESTOPS_EXECUTION_ID: current.executionId };
+  const exec = async () => ({ stdout: JSON.stringify({ id: 123, run_attempt: 1, run_number: 1, workflow_id: 99,
+    head_sha: context.workflowSha, head_branch: 'master', event: 'workflow_dispatch', path: '.github/workflows/chat-catalog-testops.yml',
+    repository: event.repository, actor: { id: 42 }, triggering_actor: { id: 42 } }) });
+  const transport = server(prepared);
+  const fetchImpl = async (url, options) => {
+    const u = new URL(url);
+    if (u.pathname === '/api/uaa/oauth/token') return Response.json({ access_token: 'SYNTHETIC_ACCESS_TOKEN' });
+    const value = await transport.api(u.pathname + u.search, options.method, options.body);
+    if (u.pathname === '/api/testresult') {
+      value.content = value.content.filter(row => row.testCaseId === current.caseId);
+      value.totalElements = value.content.length;
+    }
+    return Response.json(value);
+  };
+  assert.equal(await run('upload-case', path.join(bundle, 'projection'), env, { exec, fetchImpl }), 0);
+  assert.equal(transport.posts, 1);
+  const emitted = path.join(f.base, 'chat-completion-testops-upload-case');
+  assert.deepEqual((await readdir(emitted)).sort(), ['once-upload_case.json', 'publication.json']);
+  const target = path.join(f.publications, 'chat-catalog-case-publication-123-1-0');
+  await rm(target, { recursive: true }); await cp(emitted, target, { recursive: true });
+  const exported = await publicationSet(f.bundles, f.publications, actual, selected, f.digest);
+  assert.equal(exported[0].status, 'passed'); assert.equal(transport.posts, 1, 'finalizer must not resend');
+});
