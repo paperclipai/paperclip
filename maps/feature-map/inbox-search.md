@@ -36,7 +36,9 @@ resolvers. **Tasks → Needs attention** projects the **For you** feed as distin
 
 Both `/decisions` surfaces switch between **For you** (default), **Unassigned**,
 **Company** and **Archived** (`?view=unassigned|company|archived`); each list is
-cached per person and view. **Archived** lists only the open cards you archived
+cached per person and view. Board members (not viewers) also get **Everyone**
+(`?view=all`): every person's open cards, with its own tab count that is never
+in the badge. **Archived** lists only the open cards you archived
 (with the archive date and any Stale chip), then a **Snoozed** group with the
 time each card comes back; its Close… menu offers **Restore** (or **Restore
 now** and **Change snooze time**) instead of Archive, and the cards stay
@@ -184,11 +186,11 @@ review gate, placement with the blocked task's person, one count per obligation,
 evidence that hides and restores with its lead, and the split after an answer. The
 [Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
 checks that a chat-sourced canonical question reaches its original resolver and context,
-and the view switch, banner, Why me?, For @name and Claim; the
+and the view switch, banner, Why me?, For @name and Claim, and Everyone for a board member only (with the withdraw confirmation for another person's card); the
 [classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions,
 plus the Archived view with Restore, Change time and Decision history on both pages.
 The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
-show For you, Unassigned, Company, Archived, a different person's cards, one card for each obligation and the escalation owners (including the budget owner's hard stop in another person's Company view).
+show For you, Unassigned, Company, Archived, Everyone, a different person's cards, one card for each obligation and the escalation owners (including the budget owner's hard stop in another person's Company view).
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.
 [Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
 cover reduced-motion settlement and returning to a resolved card without replay.

@@ -1,6 +1,5 @@
 import { ArrowRight, ArrowUpRight, Hand, Mail, UserRound, X } from "lucide-react";
 import {
-  ATTENTION_PERSONAL_VIEWS,
   type AttentionItem,
   type AttentionPersonalView,
   type AttentionReceipt,
@@ -16,6 +15,7 @@ import {
   attentionReceiptLine,
   attentionResponderText,
   attentionUnownedAudienceText,
+  attentionViewsFor,
   describeAttentionAudience,
   unassignedBannerText,
 } from "@/lib/attention-views";
@@ -24,24 +24,28 @@ import { timeAgo } from "@/lib/timeAgo";
 import { cn } from "@/lib/utils";
 
 /**
- * For you / Unassigned / Company (PAP-749 plan §1, Rule 3). The "For you"
- * count is the shared badge; the other two counts stay on their own tabs.
+ * For you / Unassigned / Company / Archived (PAP-749 plan §1, Rule 3), plus
+ * Everyone for a board member (PAP-768). The "For you" count is the shared
+ * badge; the other counts stay on their own tabs.
  */
 export function AttentionViewSwitch({
   value,
   counts,
   onChange,
+  everyone = false,
   className,
 }: {
   value: AttentionPersonalView;
   counts: AttentionViewCounts;
   onChange: (view: AttentionPersonalView) => void;
+  /** Show Everyone: the viewer is a board member. */
+  everyone?: boolean;
   className?: string;
 }) {
   return (
     <Tabs value={value} onValueChange={(next) => onChange(next as AttentionPersonalView)} className={className}>
       <TabsList variant="line" aria-label="Decision views" className="p-0">
-        {ATTENTION_PERSONAL_VIEWS.map((view) => (
+        {attentionViewsFor(everyone).map((view) => (
           <TabsTrigger key={view} value={view} data-attention-view={view}>
             {ATTENTION_VIEW_LABELS[view]}
             {view === "mine" ? (

@@ -8,29 +8,55 @@ import {
   type AttentionReceipt,
   type AttentionViewCounts,
 } from "@paperclipai/shared";
+import type { CurrentBoardAccess } from "@/api/access";
 
 /**
  * The view switch on the classic Decisions page and Coordinator Needs You
  * (PAP-749 plan §1, Rule 3; §3). "For you" is the default; the URL keeps the
  * others so a link (and the Unassigned banner) can open them directly.
- * Archived holds the cards you archived or snoozed for yourself.
+ * Archived holds the cards you archived or snoozed for yourself. Everyone
+ * holds every person's cards, for board members only (PAP-768).
  */
 export const ATTENTION_VIEW_LABELS: Record<AttentionPersonalView, string> = {
   mine: "For you",
   unassigned: "Unassigned",
   company: "Company",
   archived: "Archived",
+  all: "Everyone",
 };
 
 export const ATTENTION_VIEW_PARAM = "view";
 
-export function parseAttentionView(value: string | null | undefined): AttentionPersonalView {
-  return (ATTENTION_PERSONAL_VIEWS as readonly string[]).includes(value ?? "")
+/** The views a person can switch to: Everyone only for a board member. */
+export function attentionViewsFor(everyone: boolean): readonly AttentionPersonalView[] {
+  return everyone ? ATTENTION_PERSONAL_VIEWS : ATTENTION_PERSONAL_VIEWS.filter((view) => view !== "all");
+}
+
+/** The view a URL asks for; "For you" when it names a view this person cannot open. */
+export function parseAttentionView(value: string | null | undefined, options: { everyone?: boolean } = {}): AttentionPersonalView {
+  return (attentionViewsFor(options.everyone === true) as readonly string[]).includes(value ?? "")
     ? value as AttentionPersonalView
     : "mine";
 }
 
-export const EMPTY_ATTENTION_VIEW_COUNTS: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0 };
+export const EMPTY_ATTENTION_VIEW_COUNTS: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0, all: 0 };
+
+/**
+ * Whether the signed-in person is a board member of `companyId`, who may see
+ * Everyone (PAP-768): a local board, an instance admin, or an active member
+ * who can act (owner, admin, operator, or a legacy member). A viewer cannot
+ * act on another person's card, so the tab stays hidden. False while the
+ * access snapshot is unknown. The server still checks every action.
+ */
+export function attentionEveryoneViewAllowed(
+  companyId: string | null | undefined,
+  boardAccess: Pick<CurrentBoardAccess, "source" | "isInstanceAdmin" | "memberships"> | null | undefined,
+): boolean {
+  if (!boardAccess || !companyId) return false;
+  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
+  const membership = boardAccess.memberships?.find((entry) => entry.companyId === companyId && entry.status === "active");
+  return Boolean(membership?.membershipRole && membership.membershipRole !== "viewer");
+}
 
 /** "N cards need an owner" (recommendation e). Never part of the badge. */
 export function unassignedBannerText(count: number) {

@@ -11,7 +11,7 @@ import { agentsApi } from "../api/agents";
 import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useAttentionBadge, useAttentionCloseActions, useClaimAttentionItem, useDismissAttentionReceipt } from "../hooks/useAttentionViews";
+import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useClaimAttentionItem, useDismissAttentionReceipt } from "../hooks/useAttentionViews";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "../lib/attention-views";
 import { buildCompanyUserLabelMap } from "../lib/company-members";
 import { AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "../components/AttentionViews";
@@ -137,8 +137,10 @@ function ClassicWhatNeedsMe() {
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
   const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
-  // For you is the default; Unassigned and Company live in the URL (PAP-749 Rule 3).
-  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM));
+  // For you is the default; the other views live in the URL (PAP-749 Rule 3).
+  // Everyone opens for a board member only (PAP-768).
+  const everyone = useAttentionEveryoneView(selectedCompanyId);
+  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM), { everyone });
   const setView = useCallback((next: AttentionPersonalView) => {
     setSearchParams((prev) => {
       const params = new URLSearchParams(prev);
@@ -602,7 +604,7 @@ function ClassicWhatNeedsMe() {
             Decision history
           </Button>
         </div>
-        <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} />
+        <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} everyone={everyone} />
         <DecisionsToolbar
           query={searchQuery}
           onQueryChange={setSearchQuery}
@@ -929,6 +931,7 @@ const CAUGHT_UP_TEXT: Record<AttentionPersonalView, string> = {
   unassigned: "No cards need an owner.",
   company: "No company alerts right now.",
   archived: "Nothing archived.",
+  all: "No open cards for anyone.",
 };
 
 function CaughtUpNote({ filtered, view, snoozedBelow = false }: { filtered: boolean; view: AttentionPersonalView; snoozedBelow?: boolean }) {
@@ -951,6 +954,7 @@ const ZERO_STATE_DETAIL: Record<AttentionPersonalView, string> = {
   unassigned: "Every open card has an owner.",
   company: "No failed runs, agent errors, budget stops or join requests.",
   archived: "Cards you archive or snooze for yourself show here. Restore one to see it again.",
+  all: "Nobody has a card waiting right now.",
 };
 
 function ZeroState({ view }: { view: AttentionPersonalView }) {

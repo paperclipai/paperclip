@@ -354,6 +354,10 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     expect(all.deskBadgeCount).toBe(2);
     expect(all.viewCounts.unassigned).toBe(1);
     expect(all.viewCounts.company).toBeGreaterThanOrEqual(1);
+    // Everyone (PAP-768) counts every person's current cards; it is never the badge.
+    expect(all.viewCounts.all).toBe(all.items.length);
+    expect(all.viewCounts.all).toBeGreaterThan(all.viewCounts.mine);
+    expect(all.items.some((item) => item.audience.userId === DOTTA)).toBe(true);
     // Counts ignore the requested view, so the tabs, banner and badge agree.
     for (const view of ["mine", "unassigned", "company"] as const) {
       expect((await list(companyId, SCOTT, view)).viewCounts).toEqual(all.viewCounts);
@@ -410,6 +414,10 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     for (const view of ["mine", "unassigned", "company", "all"] as const) {
       expect((await list(companyId, SCOTT, view)).viewCounts).toEqual(archived.viewCounts);
     }
+    // Everyone leaves out the cards you hid, like the other views (PAP-768).
+    const everyone = await list(companyId, SCOTT, "all");
+    expect(archived.viewCounts.all).toBe(everyone.items.length);
+    expect(everyone.items.map((item) => item.subject.id)).not.toContain(archivedPoolCard);
     const mineIds = (await list(companyId, SCOTT, "mine")).items.map((item) => item.subject.id);
     expect(mineIds).toEqual(expect.arrayContaining([currentCard, expiredSnoozeCard, changedCard]));
     expect(mineIds).not.toContain(archivedCard);

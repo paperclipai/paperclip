@@ -5,10 +5,12 @@ import {
   ATTENTION_POOL_AUDIENCE_TEXT,
   attentionAudienceLineNamesResponders,
   attentionClaimAlternative,
+  attentionEveryoneViewAllowed,
   attentionItemClaimable,
   attentionReceiptLine,
   attentionResponderText,
   attentionUnownedAudienceText,
+  attentionViewsFor,
   describeAttentionAudience,
   parseAttentionView,
   unassignedBannerText,
@@ -26,6 +28,29 @@ describe("attention views (PAP-749 task 1b)", () => {
     expect(parseAttentionView("bogus")).toBe("mine");
     expect(parseAttentionView("unassigned")).toBe("unassigned");
     expect(parseAttentionView("company")).toBe("company");
+  });
+
+  it("opens Everyone only for a board member (PAP-768)", () => {
+    expect(parseAttentionView("all", { everyone: true })).toBe("all");
+    expect(parseAttentionView("all", { everyone: false })).toBe("mine");
+    expect(attentionViewsFor(false)).toEqual(["mine", "unassigned", "company", "archived"]);
+    expect(attentionViewsFor(true)).toEqual(["mine", "unassigned", "company", "archived", "all"]);
+  });
+
+  it("treats owners, admins, operators and legacy members as board members, not viewers (PAP-768)", () => {
+    const member = (membershipRole: "owner" | "admin" | "operator" | "viewer" | "member" | null, status: "active" | "suspended" = "active") =>
+      ({ source: "session", isInstanceAdmin: false, memberships: [{ companyId: "c1", membershipRole, status }] });
+    for (const role of ["owner", "admin", "operator", "member"] as const) {
+      expect(attentionEveryoneViewAllowed("c1", member(role))).toBe(true);
+    }
+    expect(attentionEveryoneViewAllowed("c1", member("viewer"))).toBe(false);
+    expect(attentionEveryoneViewAllowed("c1", member(null))).toBe(false);
+    expect(attentionEveryoneViewAllowed("c1", member("owner", "suspended"))).toBe(false);
+    expect(attentionEveryoneViewAllowed("c2", member("owner"))).toBe(false);
+    expect(attentionEveryoneViewAllowed("c1", { source: "local_implicit", isInstanceAdmin: false, memberships: [] })).toBe(true);
+    expect(attentionEveryoneViewAllowed("c1", { source: "session", isInstanceAdmin: true, memberships: [] })).toBe(true);
+    expect(attentionEveryoneViewAllowed("c1", undefined)).toBe(false);
+    expect(attentionEveryoneViewAllowed(null, member("owner"))).toBe(false);
   });
 
   it("keys each list by company, person and view", () => {

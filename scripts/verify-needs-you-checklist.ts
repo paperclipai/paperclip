@@ -2,7 +2,8 @@
  * scripts/verify-needs-you-checklist.ts
  *
  * PAP-749 final check: walks the plan's section 7 "things to try" checklist,
- * plus the task 1d escalation owners, through the real HTTP API as each demo
+ * plus the task 1d escalation owners and the PAP-768 additions (P1 Everyone,
+ * P2 personal history, P3 one budget-stop card), through the real HTTP API as each demo
  * user (Scott, Dotta, Riley). It signs in with the demo password, so it needs a
  * running server in `authenticated` mode whose database holds a FRESH run of
  * scripts/seed-needs-you-demo.ts (default seed options).
@@ -131,11 +132,24 @@ async function main() {
   const projectCard = mine.dotta.items.find((item) => item.audience.reason === "project_owner");
   check("1d project decision owner", Boolean(projectCard), `Dotta For you: "${titleOf(projectCard)}" (project_owner)`);
 
-  // 2. As Scott, withdraw a card for Dotta; Dotta gets the receipt. Cards
-  // addressed to Dotta stay out of Scott's feed (the pre-PAP-749 addressee
-  // filter), so these are her instigator and project-owner cards; the
-  // project-owner card goes last so the task 1d demo card survives step 2.
+  // PAP-768 part 1: Everyone (view=all) for board members, with its own count.
   const scottAll = await feed(scott, "all");
+  const access = await http<{ memberships?: Array<{ companyId: string; membershipRole: string | null; status: string }> }>(scott, "GET", "/api/cli-auth/me");
+  const scottMembership = access.json?.memberships?.find((entry) => entry.companyId === companyId && entry.status === "active");
+  check("P1 Scott is a board member who sees Everyone", Boolean(scottMembership?.membershipRole && scottMembership.membershipRole !== "viewer"),
+    `role ${scottMembership?.membershipRole ?? "none"}`);
+  check("P1 Everyone count is its own, not the badge", scottAll.viewCounts.all === leads(scottAll.items).length
+    && scottAll.deskBadgeCount === scottAll.viewCounts.mine && scottAll.viewCounts.all > scottAll.viewCounts.mine,
+  `Everyone tab ${scottAll.viewCounts.all}, cards ${leads(scottAll.items).length}, badge ${scottAll.deskBadgeCount} (For you ${scottAll.viewCounts.mine})`);
+  const othersInEveryone = leads(scottAll.items).filter((item) => item.audience.kind === "user" && item.audience.userId && item.audience.userId !== scott.userId);
+  check("P1 Everyone shows other people's cards", othersInEveryone.some((item) => item.audience.userId === dotta.userId),
+    `${othersInEveryone.length} cards for others (${[...new Set(othersInEveryone.map((item) => name(item.audience.userId)))].join(", ")}); the UI shows each as "For @name"`);
+
+  // 2. As Scott, withdraw a card for Dotta from Everyone; Dotta gets the
+  // receipt. Cards addressed to Dotta stay out of Scott's feed (the
+  // pre-PAP-749 addressee filter), so these are her instigator and
+  // project-owner cards; the project-owner card goes last so the task 1d demo
+  // card survives step 2.
   const dottaCards = scottAll.items
     .filter((item) => item.audience.userId === dotta.userId
       && item.sourceKind === "issue_thread_interaction" && item.closeModes.includes("withdraw") && !item.stale)
@@ -145,7 +159,7 @@ async function main() {
   const withdraw = await close(scott, toWithdraw, { mode: "withdraw", reason: "Out of date (checklist step 2)" });
   const dottaAfterWithdraw = await feed(dotta, "mine");
   const withdrawReceipt = (dottaAfterWithdraw.receipts ?? []).find((receipt: AttentionReceipt) => receipt.sourceId === toWithdraw.subject.id);
-  check("2 withdraw for Dotta", withdraw.status === 200 && !has(dottaAfterWithdraw.items, toWithdraw.id)
+  check("2 withdraw for Dotta (from Everyone)", withdraw.status === 200 && !has(dottaAfterWithdraw.items, toWithdraw.id)
     && withdrawReceipt?.outcome === "withdrawn" && withdrawReceipt.actorUserId === scott.userId,
   `"${titleOf(toWithdraw)}" -> ${withdraw.status}; Dotta receipt: ${withdrawReceipt ? `${withdrawReceipt.outcome} by ${name(withdrawReceipt.actorUserId)} (reason: ${withdrawReceipt.reason})` : "none"}`);
 

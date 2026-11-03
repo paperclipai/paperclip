@@ -2779,10 +2779,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // One count per view for the switch, the Unassigned banner and the shared
       // badge (PAP-749 plan §1, Rule 5). Counted before the view, date and queue
       // filters and pagination, so every surface reads the same numbers. The
-      // three audience views skip the cards this person archived or snoozed;
-      // the Archived tab counts exactly those (plan §3), never in the badge.
-      // Each obligation counts once, as its lead (Rule 11).
-      const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0 };
+      // three audience views and Everyone skip the cards this person archived
+      // or snoozed; the Archived tab counts exactly those (plan §3). Only For
+      // you is the badge. Each obligation counts once, as its lead (Rule 11).
+      const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0, all: 0 };
       for (const item of enrichedItems) {
         if (obligationLeadOf(item) !== item) continue;
         if (item.archivedAt) continue;

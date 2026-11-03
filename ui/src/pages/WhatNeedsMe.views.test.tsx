@@ -19,6 +19,7 @@ const fixture = vi.hoisted(() => ({
   claim: vi.fn(async () => ({})),
   close: vi.fn(async (..._args: unknown[]) => ({ until: null })),
   restore: vi.fn(async (..._args: unknown[]) => ({})),
+  boardAccess: null as null | Record<string, unknown>,
 }));
 vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: false, userId: fixture.userId }) }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
@@ -27,7 +28,10 @@ vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast:
 vi.mock("../hooks/useInboxBadge", () => ({ useInboxDismissals: () => ({ dismiss: vi.fn(), snooze: vi.fn(), restore: vi.fn() }) }));
 vi.mock("../api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("../api/decisions", () => ({ decisionsApi: { list: async () => [] } }));
-vi.mock("../api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
+vi.mock("../api/access", () => ({ accessApi: {
+  listUserDirectory: async () => ({ users: [] }),
+  getCurrentBoardAccess: async () => { if (!fixture.boardAccess) throw new Error("No board access"); return fixture.boardAccess; },
+} }));
 vi.mock("../api/inboxDismissals", () => ({ inboxDismissalsApi: { restore: fixture.restore, dismiss: vi.fn() } }));
 vi.mock("../components/DecisionHistoryPanel", () => ({ DecisionHistoryPanel: () => <div data-history-panel>History</div> }));
 vi.mock("../api/attention", () => ({ attentionApi: {
@@ -37,7 +41,7 @@ vi.mock("../api/attention", () => ({ attentionApi: {
     fixture.calls.push(options);
     const items = fixture.byView[String(options.view)] ?? [];
     return { companyId: "company", generatedAt: "2026-10-30T12:00:00Z", totalCount: items.length, deskBadgeCount: 2,
-      viewCounts: { mine: 2, unassigned: 1, company: 0, archived: 3 }, nextCursor: null, countsBySourceKind: {}, items };
+      viewCounts: { mine: 2, unassigned: 1, company: 0, archived: 3, all: 3 }, nextCursor: null, countsBySourceKind: {}, items };
   },
 } }));
 vi.mock("../components/DecisionsToolbar", () => ({ DecisionsToolbar: () => null }));
@@ -71,6 +75,7 @@ let client: QueryClient;
 beforeEach(() => {
   fixture.userId = "scott";
   fixture.calls = [];
+  fixture.boardAccess = null;
   fixture.claim.mockClear();
   fixture.close.mockClear();
   fixture.restore.mockClear();
@@ -107,6 +112,26 @@ describe("classic Decisions views", () => {
     expect(container.querySelector('[data-row="mine-1"]')?.getAttribute("data-viewer")).toBe("scott");
     expect(container.querySelector("[data-attention-unassigned-banner]")?.textContent).toContain("1 card needs an owner");
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "scott", "mine", "classic"], exact: false })).toBeTruthy();
+  });
+
+  it("opens Everyone for a board member with its own count (PAP-768)", async () => {
+    fixture.boardAccess = { userId: "scott", source: "session", isInstanceAdmin: false, companyIds: ["company"],
+      memberships: [{ companyId: "company", membershipRole: "owner", status: "active" }] };
+    fixture.byView.all = [card("mine-1", { kind: "user", userId: "scott", reason: "addressee" }), card("dotta-1", { kind: "user", userId: "dotta", reason: "instigator" })];
+    await render("/decisions?view=all");
+    await vi.waitFor(() => expect(container.querySelector('[data-attention-view="all"]')?.getAttribute("aria-selected")).toBe("true"));
+    const tabs = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
+    expect(tabs).toEqual(["For you2", "Unassigned1", "Company0", "Archived3", "Everyone3"]);
+    expect(fixture.calls).toContainEqual(expect.objectContaining({ all: true, view: "all" }));
+    expect([...container.querySelectorAll("[data-row]")].map((row) => row.getAttribute("data-row"))).toEqual(["mine-1", "dotta-1"]);
+    expect(container.querySelector("[data-attention-unassigned-banner]")).toBeNull();
+  });
+
+  it("hides Everyone when the board access is unknown (PAP-768)", async () => {
+    await render("/decisions?view=all");
+    expect(container.querySelector('[data-attention-view="all"]')).toBeNull();
+    expect(container.querySelector('[data-attention-view="mine"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(fixture.calls.some((call) => call.view === "all")).toBe(false);
   });
 
   it("switches to Unassigned from the banner and claims a card", async () => {

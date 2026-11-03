@@ -282,18 +282,19 @@ export type AttentionFeedView = "mine" | "unassigned" | "company" | "archived" |
 
 /**
  * The views the Decisions pages switch between (PAP-749 plan §1, Rule 3; §3):
- * For you, Unassigned, Company and the person's own Archived view.
+ * For you, Unassigned, Company, the person's own Archived view, and Everyone
+ * (`all`, every person's cards), which only board members see (PAP-768).
  */
-export const ATTENTION_PERSONAL_VIEWS = ["mine", "unassigned", "company", "archived"] as const;
+export const ATTENTION_PERSONAL_VIEWS = ["mine", "unassigned", "company", "archived", "all"] as const;
 export type AttentionPersonalView = (typeof ATTENTION_PERSONAL_VIEWS)[number];
 
 /**
  * Cards in each view for the requesting user (PAP-749 plan §1, Rule 5).
  * Counted before the view, date and queue filters and pagination, so every
- * surface reads the same numbers whatever it fetched. `mine`, `unassigned` and
- * `company` count current cards without the ones this person archived or
- * snoozed; `archived` counts exactly those hidden cards (archived plus
- * snoozed). Only `mine` is the badge; the other counts stay on their tabs.
+ * surface reads the same numbers whatever it fetched. `mine`, `unassigned`,
+ * `company` and `all` count current cards without the ones this person
+ * archived or snoozed; `archived` counts exactly those hidden cards (archived
+ * plus snoozed). Only `mine` is the badge; the other counts stay on their tabs.
  */
 export type AttentionViewCounts = Record<AttentionPersonalView, number>;
 

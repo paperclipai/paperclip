@@ -1,12 +1,13 @@
 import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AttentionCloseMode, AttentionItem, AttentionPersonalView, AttentionReceipt } from "@paperclipai/shared";
+import { accessApi } from "@/api/access";
 import { attentionApi } from "@/api/attention";
 import { inboxDismissalsApi } from "@/api/inboxDismissals";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { attentionAlreadyClosedText, attentionUserLabel, readAttentionAlreadyClosed } from "@/lib/attention-close";
-import { EMPTY_ATTENTION_VIEW_COUNTS } from "@/lib/attention-views";
+import { EMPTY_ATTENTION_VIEW_COUNTS, attentionEveryoneViewAllowed } from "@/lib/attention-views";
 import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -46,6 +47,22 @@ export function useAttentionBadge(companyId: string | null | undefined, options:
     count: feed.data?.deskBadgeCount ?? 0,
     viewCounts: feed.data?.viewCounts ?? EMPTY_ATTENTION_VIEW_COUNTS,
   };
+}
+
+/**
+ * Whether the signed-in person may open Everyone (PAP-768): board members
+ * only. Reads the shared board access snapshot; false until it loads.
+ */
+export function useAttentionEveryoneView(companyId: string | null | undefined) {
+  const { userId } = useCoordinatorWorkspaceEnabled();
+  const boardAccess = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    enabled: !!companyId && !!userId,
+    retry: false,
+    staleTime: 30_000,
+  });
+  return boardAccess.data?.userId === userId && attentionEveryoneViewAllowed(companyId, boardAccess.data);
 }
 
 /** Claim an ownerless card; every attention list refetches afterwards. */

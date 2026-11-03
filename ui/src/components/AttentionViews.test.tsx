@@ -33,7 +33,7 @@ const labels = new Map([["dotta", "Dotta"]]);
 describe("AttentionViewSwitch", () => {
   it("shows the For you badge and the Unassigned and Company counts on their own tabs", async () => {
     const onChange = vi.fn();
-    await act(async () => root.render(<AttentionViewSwitch value="mine" counts={{ mine: 4, unassigned: 3, company: 2, archived: 5 }} onChange={onChange} />));
+    await act(async () => root.render(<AttentionViewSwitch value="mine" counts={{ mine: 4, unassigned: 3, company: 2, archived: 5, all: 9 }} onChange={onChange} />));
     const tabs = [...container.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual(["For you4", "Unassigned3", "Company2", "Archived5"]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
@@ -46,8 +46,28 @@ describe("AttentionViewSwitch", () => {
     expect(onChange).toHaveBeenCalledWith("unassigned");
   });
 
+  it("shows Everyone with its own count only to a board member, never as the badge (PAP-768)", async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(<AttentionViewSwitch value="all" counts={{ mine: 4, unassigned: 3, company: 2, archived: 5, all: 9 }} onChange={onChange} everyone />));
+    const tabs = [...container.querySelectorAll('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["For you4", "Unassigned3", "Company2", "Archived5", "Everyone9"]);
+    expect(tabs[4]?.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-attention-view-count="all"]')?.getAttribute("data-slot")).not.toBe("badge");
+    const mine = container.querySelector<HTMLElement>('[data-attention-view="mine"]')!;
+    await act(async () => {
+      mine.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      mine.focus();
+    });
+    expect(onChange).toHaveBeenCalledWith("mine");
+  });
+
+  it("leaves Everyone out for a person who is not a board member (PAP-768)", async () => {
+    await act(async () => root.render(<AttentionViewSwitch value="mine" counts={{ mine: 4, unassigned: 3, company: 2, archived: 5, all: 9 }} onChange={() => {}} />));
+    expect(container.querySelector('[data-attention-view="all"]')).toBeNull();
+  });
+
   it("hides an empty For you badge", async () => {
-    await act(async () => root.render(<AttentionViewSwitch value="mine" counts={{ mine: 0, unassigned: 1, company: 0, archived: 0 }} onChange={() => {}} />));
+    await act(async () => root.render(<AttentionViewSwitch value="mine" counts={{ mine: 0, unassigned: 1, company: 0, archived: 0, all: 1 }} onChange={() => {}} />));
     expect(container.querySelector('[data-attention-view-count="mine"]')).toBeNull();
   });
 });

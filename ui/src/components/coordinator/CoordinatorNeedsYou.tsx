@@ -12,7 +12,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { useAttentionBadge, useAttentionCloseActions, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
+import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { COORDINATOR_RECENT_DECISION_MS, coordinatorCardTitle, recentDecisionReceipts } from "@/lib/coordinator-attention";
@@ -52,6 +52,7 @@ const EMPTY_VIEW_TEXT: Record<AttentionPersonalView, string> = {
   unassigned: "No cards need an owner.",
   company: "No company alerts right now.",
   archived: "Nothing archived. Cards you archive or snooze for yourself show here.",
+  all: "No open cards for anyone.",
 };
 
 /** The shared Decision history panel, with its tab in the side panel header on desktop. */
@@ -73,8 +74,10 @@ export function CoordinatorNeedsYou() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
-  // For you is the default; Unassigned and Company live in the URL (PAP-749 Rule 3).
-  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM));
+  // For you is the default; the other views live in the URL (PAP-749 Rule 3).
+  // Everyone opens for a board member only (PAP-768).
+  const everyone = useAttentionEveryoneView(selectedCompanyId);
+  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM), { everyone });
   const setView = useCallback((next: typeof view) => setSearchParams(current => {
     const params = new URLSearchParams(current);
     if (next === "mine") params.delete(ATTENTION_VIEW_PARAM); else params.set(ATTENTION_VIEW_PARAM, next);
@@ -286,7 +289,7 @@ export function CoordinatorNeedsYou() {
       </SheetContent>
     </Sheet> : null}
     <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">Needs You</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />Decision history</Button></header>
-    <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} />
+    <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} everyone={everyone} />
     {view === "mine" ? <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} /> : null}
     {/* What other people did with your cards (PAP-749 plan §6). Not in the badge. */}
     {view === "mine" ? <AttentionReceiptList receipts={feed.data?.receipts ?? []} userLabelMap={userLabelMap} onOpen={navigate} onDismiss={receiptActions.dismiss} dismissingId={receiptActions.dismissingId} /> : null}

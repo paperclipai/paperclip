@@ -13,7 +13,7 @@ import { AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/Att
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
 import { attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
 
-// PAP-749 tasks 1b, 2c, 2e and 2d: the view switch, the "Why me?" line, the
+// PAP-749 tasks 1b, 2c, 2e and 2d, and PAP-768's Everyone tab: the view switch, the "Why me?" line, the
 // "For @name" chip, Claim and the Unassigned banner, plus the Close… menu, the
 // Stale chip and the collapsed Stale (N) group with "Withdraw all stale", the
 // Archived view with Restore and its Snoozed group, and one card for each
@@ -225,8 +225,12 @@ const ESCALATION_OWNER_CARDS: AttentionItem[] = [
   card("project-owned", "issue_thread_interaction", "Confirm the Platform migration plan", "No person on the task; you own the Platform project's decisions.", forScott("project_owner"), WITHDRAWABLE),
 ];
 
-const COUNTS: AttentionViewCounts = { mine: FOR_YOU.length, unassigned: UNASSIGNED.length, company: COMPANY_CARDS.length, archived: ARCHIVED.length };
-const ITEMS: Record<AttentionPersonalView, AttentionItem[]> = { mine: FOR_YOU, unassigned: UNASSIGNED, company: COMPANY_CARDS, archived: ARCHIVED };
+// Everyone (PAP-768): every person's open cards, for a board member.
+const EVERYONE: AttentionItem[] = [...FOR_YOU, ...FOR_OTHERS, ...UNASSIGNED, ...COMPANY_CARDS];
+const COUNTS: AttentionViewCounts = {
+  mine: FOR_YOU.length, unassigned: UNASSIGNED.length, company: COMPANY_CARDS.length, archived: ARCHIVED.length, all: EVERYONE.length,
+};
+const ITEMS: Record<AttentionPersonalView, AttentionItem[]> = { mine: FOR_YOU, unassigned: UNASSIGNED, company: COMPANY_CARDS, archived: ARCHIVED, all: EVERYONE };
 
 function NeedsYouViews({
   initialView = "mine",
@@ -235,6 +239,7 @@ function NeedsYouViews({
   staleOpen: initialStaleOpen = false,
   expandedId: initialExpandedId = null,
   viewerId = SCOTT,
+  everyone = true,
 }: {
   initialView?: AttentionPersonalView;
   items?: Record<AttentionPersonalView, AttentionItem[]>;
@@ -242,6 +247,8 @@ function NeedsYouViews({
   staleOpen?: boolean;
   expandedId?: string | null;
   viewerId?: string;
+  /** The viewer is a board member, so the switch shows Everyone. */
+  everyone?: boolean;
 }) {
   const [view, setView] = useState<AttentionPersonalView>(initialView);
   // Claim, Close… verbs and Withdraw all stale only hide rows locally here.
@@ -279,7 +286,7 @@ function NeedsYouViews({
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
       <h1 className="text-xl font-bold">Decisions</h1>
-      <AttentionViewSwitch value={view} counts={counts} onChange={setView} />
+      <AttentionViewSwitch value={view} counts={counts} onChange={setView} everyone={everyone} />
       {view === "mine" && <AttentionUnassignedBanner count={counts.unassigned} onOpen={() => setView("unassigned")} />}
       <div className="space-y-4">{current.map(row)}</div>
       <AttentionStaleGroup
@@ -343,6 +350,17 @@ export const Company: Story = { args: { initialView: "company" } };
 export const ForAnotherPerson: Story = {
   args: { initialView: "company", items: { ...ITEMS, company: FOR_OTHERS }, expandedId: "q-dotta", staleOpen: true },
 };
+
+/**
+ * Everyone (PAP-768): a board member sees every person's open cards with
+ * their own count, never in the badge. Each card for a different person shows
+ * "For @name"; Withdraw, Transfer and the answer controls ask "This is for
+ * @Dotta. Continue?" first.
+ */
+export const Everyone: Story = { args: { initialView: "all", expandedId: "q-dotta" } };
+
+/** A viewer is not a board member, so the switch has no Everyone tab. */
+export const NoEveryoneForViewer: Story = { args: { everyone: false } };
 
 /** Company alerts expanded: the failed run retries inline, the budget stop raises or keeps paused. */
 export const CompanyInlineVerbs: Story = {

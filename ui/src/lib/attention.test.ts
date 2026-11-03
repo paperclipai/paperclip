@@ -129,7 +129,7 @@ describe("attentionBadgeCount", () => {
       generatedAt: "2026-07-09T12:00:00Z",
       totalCount: 3,
       deskBadgeCount: 2,
-      viewCounts: { mine: 2, unassigned: 1, company: 0, archived: 0 },
+      viewCounts: { mine: 2, unassigned: 1, company: 0, archived: 0, all: 3 },
       nextCursor: "next-page",
       countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
       items: [buildItem({ id: "1" }), buildItem({ id: "2" }), buildItem({ id: "3" })],

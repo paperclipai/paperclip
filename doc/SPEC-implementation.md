@@ -1617,6 +1617,8 @@ Escalation owners (PAP-749): a card that names no person (no addressee, chat use
 
 One card for each obligation (PAP-749): cards that are one obligation share `obligationKey` and `obligationLeadId` (the `id` of the lead card); both are `null` on a card that is its own obligation. A pending approval leads the in-review card of a task that waits on it (`approval:<approvalId>`), unless the task has a pending human review stage, which is an independent quality gate and keeps its own card. A failed run leads the blocker cards of the task it blocks (`blocked:<issueId>`), else the blocked task's own unblock card leads. All members share the lead's audience, except that a failed run that blocks a person's task goes with the task to that person. The feed still returns every card, places each lead's evidence right after it, and shows or hides evidence with its lead (view, personal archive or snooze, retention and filters); `viewCounts` and the badge count each obligation once. Both Decisions pages show the lead with one line for each evidence card; the lead keeps the one action.
 
+Everyone view (PAP-768): both Decisions pages show a fifth tab, Everyone (`view=all`), to board members only (a local board, an instance admin, or an active member who is not a viewer). It lists every person's open cards except the ones the viewer archived or snoozed; `viewCounts.all` is its count and is never in the badge. A card for a different person shows "For @name", and acting on it asks "This is for @name. Continue?" first; the server still checks who may act.
+
 ## 11. Heartbeat and Adapter Contract
 
 ## 11.1 Adapter Interface

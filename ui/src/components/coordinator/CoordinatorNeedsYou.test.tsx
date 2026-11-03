@@ -8,7 +8,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn(), boardAccess: null as null | Record<string, unknown> }));
 const dismissals = vi.hoisted(() => ({ restore: vi.fn(async (..._args: unknown[]) => ({})) }));
 vi.mock("@/api/inboxDismissals", () => ({ inboxDismissalsApi: { restore: dismissals.restore, dismiss: vi.fn() } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
@@ -19,7 +19,10 @@ vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspa
 vi.mock("@/lib/router", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/router")>(), useNavigate: () => fixture.navigate }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
-vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [{ principalId: "dotta", status: "active", user: { name: "Dotta" } }] }) } }));
+vi.mock("@/api/access", () => ({ accessApi: {
+  listUserDirectory: async () => ({ users: [{ principalId: "dotta", status: "active", user: { name: "Dotta" } }] }),
+  getCurrentBoardAccess: async () => { if (!fixture.boardAccess) throw new Error("No board access"); return fixture.boardAccess; },
+} }));
 vi.mock("@/api/issues", () => ({ issuesApi: { retryTask: fixture.retryTask } }));
 vi.mock("@/api/attention", () => ({ attentionApi: {
   claim: fixture.claim,
@@ -57,7 +60,7 @@ let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
   fixture.history = []; fixture.url = "/decisions"; vi.clearAllMocks();
-  fixture.byView = {}; fixture.viewCounts = undefined; fixture.listCalls = [];
+  fixture.byView = {}; fixture.viewCounts = undefined; fixture.listCalls = []; fixture.boardAccess = null;
   fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false; fixture.mobile = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
@@ -474,6 +477,57 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     // The run keeps the one action for the blocked work.
     await click("Retry");
     expect(fixture.retryTask).toHaveBeenCalledWith("task-7", { idempotencyKey: expect.any(String), observedRunId: "run-7" });
+    client.clear();
+  });
+
+  const boardMember = (membershipRole: string) => ({ userId: "reviewer", source: "session", isInstanceAdmin: false, companyIds: ["company"],
+    memberships: [{ companyId: "company", membershipRole, status: "active" }] });
+
+  it("opens Everyone for a board member, names another person's card and asks before withdrawing it (PAP-768)", async () => {
+    fixture.boardAccess = boardMember("admin");
+    fixture.url = "/decisions?view=all";
+    const dottas = { ...mine("d1", "instigator"), audience: { kind: "user", userId: "dotta", reason: "instigator" }, closeModes: ["withdraw", "archive", "snooze"],
+      subject: { id: "d1", kind: "interaction", title: "Dotta's confirmation", metadata: { issueId: "task-d1" } } } as unknown as AttentionItem;
+    fixture.byView = { all: [mine("m1", "addressee"), dottas] };
+    fixture.viewCounts = { mine: 1, unassigned: 0, company: 0, archived: 0, all: 2 };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    await vi.waitFor(() => expect(tab("all")?.getAttribute("aria-selected")).toBe("true"));
+    expect(tab("all").textContent).toBe("Everyone2");
+    // Everyone has its own count; the badge stays the For you count.
+    expect(tab("mine").textContent).toBe("For you1");
+    expect(fixture.listCalls).toContainEqual({ all: true, view: "all" });
+    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "all"], exact: false })).toBeTruthy();
+    const card = container.querySelector<HTMLElement>('[data-attention-card="d1"]')!;
+    expect(card.querySelector("[data-attention-for-user]")?.textContent).toBe("For @Dotta");
+    expect(container.querySelector('[data-attention-card="m1"] [data-attention-for-user]')).toBeNull();
+
+    const menu = card.querySelector<HTMLElement>("[data-attention-close-menu]")!;
+    await act(async () => {
+      menu.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      menu.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => document.querySelector<HTMLElement>('[data-attention-close-mode="withdraw"]')!.click()); await flush();
+    const dialog = document.querySelector<HTMLElement>("[data-attention-withdraw-dialog]")!;
+    expect(dialog.textContent).toContain("This is for @Dotta. Withdraw anyway?");
+    expect(fixture.close).not.toHaveBeenCalled();
+    await act(async () => [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Withdraw request")!.click());
+    await flush(); await flush();
+    expect(fixture.close).toHaveBeenCalledWith("company", "issue_thread_interaction", "d1", expect.objectContaining({ mode: "withdraw" }));
+    expect(container.querySelector('[data-attention-card="d1"]')).toBeNull();
+    client.clear();
+  });
+
+  it("keeps Everyone from a viewer: no tab, and ?view=all opens For you (PAP-768)", async () => {
+    fixture.boardAccess = boardMember("viewer");
+    fixture.url = "/decisions?view=all";
+    fixture.byView = { mine: [mine("m1", "addressee")], all: [mine("m1", "addressee"), mine("m2", "addressee")] };
+    fixture.viewCounts = { mine: 1, unassigned: 0, company: 0, archived: 0, all: 2 };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client); await flush();
+    expect(tab("mine").getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-attention-view="all"]')).toBeNull();
+    expect(fixture.listCalls.some((call) => (call as { view?: string }).view === "all")).toBe(false);
     client.clear();
   });
 
