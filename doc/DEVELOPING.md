@@ -3028,6 +3028,12 @@ The goal-less regression in `native-session-resumption.test.ts` holds provider
 cleanup open and then exercises a normal follow-up and an explicit session reset.
 Its fresh-session case keeps the prior task-session row, opens one new provider
 session, and verifies that the following ordinary comment resumes that session.
+The opt-in `native-session-epoch.live.test.ts` runs the same path with an existing
+Codex login and a built native Runner. It uses warm mode, makes three model calls,
+checks exact file contents and provider-thread reuse, and removes its temporary
+credential copy and workspace. Run it with
+`PAPERCLIP_LIVE_SESSION_EPOCH=true pnpm exec vitest run server/src/services/native-runtime/native-session-epoch.live.test.ts`.
+`PAPERCLIP_LIVE_EVIDENCE_PATH` can select a JSON evidence file outside the fixture.
 Control-port tests also cover terminal snapshots before accepted results and
 result-replay contention with the status writer's coordinator-first lock order.
 Remote adoption tests must invoke actual external-state preparation. Inspecting

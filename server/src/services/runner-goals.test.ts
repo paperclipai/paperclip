@@ -409,7 +409,7 @@ describeEmbeddedPostgres("runner goal service", () => {
     expect(session).toMatchObject({ goalSourceId: `${runnerId}:${nextRunId}`, goalSourceCursor: 2 });
   });
 
-  it.each(["current", "not_current", "reassigned", "blocked", "prior_running", "next_finished", "foreign_runner", "missing_session", "unfinished_goal", "unreadable_goal", "conversation_reset"] as const)("fences a fresh goal source by current execution authority (%s)", async kind => {
+  it.each(["current", "current_complete", "not_current", "reassigned", "blocked", "prior_running", "next_finished", "foreign_runner", "missing_session", "unfinished_goal", "unreadable_goal", "conversation_reset"] as const)("fences a fresh goal source by current execution authority (%s)", async kind => {
     const binding = await seed(), priorRunId = randomUUID(), nextRunId = randomUUID();
     const priorRunnerId = randomUUID(), nextRunnerId = randomUUID();
     const priorSessionId = randomUUID(), nextSessionId = randomUUID();
@@ -423,9 +423,9 @@ describeEmbeddedPostgres("runner goal service", () => {
     await db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, binding.issueId));
     const priorEvent = { eventType: "session.goal.updated", sourceInstanceId: priorRunnerId,
       sourceRunId: priorRunId, sourceSeq: 20,
-      payload: { goal: { objective: "Retained goal", status: "active" } } };
+      payload: { goal: { objective: "Retained goal", status: kind === "current_complete" ? "complete" : "active" } } };
     await applyRunnerGoalPrpEvent(db, eventBinding, priorEvent);
-    if (kind !== "unfinished_goal") await applyRunnerGoalPrpEvent(db, eventBinding, {
+    if (kind !== "unfinished_goal" && kind !== "current_complete") await applyRunnerGoalPrpEvent(db, eventBinding, {
       ...priorEvent, eventType: "session.goal.cleared", sourceSeq: 21, payload: { goal: null },
     });
     if (kind === "not_current") await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, binding.issueId));
@@ -444,7 +444,7 @@ describeEmbeddedPostgres("runner goal service", () => {
       payload: { goal: { objective: "Current fresh session", status: "active" } } };
     const changed = await applyRunnerGoalPrpEvent(db, eventBinding, nextEvent);
     const [session] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, binding.issueId));
-    if (kind !== "current") {
+    if (kind !== "current" && kind !== "current_complete") {
       expect(changed).toBeNull();
       expect(session.goalSourceId).toBe(`${priorRunnerId}:${priorRunId}`);
       expect(session.goalSourceCursor).toBe(kind === "unfinished_goal" ? 20 : 21);

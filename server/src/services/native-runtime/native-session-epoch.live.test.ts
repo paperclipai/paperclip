@@ -1,17 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { agents, agentTaskSessions, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { expect, it } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
+import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { heartbeatService } from "../heartbeat.js";
 import { issueService } from "../issues.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { closeIdleWarmNativeSessionsForRestart } from "./native-session-executor.js";
 
 it.skipIf(process.env.PAPERCLIP_LIVE_SESSION_EPOCH !== "true")("publishes a fresh live Codex session and resumes its saved file", async () => {
-  const root = await mkdtemp(join(tmpdir(), "paperclip-session-epoch-live-"));
+  const home = createIsolatedTestHome(), root = home.home;
+  const lifecycleMode = process.env.PAPERCLIP_LIVE_SESSION_LIFECYCLE === "per_turn" ? "per_turn" : "warm";
   const keys = ["PAPERCLIP_HOME", "CODEX_HOME", "PAPERCLIP_API_URL", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_TELEMETRY_DISABLED"];
   const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>> | undefined;
@@ -36,7 +39,8 @@ it.skipIf(process.env.PAPERCLIP_LIVE_SESSION_EPOCH !== "true")("publishes a fres
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, fixture.runId));
     await db.update(companies).set({ defaultResponsibleUserId: fixture.userId }).where(eq(companies.id, fixture.companyId));
     await db.update(agents).set({ adapterConfig: { provider: "codex", model: "gpt-6.1-sol", modelReasoningEffort: "low",
-      cwd: fixture.workspace, workspaceStrategy: { type: "project_primary" }, env: { CODEX_HOME: codexHome }, timeoutSec: 180 },
+      cwd: fixture.workspace, workspaceStrategy: { type: "project_primary" }, env: { CODEX_HOME: codexHome }, timeoutSec: 180,
+      lifecycleMode, idleTimeoutMs: 900_000 },
       runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
     }).where(eq(agents.id, fixture.agentId));
     await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
@@ -67,18 +71,20 @@ it.skipIf(process.env.PAPERCLIP_LIVE_SESSION_EPOCH !== "true")("publishes a fres
       completed.push({ runId: run!.id, sessionId: after!.nativeSessionId!, providerSessionId: after!.sessionIdAfter!,
         publication: after!.runnerProfileJson?.nativeTaskSessionPublication });
     }
+    console.log(JSON.stringify({ observedSessions: completed }));
     expect(completed[1].sessionId).not.toBe(completed[0].sessionId);
     expect(completed[1].providerSessionId).not.toBe(completed[0].providerSessionId);
     expect(completed[2].sessionId).toBe(completed[1].sessionId);
     expect(completed[2].providerSessionId).toBe(completed[1].providerSessionId);
-    const evidence = { passed: true, model: "gpt-6.1-sol", provider: "real local Codex login", platform: `${process.platform}-${process.arch}`,
+    const evidence = { passed: true, model: "gpt-6.1-sol", lifecycleMode, provider: "real local Codex login", platform: `${process.platform}-${process.arch}`,
       turns: 3, freshSessionPublished: true, ordinaryFollowupResumedFreshSession: true, exactFileLines: 3, completed };
     if (process.env.PAPERCLIP_LIVE_EVIDENCE_PATH) await writeFile(process.env.PAPERCLIP_LIVE_EVIDENCE_PATH, JSON.stringify(evidence, null, 2) + "\n");
     console.log(JSON.stringify(evidence));
   } finally {
     await heartbeat?.drainActiveRunExecutions();
+    await closeIdleWarmNativeSessionsForRestart();
     await server?.close();
     for (const key of keys) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
-    await rm(root, { recursive: true, force: true });
+    home.cleanup();
   }
 }, 600_000);
