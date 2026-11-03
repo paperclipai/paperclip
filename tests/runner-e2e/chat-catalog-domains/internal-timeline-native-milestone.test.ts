@@ -148,6 +148,19 @@ it.each([
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
 });
 
+it.each([
+  "Today UTC: Morgan paused the task after verification failed. You reassigned the task to Riley. Riley completed the repair and the check passed.",
+  "Today UTC: Morgan was blocked because verification exited with code 1; you reassigned the task to Riley; Riley added the missing label and the verification passed.",
+])("retains pause context when its wording precedes the failure outcome: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  "Today UTC: Morgan's verification failed. You reassigned the task to Riley and then paused the task. Riley completed the repair and the check passed.",
+  "Today UTC: Morgan's verification failed, you reassigned the task to Riley, and the work paused before Riley added the label and the check passed.",
+])("still requires the pause before the actual handoff: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
 it("admits the selected live timeline metadata without invoking fixture callbacks", async () => {
   const descriptor = findChatCatalogCase("activity.work-timeline")!;
   const implementation = workTimelineCases[0]!;
