@@ -153,6 +153,61 @@ describe("deferred receipt durable dispatch", () => {
       source: "on_demand", status: "completed", reason: "task_retry", payload: { issueId: f.issue.id } });
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready; await quiet();
   });
+  it("reconsiders every saved receipt during repeated company eligibility changes", async () => {
+    const f = await fixture();
+    const ids = Array.from({ length: 178 }, (_, index) => `${(index + 1).toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`);
+    await db.insert(agentWakeupRequests).values(ids.map(id => ({ id, companyId: f.companyId, agentId: f.agent.id,
+      source: "on_demand", status: "deferred_issue_execution",
+      payload: { issueId: f.issue.id, _paperclipWakeContext: { wakeCommentIds: [randomUUID()] } },
+    })));
+    const checked = new Set<string>();
+    await registerDeferredReceiptWork(db, coordinator, {
+      resume: async scope => { checked.add(scope.requestId!); },
+      settleTaskChat: async () => {}, createNativeBatch: () => async () => {}, schedulingSuppressed: async () => false,
+    }, () => !drain).ready;
+    for (let pass = 0; pass < 12; pass++) {
+      await db.transaction(tx => notifyDeferredExecutionEligibility(tx, { companyId: f.companyId }));
+      await vi.advanceTimersByTimeAsync(31_000);
+      await Promise.allSettled([...passes]);
+      await immediate();
+    }
+    expect(checked.size).toBe(ids.length);
+    await quiet();
+  });
+  it("dispatches task Retry past a repeatedly invalidated backlog into real process output", async () => {
+    const f = await fixture();
+    const [closed] = await db.insert(issues).values({ companyId: f.companyId, title: "Closed task history",
+      status: "done", assigneeAgentId: f.agent.id }).returning();
+    await db.insert(agentWakeupRequests).values(Array.from({ length: 178 }, (_, index) => ({
+      id: `${(index + 1).toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`,
+      companyId: f.companyId, agentId: f.agent.id, source: "on_demand", status: "deferred_issue_execution",
+      payload: { issueId: closed.id, _paperclipWakeContext: { wakeCommentIds: [randomUUID()] } },
+    })));
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+    await heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !drain).ready;
+    const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id, actorId: f.actorId,
+      observedRunId: f.source.id, idempotencyKey: randomUUID() });
+    const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0];
+    for (let pass = 0; pass < 12 && !(await read()).runId; pass++) {
+      await db.transaction(tx => notifyDeferredExecutionEligibility(tx, { companyId: f.companyId }));
+      await vi.advanceTimersByTimeAsync(31_000);
+      await Promise.allSettled([...passes]);
+      await immediate();
+    }
+    const receipt = await read();
+    expect(receipt.runId).toBeTruthy();
+    await waitForReal(async () => {
+      await heartbeat.drainActiveRunExecutions();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.stdoutExcerpt).toContain("receipt-proof");
+    }, { timeout: 15_000 });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${retry.requestId}`)).toHaveLength(1);
+    await finish(f.issue.id);
+    await quiet();
+  });
   it("dispatches an ordinary committed task Retry into saved process output", async () => {
     const f = await fixture();
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
