@@ -18,6 +18,10 @@ function fixture(t) {
 const fs = require("node:fs");
 const path = require("node:path");
 const target = path.dirname(process.argv[3]);
+// Model the actual package dependency: shared cannot resolve the SDK's dist
+// exports until the prerequisite compiler has completed successfully.
+if (target.endsWith(path.join("packages", "shared"))
+  && !fs.existsSync(path.resolve("packages/runner-sdk/dist/complete"))) process.exit(43);
 const active = path.resolve("compiler-active");
 try { fs.mkdirSync(active); } catch { process.exit(42); }
 process.on("exit", () => fs.rmSync(active, { recursive: true, force: true }));
@@ -32,7 +36,7 @@ setTimeout(() => {
   fs.writeFileSync(path.join(target, "dist/complete"), "done");
 }, Number(process.env.BUILD_DELAY ?? 20));
 `);
-  for (const target of ["packages/shared", "packages/plugins/sdk"]) {
+  for (const target of ["packages/runner-sdk", "packages/shared", "packages/plugins/sdk"]) {
     fs.mkdirSync(path.join(root, target, "src"), { recursive: true });
     fs.writeFileSync(path.join(root, target, "src/index.ts"), "export {};\n");
     fs.writeFileSync(path.join(root, target, "tsconfig.json"), "{}");
@@ -60,6 +64,28 @@ async function until(predicate) {
   }
 }
 
+test("cold plugin startup compiles the runner SDK before its shared consumers", async (t) => {
+  const f = fixture(t);
+  const result = await f.launch().done;
+  assert.equal(result.code, 0, result.output);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n"), [
+    "packages/runner-sdk", "packages/shared", "packages/plugins/sdk",
+  ].map(target => path.join(fs.realpathSync(f.root), target)));
+  assert.equal(fs.existsSync(path.join(f.root, "packages/runner-sdk/dist/complete")), true);
+});
+
+test("runner SDK contract changes invalidate shared and plugin SDK consumers", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.launch().done).code, 0);
+  fs.appendFileSync(path.join(f.root, "packages/runner-sdk/src/index.ts"), "export const changed = true;\n");
+  const result = await f.launch().done;
+  assert.equal(result.code, 0, result.output);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 6);
+  assert.match(result.output, /Building @paperclipai\/runner-sdk/);
+  assert.match(result.output, /Building @paperclipai\/shared/);
+  assert.match(result.output, /Building @paperclipai\/plugin-sdk/);
+});
+
 test("recovers the old empty lock left by interrupted startup", async (t) => {
   const f = fixture(t);
   fs.mkdirSync(f.lock, { recursive: true });
@@ -79,7 +105,7 @@ test("concurrent startups recover a dead owner and build only once", async (t) =
   fs.writeFileSync(path.join(f.lock, `owner-${dead}-old.json`), JSON.stringify({ pid: dead }));
   const results = await Promise.all(Array.from({ length: 4 }, () => f.launch({ BUILD_DELAY: "150" }).done));
   for (const result of results) assert.equal(result.code, 0, result.output);
-  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 2);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 3);
 });
 
 test("does not accept partially emitted output while another compiler holds the lock", async (t) => {
@@ -234,5 +260,5 @@ test("shared source changes invalidate both shared and dependent SDK output", as
   assert.equal(retry.code, 0, retry.output);
   assert.match(retry.output, /Building @paperclipai\/shared/);
   assert.match(retry.output, /Building @paperclipai\/plugin-sdk/);
-  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 4);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 5);
 });

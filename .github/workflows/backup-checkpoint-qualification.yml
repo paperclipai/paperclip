@@ -54,9 +54,8 @@ jobs:
           fi
       - name: Build workspace import prerequisites
         run: |
-          pnpm --filter @paperclipai/shared build
-          pnpm --filter @paperclipai/db build
           pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+          pnpm --filter @paperclipai/db build
       - name: Use the service image's matching real PostgreSQL clients
         env:
           PG_CONTAINER: ${{ job.services.postgres.id }}
