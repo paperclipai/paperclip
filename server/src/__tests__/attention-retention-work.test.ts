@@ -1078,7 +1078,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await state("agent_error_alert", agentId)).toBeNull();
   });
 
-  it("drains a paged backlog with source-scoped self notifications and leaves completed history quiet", async () => {
+  it("drains a paged backlog with source-scoped self notifications and leaves completed history quiet", () => tracked(async () => {
     await db.insert(issues).values(Array.from({ length: 225 }, () => ({ companyId, title: randomUUID(), status: "in_review", assigneeUserId: "board", updatedAt: old() })));
     const service = attentionRetentionService(db);
     const load = vi.spyOn(service, "load");
@@ -1090,7 +1090,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(scopes.filter(scope => scope && !scope.sourceId)).toHaveLength(0);
     expect(scopes.filter(scope => scope?.sourceId).length).toBeLessThanOrEqual(225);
     expect(new Set((await db.select().from(decisionRetention)).map(row => row.sourceId)).size).toBe(225);
-  });
+  }));
 
   it("retries a failed atomic archive across drain and preserves notifications during a scan", async () => {
     const row = await insertIssue("in_review", { assigneeUserId: "board" });
