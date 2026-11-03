@@ -22,8 +22,10 @@ import {
   issueDocuments,
   instanceSettings,
   issueRelations,
+  issueLabels,
   issueThreadInteractions,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -34,6 +36,9 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import { setPluginEventBus } from "../services/activity-log.js";
+import { createPluginEventBus } from "../services/plugin-event-bus.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -48,6 +53,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   let issuesSvc!: ReturnType<typeof issueService>;
   let interactionsSvc!: ReturnType<typeof issueThreadInteractionService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const issueCreatedEvents: PluginEvent[] = [];
 
   beforeAll(async () => {
     if (externalUrl) await applyPendingMigrations(externalUrl);
@@ -55,10 +61,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     db = createDb(externalUrl ?? tempDb!.connectionString);
     issuesSvc = issueService(db);
     interactionsSvc = issueThreadInteractionService(db);
+    const pluginEventBus = createPluginEventBus();
+    pluginEventBus.forPlugin("test.issue-created").subscribe("issue.created", async (event) => {
+      issueCreatedEvents.push(event);
+    });
+    setPluginEventBus(pluginEventBus);
   }, 20_000);
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    issueCreatedEvents.length = 0;
     await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(issueComments);
@@ -1361,6 +1373,159 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const children = await issuesSvc.list(companyId, { parentId: issueId });
     expect(children).toHaveLength(1);
     expect(children[0]?.title).toBe("Create the root follow-up");
+  });
+
+  it("applies company labels by name and logs issue.created for each accepted suggested task", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Label suggested tasks");
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other",
+      issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const laneLabelId = randomUUID();
+    const riskLabelId = randomUUID();
+    await db.insert(labels).values([
+      { id: laneLabelId, companyId, name: "lane:claude", color: "#2563eb" },
+      { id: riskLabelId, companyId, name: "complexity:standard", color: "#6b7280" },
+      { companyId: otherCompanyId, name: "foreign", color: "#6b7280" },
+    ]);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "root",
+            title: "Create the labelled follow-up",
+            labels: ["lane:claude", "complexity:standard", "missing", "foreign"],
+          },
+          {
+            clientKey: "child",
+            parentClientKey: "root",
+            title: "Create the unlabelled follow-up",
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const accepted = await interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    const [root, child] = accepted.createdIssues;
+    const appliedLabels = await db
+      .select({ issueId: issueLabels.issueId, labelId: issueLabels.labelId })
+      .from(issueLabels);
+    expect(appliedLabels).toEqual(expect.arrayContaining([
+      { issueId: root!.id, labelId: laneLabelId },
+      { issueId: root!.id, labelId: riskLabelId },
+    ]));
+    expect(appliedLabels).toHaveLength(2);
+
+    const createdActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.created"));
+    expect(createdActivity).toHaveLength(2);
+    expect(createdActivity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        companyId,
+        actorType: "user",
+        actorId: "local-board",
+        entityType: "issue",
+        entityId: root!.id,
+        details: expect.objectContaining({
+          title: "Create the labelled follow-up",
+          parentId: issueId,
+          source: "suggest_tasks_accept",
+          interactionId: created.id,
+        }),
+      }),
+      expect.objectContaining({
+        entityId: child!.id,
+        details: expect.objectContaining({ parentId: root!.id }),
+      }),
+    ]));
+
+    await vi.waitFor(() => expect(issueCreatedEvents).toHaveLength(2));
+    expect(issueCreatedEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventType: "issue.created",
+        companyId,
+        actorType: "user",
+        actorId: "local-board",
+        entityType: "issue",
+        entityId: root!.id,
+        payload: expect.objectContaining({
+          source: "suggest_tasks_accept",
+          interactionId: created.id,
+        }),
+      }),
+      expect.objectContaining({
+        eventType: "issue.created",
+        entityId: child!.id,
+      }),
+    ]));
+  });
+
+  it("publishes no issue.created event when accepting suggested tasks rolls back", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Roll back suggested tasks");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "first",
+            title: "Create the first follow-up",
+          },
+          {
+            clientKey: "second",
+            title: "Create the follow-up for a missing agent",
+            assigneeAgentId: randomUUID(),
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow();
+
+    const createdActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.created"));
+    expect(createdActivity).toHaveLength(0);
+    const children = await db.select().from(issues).where(eq(issues.parentId, issueId));
+    expect(children).toHaveLength(0);
+    expect(issueCreatedEvents).toHaveLength(0);
   });
 
   it("rejects partial acceptance when a selected task omits its selected-tree parent", async () => {
