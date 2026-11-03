@@ -218,6 +218,7 @@ function createMemoryStore(): AdapterAuthSessionStore & {
         promotionExpiresAt: null,
         finishedAt: null,
         failureReason: null,
+        resultClaim: null,
       });
     },
     async recordLeaseAcquired(input) {
@@ -1413,7 +1414,7 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("device-login");
-    stopDb = started.stop;
+    stopDb = started.cleanup;
     db = createDb(started.connectionString);
   });
 
@@ -2039,7 +2040,7 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
         // The start ttl read: `session.expiresAt` reflects the profile's
         // `timeoutMs`, not the fixed `DEVICE_LOGIN_TIMEOUT_MS`.
         const expectedExpiresAt = Date.now() + customTimeoutMs;
-        expect(Math.abs(new Date(started.session.expiresAt).getTime() - expectedExpiresAt)).toBeLessThan(
+        expect(Math.abs(new Date(started.session.expiresAt!).getTime() - expectedExpiresAt)).toBeLessThan(
           5000,
         );
 

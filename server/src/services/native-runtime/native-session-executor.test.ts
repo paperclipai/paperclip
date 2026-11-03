@@ -17317,6 +17317,22 @@ it("keeps an ACPX missing runtime package failure actionable and stops automatic
   expect(code).toBe("native_provider_runtime_missing");
   expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
 });
+it("classifies only a definite session.open outcome as a bounded pre-session failure", () => {
+  const detail = '{"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)"},"status":"failed"}';
+  for (const status of ["failed", "rejected"]) {
+    const code = nativeSessionFailureSourceCode(new Error(`PRP command session.open ${status}: ${detail}`));
+    expect(code).toBe("provider_session_open_rejected");
+    expect(nativeSessionFailureDisposition(2, new Date(), code)).toMatchObject({ phase: "retryable_failure" });
+    expect(nativeSessionFailureDisposition(3, new Date(), code)).toMatchObject({
+      phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
+    });
+  }
+  // The runner cannot say whether the command ran, so provider state stays unknown.
+  expect(nativeSessionFailureSourceCode(new Error(`PRP command session.open indeterminate: ${detail}`)))
+    .toBe("native_session_interrupted");
+  expect(nativeSessionFailureSourceCode(new Error(`PRP command turn.start failed: ${detail}`)))
+    .toBe("native_session_interrupted");
+});
 describe("HTTP Stop during remote runner staging", () => {
   it("does not dispatch after Stop and bounded bootstrap cleanup", async () => {
     const { createCapabilityRunnerdCodexTransport } = await import("@paperclipai/paperclip-runner/live");

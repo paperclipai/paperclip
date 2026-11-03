@@ -76,7 +76,7 @@ describe("planLayers", () => {
     for (const layer of layers) expect(layer.files).toContain("src/types/ambient.d.ts");
   });
 
-  it("keeps test support files in the test layer and leaves src/__tests__ to imports", () => {
+  it("keeps test support files in the test layer and shards src/__tests__ by a stable hash", () => {
     const layers = planLayers(
       new Map([
         ["src/a.ts", ""],
@@ -88,6 +88,25 @@ describe("planLayers", () => {
 
     expect(sourcesOf(layers, "below")).toEqual(["src/a.ts"]);
     expect(sourcesOf(layers, "tests")).toEqual(["src/services/__tests__/fixtures.ts"]);
+    const shards = layers.filter((layer) => layer.testTree);
+    expect(shards.flatMap((layer) => layer.sourceFiles).sort()).toEqual([
+      "src/__tests__/big.test.ts",
+      "src/__tests__/helpers/db.ts",
+    ]);
+    for (const shard of shards) expect(shard.references).toEqual(["below", "cycle", "above"]);
+
+    const withMore = planLayers(
+      new Map([
+        ["src/a.ts", ""],
+        ["src/__tests__/helpers/db.ts", ""],
+        ["src/__tests__/big.test.ts", ""],
+        ["src/__tests__/added-1.test.ts", ""],
+        ["src/__tests__/added-2.test.ts", ""],
+      ]),
+    );
+    for (const shard of shards) {
+      for (const file of shard.sourceFiles) expect(sourcesOf(withMore, shard.name)).toContain(file);
+    }
   });
 
   it("lists imported JSON in the layer that imports it", () => {
@@ -120,14 +139,14 @@ describe("planLayers", () => {
     const planned = layers.flatMap((layer) => layer.sourceFiles);
     expect(new Set(planned).size).toBe(planned.length);
     expect(planned.sort()).toEqual(
-      sourceFiles.filter((file) => !file.endsWith(".d.ts") && !file.startsWith("src/__tests__/")).sort(),
+      sourceFiles.filter((file) => !file.endsWith(".d.ts")).sort(),
     );
 
     const position = new Map(
       layers.flatMap((layer, index) => layer.sourceFiles.map((file) => [file, index])),
     );
     const imports = readImports(new Map([...files].filter(([file]) => !file.endsWith(".d.ts"))));
-    for (const layer of layers.filter((candidate) => candidate.name !== "tests")) {
+    for (const layer of layers.filter((candidate) => candidate.name !== "tests" && !candidate.testTree)) {
       for (const file of layer.sourceFiles) {
         for (const target of imports.get(file).modules) {
           if (position.has(target)) expect(position.get(target)).toBeLessThanOrEqual(position.get(file));
@@ -160,9 +179,37 @@ describe("layerConfig", () => {
   });
 });
 
+describe("layerConfig for the test tree", () => {
+  it("reads the options that editors read and emits nothing", () => {
+    const config = layerConfig({
+      name: "test-tree-0",
+      files: ["src/__tests__/a.test.ts"],
+      references: ["below"],
+      testTree: true,
+    });
+
+    expect(config.extends).toBe("../../../src/__tests__/tsconfig.json");
+    expect(config.compilerOptions).toBeUndefined();
+    expect(config.files).toEqual(["../../../src/__tests__/a.test.ts"]);
+    expect(config.references).toEqual([{ path: "./tsconfig.below.json" }]);
+  });
+
+  it("has a real tests tsconfig that cannot emit and sees the ambient types", () => {
+    const config = JSON.parse(readFileSync(path.join(serverRoot, "src/__tests__/tsconfig.json"), "utf8"));
+
+    expect(config.compilerOptions).toMatchObject({ noEmit: true, rootDir: "../../.." });
+    expect(config.include).toContain("../types/*.d.ts");
+  });
+});
+
 describe("declarationsConfig", () => {
-  it("references the source layers that exist, and not tests", () => {
-    const config = declarationsConfig([{ name: "below" }, { name: "above" }, { name: "tests" }]);
+  it("references the source layers that exist, and no test layer", () => {
+    const config = declarationsConfig([
+      { name: "below" },
+      { name: "above" },
+      { name: "tests" },
+      { name: "test-tree-0", testTree: true },
+    ]);
 
     expect(config.compilerOptions.composite).toBe(true);
     expect(config.files).toEqual([]);
@@ -213,8 +260,10 @@ describe("typecheckLayers", () => {
     expect(JSON.parse(readFileSync(path.join(output, "package.json"), "utf8"))).toEqual({ type: "module" });
   });
 
-  it("skips the tests layer when only declarations are needed", () => {
+  it("skips the test layers when only declarations are needed", () => {
     const root = serverFixture();
+    mkdirSync(path.join(root, "src", "__tests__"));
+    writeFileSync(path.join(root, "src", "__tests__", "route.test.ts"), `import "../route.js";`);
     const configs = [];
 
     const status = typecheckLayers({
@@ -403,6 +452,53 @@ describe("typecheckLayers with the real compiler", () => {
     expect(status).not.toBe(0);
     expect(output).toMatch(/src\/one\.ts\(\d+,\d+\): error TS\d+/);
     expect(output).toContain("leaf");
+  }, 60_000);
+
+  function addTestTree(root, source) {
+    mkdirSync(path.join(root, "src", "__tests__"), { recursive: true });
+    writeFileSync(
+      path.join(root, "src", "__tests__", "tsconfig.json"),
+      `${JSON.stringify({
+        extends: "../../tsconfig.json",
+        compilerOptions: { noEmit: true, rootDir: "../.." },
+        include: ["."],
+      })}\n`,
+    );
+    writeFileSync(path.join(root, "src", "__tests__", "tree.test.ts"), source);
+  }
+
+  it("checks the test tree through declarations", () => {
+    const root = compilerFixture();
+    addTestTree(root, `import { route } from "../route.js";\nexport const checked: number = route();\n`);
+
+    const { status, output } = check(root);
+
+    expect(output).toBe("");
+    expect(status).toBe(0);
+  }, 60_000);
+
+  it("fails on a type error in the test tree", () => {
+    const root = compilerFixture();
+    addTestTree(root, `import { route } from "../route.js";\nexport const checked: string = route();\n`);
+
+    const { status, output } = check(root);
+
+    expect(status).not.toBe(0);
+    expect(output).toMatch(/tree\.test\.ts\(2,\d+\): error TS2322/);
+  }, 60_000);
+
+  it("fails when the test-tree tsconfig is invalid", () => {
+    const root = compilerFixture();
+    addTestTree(root, `export const checked = 1;\n`);
+    writeFileSync(
+      path.join(root, "src", "__tests__", "tsconfig.json"),
+      `${JSON.stringify({ extends: "../../tsconfig.json", compilerOptions: { noEmit: true, rootDir: "../..", target: "not-a-target" } })}\n`,
+    );
+
+    const { status, output } = check(root);
+
+    expect(status).not.toBe(0);
+    expect(output).toMatch(/error TS\d+/);
   }, 60_000);
 
   it("reports a type change through declarations in the test layer", () => {

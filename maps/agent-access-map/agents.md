@@ -219,6 +219,16 @@ environment, and consent checks as other edits. It adds no agent permission or
 credential fallback. Pool and externally managed agents use their existing
 configuration surfaces. Board browser verification does not qualify agent access.
 
+Ordinary configuration PATCH requests with healthy installed AI accounts validate
+current access, compatibility and environment selection without allocating a
+computer or sending a provider prompt. Legacy-account adoption, task connection
+adoption and Copilot model verification retain their live checks. Explicit Test
+and execution keep runtime validation. This changes save latency and validation
+timing; it grants no account, environment or execution authority. The isolated
+PostgreSQL route fixtures in
+[agent-configuration-save.test.ts](../../server/src/__tests__/agent-configuration-save.test.ts)
+cover board saves and revoked-account rejection, not native-agent access.
+
 The existing-agent upgrade notice for Claude, Codex, and Grok Build uses this configuration PATCH. It does not
 grant configuration, account, or environment access. The server resolves the
 saved settings under normal company/configuration authorization. Grok migration preserves

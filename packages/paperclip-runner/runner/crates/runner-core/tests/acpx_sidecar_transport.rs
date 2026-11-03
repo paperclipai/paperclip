@@ -248,6 +248,35 @@ fn preserves_closed_admission_categories_over_the_sidecar_pipe() {
 }
 
 #[test]
+fn session_ensure_rejection_carries_its_provider_cause_outside_the_error_text() {
+    let mut transport = transport("remote-error", Duration::from_secs(1));
+    let cause = |category: &str| {
+        json!({ "schema": "paperclip.provider-failure.v1", "provider": "anthropic", "phase": "startup",
+            "category": category, "message": "You've hit your limit [REDACTED] amber-cause-5512",
+            "retryability": "requires_action" })
+    };
+    for (category, classification) in [
+        ("quota_exhausted", "provider_quota_exhausted"),
+        ("unknown", "session_ensure_failed"),
+    ] {
+        let error = transport
+            .request(
+                GeneratedAcpxSidecarCommand::SessionOpen,
+                json!({ "errorCode": "ACPX_SESSION_ENSURE_FAILED", "providerFailure": cause(category) }),
+            )
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(&format!(
+            "retryable=false, classification={classification})"
+        )));
+        assert!(!message.contains("amber-cause-5512"));
+        assert!(!message.contains("violet-circuit-4821"));
+        assert_eq!(error.provider_failure(), Some(cause(category)));
+    }
+    transport.shutdown().unwrap();
+}
+
+#[test]
 fn redacts_sidecar_stderr_when_the_process_exits() {
     let mut transport = transport("exit-secret", Duration::from_secs(1));
     let error = transport

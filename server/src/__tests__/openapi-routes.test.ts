@@ -1428,3 +1428,12 @@ describe("heartbeat run ID OpenAPI contract", () => {
     expect(checked).toBe(12);
   });
 });
+
+
+it("documents explicit owner removals in the timeline response event enum", () => {
+  const spec = buildOpenApiSpec() as any;
+  const schema = spec.paths["/api/companies/{companyId}/timeline"].get.responses["200"].content["application/json"].schema;
+  expect(schema.properties.events.items.properties.kind.enum).toEqual([
+    "created", "commented", "approved", "delegated", "assigned", "unassigned",
+  ]);
+});

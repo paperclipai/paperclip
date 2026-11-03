@@ -1545,8 +1545,8 @@ describeEmbeddedPostgres("attention service", () => {
     const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Review copy and visual", status: "in_review", assigneeAgentId: workerId });
     const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
     await db.insert(issueThreadInteractions).values(ids.map((id, index) => ({
-      id, companyId, issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", createdByAgentId: workerId,
-      payload: { version: 1, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
+      id, companyId, issueId, kind: "request_confirmation" as const, status: "pending" as const, continuationPolicy: "wake_assignee" as const, createdByAgentId: workerId,
+      payload: { version: 1 as const, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
       createdAt: new Date(Date.UTC(2026, 6, 9, 12, index)),
     })));
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });

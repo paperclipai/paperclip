@@ -51,6 +51,7 @@ const GROK_PROMPT_OUTPUT = [
 const CREDENTIAL_BYTES = '{"tokens":{"access":"SECRET-ACCESS-TOKEN"}}';
 
 const mockAgentService = vi.hoisted(() => ({
+  create: vi.fn(),
   getById: vi.fn(),
   getChainOfCommand: vi.fn(async () => []),
 }));

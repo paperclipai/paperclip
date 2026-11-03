@@ -49,6 +49,56 @@ describe("Codex ACPX runtime adapter", () => {
     });
     expect(runtime.startTurn).not.toHaveBeenCalled();
   });
+  it("keeps a redacted explanation for an ensure rejection that carries no ACP error", async () => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    options.launchEnvironment = { ANTHROPIC_API_KEY: "fixture-anthropic-secret" };
+    const rejection = new Error("Claude Code exited during startup for fixture-anthropic-secret (sk-ant-api03-fixtureprivate)");
+    vi.mocked(runtime.ensureSession).mockRejectedValue(rejection);
+    const failure = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime }).catch((error: unknown) => error);
+    expect(failure).toBe(rejection);
+    expect(failure).toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED", providerFailure: { provider: "anthropic",
+      phase: "startup", category: "unknown", message: "Claude Code exited during startup for [REDACTED] ([REDACTED])" } });
+    expect(JSON.stringify((failure as { providerFailure: unknown }).providerFailure)).not.toMatch(/fixture-anthropic-secret|fixtureprivate/);
+  });
+  it("classifies an ACP authentication-required ensure rejection", async () => {
+    const runtime = fakeRuntime();
+    const message = "Authentication required: This integration does not support using claude.ai subscriptions.";
+    vi.mocked(runtime.ensureSession).mockRejectedValue(Object.assign(new Error(message), { code: -32000 }));
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED",
+      providerFailure: { category: "authentication", message, phase: "startup", retryability: "requires_action" } });
+  });
+  it("attaches a provider cause to a non-error ensure rejection", async () => {
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.ensureSession).mockRejectedValue({ code: -32603, message: "Internal error", data: { errorKind: "billing_error" } });
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_NON_ERROR",
+      providerFailure: { category: "quota_exhausted", providerCode: "billing_error", phase: "startup" } });
+  });
+  it("does not report Runner cancellation as a provider explanation", async () => {
+    const runtime = fakeRuntime();
+    const controller = new AbortController();
+    const reason = new Error("runtime admission cancelled");
+    const rejection = new Error("ACP connection closed");
+    vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+      controller.abort(reason);
+      throw rejection;
+    });
+    const options = openOptions(fakeCommand());
+    options.signal = controller.signal;
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toBe(reason);
+    await vi.waitFor(() => expect(rejection).toHaveProperty("code", "ACPX_SESSION_ENSURE_FAILED"));
+    expect(rejection).not.toHaveProperty("providerFailure");
+    expect(reason).not.toHaveProperty("providerFailure");
+  });
   it.each([false, true])("acknowledges configured Claude effort before admission (restoring=%s)", async restoring => {
     const runtime = fakeRuntime();
     const child = fakeChild();

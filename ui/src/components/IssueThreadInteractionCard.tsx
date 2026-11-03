@@ -2749,7 +2749,9 @@ function RequestConfirmationCard({
       {interaction.status === "pending" ? (
         <div className={compact ? "space-y-3" : "space-y-3 rounded-sm border border-border/70 bg-background/75 p-4"}>
           <div data-decision-prompt={compact ? true : undefined} className={compact ? "text-lg font-medium leading-relaxed text-foreground" : "text-sm leading-6 text-foreground"}>
-            {interaction.payload.prompt}
+            <MarkdownBody className={compact ? "text-lg" : undefined} externalReferences={externalReferences} mediaMode="reference">
+              {interaction.payload.prompt}
+            </MarkdownBody>
           </div>
           {interaction.payload.detailsMarkdown ? (
             compact ? <details className="group/confirmation-details">
@@ -3130,7 +3132,9 @@ function RequestCheckboxConfirmationCard({
         {/* Show each piece of state once: a connection-authorization prompt is
             the same sentence as the card title, so repeating it here is noise. */}
         {interaction.payload.prompt === interaction.title ? null : (
-          <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
+          <MarkdownBody className="text-sm leading-6 text-foreground" externalReferences={externalReferences} mediaMode="reference">
+            {interaction.payload.prompt}
+          </MarkdownBody>
         )}
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-border/60 pt-3 text-sm">

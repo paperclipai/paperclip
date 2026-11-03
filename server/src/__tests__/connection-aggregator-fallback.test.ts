@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { requestHumanInputAction } from "../../../packages/paperclip-runner/src/protocol-actions/request-human-input.js";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";

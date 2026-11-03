@@ -308,7 +308,7 @@ describe("residual recovery production matrix", () => {
       const unsubscribe = subscribeCompanyLiveEvents(f.companyId, event => {
         if (event.type === "heartbeat.run.status" && event.payload.runId === runId) statusEvents.push(event);
       });
-      extraStops.push(async () => unsubscribe());
+      extraStops.push(async () => { unsubscribe(); });
       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
       await once(child, "spawn");
       const stopChild = async () => {

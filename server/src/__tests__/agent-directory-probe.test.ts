@@ -182,7 +182,7 @@ describe("stable live agent directory observation", () => {
       traversal: `${reserved}/../../scratch`, "trailing-slash": `${reserved}/scratch/`, nul: `${reserved}/scratch\0`,
     }[kind]!;
     await expect(prepareSandboxManagedRuntime({
-      spec: { transport: "sandbox", provider: "fixture", sandboxId: "owned", remoteCwd: root, apiKey: null },
+      spec: { transport: "sandbox", provider: "fixture", sandboxId: "owned", remoteCwd: root, timeoutMs: 30_000, apiKey: null },
       adapterKey: "agent-files", client: {} as never, workspaceLocalDir: root, runtimeRootDir: invalid,
     })).rejects.toThrow("Transfer scratch must remain within the lease runtime tree");
     expect(fs.existsSync(reserved)).toBe(false);

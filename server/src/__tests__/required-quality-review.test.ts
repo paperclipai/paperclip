@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, assets, companies, createDb, documents, heartbeatRuns, issueAttachments, issueThreadInteractionIdempotencyKeys, issueThreadInteractions, issues } from "@paperclipai/db";
@@ -16,6 +16,12 @@ import { nativeCompletionFeedback } from "../services/native-runtime/native-comp
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import type { PrpStructuredRunResult } from "../vendor/paperclip-runner/index.js";
 
+// Issue writes and the `issues` row type take the policy as a plain JSON record.
+function executionPolicyRecord(input: unknown): Record<string, unknown> | null {
+  const policy = normalizeIssueExecutionPolicy(input);
+  return policy ? { ...policy } : null;
+}
+
 const requirement = { version: 1 as const, deliverables: [{ key: "copy", label: "Blog copy" }, { key: "visual", label: "Supporting visual" }] };
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit required output quality review", () => {
@@ -29,7 +35,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(agents).values({ id: agentId, companyId, name: "Writer", status: "idle", adapterType: "paperclip_runner" });
     const [task] = await db.insert(issues).values({ id: issueId, companyId, title: "Review outputs", status: "in_progress", assigneeAgentId: agentId,
       createdByUserId: userId, reviewPolicy: null,
-      executionPolicy: required ? normalizeIssueExecutionPolicy({ requiredQualityReview: requirement }) : null }).returning();
+      executionPolicy: required ? executionPolicyRecord({ requiredQualityReview: requirement }) : null }).returning();
     const saved = await documentService(db).upsertIssueDocument({ issueId, key: "copy", title: "Blog copy", body: "Draft one", format: "markdown", baseRevisionId: null, createdByUserId: userId });
     const copy = { type: "issue_document" as const, key: "copy", revisionId: saved.document.latestRevisionId! };
     const assetId = randomUUID(), attachmentId = randomUUID(), sha256 = "a".repeat(64);
@@ -70,7 +76,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
   it("protects accepted requirements from agent removal or weakening and permits audited human edits", async () => {
     const f = await fixture();
-    for (const executionPolicy of [null, normalizeIssueExecutionPolicy({ requiredQualityReview: { version: 1, deliverables: [requirement.deliverables[0]] } })]) {
+    for (const executionPolicy of [null, executionPolicyRecord({ requiredQualityReview: { version: 1, deliverables: [requirement.deliverables[0]] } })]) {
       await expect(issueService(db).update(f.issueId, { executionPolicy, actorAgentId: f.agentId })).rejects.toThrow("Only a human");
     }
     expect(await issueService(db).update(f.issueId, { executionPolicy: null, actorUserId: f.userId })).toMatchObject({ executionPolicy: null });
@@ -78,15 +84,15 @@ const support = await getEmbeddedPostgresTestSupport();
   it("requires reopening before adding an unsatisfied review contract to an already-completed task", async () => {
     const f = await fixture(false), service = issueService(db);
     await service.update(f.issueId, { status: "done", actorAgentId: f.agentId });
-    const executionPolicy = normalizeIssueExecutionPolicy({ requiredQualityReview: requirement });
+    const executionPolicy = executionPolicyRecord({ requiredQualityReview: requirement });
     await expect(service.update(f.issueId, { executionPolicy, actorUserId: f.userId })).rejects.toMatchObject({ details: { code: "required_quality_review_incomplete" } });
     expect(await service.update(f.issueId, { status: "todo", executionPolicy, actorUserId: f.userId })).toMatchObject({ status: "todo", executionPolicy: { requiredQualityReview: requirement } });
   });
   it("does not silently drop a required review when reusing an open task by title or idempotency key", async () => {
     const f = await fixture(false), service = issueService(db);
-    await expect(service.create(f.companyId, { title: f.task.title, allowDuplicate: false, executionPolicy: normalizeIssueExecutionPolicy({ requiredQualityReview: requirement }) })).rejects.toMatchObject({ details: { code: "required_quality_review_mismatch" } });
+    await expect(service.create(f.companyId, { title: f.task.title, allowDuplicate: false, executionPolicy: executionPolicyRecord({ requiredQualityReview: requirement }) })).rejects.toMatchObject({ details: { code: "required_quality_review_mismatch" } });
     const child = await service.createChild(f.issueId, { title: "Existing child", idempotencyKey: "same-child" });
-    await expect(service.createChild(f.issueId, { title: "Existing child", idempotencyKey: "same-child", executionPolicy: normalizeIssueExecutionPolicy({ requiredQualityReview: requirement }) })).rejects.toMatchObject({ details: { code: "required_quality_review_mismatch" } });
+    await expect(service.createChild(f.issueId, { title: "Existing child", idempotencyKey: "same-child", executionPolicy: executionPolicyRecord({ requiredQualityReview: requirement }) })).rejects.toMatchObject({ details: { code: "required_quality_review_mismatch" } });
     expect(child.issue.executionPolicy).toBeNull();
   });
   it("rejects stale revisions, removed attachments and changed requirement identities", async () => {
@@ -211,8 +217,8 @@ const support = await getEmbeddedPostgresTestSupport();
   it("caps pending quality cards task-wide even when previous requirement keys or reviewers differ", async () => {
     const f = await fixture();
     await db.insert(issueThreadInteractions).values(Array.from({ length: 10 }, (_, i) => ({
-      companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
-      payload: { version: 1, prompt: "Prior required output", target: f.copy, qualityReview: { key: `prior-${i}`, requirementHash: "a".repeat(64) } },
+      companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation" as const, status: "pending" as const, continuationPolicy: "wake_assignee" as const,
+      payload: { version: 1 as const, prompt: "Prior required output", target: f.copy, qualityReview: { key: `prior-${i}`, requirementHash: "a".repeat(64) } },
     })));
     await expect(f.service.create(f.task, { kind: "request_confirmation", addresseeUserId: f.userId, payload: { version: 1, prompt: "Approve copy?", target: f.copy, qualityReview: { key: "copy" } } }, { agentId: f.agentId })).rejects.toMatchObject({ details: { code: "quality_review_pending_limit" } });
     const rows = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));

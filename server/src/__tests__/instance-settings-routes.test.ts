@@ -1209,14 +1209,25 @@ describe("instance settings routes", () => {
         expect(response.body.idleSleepSafety).toEqual({ version: 3, backgroundWork: "none" });
         expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
           ownerId, expect.any(Function), undefined, undefined, false, false,
-          { incomingWake: catalog, deadlineCapability: catalog });
+          { incomingWake: catalog, deadlineCapability: undefined });
         const options = mockReadIdleSleepSafety.mock.calls[0][9];
-        expect(options.incomingWake).toBe(options.deadlineCapability);
+        expect(options.deadlineCapability).toBeUndefined();
         expect(Object.isFrozen(options.incomingWake)).toBe(true);
         expect(Object.isFrozen(options.incomingWake.incomingWake)).toBe(true);
         expect(Object.isFrozen(options.incomingWake.incomingWake.routes)).toBe(true);
         await request(createControlApp({ type: "none" })).get(path).set("x-paperclip-cloud-control", token).expect(401);
         expect(mockReadIdleSleepSafety).toHaveBeenCalledTimes(1);
+      });
+
+      it("passes the signed deadline catalog only for its explicit named query", async () => {
+        await request(createControlApp({ type: "none" })).get(`${path}&scheduledWake=domain-deadlines-v1`)
+          .set("x-paperclip-cloud-control", assertion()).expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
+          ownerId, expect.any(Function), undefined, undefined, true, true,
+          { incomingWake: catalog, deadlineCapability: catalog });
+        const options = mockReadIdleSleepSafety.mock.calls[0][9];
+        expect(options.incomingWake).toBe(options.deadlineCapability);
+        expect(Object.isFrozen(options.deadlineCapability)).toBe(true);
       });
 
       it.each([
@@ -1548,7 +1559,7 @@ describe("instance settings routes", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual(drain);
       expect(mockPublishActivity).toHaveBeenCalledTimes(2);
-      expect(mockPublishActivity.mock.calls.map(([publication]: [{ companyId: string }]) => publication.companyId)).toEqual([
+      expect(mockPublishActivity.mock.calls.map(([publication]) => publication.companyId)).toEqual([
         "company-1",
         "company-2",
       ]);

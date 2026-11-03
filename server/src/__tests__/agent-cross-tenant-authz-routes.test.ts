@@ -47,6 +47,7 @@ let currentKeyAgentId = agentId;
 let currentAccessCanUser = false;
 
 const mockAgentService = vi.hoisted(() => ({
+  create: vi.fn(),
   getById: vi.fn(),
   retryLifecycle: vi.fn(),
   pause: vi.fn(),

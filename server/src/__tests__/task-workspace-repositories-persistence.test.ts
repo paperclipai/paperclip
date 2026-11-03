@@ -152,7 +152,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         await exec(realGit, ["-C", taskRoot, "add", "."]);
         expect((await exec(realGit, ["-C", taskRoot, "diff", "--cached", "--name-only"])).stdout.trim()).toBe("report.txt");
         const baseline = await captureDirectorySnapshot(taskRoot, { exclude: [".paperclip-runtime"] });
-        try { expect([...baseline.entries.keys()].some(entry => entry.includes("repository-staging") || entry.includes(".clone-"))).toBe(false); }
+        try { expect([...baseline.entries].some(([entry]) => entry.includes("repository-staging") || entry.includes(".clone-"))).toBe(false); }
         finally { await disposeDirectorySnapshot(baseline); }
       } finally {
         clearTimeout(timeout);

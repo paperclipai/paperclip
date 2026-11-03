@@ -441,7 +441,9 @@ function ReceiptDisclosure({
       .map((option) => option.label);
     request = (
       <div>
-        <p className="text-sm text-foreground">{interaction.payload.prompt}</p>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+          {interaction.payload.prompt}
+        </MarkdownBody>
         {interaction.status === "accepted" ? (
           <p className="mt-1 text-sm font-medium text-foreground">
             Answer:{" "}
@@ -530,7 +532,9 @@ function ReceiptDisclosure({
   } else {
     request = (
       <div className="grid gap-2">
-        <p className="text-sm text-foreground">{interaction.payload.prompt}</p>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+          {interaction.payload.prompt}
+        </MarkdownBody>
         {interaction.payload.detailsMarkdown ? (
           <div className="text-sm">
             <MarkdownBody externalReferences={externalReferences}>
@@ -875,11 +879,11 @@ function ConfirmationCard({
         />
       ) : isPlanConfirmation && rejecting ? null : (
         <div className="space-y-2">
-          <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
             {isPlanConfirmation
               ? "Do you accept this plan?"
               : interaction.payload.prompt}
-          </p>
+          </MarkdownBody>
           {!isPlanConfirmation ? (
             <CompactTarget interaction={interaction} />
           ) : null}
@@ -1165,15 +1169,17 @@ function CheckboxConfirmationCard({
   return (
     <div>
       <div className="space-y-2">
-        <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
-          {interaction.payload.prompt}
-        </p>
+        <div id={`${interaction.id}-prompt`}>
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
+            {interaction.payload.prompt}
+          </MarkdownBody>
+        </div>
         <CompactTarget interaction={interaction} />
       </div>
       <div
         className="mt-3 grid gap-1"
         role="group"
-        aria-label={interaction.payload.prompt}
+        aria-labelledby={`${interaction.id}-prompt`}
       >
         {interaction.payload.options.length > 10 ? (
           <label className="relative mb-1 block">

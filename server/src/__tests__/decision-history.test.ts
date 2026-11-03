@@ -87,7 +87,7 @@ const support = await getEmbeddedPostgresTestSupport();
         kind: "request_item_verdicts", status: "answered", resolvedAt: new Date(),
         payload: { version: 1, prompt: "Review", items: [] },
         result: { version: 1, outcome: "resolved", complete: true,
-          items: verdicts.map((verdict, index) => ({ id: String(index), verdict })) } });
+          items: verdicts.map((verdict, index) => ({ id: String(index), verdict, resolvedAt: new Date().toISOString() })) } });
     }
     await db.insert(issueThreadInteractions).values([
       { companyId, issueId, title: "Question answered", kind: "ask_user_questions", status: "answered", resolvedAt: new Date(), payload: { version: 1, questions: [] } },

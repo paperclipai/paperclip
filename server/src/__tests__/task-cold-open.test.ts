@@ -1,4 +1,4 @@
-import nativePlanWrites from "./fixtures/native-plan-write-events.json";
+import nativePlanWrites from "./fixtures/native-plan-write-events.json" with { type: "json" };
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";

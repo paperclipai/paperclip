@@ -14,11 +14,13 @@ describe("ACPX launch environment", () => {
       expect(() => createSanitizedAcpxSpawnInput({[key]:value, [CONFIGURED_ENVIRONMENT_KEYS]:JSON.stringify([key])}, "claude")).toThrow("configured environment");
     }
   });
-  it("keeps explicit Claude managed-command selectors without forwarding GitHub credentials", () => {
+  it("keeps explicit Claude managed-command transport without forwarding GitHub credentials", () => {
     const helpers = { PATH: "/managed:/usr/bin", BASH_ENV: "/managed/.bashrc", ZDOTDIR: "/managed",
-      GH_CONFIG_DIR: "/managed", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/managed" };
+      GH_CONFIG_DIR: "/managed", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/managed",
+      PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3210", PAPERCLIP_GITHUB_BROKER_TOKEN: "session-capability",
+      PAPERCLIP_GITHUB_BRIDGE_TOKEN: "bridge-capability" };
     const source = { ...helpers, GH_TOKEN: "host-secret", GITHUB_TOKEN: "host-secret",
-      PAPERCLIP_GITHUB_BROKER_TOKEN: "host-capability", NODE_OPTIONS: "--require=untrusted" };
+      PAPERCLIP_GIT_TOKEN: "host-secret", NODE_OPTIONS: "--require=untrusted" };
     expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual(helpers);
     for (const [key, value] of Object.entries(helpers)) vi.stubEnv(key, value);
     const ambient = createSanitizedAcpxSpawnInput(undefined, "claude").env;
@@ -26,6 +28,12 @@ describe("ACPX launch environment", () => {
     for (const key of Object.keys(helpers).filter(key => key !== "PATH")) {
       expect(ambient).not.toHaveProperty(key);
       expect(sibling).not.toHaveProperty(key);
+    }
+    const { PAPERCLIP_GITHUB_LAUNCHER_DIR: _launcher, ...withoutLauncher } = source;
+    expect(createSanitizedAcpxSpawnInput(withoutLauncher, "claude").env).toEqual({ PATH: helpers.PATH });
+    for (const [key, value] of Object.entries(helpers).filter(([key]) => key.startsWith("PAPERCLIP_GITHUB_"))) {
+      expect(configuredEnvironmentProjection({ [key]: value })).not.toHaveProperty(key);
+      expect(() => createSanitizedAcpxSpawnInput({ [key]: value, [CONFIGURED_ENVIRONMENT_KEYS]: JSON.stringify([key]) }, "claude")).toThrow("configured environment");
     }
   });
   it("does not inherit ambient prepared storage", () => {
