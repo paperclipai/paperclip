@@ -75,9 +75,6 @@ export async function inspectRemoteWarmSessionRecovery(input: {
       !prior.owner.controllerProcessStartedAt || !prior.owner.controllerBootId) return deny();
   const previous = parseNativeExecutionInput(prior.run.runnerProfileJson?.nativeExecutionInput);
   if (previous.binding.runId !== identity.runId || !input.matchesExecution(previous)) return deny();
-  // A finalizer can claim an already successful predecessor during admission.
-  // Its current lease is a wait, not evidence that retained work is ambiguous.
-  // The ordinary pre-provider deferral keeps this same run and rechecks authority.
   if (prior.owner.leaseOwner && prior.owner.leaseExpiresAt && prior.owner.leaseExpiresAt > new Date()) {
     throw new NativeControllerRecoveryWaitingError(prior.owner.leaseExpiresAt);
   }
