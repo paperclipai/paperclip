@@ -93,7 +93,8 @@ describe("tenant-session recovery", () => {
     await expect(api.get("/ordinary-401")).rejects.toMatchObject({
       name: "ApiError",
       status: 401,
-      message: "unauthorized",
+      code: "unauthorized",
+      message: "Your session has ended. Sign in again to continue.",
     });
 
     fetchMock.mockResolvedValue(jsonResponse({ recovered: true }));
