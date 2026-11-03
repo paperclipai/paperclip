@@ -1586,6 +1586,12 @@ does not prove that the provider stopped or that a retry is safe; it remains
 non-recoverable until the existing ownership and recovery checks establish the
 next permitted action.
 
+If a failed sidecar control closes an ACPX session before the event pump observes
+the failure, its terminal retains the original closed-code diagnostic and any
+validated provider cause. Later polling must not replace that cause with a generic
+closed-session message. Intentional shutdown keeps its ordinary closed state;
+retaining a failure never reopens the provider or authorizes another attempt.
+
 Provider rejections additionally use the versioned `ProviderFailure` cause.
 The provider adapter extracts and redacts the original explanation before the
 process boundary. Startup command receipts and failed turns retain the same

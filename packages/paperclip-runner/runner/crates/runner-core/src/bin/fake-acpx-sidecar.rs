@@ -314,6 +314,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-wrong-cancel"
             | "turns-wrong-scope"
             | "turns-tool"
+            | "turns-tool-resolution-rejected"
             | "turns-tool-terminal"
             | "turns-reused-tool-id-terminal"
             | "turns-late-tool-after-suspend"
@@ -349,6 +350,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
+                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                    write_json(
+                        &mut stdout,
+                        &json!({
+                            "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                            "id":id,"ok":false,"error":{
+                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false,
+                                "providerFailure":{
+                                    "schema":"paperclip.provider-failure.v1", "provider":"claude", "phase":"turn",
+                                    "category":"unknown", "message":"The provider retired this tool call.", "retryability":"unknown"
+                                }
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
                 if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
                     let turn_id = request
                         .pointer("/params/turnId")
@@ -443,6 +460,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && matches!(
                         mode,
                         "turns-tool"
+                            | "turns-tool-resolution-rejected"
                             | "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
                             | "turns-late-tool-after-suspend"
@@ -459,7 +477,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-resolution-rejected" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;

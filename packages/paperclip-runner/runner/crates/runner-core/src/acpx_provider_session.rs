@@ -348,6 +348,7 @@ pub struct AcpxProviderSession {
     catalog_revision: u64,
     working_directory: PathBuf,
     closed: bool,
+    failure: Option<LocalRunnerError>,
     transport_terminated: bool,
     runtime_retired: bool,
 }
@@ -383,6 +384,7 @@ impl AcpxProviderSession {
             catalog_revision: config.catalog_revision,
             working_directory: config.working_directory.clone(),
             closed: false,
+            failure: None,
             transport_terminated: false,
             runtime_retired: false,
         })
@@ -1112,7 +1114,10 @@ impl AcpxProviderSession {
 
     fn ensure_open(&self) -> Result<(), LocalRunnerError> {
         if self.closed {
-            return Err(LocalRunnerError::invalid("ACPX provider session is closed"));
+            return Err(self
+                .failure
+                .clone()
+                .unwrap_or_else(|| LocalRunnerError::invalid("ACPX provider session is closed")));
         }
         Ok(())
     }
@@ -1197,7 +1202,12 @@ impl AcpxProviderSession {
 
     fn fail_closed(&mut self, error: LocalRunnerError) -> LocalRunnerError {
         self.closed = true;
-        with_cleanup_error(error, self.terminate_transport())
+        let error = with_cleanup_error(
+            self.failure.clone().unwrap_or(error),
+            self.terminate_transport(),
+        );
+        self.failure = Some(error.clone());
+        error
     }
 }
 
@@ -1701,7 +1711,8 @@ fn with_cleanup_error(
         Ok(()) => error,
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
-        )),
+        ))
+        .with_provider_failure(error.provider_failure()),
     }
 }
 
