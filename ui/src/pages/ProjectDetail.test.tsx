@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
@@ -18,6 +19,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  listAll: vi.fn(),
   update: vi.fn(),
 }));
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
@@ -194,6 +196,7 @@ describe("ProjectDetail", () => {
     mockProjectsApi.get.mockResolvedValue(project());
     mockProjectsApi.list.mockResolvedValue([project()]);
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.listAll.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockBudgetsApi.overview.mockResolvedValue({ policies: [] });
@@ -260,6 +263,22 @@ describe("ProjectDetail", () => {
     expect(mockProjectsApi.update).toHaveBeenCalledWith("project-1", { visibility: "open" }, "company-1");
     expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
     queryClient.clear();
+  });
+
+  it.each(["issues", "plugin-operations"])("removes cached %s after a real task-list denial", async tab => {
+    mockLocation.pathname = `/projects/project-1/${tab}`;
+    const read = tab === "issues" ? mockIssuesApi.listAll : mockIssuesApi.list;
+    read.mockResolvedValue([{ id: "private-task", companyId: "company-1" }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    try {
+      await act(() => root!.render(<QueryClientProvider client={client}><ProjectDetail /></QueryClientProvider>));
+      await vi.waitFor(() => expect(mockIssuesList.mock.calls.at(-1)?.[0]).toMatchObject({ issues: [{ id: "private-task" }] }));
+      read.mockRejectedValue(new ApiError("forbidden", 403, null));
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.list("company-1") }); });
+      await vi.waitFor(() => expect(container.textContent).toContain("You don’t have permission to do that."));
+      expect(container.querySelector('[data-testid="issues-list"]')).toBeNull();
+    } finally { client.clear(); }
   });
 
   it("shows managed plugin affordances and filters the operations tab by plugin origin", async () => {

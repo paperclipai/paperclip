@@ -325,6 +325,46 @@ describeEmbeddedPostgres("activity service", () => {
     expect(runs[0]).not.toHaveProperty("contextSnapshot");
   });
 
+  it.each(["requested", "acknowledged", "pending_native", "missing_native", "wrong_run", "wrong_company",
+    "malformed_execution", "null_execution", "malformed_native"] as const)(
+    "projects only bounded, owner-matched Stop evidence in issue history: %s", async proof => {
+      const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Stop history", issuePrefix: `S${companyId.slice(0, 6)}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Stopped runner", adapterType: "process" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Stop the current run", assigneeAgentId: agentId });
+      const native = { schema: "paperclip.native-cancellation.v1", runId, companyId,
+        dispatchState: proof === "pending_native" ? "pending" : "acknowledged",
+        intentAuditId: "private-stop-proof", effects: ["private-stop-proof"], secret: "private-stop-proof" };
+      const result: Record<string, unknown> = {
+        executionCancellation: { state: proof === "requested" ? "requested" : "acknowledged",
+          proof: "private-stop-proof", secret: "private-stop-proof" },
+        nativeCancellation: native, unrelated: "private-stop-proof",
+      };
+      if (proof === "missing_native") delete result.nativeCancellation;
+      if (proof === "wrong_run") native.runId = randomUUID();
+      if (proof === "wrong_company") native.companyId = randomUUID();
+      if (proof === "malformed_native") result.nativeCancellation = { ...native, dispatchState: { secret: "private-stop-proof" } };
+      if (proof === "malformed_execution") result.executionCancellation = { state: { secret: "private-stop-proof" } };
+      if (proof === "null_execution") result.executionCancellation = null;
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, scopeKind: "issue",
+        nativeIssueId: issueId, runtimeMode: "native", status: "cancelled", finishedAt: new Date(),
+        contextSnapshot: { issueId }, livenessState: "advanced", resultJson: result });
+
+      const rows = await activityService(db).runsForIssue(companyId, issueId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ runId, runtimeMode: "native", status: "cancelled" });
+      expect(rows[0]!.resultJson).toEqual({
+        executionCancellation: { state: proof === "requested" ? "requested"
+          : proof === "malformed_execution" || proof === "null_execution" ? "unknown" : "acknowledged" },
+        ...(["missing_native", "wrong_run", "wrong_company", "malformed_native"].includes(proof) ? {} : {
+          nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId, companyId,
+            dispatchState: proof === "pending_native" ? "pending" : "acknowledged" },
+        }),
+      });
+      expect(JSON.stringify(rows)).not.toContain("private-stop-proof");
+    },
+  );
+
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
