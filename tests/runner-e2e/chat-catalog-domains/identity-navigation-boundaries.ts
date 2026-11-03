@@ -50,6 +50,14 @@ export function gradeNavigationBoundary(value: unknown) {
   return c.result();
 }
 const sources = ["chat-catalog-domains/identity-navigation-boundaries.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/navigation-preferences.yaml"];
+// An empty company's dashboard correctly opens first-agent onboarding, which hides
+// optional announcements. Use its normal Projects page for this personal preference.
+async function openAnnouncementCompanySurface(ctx: ChatCatalogContext, issuePrefix: string, reload = false) {
+  await ctx.input.page.goto(`/${issuePrefix}/projects`, { waitUntil: "domcontentloaded" });
+  if (reload) await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
+  await expect(ctx.input.page.getByText("No projects yet.", { exact: true })).toBeVisible();
+  await expect(ctx.input.page.getByRole("dialog")).toHaveCount(0);
+}
 export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
   identityDefinition("navigation-preferences.broken-link", async ctx => {
     const source = await openStandingChat(ctx); const p = await project(ctx);
@@ -106,7 +114,7 @@ export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
       const invalidAuditCompanyStatus = invalid.status; await invalid.body?.cancel();
       const source = ctx.input.page.url();
       await expect(ctx.input.page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("heading", { name: publication.title, exact: true })).toBeVisible();
-      await ctx.input.page.goto(`/${otherCompany.issuePrefix}/dashboard`, { waitUntil: "domcontentloaded" });
+      await openAnnouncementCompanySurface(ctx, otherCompany.issuePrefix);
       await expect(ctx.input.page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("heading", { name: publication.title, exact: true })).toBeVisible();
       const secondary = await ctx.input.api.get<Publication | null>("/api/announcements/current");
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
@@ -114,7 +122,7 @@ export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
         observerBeforePublicationId: observerPublication?.id, invalidAuditCompanyStatus };
     } catch (error) { try { await observer.dispose(); } finally { observers.delete(ctx); const id = otherCompanies.get(ctx); if (id) await ctx.input.api.delete(`/api/companies/${id}`, { allowNotFound: true }); otherCompanies.delete(ctx); } throw error; }
   }, gradeNavigationBoundary, {
-    sourceFiles: [...sources, "chat-announcement-fixture.ts", "harness-env.ts", "../../packages/shared/src/announcements.ts", "../../server/src/services/announcement-feed.ts", "../../server/src/routes/announcements.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.announcement-dismissal.v2",
+    sourceFiles: [...sources, "chat-announcement-fixture.ts", "harness-env.ts", "../../packages/shared/src/announcements.ts", "../../server/src/services/announcement-feed.ts", "../../server/src/routes/announcements.ts", "../../ui/src/pages/Projects.tsx", "../../ui/src/components/AnnouncementWell.tsx"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.announcement-dismissal.v2",
     async act(ctx, state) {
       await waitForReply(ctx); const publication = state.publication as Publication; const source = ctx.input.page.url();
       state.beforeHumanPublicationId = (await ctx.input.api.get<Publication | null>("/api/announcements/current"))?.id;
@@ -123,7 +131,7 @@ export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
       await ctx.input.page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement", exact: true }).click();
       state.dismissRequestStatus = (await response).status(); state.afterHumanPublication = await ctx.input.api.get("/api/announcements/current");
       const other = state.otherCompany as Entity & { issuePrefix: string };
-      await ctx.input.page.goto(`/${other.issuePrefix}/dashboard`, { waitUntil: "domcontentloaded" }); await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
+      await openAnnouncementCompanySurface(ctx, other.issuePrefix, true);
       await expect(ctx.input.page.getByRole("complementary", { name: "Paperclip announcements" })).toHaveCount(0); state.secondaryAfterReloadHidden = true;
       const observer = observers.get(ctx)!; const receipt = await observer.request("/api/announcements/current"); state.observerAfterPublicationId = ((await receipt.json()) as Publication | null)?.id;
       const page = await observer.context.newPage();
