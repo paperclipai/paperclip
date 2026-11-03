@@ -22,14 +22,22 @@ const recordKey = (userId: string, companyId: string | null) => `${QUERY_CACHE_P
 const issueIdentity = (query: { queryKey: readonly unknown[]; state: { data: unknown } }) => String(object(query.state.data)?.id ?? query.queryKey[2]).toLowerCase();
 const issueRefs = (query: { queryKey: readonly unknown[]; state: { data: unknown } }) => [query.queryKey[2], object(query.state.data)?.id, object(query.state.data)?.identifier]
   .filter((id): id is string => typeof id === "string").map(id => id.toLowerCase());
-const excludedFields = new Set(["planDocument", "legacyPlanDocument", "documentSummaries", "documents", "comments", "workProducts", "browsers", "pairingCode", "viewerUrl", "accessToken", "refreshToken", "sessionToken", "token", "password", "apiKey", "privateKey", "authorization", "access_token", "refresh_token", "id_token", "clientSecret", "client_secret", "api_key", "private_key", "credentials", "adapterConfig", "runtimeConfig", "env"].map(key => key.toLowerCase()));
+const excludedFields = new Set(["planDocument", "legacyPlanDocument", "documentSummaries", "documents", "comments", "workProducts", "browsers", "pairingCode", "viewerUrl", "accessToken", "refreshToken", "sessionToken", "token", "password", "apiKey", "privateKey", "authorization", "access_token", "refresh_token", "id_token", "clientSecret", "client_secret", "api_key", "private_key", "credentials", "env"].map(key => key.toLowerCase()));
 function displayData(value: unknown, denied: ReadonlySet<string>): unknown {
   if (Array.isArray(value)) return value.map(item => displayData(item, denied)).filter(item => item !== undefined);
   if (!value || typeof value !== "object" || value instanceof Date) return value;
   const row = value as Record<string, unknown>;
   if (typeof row.id === "string" && denied.has(row.id.toLowerCase())) return undefined;
   return Object.fromEntries(Object.entries(row).filter(([key]) => !excludedFields.has(key.toLowerCase()))
-    .map(([key, item]) => [key, displayData(item, denied)]));
+    .map(([key, item]) => {
+      if (key === "runtimeConfig") return [key, {}];
+      if (key === "adapterConfig") {
+        const config = object(item);
+        return [key, Object.fromEntries(["provider", "model", "agent", "acpxAgent", "effort"]
+          .filter(field => typeof config?.[field] === "string").map(field => [field, config![field]]))];
+      }
+      return [key, displayData(item, denied)];
+    }));
 }
 
 function browserStorage(): CacheStorage | null {
