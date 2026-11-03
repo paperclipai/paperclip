@@ -442,25 +442,24 @@ async function recordRetryableFailure(input: {
         executionStatusDeliveryId: randomUUID(),
         ...(projectsTerminalStatus
           ? {
-              status:
-                input.failureScope === "workspace"
-                  ? "failed"
-                  : exhaustedRunStatus,
-              finishedAt: input.run.finishedAt ?? now,
+              // Stop can win after the failure's admission snapshot. The
+              // UPDATE locks and evaluates the current row, not that snapshot.
+              status: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.status}
+                else ${input.failureScope === "workspace" ? "failed" : exhaustedRunStatus} end`,
+              finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
+                else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
             }
           : {}),
         nativePhase: phase,
         nativePhaseUpdatedAt: now,
-        resultJson: {
-          ...record(input.run.resultJson),
+        // Preserve concurrent cancellation and accounting receipts while
+        // recording the finalizer's own failure history.
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
           finalizationPhase: phase,
           failureCode,
           originalFailureCode: input.failureCode,
-          nextAttemptAt:
-            supersededByNewerRun || exhausted
-              ? null
-              : nextAttemptAt.toISOString(),
-        },
+          nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
+        })}::jsonb`,
         updatedAt: now,
       })
       .where(eq(heartbeatRuns.id, input.run.id))

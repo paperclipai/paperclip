@@ -223,6 +223,73 @@ describe("committed native run projection lifecycle", () => {
     expect(await readWake(wake.id)).toEqual(settled);
   });
 
+  it.each(["provider", "workspace"] as const)("preserves actual Stop through %s finalization retry exhaustion", async scope => {
+    const binding = await seed(true);
+    await complete(binding, "control_plane");
+    const wake = await claimedWake(binding);
+    await workspaceOperationService(db).createRecorder({ companyId, issueId: binding.issueId, heartbeatRunId: binding.runId })
+      .recordOperation({ phase: "workspace_finalize", cwd: root,
+        run: async () => ({ status: scope === "workspace" ? "failed" : "succeeded", exitCode: scope === "workspace" ? 1 : 0 }) });
+    await heartbeatService(db).cancelRun(binding.runId, "Stopped by operator", {
+      cancellationRequestId: randomUUID(), cancellationRequestedByUserId: "board-user",
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+    });
+    const stopped = await read(binding.runId), cancelledWake = await readWake(wake.id);
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped.resultJson?.nativeCancellation).toMatchObject({ scope: "run", dispatched: false, dispatchState: "acknowledged" });
+    const acceptedResult = (await state(binding.runId)).resultId;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (scope === "workspace") await recordNativeFinalizationFailure({ db, runId: binding.runId,
+        projectRunStatus: true, failureScope: "workspace", error: new Error("native_workspace_finalize_failed") });
+      else await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true, failpoint: "status_projection" });
+    }
+    const after = await read(binding.runId);
+    expect((await state(binding.runId))).toMatchObject({ phase: "terminal_failure", resultId: acceptedResult, nextAttemptAt: null });
+    expect(after).toMatchObject({ status: "cancelled", finishedAt: stopped.finishedAt,
+      error: stopped.error, errorCode: stopped.errorCode, costAccountingPending: stopped.costAccountingPending,
+      costAccountedAt: stopped.costAccountedAt, usageJson: stopped.usageJson });
+    expect(after.resultJson?.nativeCancellation).toEqual(stopped.resultJson?.nativeCancellation);
+    expect(await readWake(wake.id)).toEqual(cancelledWake);
+    expect(after.resultJson).toMatchObject({ finalizationPhase: "terminal_failure", nextAttemptAt: null });
+    expect((await db.select().from(issues).where(eq(issues.id, binding.issueId)))[0].status)
+      .toBe(scope === "workspace" ? "blocked" : "in_review");
+    await start(); await flush(); await quiet();
+    expect((await read(binding.runId)).status).toBe("cancelled");
+  });
+
+  it("preserves Stop that wins after the workspace terminal-failure admission snapshot", async () => {
+    const binding = await seed(true); await complete(binding, "control_plane");
+    const wake = await claimedWake(binding);
+    await workspaceOperationService(db).createRecorder({ companyId, issueId: binding.issueId, heartbeatRunId: binding.runId })
+      .recordOperation({ phase: "workspace_finalize", cwd: root, run: async () => ({ status: "failed", exitCode: 1 }) });
+    const fail = () => recordNativeFinalizationFailure({ db, runId: binding.runId,
+      projectRunStatus: true, failureScope: "workspace" as const, permanent: true, error: new Error("native_workspace_finalize_failed") });
+    let stopped: Awaited<ReturnType<typeof read>> | undefined;
+    let cancelledWake: Awaited<ReturnType<typeof readWake>> | undefined;
+    const transaction = db.transaction.bind(db);
+    const stopAfterSnapshot: typeof db.transaction = async (callback, config) => {
+      // recordNativeFinalizationFailure has already read its run/coordinator.
+      // Let the actual Stop producer win before its failure transaction starts.
+      expect((await read(binding.runId)).status).toBe("running");
+      await heartbeatService(db).cancelRun(binding.runId, "Stopped by operator", {
+        cancellationRequestId: randomUUID(), cancellationRequestedByUserId: "board-user",
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+      });
+      stopped = await read(binding.runId); cancelledWake = await readWake(wake.id);
+      expect(stopped.status).toBe("cancelled");
+      return transaction(callback, config);
+    };
+    vi.spyOn(db, "transaction").mockImplementationOnce(stopAfterSnapshot);
+    await fail();
+    const after = await read(binding.runId);
+    expect(after).toMatchObject({ status: "cancelled", finishedAt: stopped!.finishedAt,
+      error: stopped!.error, errorCode: stopped!.errorCode });
+    expect(after.resultJson?.nativeCancellation).toEqual(stopped!.resultJson?.nativeCancellation);
+    expect(await readWake(wake.id)).toEqual(cancelledWake);
+    expect((await state(binding.runId)).phase).toBe("terminal_failure");
+  });
+
   it.each(["provider", "workspace"] as const)("settles the exact wake when %s finalization retries exhaust", async scope => {
     const binding = await accepted(), wake = await claimedWake(binding);
     if (scope === "workspace") await db.update(workspaceOperations).set({ status: "failed" })

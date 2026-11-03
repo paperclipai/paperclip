@@ -1861,7 +1861,11 @@ An operator Stop waits for provider termination. Remote sandbox providers may re
 Native workspace finalization can complete after an operator Stop has cancelled
 its run. The accepted provider result and saved-file receipts remain available,
 but late finalization preserves the run's cancellation status, finish time and
-errors, together with its cancelled source wake. Task status remains a separate
+errors, together with its cancelled source wake. Retry exhaustion has the same
+rule: workspace or status-decision failures retain cancellation while recording
+their bounded finalization failure and existing file-recovery obligations.
+Failure metadata merges into the current run without replacing concurrent
+cancellation or accounting receipts. Task status remains a separate
 server-arbiter decision over the accepted result. A valid completed result can
 finish the task after run-only Stop; failed or incomplete work keeps its normal
 nonterminal disposition. Stop does not reopen an already committed task. This
