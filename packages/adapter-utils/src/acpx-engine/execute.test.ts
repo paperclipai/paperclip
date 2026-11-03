@@ -3057,6 +3057,25 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(cleared.env).toBeUndefined();
   });
 
+  it("removes an unchanged managed env value after two identical runs and a clear", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const config = { agent: "claude", stateDir, cwd, managedHooks: { env: { MANAGED_LOG: "/plugin.log" } } };
+
+    for (let run = 0; run < 2; run += 1) {
+      await runExecutor(config, { context: { paperclipWorkspace: { cwd } } });
+    }
+    const applied = JSON.parse(await fs.readFile(settingsPath, "utf8")) as { env?: Record<string, string> };
+    expect(applied.env).toEqual({ MANAGED_LOG: "/plugin.log" });
+
+    await runExecutor({ agent: "claude", stateDir, cwd }, { context: { paperclipWorkspace: { cwd } } });
+    const cleared = JSON.parse(await fs.readFile(settingsPath, "utf8")) as { env?: Record<string, string> };
+    expect(cleared.env).toBeUndefined();
+  });
+
   it("keeps a workspace hook group that matches the managed block when the block is cleared", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

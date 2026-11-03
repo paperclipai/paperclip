@@ -1800,7 +1800,10 @@ async function writePaperclipClaudeSettings(input: {
   }
   const ownedEnvKeys: string[] = [];
   for (const [key, value] of Object.entries(managedHooks.env)) {
-    if (mergedEnv[key] === value) continue;
+    if (mergedEnv[key] === value) {
+      if (previousManaged.envKeys.includes(key)) ownedEnvKeys.push(key);
+      continue;
+    }
     mergedEnv[key] = value;
     ownedEnvKeys.push(key);
   }
