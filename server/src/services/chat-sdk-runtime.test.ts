@@ -241,6 +241,8 @@ import {
   type CreateChatSdkEndpointRuntimeOptions,
 } from "./chat-sdk-runtime.js";
 
+import { createChatRuntime } from "./chat-runtime.js";
+
 const persistence: ChatSdkStatePersistence = {
   async compareAndSet() {
     return true;
@@ -1149,6 +1151,31 @@ describe("Chat SDK endpoint runtime", () => {
       expect(captures.chats[1]).toMatchObject({ initializeCalls: 0 });
       await next.initialize();
       expect(captures.chats[1]).toMatchObject({ initializeCalls: 1 });
+      await registry.shutdown();
+    });
+
+    it.each([
+      { name: "SDK", create: createChatSdkRuntime },
+      { name: "shared", create: createChatRuntime },
+    ])("keeps $name lifecycle work visible while hidden retirement fails, until its owner retries", async ({ create }) => {
+      const registry = create();
+      const first = await registry.replaceEndpoint(registryOptions());
+      expect(registry.hasUnsettledLifecycle()).toBe(false);
+      const held = deferred();
+      const shutdown = vi.spyOn(first, "shutdown").mockReturnValueOnce(held.promise).mockResolvedValue(undefined);
+      const removal = registry.removeEndpoint("endpoint-1");
+      const result = removal.catch((error: Error) => error.message);
+      expect(registry.hasUnsettledLifecycle()).toBe(true);
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+      expect(registry.get("endpoint-1")).toBeNull();
+      expect(registry.list()).toEqual([]);
+      expect(registry.hasUnsettledLifecycle()).toBe(true);
+      held.reject(new Error("retirement uncertain"));
+      expect(await result).toBe("retirement uncertain");
+      expect(registry.hasUnsettledLifecycle()).toBe(true);
+      await registry.removeEndpoint("endpoint-1");
+      expect(shutdown).toHaveBeenCalledTimes(2);
+      expect(registry.hasUnsettledLifecycle()).toBe(false);
       await registry.shutdown();
     });
 
