@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { issueDocumentKeySchema } from "@paperclipai/shared";
 import { documentService } from "../documents.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions } from "./runner-bridge-tools.js";
 
 const binding = {
   companyId: "00000000-0000-4000-8000-000000000001",
@@ -39,6 +40,8 @@ const keys = [
 const operations = ["read_document", "write_document", "list_document_revisions"] as const;
 const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: false });
 const definitions = new PaperclipRunnerToolAuthority({} as Db, binding).definitions();
+const bridgeDefinitions = runnerBridgeDefinitions({ workspace: false, skills: false, api: true, mode: "standard" });
+const bridgeKeys = [...keys, " ".repeat(36) + "a".repeat(64), " ".repeat(37) + "a".repeat(64)];
 function input(operation: string, key: string) {
   return operation === "write_document"
     ? { idempotencyKey: "synthetic", key, title: "Synthetic", body: "Synthetic", baseRevisionId: null }
@@ -46,6 +49,23 @@ function input(operation: string, key: string) {
 }
 
 describe("ordinary task-document key contract parity", () => {
+  it.each(["read_task_document", "write_task_document"].flatMap(operation => bridgeKeys.map(key => [operation, key] as const)))(
+    "%s advertises and validates the real service key contract for %j", async (operation, key) => {
+      const validServiceKey = issueDocumentKeySchema.safeParse(key.trim().toLowerCase()).success;
+      const expected = key.length <= 100 && validServiceKey;
+      const args = operation === "read_task_document" ? { taskId: binding.issueId, key }
+        : { taskId: binding.issueId, key, title: "Synthetic", body: "Synthetic", baseRevisionId: null };
+      const tool = bridgeDefinitions.find(definition => definition.name === operation)!;
+      expect(ajv.validate(tool.inputSchema as object, args), JSON.stringify(ajv.errors)).toBe(expected);
+      expect(RUNNER_BRIDGE_SCHEMAS.get(operation)!.safeParse(args).success).toBe(expected);
+      const select = vi.fn(() => { throw new Error("synthetic_database_boundary"); });
+      const service = documentService({ select } as unknown as Db);
+      const call = operation === "read_task_document" ? service.getIssueDocumentByKey(binding.issueId, key)
+        : service.upsertIssueDocument({ issueId: binding.issueId, key, title: "Synthetic", format: "markdown", body: "Synthetic", baseRevisionId: null });
+      await expect(call).rejects.toThrow(validServiceKey ? "synthetic_database_boundary" : "Invalid document key");
+      expect(select).toHaveBeenCalledTimes(validServiceKey ? 1 : 0);
+    },
+  );
   it.each(operations.flatMap(operation => keys.map(key => [operation, key] as const)))(
     "%s matches real normalization for %j",
     async (operation, key) => {
