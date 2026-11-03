@@ -7650,7 +7650,7 @@ registry.registerPath({
   tags: ["runs"],
   summary: "Issue a short-lived status-only run observer token",
   request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
-  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 503: r.serverError },
 });
 
 registry.registerPath({
