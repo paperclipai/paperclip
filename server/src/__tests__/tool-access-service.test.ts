@@ -101,6 +101,7 @@ import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import * as sentry from "../sentry.js";
 import { HttpError } from "../errors.js";
+import { githubConnectionEventService } from "../services/github-connection-events.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { invalidatePaperclipCloudConnectorCapabilities, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
@@ -8151,7 +8152,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe(false);
   });
 
-  it.each(["none", "event", "same-time-refresh", "one-conflict"])(
+  it.each(["none", "event", "same-time-refresh", "one-conflict", "pr-webhook", "conflict-then-pr-webhook", "installation-webhook"])(
     "binds a managed GitHub identity and protects refresh from concurrent access changes (%s)",
     async (concurrentChange) => {
       const company = await createCompany(db);
@@ -8171,6 +8172,7 @@ describeEmbeddedPostgres("tool access service", () => {
         platform_shared: true,
       };
       let beforeRepositoryResponse = async () => {};
+      let installationSuspended = false;
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
         const href = String(url);
         if (href === "https://api.github.com/user") {
@@ -8188,6 +8190,7 @@ describeEmbeddedPostgres("tool access service", () => {
                 repository_selection: "selected",
                 html_url: "https://github.com/settings/installations/101",
                 account: { login: "paperclipai" },
+                ...(installationSuspended ? { suspended_at: new Date().toISOString() } : {}),
               },
             ],
           });
@@ -8342,6 +8345,55 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
         ).resolves.toHaveLength(1);
         vi.mocked(connector.setWebhookBinding).mockClear();
+        if (["pr-webhook", "conflict-then-pr-webhook", "installation-webhook"].includes(concurrentChange)) {
+          let repositoryResponses = 0;
+          let webhookAt: Date;
+          beforeRepositoryResponse = async () => {
+            repositoryResponses += 1;
+            if (concurrentChange === "conflict-then-pr-webhook" && repositoryResponses === 1) {
+              await db.update(connectionGrants).set({
+                providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github,accessRevision}', ${JSON.stringify(randomUUID())}::jsonb)`,
+              }).where(eq(connectionGrants.id, grant!.id));
+              return;
+            }
+            webhookAt = new Date(Date.now() + repositoryResponses);
+            vi.mocked(connector.leaseEvents).mockResolvedValueOnce({
+              leaseId: randomUUID(),
+              events: [{
+                id: randomUUID(), provider: "github",
+                event: concurrentChange === "installation-webhook" ? "installation" : "pull_request",
+                action: concurrentChange === "installation-webhook" ? "suspend" : "edited",
+                installationId: "101", repositoryId: "1", createdAt: webhookAt.toISOString(),
+                bindingIds: [`${grant!.id}_101`],
+                payload: { repository: "paperclipai/repo-1", number: 1, state: "open", merged: false,
+                  updatedAt: webhookAt.toISOString(), url: "https://github.com/paperclipai/repo-1/pull/1" },
+              }],
+            });
+            await expect(githubConnectionEventService(db, { connector, now: () => webhookAt })
+              .pollOnce({ forDelivery: true })).resolves.toMatchObject({ processed: 1, failed: 0 });
+            if (concurrentChange === "installation-webhook") installationSuspended = true;
+          };
+          if (concurrentChange === "installation-webhook") {
+            await expect(service.checkHealth(connected.connectionId, actor))
+              .rejects.toThrow("GitHub installation is suspended");
+            expect(repositoryResponses).toBe(1);
+            const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+            expect(latest?.providerTenant?.github).toMatchObject({ installationCount: 0, repositoryCount: 0 });
+            expect(latest?.providerTenant?.github?.repositories).toBeUndefined();
+            expect(connector.setWebhookBinding).not.toHaveBeenCalled();
+            return;
+          }
+          await expect(service.checkHealth(connected.connectionId, actor))
+            .resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+          expect(repositoryResponses).toBe(concurrentChange === "pr-webhook" ? 1 : 2);
+          const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+          expect(latest?.providerTenant?.github).toMatchObject({
+            repositoryCount: 3, lastWebhookAt: webhookAt!.toISOString(), webhookHealth: "healthy",
+          });
+          expect(latest?.providerTenant?.github?.repositories).toHaveLength(3);
+          expect(connector.setWebhookBinding).toHaveBeenCalled();
+          return;
+        }
         if (concurrentChange !== "none") {
           beforeRepositoryResponse = async () => {
             if (concurrentChange === "one-conflict")

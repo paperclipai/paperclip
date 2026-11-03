@@ -353,11 +353,11 @@ When changing the workflow path or branch, authorize the new reference before
 updating the caller. Retain older authorized SHA references while queued runs or
 supported reruns still use them.
 
-General server shards run at most two test files at a time in separate Vitest
+General server shards run at most three test files at a time in separate Vitest
 forks. Each file retains its own home, config and process state, and its test
 cases run serially. An explicit `PAPERCLIP_*_TEST_DATABASE_URL`, including
 `PAPERCLIP_TEST_DATABASE_URL`, keeps those shards serial because the database
-is shared. Native Runner suites also use two isolated file workers. Their long
+is shared. Native Runner suites use four isolated file workers. Their long
 lease, preparation, disk-loss and checkpoint tests have separate files so real
 observation windows can overlap. Issue recovery suites split by producer and
 recovery behavior for the same reason. Unsharded local tests and route/authz
@@ -368,6 +368,22 @@ two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
+
+The two PR Runner Vitest jobs separate package tests from native server tests.
+The first runs the complete package inventory; the second runs the complete
+native server group. The existing `--shard=1/2` and `--shard=2/2` commands route
+through `run-pr-vitest-lane.mjs` for compatibility with the master-pinned
+workflow. Other workflow names and shard counts keep their existing coverage.
+Both jobs still prepare debug binaries. A separate exact-key debug cache holds
+the workspace library and every Cargo binary target. Its key includes source,
+protocol and fixture content, Cargo configuration, compiler flags, toolchain
+and checkout path. Only the Rust lane of a verified master push saves it.
+PR jobs only restore it; a missing or incomplete entry rebuilds normally.
+
+Affected-test selection treats Vite's exact `?raw` imports as file inputs.
+Changing that file selects its consumers. Generated/untracked files and unknown
+query loaders retain their consumers conservatively. Other filesystem, process
+and network effects keep their existing fallback.
 
 For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
@@ -4177,6 +4193,12 @@ Task files, personal agent state (`AGENT_HOME`), and provider home are distinct.
 Focused coverage lives in `task-workspace-binding.test.ts`, `task-workspace-repositories*.test.ts`, `task-workspace-tools.test.ts`, channel integration tests, and adapter-utils checkpoint/native persistence tests. Full handoff still requires the repository typecheck, test, and build commands. Remote transport fixtures establish protocol behavior; they do not qualify production provider throughput.
 
 Channel defaults can be configured in Apps connection settings and per destination. They affect new conversations only. A queued selection or repository request is applied on the next normal admission; configuration changes do not interrupt a live run. See [the architecture](plans/2026-10-09-task-workspaces.md).
+
+GitHub repository discovery and admission recheck current grant access. Installation
+changes advance the access revision and invalidate an in-flight refresh. Ordinary
+pull-request webhooks update delivery health without invalidating repository
+access. A refresh preserves their latest webhook timestamp and health when it
+commits. Concurrent access refreshes retain the existing one-retry limit.
 
 ### Slack provisioning paths
 

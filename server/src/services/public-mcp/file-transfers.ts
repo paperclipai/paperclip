@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import express, { Router } from "express";
-import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { type Db, mcpAttachmentUploads, mcpFileTickets, mcpOauthGrants, issues } from "@paperclipai/db";
 import { z } from "zod";
 import { MAX_ATTACHMENT_BYTES, isAllowedContentType } from "../../attachment-types.js";
@@ -79,18 +79,27 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
     await taskAccess(p, attachment.issueId, false, queryDb, sessionId);
     return attachment;
   }
-  async function sweep() {
+  // Each transfer service lives for the app lifetime. Advance this bounded
+  // traversal only after commit, and wrap so uncertain rows are retried.
+  let cleanupAfterId: string | undefined;
+  let pendingSweep: Promise<void> | undefined;
+  function sweep() {
+    if (!pendingSweep) pendingSweep = runSweep().finally(() => { pendingSweep = undefined; });
+    return pendingSweep;
+  }
+  async function runSweep() {
     await db.delete(mcpFileTickets).where(lt(mcpFileTickets.expiresAt, new Date()));
     // Serialize cleanup against completion/reissue. Requalify old optimistic
     // cleanup and orphaned removed attachments, never a still-linked file.
-    await db.transaction(async tx => {
+    cleanupAfterId = await db.transaction(async tx => {
       const abandoned = await tx.select().from(mcpAttachmentUploads).where(and(
+        eq(mcpAttachmentUploads.storageProvider, storage.provider),
         isNull(mcpAttachmentUploads.cleanupVerifiedAt), lt(mcpAttachmentUploads.expiresAt, new Date()),
+        cleanupAfterId ? gt(mcpAttachmentUploads.id, cleanupAfterId) : undefined,
         sql`(${mcpAttachmentUploads.attachmentId} IS NULL OR NOT EXISTS (
           SELECT 1 FROM issue_attachments attachment WHERE attachment.id = ${mcpAttachmentUploads.attachmentId}))`,
-      )).limit(20).for("update", { skipLocked: true });
+      )).orderBy(asc(mcpAttachmentUploads.id)).limit(20).for("update", { skipLocked: true });
       for (const upload of abandoned) {
-        if (upload.storageProvider !== storage.provider) continue;
         try {
           await storage.deleteObject(upload.companyId, upload.objectKey);
           if ((await storage.headObject(upload.companyId, upload.objectKey)).exists !== false) {
@@ -105,6 +114,7 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
         const verifiedAt = new Date();
         await tx.update(mcpAttachmentUploads).set({ cleanedAt: verifiedAt, cleanupVerifiedAt: verifiedAt }).where(eq(mcpAttachmentUploads.id, upload.id));
       }
+      return abandoned.length === 20 ? abandoned.at(-1)!.id : undefined;
     });
   }
   async function ticket(p: McpPrincipal, target: { uploadId?: string; attachmentId?: string }, sessionId?: string) {
