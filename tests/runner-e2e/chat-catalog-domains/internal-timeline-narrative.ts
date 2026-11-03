@@ -76,6 +76,7 @@ export function truthfulTimelineAccount(input: {
   const adjacentVerification = new RegExp(`^\\s*(?:(?:the|a|an)\\s+|${escape(repairWorker)}['’]s\\s+)?${commandSubject}\\s+${successModifiers}(?:${repairSuccess.source})(?:\\s+with\\s+exit(?:\\s+(?:code|status))?\\s*[:=]?\\s*0)?\\s*[.!]?\\s*$`, "i");
   const repairObjectTail = new RegExp(`^(?:[ \\t]+${commandModifier}){0,6}\\s*[.!]?\\s*$`, "i");
   const passiveRepairSubject = new RegExp(`^\\s*(?:${commandModifier}[ \\t]+){1,6}$`, "i");
+  const deniedRepairObject = /^\s*(?:[a-z]+ly\s+){0,2}(?:(?:no|none|neither|nothing)\b|zero(?=\s|[.!?]|$))/i;
   const repairs = clauses.flatMap(({ text, at }, clauseIndex) => [...text.matchAll(repairAction)].filter(match => {
     const end = match.index + match[0].length;
     const laterSuccess = [...text.slice(end).matchAll(new RegExp(repairSuccess.source, "gi"))].some(success => {
@@ -87,9 +88,11 @@ export function truthfulTimelineAccount(input: {
     if (laterSuccess) return true;
     const next = clauses[clauseIndex + 1]?.text;
     const lead = text.slice(0, match.index);
+    const passiveRepair = /^\b(?:was|got|had been|has been)\b/i.test(match[0]);
     const assertedRepair = /^\s*(?:(?:then|later|finally)\s+)?$/i.test(lead)
-      || /^\b(?:was|got|had been|has been)\b/i.test(match[0]) && passiveRepairSubject.test(lead);
-    if (next && assertedRepair && repairObjectTail.test(text.slice(end))
+      || passiveRepair && passiveRepairSubject.test(lead);
+    if (next && assertedRepair && !deniedRepairObject.test(passiveRepair ? lead : text.slice(end))
+      && repairObjectTail.test(text.slice(end))
       && !text.trimEnd().endsWith("?") && adjacentVerification.test(next)
       && !/\b(?:if|unless|whether|before|earlier|previous(?:ly)?|already|unrelated|different|other)\b/i.test(text + next)) return true;
     // An earlier success word counts only with the bounded causal relationship
