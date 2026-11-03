@@ -57,7 +57,10 @@ export const AddToSlack: Story = { name: "02 · Connect · Returning workspace",
 } };
 export const MultipleWorkspaces: Story = { name: "02 · Connect · Choose workspace", args: { scenario: "create", workspaceCount: 2 } };
 export const Connect: Story = { name: "02 · Connect · Waiting for a message", args: { scenario: "verify" } };
-export const Success: Story = { name: "02 · Connect · Success", args: { scenario: "success" } };
+export const Success: Story = { name: "02 · Connect · Success", args: { scenario: "success" }, play: async ({ canvasElement }) => {
+  const canvas = within(canvasElement);
+  await expect(await canvas.findByRole("link", { name: /^Open Slack$/ })).toHaveAttribute("href", "https://app.slack.com/client/TSTORY/DSTORY");
+} };
 export const ApprovalPending: Story = { name: "Recovery · Slack approval pending", args: { scenario: "declined" } };
 export const ApprovalDeclined: Story = { name: "Recovery · Slack approval declined", args: { scenario: "approval_denied" } };
 export const EventConfigurationPending: Story = { name: "Recovery · App configuration pending", args: { scenario: "manifest_pending" } };

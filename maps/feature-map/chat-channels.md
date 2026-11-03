@@ -55,6 +55,10 @@ must resolve the selected Slack manager grant, reject malformed or missing IDs,
 and deny another company's or person's grant before provider calls. The channel
 integration suite exercises this route with a board fixture and provider fixtures;
 live Slack setup remains a separate acceptance check.
+After welcome delivery completes setup automatically, verify **Open Slack**
+remains on Success and on the saved connection page. Follow that visible link,
+send a real DM and thread follow-up, then reload the catalog to confirm setup
+stays complete. A welcome message alone is not an agent response.
 
 ### `external-thread`
 
