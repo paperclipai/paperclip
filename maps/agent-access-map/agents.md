@@ -44,6 +44,16 @@ bypass hiring authorization. Source: [runner resolver](../../server/src/services
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
+`agents:read` permits redacted configuration, configured skills, instruction content,
+and configuration/instruction history reads. It does not permit changes, restore,
+or environment probes. `agents:configure` still includes read/write authority;
+`agents:suggest-changes` still includes reads and consented changes. Individual
+reads use the target agent and honor target-scoped grants. Agents can read their
+own redacted configuration and history without peer-read authority. Company-wide
+configuration listings require company-wide read authority. Standard-agent read
+defaults and the one-time existing-agent rollout are defined in
+[agent permission defaults](../../doc/agent-permission-defaults.md).
+
 The early wizard record (`setupId` on create) and completion of that record
 (`setupAgentId` on hire) require a board actor and company-scoped creation
 permission. Its creator can finish their own inactive setup with that permission;
