@@ -1,13 +1,14 @@
-export type SkillsNavigationView = "installed" | "discover" | "authored" | "sources";
+export type SkillsNavigationView = "installed" | "discover" | "authored" | "sources" | "coverage";
 
 export const SKILLS_NAVIGATION_HREFS: Record<SkillsNavigationView, string> = {
   sources: "/skills/sources",
   installed: "/skills",
   discover: "/skills?tab=discover",
   authored: "/skills/studio",
+  coverage: "/skills?tab=coverage",
 };
 
-export function resolveSkillsDiscoveryView(tabParam: string | null): Exclude<SkillsNavigationView, "authored" | "sources"> {
+export function resolveSkillsDiscoveryView(tabParam: string | null): Exclude<SkillsNavigationView, "authored" | "sources" | "coverage"> {
   // Preserve old discovery links while presenting one canonical Discover view.
   return ["discover", "all", "catalog", "bundled"].includes(tabParam ?? "")
     ? "discover"
@@ -16,7 +17,7 @@ export function resolveSkillsDiscoveryView(tabParam: string | null): Exclude<Ski
 
 export function withSkillsDiscoveryView(
   current: URLSearchParams,
-  view: Exclude<SkillsNavigationView, "authored" | "sources">,
+  view: Exclude<SkillsNavigationView, "authored" | "sources" | "coverage">,
 ): URLSearchParams {
   const params = new URLSearchParams(current);
   if (view === "installed") params.delete("tab");
@@ -39,5 +40,6 @@ export function resolveSkillsNavigationView(
 
   const params = typeof search === "string" ? new URLSearchParams(search) : search;
   if (params.has("catalog") || params.get("view") === "catalog") return "discover";
+  if (params.get("tab") === "coverage") return "coverage";
   return resolveSkillsDiscoveryView(params.get("tab"));
 }

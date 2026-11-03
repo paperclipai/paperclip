@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CompanySkills,
   DiscoveryGrid,
   InstallPreviewDialog,
   SkillDetailPage,
@@ -18,8 +19,11 @@ import {
 } from "./CompanySkills";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
+const mockRouterSearch = vi.hoisted(() => ({
+  params: new URLSearchParams(),
+}));
+
 const readVersion = vi.hoisted(() => vi.fn());
-vi.mock("../api/companySkills", () => ({ companySkillsApi: { version: readVersion } }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -27,7 +31,72 @@ vi.mock("@/lib/router", () => ({
   ),
   useNavigate: () => vi.fn(),
   useParams: () => ({}),
-  useSearchParams: () => [new URLSearchParams(), vi.fn()],
+  useSearchParams: () => [mockRouterSearch.params, vi.fn()],
+}));
+
+vi.mock("./skills/SkillCoverageMatrix", () => ({
+  SkillCoverageMatrix: ({ companyId }: { companyId: string }) => (
+    <div data-testid="skill-coverage-matrix">{companyId}</div>
+  ),
+  CompanySkillsCoverageTab: ({ companyId }: { companyId: string }) => (
+    <div data-testid="skill-coverage-matrix">{companyId}</div>
+  ),
+}));
+
+vi.mock("../context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompanyId: "company-1" }),
+}));
+
+vi.mock("../context/BreadcrumbContext", () => ({
+  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({ pushToast: vi.fn() }),
+  useOptionalToastActions: () => ({ pushToast: vi.fn() }),
+}));
+
+const mockStreamlinedUi = vi.hoisted(() => ({ enabled: false }));
+
+vi.mock("../hooks/useStreamlinedUiEnabled", () => ({
+  useStreamlinedUiEnabled: () => ({ enabled: mockStreamlinedUi.enabled, loaded: true }),
+}));
+
+vi.mock("../adapters/use-adapter-capabilities", () => ({
+  useAdapterCapabilities: () => () => ({ supportsSkills: true }),
+}));
+
+vi.mock("../api/companySkills", () => ({
+  companySkillsApi: {
+    version: readVersion,
+    list: vi.fn(async () => []),
+    catalogList: vi.fn(async () => []),
+    coverage: vi.fn(async () => ({
+      skills: [],
+      agents: [],
+      cells: [],
+      summary: {
+        agentCount: 0,
+        skillCount: 0,
+        desiredCellCount: 0,
+        gapCount: 0,
+        unsupportedAgentCount: 0,
+      },
+    })),
+    categories: vi.fn(async () => []),
+  },
+}));
+
+vi.mock("../api/folders", () => ({
+  foldersApi: {
+    list: vi.fn(async () => ({ kind: "skill", folders: [], allCount: 0, unfiledCount: 0 })),
+  },
+}));
+
+vi.mock("../api/agents", () => ({
+  agentsApi: {
+    list: vi.fn(async () => []),
+  },
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -119,6 +188,8 @@ afterEach(() => {
   queryClient?.clear();
   container?.remove();
   container = null;
+  mockRouterSearch.params = new URLSearchParams();
+  mockStreamlinedUi.enabled = false;
 });
 
 function makeVersion(revisionNumber: number, content: string): CompanySkillVersion {
@@ -1152,5 +1223,52 @@ describe("install-time agent enablement", () => {
     await click(buttonsNamed(node, "Install update")[0] as HTMLButtonElement);
 
     expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
+  });
+});
+
+describe("CompanySkills coverage tab", () => {
+  it("keeps the shared tabs on the coverage page in streamlined mode", async () => {
+    mockRouterSearch.params = new URLSearchParams("tab=coverage");
+    mockStreamlinedUi.enabled = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySkills />
+        </QueryClientProvider>,
+      );
+    });
+
+    const tab = container.querySelector('nav[aria-label="Skills views"] a[aria-current="page"]');
+    expect(tab?.textContent).toBe("Coverage");
+    expect(tab?.getAttribute("href")).toBe("/skills?tab=coverage");
+    expect(container.querySelector('[data-testid="skill-coverage-matrix"]')).not.toBeNull();
+  });
+
+  it("is reachable and mounts the coverage matrix", async () => {
+    mockRouterSearch.params = new URLSearchParams("tab=coverage");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySkills />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Coverage");
+    expect(container.querySelector('[data-testid="skill-coverage-matrix"]')?.textContent).toBe("company-1");
   });
 });
