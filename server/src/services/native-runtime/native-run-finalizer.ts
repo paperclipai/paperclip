@@ -3,7 +3,7 @@ import { notifyExternalAgentSettlement } from "../../modules/external-agents/ind
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
 import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
-import { projectCommittedRun, recoveredExecutionFailureMetadata } from "./native-run-projection.js";
+import { projectCommittedRun, recoveredExecutionFailureMetadata, settleNativeTerminalWake } from "./native-run-projection.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -465,6 +465,7 @@ async function recordRetryableFailure(input: {
       })
       .where(eq(heartbeatRuns.id, input.run.id))
       .returning();
+    if (projectsTerminalStatus && updatedRun) await settleNativeTerminalWake(tx as unknown as Db, updatedRun);
     if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
     if (supersededByNewerRun) {
       await issueRecoveryActionService(
@@ -1679,6 +1680,7 @@ export async function finalizeNativeRun(input: {
         await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         const [after] = await projectRun(tx);
+        if (after && input.projectRunStatus) await settleNativeTerminalWake(tx, after);
         return after ? { before, after } : null;
       });
       const updatedRun = projection?.after;

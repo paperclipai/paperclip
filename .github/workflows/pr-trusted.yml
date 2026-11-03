@@ -424,6 +424,9 @@ jobs:
           PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
         run: pnpm --filter @paperclipai/server typecheck
 
+      - name: Typecheck test projects against the server declarations
+        run: node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
+
       - name: Verify repository-wide CLI guidance safety
         run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
 
