@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -136,7 +136,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     expect(result.from.toISOString()).toBe("2026-02-12T00:00:00.000Z");
   });
 
-  it("aggregates runs, human events, approvals, and delegation edges", async () => {
+  it("aggregates runs, human events, approvals, and recorded assignments", async () => {
     const { companyId, userId, agentAId, agentBId } = await seedBase();
     const parentIssueId = randomUUID();
     const childIssueId = randomUUID();
@@ -256,13 +256,31 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
       "created",
       "commented",
       "approved",
-      "delegated",
       "assigned",
     ]));
     expect(result.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "delegation", issueId: childIssueId }),
       expect.objectContaining({ kind: "assignment", issueId: childIssueId }),
     ]));
+  });
+
+  it("does not retain an inferred delegation when assignment history was recorded", async () => {
+    const { companyId, agentAId, agentBId } = await seedBase();
+    const parentId = randomUUID(), childId = randomUUID();
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "done", assigneeAgentId: agentAId,
+        createdAt: new Date("2026-03-01T10:00:00Z"), updatedAt: new Date("2026-03-05T10:00:00Z") },
+      { id: childId, companyId, parentId, title: "Child", status: "done", assigneeAgentId: agentBId,
+        createdAt: new Date("2026-03-03T10:00:00Z"), updatedAt: new Date("2026-03-05T10:00:00Z") },
+    ]);
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId,
+      action: "issue.assigned", entityType: "issue", entityId: childId,
+      details: { assigneeAgentId: agentBId }, createdAt: new Date("2026-03-05T12:00:00Z") });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-05T00:00:00Z", to: "2026-03-06T00:00:00Z" });
+    expect(response.status).toBe(200);
+    expect(response.body.events).toContainEqual(expect.objectContaining({ issueId: childId, kind: "assigned" }));
+    expect(response.body.events.filter((event: { kind: string }) => event.kind === "delegated")).toEqual([]);
+    expect(response.body.edges.filter((edge: { kind: string }) => edge.kind === "delegation")).toEqual([]);
   });
 
   it("preserves delegation edges when parent and child cross a page boundary", async () => {
@@ -513,6 +531,113 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     expect(maxActiveChecks).toBeLessThanOrEqual(16);
   });
 
+  it.each(["before", "after"] as const)("does not invent creation ownership from a reassignment %s the query window", async when => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Historical launch owner",
+      status: "done", priority: "medium", assigneeAgentId: agentBId, createdByUserId: userId,
+      createdAt: new Date("2026-03-01T10:00:00Z"), updatedAt: new Date("2026-03-05T10:00:00Z") });
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: userId,
+      entityType: "issue", entityId: issueId, action: "issue.updated",
+      createdAt: new Date(when === "before" ? "2026-03-02T10:00:00Z" : "2026-03-06T10:00:00Z"),
+      details: { assigneeAgentId: agentBId, changes: { assigneeAgentId: { from: agentAId, to: agentBId } } } });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ issueId, from: "2026-03-05T00:00:00Z", to: "2026-03-06T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual([]);
+    expect(response.body.events.filter((event: { kind: string }) => event.kind === "assigned")).toEqual([]);
+    expect(response.body.events).toContainEqual(expect.objectContaining({ issueId, kind: "created" }));
+  });
+
+  it.each([
+    ["child", "2026-03-02T10:00:00Z"], ["child", "2026-03-05T12:00:00Z"],
+    ["parent", "2026-03-02T10:00:00Z"], ["parent", "2026-03-06T10:00:00Z"],
+  ] as const)("does not infer a creation delegation after %s ownership changed at %s", async (changedIssue, at) => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const parentId = randomUUID(), childId = randomUUID();
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Launch parent", status: "done", priority: "medium",
+        createdByUserId: userId, assigneeAgentId: agentAId,
+        createdAt: new Date("2026-03-01T10:00:00Z"), updatedAt: new Date("2026-03-05T10:00:00Z") },
+      { id: childId, companyId, parentId, title: "Launch child", status: "done", priority: "medium",
+        createdByAgentId: agentAId, assigneeAgentId: agentBId,
+        createdAt: new Date("2026-03-03T10:00:00Z"), updatedAt: new Date("2026-03-05T10:00:00Z") },
+    ]);
+    const target = changedIssue === "parent" ? agentAId : agentBId;
+    const previous = changedIssue === "parent" ? agentBId : agentAId;
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: userId,
+      entityType: "issue", entityId: changedIssue === "parent" ? parentId : childId,
+      action: "issue.updated", createdAt: new Date(at),
+      details: { assigneeAgentId: target, changes: { assigneeAgentId: { from: previous, to: target } } } });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ limit: 1, from: "2026-03-05T00:00:00Z", to: "2026-03-06T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.pagination).toMatchObject({ totalIssues: 2, hasMore: true });
+    expect(response.body.edges.filter((edge: { kind: string }) => edge.kind === "delegation")).toEqual([]);
+    expect(response.body.events.filter((event: { kind: string }) => event.kind === "delegated")).toEqual([]);
+    if (changedIssue === "child" && at.startsWith("2026-03-05")) {
+      expect(response.body.events).toContainEqual({ actorId: `user:${userId}`, issueId: childId, kind: "assigned", at: new Date(at).toISOString() });
+      expect(response.body.edges).toContainEqual({ fromActorId: `user:${userId}`, toActorId: `agent:${agentBId}`, issueId: childId, kind: "assignment", at: new Date(at).toISOString() });
+    }
+  });
+
+  it("checks ownership history once for the readable page and its readable parents only", async () => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const parentId = randomUUID(), childId = randomUUID(), hiddenId = randomUUID(), unpagedId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign", issuePrefix: "TF" });
+    await db.insert(issues).values([parentId, unpagedId, childId, hiddenId].map((id, index) => ({
+      id, companyId, title: `Scoped ${index}`, status: "done", assigneeAgentId: id === parentId ? agentAId : agentBId,
+      parentId: id === childId ? parentId : null, createdByUserId: userId,
+      createdAt: new Date(Date.parse("2026-03-01T10:00:00Z") + index * 1000), updatedAt: new Date("2026-03-05T10:00:00Z"),
+    })));
+    const ownershipRow = (entityId: string, scopedCompanyId = companyId) => ({ companyId: scopedCompanyId,
+      actorType: "user", actorId: userId, entityType: "issue", entityId, action: "issue.updated",
+      createdAt: new Date("2026-03-02T10:00:00Z"), details: { changes: { assigneeAgentId: { from: agentBId, to: agentAId } } } });
+    await db.insert(activityLog).values([ownershipRow(parentId), ownershipRow(hiddenId), ownershipRow(childId, foreignCompanyId),
+      ...Array.from({ length: 1000 }, () => ownershipRow(unpagedId))]);
+    const queries: Array<{ query: string; parameters: unknown[] }> = [];
+    const previousDebug = db.$client.options.debug;
+    let result;
+    db.$client.options.debug = (_connection, query, parameters) => queries.push({ query, parameters });
+    try {
+      result = await workTimelineService(db).getTimeline({ companyId, limit: 1,
+        from: new Date("2026-03-05T00:00:00Z"), to: new Date("2026-03-06T00:00:00Z"),
+        canReadIssue: async issue => issue.id !== hiddenId });
+    } finally { db.$client.options.debug = previousDebug; }
+    const history = queries.filter(row => /^select distinct /i.test(row.query) && row.query.includes('"activity_log"'));
+    expect(history).toHaveLength(1);
+    expect(history[0]!.query).not.toContain("created_at");
+    const scopedIds = history[0]!.parameters.filter(value => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value));
+    expect(new Set(scopedIds)).toEqual(new Set([companyId, parentId, childId]));
+    const rows = await db.$client.unsafe(history[0]!.query, history[0]!.parameters as any[]);
+    expect(rows.map(row => row.entity_id)).toEqual([parentId]);
+    const explain = await db.$client.unsafe(`explain (analyze, format json) ${history[0]!.query}`, history[0]!.parameters as any[]);
+    const plan = explain[0]!["QUERY PLAN"][0].Plan;
+    expect(plan["Actual Rows"]).toBe(1);
+    expect(result.edges).toContainEqual(expect.objectContaining({ issueId: childId, kind: "assignment", toActorId: `agent:${agentBId}` }));
+    expect(result.edges.some(edge => edge.kind === "delegation")).toBe(false);
+    expect(result.events.every(event => event.issueId === childId)).toBe(true);
+    console.info("Timeline ownership lookup", JSON.stringify({ queryCount: history.length, scopedIssueCount: 2,
+      returnedIssueCount: rows.length, actualPlanRows: plan["Actual Rows"], planNode: plan["Node Type"] }));
+  });
+
+  it("fails the route when ownership history cannot be read instead of inventing creation ownership", async () => {
+    const { companyId, agentAId } = await seedBase();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "History failure", status: "done", assigneeAgentId: agentAId,
+      createdAt: new Date("2026-03-05T10:00:00Z"), updatedAt: new Date("2026-03-05T10:00:00Z") });
+    const selectDistinct = db.selectDistinct.bind(db);
+    const fault = vi.spyOn(db, "selectDistinct").mockImplementationOnce(() => selectDistinct({ issueId: sql<string>`1 / 0` }) as any);
+    try {
+      const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+        .query({ issueId, from: "2026-03-05T00:00:00Z", to: "2026-03-06T00:00:00Z" });
+      expect(fault).toHaveBeenCalledOnce();
+      expect(response.status).toBe(500);
+      expect(response.body).not.toHaveProperty("edges");
+    } finally { fault.mockRestore(); }
+  });
+
   it("serves the recorded human reassignment instead of inferring the current owner at creation", async () => {
     const { companyId, userId, agentAId, agentBId } = await seedBase();
     const issueId = randomUUID();
@@ -550,12 +675,14 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     const { companyId, userId, agentAId, agentBId } = await seedBase();
     const createdAt = new Date("2026-03-05T10:00:00Z");
     const changedAt = new Date("2026-03-05T11:00:00Z");
-    for (const kind of ["absent", "null", "unchanged", "self-assignment"] as const) {
+    for (const kind of ["absent", "null", "unchanged", "canonical-empty", "canonical-unchanged", "self-assignment"] as const) {
       const issueId = randomUUID();
       const assigneeAgentId = kind === "null" ? null : kind === "self-assignment" ? agentBId : agentAId;
       await db.insert(issues).values({ id: issueId, companyId, title: kind, status: "done",
         priority: "medium", assigneeAgentId, createdByUserId: userId, createdAt, updatedAt: changedAt });
       const details = kind === "absent" ? { status: "done" }
+        : kind === "canonical-empty" ? { assigneeAgentId, changes: {} }
+        : kind === "canonical-unchanged" ? { assigneeAgentId, changes: { assigneeAgentId: { from: agentAId, to: agentAId } } }
         : { assigneeAgentId, _previous: { assigneeAgentId: agentAId } };
       await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId,
         action: "issue.updated", entityType: "issue", entityId: issueId, details, createdAt: changedAt });
