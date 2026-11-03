@@ -1,7 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/db";
 import { budgetService, deliverBudgetEnforcement, hasPendingBudgetEnforcement } from "../services/budgets.ts";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
@@ -40,7 +41,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     await import("../services/agent-lifecycle.js");
     if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-budgets-service-");
     db = createDb(externalUrl ?? tempDb!.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(budgetIncidents);
@@ -117,6 +118,105 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
 
     return event!;
   }
+
+  it.each(["no policy", "healthy policy", "warning policy", "manual company pause", "manual project pause", "orphan budget pause"])(
+    "checks %s without waiting for another accounting writer",
+    async state => {
+      const { companyId, agentId, projectId } = await createBudgetFixture();
+      if (state === "healthy policy" || state === "warning policy") {
+        const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "company", scopeId: companyId,
+          windowKind: "calendar_month_utc", amount: 100 }).returning();
+        await insertCostEvent({ companyId, agentId, costCents: state === "warning policy" ? 80 : 20 });
+        if (state === "warning policy") {
+          const now = new Date();
+          await db.insert(budgetIncidents).values({ companyId, policyId: policy.id, scopeType: "company", scopeId: companyId,
+            metric: "billed_cents", windowKind: "calendar_month_utc",
+            windowStart: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+            windowEnd: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)),
+            thresholdType: "soft", amountLimit: 100, amountObserved: 80 });
+        }
+      }
+      if (state === "manual company pause" || state === "orphan budget pause") {
+        await db.update(companies).set({ status: "paused", pauseReason: state === "orphan budget pause" ? "budget" : "manual" })
+          .where(eq(companies.id, companyId));
+      }
+      if (state === "manual project pause") {
+        await db.update(projects).set({ pausedAt: new Date(), pauseReason: "manual" }).where(eq(projects.id, projectId));
+      }
+
+      const reader = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 1 });
+      let acquired!: () => void, release!: () => void;
+      const lockAcquired = new Promise<void>(resolve => { acquired = resolve; });
+      const holdLock = new Promise<void>(resolve => { release = resolve; });
+      const writer = db.transaction(async tx => {
+        await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("no key update");
+        acquired();
+        await holdLock;
+      });
+      try {
+        await Promise.race([lockAcquired, writer]);
+        await reader.execute(sql`set lock_timeout = '500ms'`);
+        const block = await budgetService(reader).getInvocationBlock(companyId, agentId, { projectId });
+        if (state === "manual company pause") {
+          expect(block).toMatchObject({ scopeType: "company", scopeId: companyId,
+            reason: "Company is paused and cannot start new work." });
+        } else if (state === "manual project pause") {
+          expect(block).toMatchObject({ scopeType: "project", scopeId: projectId,
+            reason: "Project is paused and cannot start new work." });
+        } else if (state === "orphan budget pause") {
+          expect(block).toMatchObject({ scopeType: "company", scopeId: companyId,
+            reason: "Budget pause requires a policy or an explicit operator resume." });
+        } else expect(block).toBeNull();
+        if (state === "warning policy") {
+          expect(await reader.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, companyId)))
+            .toMatchObject([{ thresholdType: "soft", status: "open", resolvedAt: null }]);
+        }
+        if (state === "no policy") {
+          await expect(budgetService(reader).evaluateAdmission(companyId, agentId, { projectId }))
+            .rejects.toMatchObject({ cause: { code: "55P03" } });
+        }
+      } finally {
+        release();
+        try { await writer; }
+        finally { await reader.$client.end({ timeout: 1 }); }
+      }
+    },
+  );
+
+  it.each([true, false])("releases an agent budget hold when its policy is healthy (active: %s)", async isActive => {
+    const { companyId, agentId } = await createBudgetFixture();
+    await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: agentId,
+      windowKind: "calendar_month_utc", amount: 100, isActive });
+    await db.update(agents).set({ status: "paused", lifecycleState: "paused", pauseReason: "budget", pausedAt: new Date(), lifecycleHolds: ["budget"] })
+      .where(eq(agents.id, agentId));
+
+    expect(await budgetService(db).getInvocationBlock(companyId, agentId)).toBeNull();
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]).toMatchObject({
+      lifecycleState: "resuming", pauseReason: null, lifecycleHolds: [],
+    });
+  });
+
+  it.each(["hard", "soft"])("resolves an obsolete %s incident even when the scope no longer has a budget hold", async thresholdType => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: agentId,
+      windowKind: "calendar_month_utc", amount: 100 }).returning();
+    const [incident] = await db.insert(budgetIncidents).values({ companyId, policyId: policy.id, scopeType: "agent", scopeId: agentId,
+      metric: "billed_cents", windowKind: "calendar_month_utc", windowStart: new Date(0), windowEnd: new Date(1),
+      thresholdType, amountLimit: 100, amountObserved: 100 }).returning();
+
+    expect(await budgetService(db).getInvocationBlock(companyId, agentId)).toBeNull();
+    expect((await db.select().from(budgetIncidents).where(eq(budgetIncidents.id, incident.id)))[0])
+      .toMatchObject({ status: "resolved", resolvedAt: expect.any(Date) });
+  });
+
+  it("rejects another company's agent or project before allowing a no-policy invocation", async () => {
+    const own = await createBudgetFixture();
+    const other = await createBudgetFixture();
+    const service = budgetService(db);
+    await expect(service.getInvocationBlock(own.companyId, other.agentId)).rejects.toThrow("Budget scope not found");
+    await expect(service.getInvocationBlock(own.companyId, own.agentId, { projectId: other.projectId }))
+      .rejects.toThrow("Budget scope not found");
+  });
 
   it("raises one soft incident per window before hard-stopping and preserving safe local audit details", async () => {
     const { companyId, agentId } = await createBudgetFixture();
