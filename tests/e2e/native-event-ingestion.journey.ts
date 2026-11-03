@@ -107,7 +107,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   }
   report.fixtureSha256 = createHash("sha256").update(await readFile(path.resolve(import.meta.dirname, "fixtures/in-feed-codex.mjs"))).digest("hex");
   const protocolFiles = ["native-event-ingestion.journey.ts", "playwright-native-ingestion.config.ts", "fixtures/in-feed-codex.mjs",
-    "fixtures/native-ingestion-bin/codex", "fixtures/composer-stop-codex-loader.mjs"];
+    "fixtures/native-ingestion-bin/codex", "fixtures/composer-stop-codex-loader.mjs", "fixtures/native-ingestion-bootstrap.mjs"];
   report.measurementSha256 = createHash("sha256").update(Buffer.concat(await Promise.all(protocolFiles.map(file => readFile(path.resolve(import.meta.dirname, file)))))).digest("hex");
   try {
     await json(await request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: true, enableWorktreeRunExecution: true } }));
@@ -116,8 +116,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     const agents = [];
     const agentCount = Math.ceil(Math.max(...cases.map(item => item.runs)) / 50);
     for (let index = 0; index < agentCount; index++) {
-      const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-        name: `Ingestion ${index + 1}`, role: index === 0 ? "ceo" : "engineer", adapterType: "paperclip_runner",
+      const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { timeout: 120_000, data: {
+        name: `Ingestion ${index + 1}`, role: "engineer", adapterType: "paperclip_runner",
         adapterConfig: { provider: "codex", model: "gpt-5.1-codex-mini", env: {
           OPENAI_API_KEY: { type: "user_secret_ref", key: "OPENAI_API_KEY", version: "latest", required: true },
         } }, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 50 } },
@@ -130,7 +130,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     async function perform(workload: Case, stop = false) {
       const key = randomUUID().replaceAll("-", ""), nonce = randomUUID().replaceAll("-", "");
       pending.set(key, new Map());
-      const prompt = (token: string, prelude: number) => `INGESTION_PERF nonce=${token} events=${workload.events} intervalMs=${workload.intervalMs} prelude=${prelude} gate=${base}${key}`;
+      const prompt = (token: string, prelude: number) => `Measure native streaming for ${token.slice(0, 8)}.\n\nINGESTION_PERF nonce=${token} events=${workload.events} intervalMs=${workload.intervalMs} prelude=${prelude} gate=${base}${key}`;
       const before = new Set((await json(await request.get(`/api/companies/${company.id}/issues`))).map((issue: { id: string }) => issue.id));
       await page.goto(`/${company.issuePrefix}/agents/${agents[0].id}/overview`);
       await page.getByRole("link", { name: "Tasks", exact: true }).click();
@@ -180,6 +180,9 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         return runs.length === issueIds.length && runs.every(run => ["succeeded", "cancelled", "failed"].includes(run.status));
       }, { timeout: 180_000 }).toBe(true);
       const settledAt = Date.now(), visible = await observed();
+      const details = [];
+      for (const run of runs) details.push(await json(await request.get(`/api/heartbeat-runs/${run.id}`)));
+      runs = details;
       expect(runs.every(run => run.runtimeMode === "native")).toBe(true);
       expect(runs.every(run => run.status === (stop ? "cancelled" : "succeeded"))).toBe(true);
       if (stop) await expect.poll(async () =>

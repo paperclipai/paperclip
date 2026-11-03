@@ -27,6 +27,29 @@ const call = (tool, args) => new Promise((resolve, reject) => {
 async function sendIngestion(value) {
   if (!process.stdout.write(`${JSON.stringify(value)}\n`)) await once(process.stdout, 'drain');
 }
+function ingestionFixturePlan(value) {
+  const strings = [];
+  function collect(input, depth = 0) {
+    if (depth > 6) return;
+    if (typeof input === 'string') {
+      strings.push(input);
+      try { collect(JSON.parse(input), depth + 1); } catch { /* Ordinary prompt text. */ }
+    } else if (Array.isArray(input)) for (const item of input) collect(item, depth + 1);
+    else if (input && typeof input === 'object') for (const item of Object.values(input)) collect(item, depth + 1);
+  }
+  collect(value);
+  for (let text of strings) {
+    // The real Markdown composer escapes punctuation, and the native brief
+    // also carries a shortened title. Accept a complete fixture plan only.
+    for (let pass = 0; pass < 4; pass++) text = text.replace(/\\([\\_=:./-])/g, '$1');
+    const match = text.match(/INGESTION_PERF nonce=([a-z0-9]+) events=(\d+) intervalMs=(\d+) prelude=(\d+) gate=(http:\/\/(?:127\.0\.0\.1|localhost):\d+\/native-ingestion-gate\/[a-f0-9]{32})/);
+    if (!match) continue;
+    const plan = { nonce: match[1], events: Number(match[2]), intervalMs: Number(match[3]), prelude: Number(match[4]), gate: match[5] };
+    if (plan.events < 1 || plan.events > 4096 || plan.intervalMs > 1000 || plan.prelude > 10_000) throw new Error('Ingestion fixture exceeds its bounded workload');
+    return plan;
+  }
+  throw new Error('Missing complete INGESTION_PERF fixture plan');
+}
 
 async function streamIngestion() {
   if (!ingestionPlan) throw new Error('Missing INGESTION_PERF fixture plan');
@@ -220,12 +243,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     helloProbe = (process.argv.includes('--completion-stream-fixture') || ingestionFixture)
       && JSON.stringify(message.params?.input).includes('Respond only with hello. Do not use tools or inspect files.');
     if (ingestionFixture && !helloProbe) {
-      const match = JSON.stringify(message.params?.input).match(/INGESTION_PERF nonce=([a-z0-9]+) events=(\d+) intervalMs=(\d+) prelude=(\d+) gate=([^\s"\\]+)/);
-      if (!match) throw new Error('Missing explicit ingestion fixture plan');
-      ingestionPlan = { nonce: match[1], events: Number(match[2]), intervalMs: Number(match[3]), prelude: Number(match[4]), gate: match[5] };
-      if (ingestionPlan.events < 1 || ingestionPlan.events > 4096 || ingestionPlan.intervalMs > 1000 || ingestionPlan.prelude > 10_000) {
-        throw new Error('Ingestion fixture exceeds its bounded workload');
-      }
+      ingestionPlan = ingestionFixturePlan(message.params?.input);
     }
     emitCeoLineage = JSON.stringify(message.params).includes('CEO descendant fixture');
     declined = /connection_intent/.test(JSON.stringify(message.params)) && /rejected/.test(JSON.stringify(message.params));

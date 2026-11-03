@@ -7,8 +7,15 @@ import base from "./playwright.config";
 const server = base.webServer as Exclude<typeof base.webServer, unknown[]>;
 const evidence = process.env.PAPERCLIP_INGESTION_EVIDENCE_DIR;
 const appRoot = path.resolve(process.env.PAPERCLIP_INGESTION_APP_ROOT ?? path.resolve(import.meta.dirname, "../.."));
-const command = process.env.PAPERCLIP_INGESTION_SERVER_COMMAND ?? server?.command;
-const compiled = Boolean(command?.includes("server/dist/index.js") && !command.includes("server/src/index") && !/onboard[^;&]*--run/.test(command));
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const bootstrap = path.resolve(import.meta.dirname, "fixtures/native-ingestion-bootstrap.mjs");
+const compiledCommand = `node --import ./server/node_modules/tsx/dist/loader.mjs ${quote(bootstrap)} && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js`;
+const command = process.env.PAPERCLIP_INGESTION_SERVER_COMMAND ?? compiledCommand;
+const autoStartingOnboard = /\bonboard\b[^;&]*(?:--yes|-y)\b/.test(command);
+if (command.includes("server/dist/index.js") && autoStartingOnboard) {
+  throw new Error("onboard --yes starts the source server before the compiled command; use native-ingestion-bootstrap.mjs for configuration only");
+}
+const compiled = Boolean(command.includes("server/dist/index.js") && !command.includes("server/src/index") && !autoStartingOnboard);
 if (process.env.PAPERCLIP_INGESTION_SMOKE !== "1" && !compiled) {
   throw new Error("Full ingestion measurements require a compiled server/dist/index.js command; source CLI is qualification smoke only");
 }
