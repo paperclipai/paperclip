@@ -852,6 +852,36 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     return { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease };
   }
 
+  it("gives a bootstrap retry a fresh allocation even when the failed lease was reusable", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    let acquisitions = 0;
+    const workerManager = {
+      isRunning: () => true,
+      call: vi.fn(async (_id: string, method: string) => {
+        if (method === "environmentAcquireLease") return { providerLeaseId: `fresh-bootstrap-${++acquisitions}`,
+          metadata: { provider: "fake-plugin", reuseLease: true, remoteCwd: "/workspace" } };
+        throw new Error(`Unexpected provider operation: ${method}`);
+      }),
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const input = { companyId: seeded.companyId, environment: seeded.environment, issueId: null, agentId: seeded.agentId,
+      adapterType: "paperclip_runner", heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" as const } };
+    const first = await runtime.acquireRunLease(input);
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "remote_workspace_prepare_timeout" })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    await environmentService(db).releaseLease(first.lease.id, "failed");
+    const retryRunId = randomUUID();
+    await insertRunningManualRun(retryRunId, seeded.companyId, seeded.agentId);
+    const next = await runtime.acquireRunLease({ ...input, heartbeatRunId: retryRunId });
+    expect(next.lease.providerLeaseId).toBe("fresh-bootstrap-2");
+    expect(next.lease.providerLeaseId).not.toBe(first.lease.providerLeaseId);
+    expect(workerManager.call).toHaveBeenCalledTimes(2);
+    expect((await environmentService(db).getLeaseById(first.lease.id))?.status).toBe("failed");
+  });
+
   it("acquires and resumes a reusable lease after a task changes from per-turn to warm", async () => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");

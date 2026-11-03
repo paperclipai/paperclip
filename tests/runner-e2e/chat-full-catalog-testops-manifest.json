@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
+  "targetSha": "fd5e3b1e5a379524c0d1651ed8273e75ffd86541",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -170,9 +170,9 @@
     ],
     "repairMetadata": {
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
-      "previousTargetSha": "de6d29e025683f5c28125bcaa4f38b41836d8516",
+      "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "d214f8bf1d6c8c737682999ca9eb9d4ea2a5945bebbccb96e9ac326d538b0629",
+      "candidateDescriptorSha256": "b70bd45c3e0bb2fcca04788259b7935483dd2eb5c8be82300730511383a2a150",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -191,7 +191,7 @@
           "sha256": "18fbb9419bbdacb46eacdaa62dfa99feb9024faf2d1eef829aa70d43952575a9"
         }
       ],
-      "conditions": "New candidate measurements only; original definitions, failed attempts and previousSource5 de6 remain immutable. Source6 retains all Source5 repairs and adds remaining ORIGINAL deadline plus exact canonical source guards for personal-secret and team-install initial observations, real hire-review link readiness, and genuine skill-update provider checkpoints after cheap native readiness. Candidate-only Core18742/61996 overlay permits only a new Ask-first review for a strictly authenticated later same-person human intent after decline, including issue.comment.reopen; same-intent replay remains denied, with no approval or provider authority granted. All queries/models/human/native counts/clocks remain as de6; earlier Studio144 explicit2..3 accounting remains. CorePRs18717/18734/18742 remain UNMERGED; SDK115 completion remainsUNKNOWN and otherfiveSDK cases stay held.",
+      "conditions": "New candidate measurements only. Original definitions, prior failed attempts and source6 ab201 remain historical. This target retains that catalog and integrates merged runtime fixes #18711, #18713 and #18718, with the prior-run restoration condition adapted to its existing owner. It adds the reviewed previous-question locator, attributed human-only denial and conditional-outcome oracle, and actor-sensitive timeline narrative/recorded-reassignment fixes. Closed finish diagnostics retain an effective schema digest, hashed call correlation and bounded type/category enums only. Historical MCP timeout and continuation-shape causes remain unresolved; no new all-ten PASS is claimed. Queries, model, human/native counts and original clocks remain fixed; the earlier Studio144 explicit 2..3 accounting stays. Core PRs18717/18734/18742 are now merged. SDK115 completion remains UNKNOWN and the other five SDK cases remain held. Full244 runtime catalog is not merged to master and the196/244 gate is unchanged.",
       "changedFields": [
         {
           "key": "activity.work-timeline",
@@ -214,13 +214,21 @@
             "chat-catalog-domains/internal-activity.ts",
             "chat-scenarios/activity.yaml",
             "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-narrative.ts",
             "chat-catalog-domains/internal-timeline-verifier.ts",
             "chat-catalog-domains/internal-privacy.ts",
             "chat-catalog-domains/identity-auth.ts",
             "chat-catalog-domains/internal-routine-audit.ts",
             "../e2e/fetch-allowed-port.ts",
-            "../../server/src/services/native-runtime/status-decision-committer.ts"
+            "../../server/src/services/native-runtime/status-decision-committer.ts",
+            "../../server/src/services/work-timeline.ts"
           ]
+        },
+        {
+          "key": "activity.work-timeline",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.internal.v1",
+          "current": "paperclip.chat-catalog.work-timeline.v2"
         },
         {
           "key": "agents.choose-primary",
@@ -261,6 +269,9 @@
           ],
           "current": [
             "chat-catalog-domains/external-app-review.ts",
+            "chat-catalog-domains/external-app-review-outcomes.ts",
+            "chat-catalog-domains/external-app-review-probe.ts",
+            "../../packages/shared/src/validators/issue.ts",
             "chat-catalog-domains/external-provider.ts",
             "chat-catalog-domains/identity-support.ts",
             "chat-catalog-domains/external-secret-scan.ts",
@@ -286,7 +297,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v2"
+          "current": "paperclip.chat-catalog.app-review.v3"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -842,13 +853,21 @@
             "chat-catalog-domains/internal-activity.ts",
             "chat-scenarios/activity.yaml",
             "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-narrative.ts",
             "chat-catalog-domains/internal-timeline-verifier.ts",
             "chat-catalog-domains/internal-privacy.ts",
             "chat-catalog-domains/identity-auth.ts",
             "chat-catalog-domains/internal-routine-audit.ts",
             "../e2e/fetch-allowed-port.ts",
-            "../../server/src/services/native-runtime/status-decision-committer.ts"
+            "../../server/src/services/native-runtime/status-decision-committer.ts",
+            "../../server/src/services/work-timeline.ts"
           ]
+        },
+        {
+          "key": "activity.work-timeline",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.internal.v1",
+          "current": "paperclip.chat-catalog.work-timeline.v2"
         },
         {
           "key": "agents.choose-primary",
@@ -889,6 +908,9 @@
           ],
           "current": [
             "chat-catalog-domains/external-app-review.ts",
+            "chat-catalog-domains/external-app-review-outcomes.ts",
+            "chat-catalog-domains/external-app-review-probe.ts",
+            "../../packages/shared/src/validators/issue.ts",
             "chat-catalog-domains/external-provider.ts",
             "chat-catalog-domains/identity-support.ts",
             "chat-catalog-domains/external-secret-scan.ts",
@@ -914,7 +936,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v2"
+          "current": "paperclip.chat-catalog.app-review.v3"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -1481,11 +1503,11 @@
       "runtimeConditions": {
         "toolGuidance106": {
           "corePR": 18717,
-          "corePRUnmerged": true,
+          "corePRUnmerged": false,
           "sourcePath": "packages/paperclip-runner/src/protocol-actions/create-skill.ts",
           "sourceSha256": "02738a3afec54d7d5f417c10efd96f428409da4748d58d9bd60c2c4a6457916e",
           "queryAndModelUnchanged": true,
-          "condition": "Candidate-only new-authoring versus existing-source-import guidance; own catalogs regenerated, no master inventory transplant."
+          "condition": "Reviewed new-authoring versus existing-source-import guidance; source PR18717 is merged. Own catalog source bytes remain pinned without a master catalog transplant."
         },
         "studio144Accounting": {
           "key": "skills.studio-test",
@@ -1505,8 +1527,8 @@
           "condition": "Reviewed synthetic staging input only; per-worker singleton550 enables it; production feed and global index unchanged."
         },
         "sdkPublicProof": {
-          "previousRegistrySha256": "018b5b15450e84f63920575de3b5903f7838678ef66a1e17aa050e0b21b40319",
-          "registrySha256": "32c7971e1d9c9d31cd6791045b0265f0475c8f10932ff6dd34681681b6a89342",
+          "previousRegistrySha256": "32c7971e1d9c9d31cd6791045b0265f0475c8f10932ff6dd34681681b6a89342",
+          "registrySha256": "9169583e54d165dc8d08b9a9010175d11ca87f3590477a7b23032508020ea039",
           "inputCount": 506,
           "scannerAndCanaryCertificatesUnchanged": true,
           "plugin558StillHeld": true,
@@ -1514,17 +1536,37 @@
           "previousExpectedLockSha256": "c7f23021335b60da0cff1dd4c75cf8b948333ef3165d7d1703eb79a589edb798",
           "expectedLockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
           "historical43Finding": "detector3 unresolved_context/publicSource null; owning proof rejected stale expected lock",
-          "newCandidate115Unqualified": true
+          "newCandidate115Unqualified": true,
+          "sourceInputsChanged": true,
+          "changedInputPaths": [
+            "packages/shared/src/types/work-timeline.ts"
+          ],
+          "compileQualification": {
+            "baselineSourceSha": "124232037eebe73a513907b08f0e96bfdd454c82",
+            "compiledSourceSha": "6abe5739a713d0a8bb0308b1495846881b82d253",
+            "acceptedSourceSha": "b734393eff0d7ef85b7ad8abd556d2a66ca3a4e6",
+            "all506InputGitBlobsMatched": true,
+            "owningSharedAndPluginSdkTypeScriptBuildsPassed": true,
+            "changedRuntimeJavaScriptFiles": 0,
+            "changedDeclarationFiles": [
+              "packages/shared/dist/types/work-timeline.d.ts"
+            ],
+            "existingAndUnassignedConsumerCompiled": true,
+            "unknownEventKindRejected": true,
+            "sourceSdkControlsPassed": 51,
+            "inputAndBuildCustodyControlsPassed": 20,
+            "runtimeHeldCasesRemainHeld": true
+          }
         },
         "toolProposal487": {
           "corePr": 18734,
           "coreHead": "50600786f755b6602989f3b0f88cd090ff948196",
-          "corePRUnmerged": true,
-          "condition": "Candidate-only reviewed disclosure plus bounded pre-trim guard; no authority change. CorePR18734 remainsunmerged.",
+          "corePRUnmerged": false,
+          "condition": "Reviewed disclosure and bounded pre-trim guard from merged CorePR18734; no authority change.",
           "replay": {
             "corePR": 18742,
             "coreHead": "61996a96dd09e90a5788e8711a94fc5ae631f425",
-            "corePRUnmerged": true,
+            "corePRUnmerged": false,
             "condition": "A new Ask-first request only for an authenticated later same-person human intent after the prior decline; same-intent retry and derived or foreign sources remain denied. No approval/execution authority change.",
             "acceptedDirectSources": [
               "issue.comment",
@@ -1536,7 +1578,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
+        "targetSha": "fd5e3b1e5a379524c0d1651ed8273e75ffd86541",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
@@ -2079,19 +2121,21 @@
         "activity/timeline"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.internal.v1",
+      "oracleVersion": "paperclip.chat-catalog.work-timeline.v2",
       "sourceFiles": [
         "chat-catalog-domains/internal-definition.ts",
         "chat-catalog-domains/internal-support.ts",
         "chat-catalog-domains/internal-activity.ts",
         "chat-scenarios/activity.yaml",
         "chat-catalog-domains/internal-work-timeline.ts",
+        "chat-catalog-domains/internal-timeline-narrative.ts",
         "chat-catalog-domains/internal-timeline-verifier.ts",
         "chat-catalog-domains/internal-privacy.ts",
         "chat-catalog-domains/identity-auth.ts",
         "chat-catalog-domains/internal-routine-audit.ts",
         "../e2e/fetch-allowed-port.ts",
-        "../../server/src/services/native-runtime/status-decision-committer.ts"
+        "../../server/src/services/native-runtime/status-decision-committer.ts",
+        "../../server/src/services/work-timeline.ts"
       ],
       "screenshot": "final-state.png",
       "evidenceKind": "private-final-state-png",
@@ -3155,9 +3199,12 @@
         "questions-and-approvals/tool-review"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.app-review.v2",
+      "oracleVersion": "paperclip.chat-catalog.app-review.v3",
       "sourceFiles": [
         "chat-catalog-domains/external-app-review.ts",
+        "chat-catalog-domains/external-app-review-outcomes.ts",
+        "chat-catalog-domains/external-app-review-probe.ts",
+        "../../packages/shared/src/validators/issue.ts",
         "chat-catalog-domains/external-provider.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/external-secret-scan.ts",

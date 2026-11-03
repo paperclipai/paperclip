@@ -6,6 +6,8 @@ import { readTaskRetryIntent } from "./task-retry.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
+import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -380,8 +382,19 @@ export async function admitExplicitNativeContinuation(input: {
     // cleanup failed. That immutable result is history, not an active commit.
     // Keep it intact and require the same controller/process/lease stop proofs
     // before admitting new user input; never apply or replay the old result.
+    const legacyReference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
+    const migratedSource = coordinator && !coordinator.resultId && !coordinator.leaseOwner
+      && ["observed", "retryable_failure"].includes(coordinator.phase)
+      && await hasVerifiedWorkspaceRepair(db, run)
+      ? await readMigratedLegacyWorkspaceSource(db, { companyId, runId: run.id, reference: legacyReference }) : null;
+    // Offline migration fenced this exact unfinished turn and preserved its
+    // coordinator. A verified attachment permits new user input without
+    // inventing a terminal result or replaying the old session. All stop and
+    // ownership checks below still apply.
+    const preservedFailure = migratedSource?.issueId === issueId
+      && migratedSource.unresolvedFinalization?.phase === coordinator?.phase;
     if (!cancelledStartup && coordinator && (
-        (coordinator.phase !== "terminal_failure" && !committedFailure) || coordinator.leaseOwner ||
+        (coordinator.phase !== "terminal_failure" && !committedFailure && !preservedFailure) || coordinator.leaseOwner ||
         coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."

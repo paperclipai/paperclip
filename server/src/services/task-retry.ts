@@ -331,8 +331,11 @@ export async function requestTaskRetry(input: {
     if (!busy) {
       for (const action of records) {
         const previous = readSystemRecovery(action.evidence);
-        if (!previous || previous.state === "complete") continue;
-        if (previous.state === "running") {
+        if (!previous) continue;
+        // A completed preservation still owns its snapshot evidence. Bind the
+        // new intent so sibling holds can select that same continuation, without
+        // repeating recovery or renewing its attempt budget.
+        if (previous.state === "complete" || previous.state === "running") {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
           continue;
