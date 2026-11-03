@@ -441,6 +441,8 @@ covers client transport recovery with mocks. It does not prove runner restart.
 
 Automated read coverage: `QueryView.test.tsx`, `useResilientFetch.test.tsx`, and the migrated surface tests cover retained content during transient failures and genuine access errors. `pnpm check:query-errors` enforces shared error rendering across the UI. Browser viewer URLs and pairing previews stay in component memory and are cleared on definitive denial.
 
+`persisted-query-cache.test.ts` covers the reload allowlist, account changes, sign-out across tabs, expiry, build changes and denied reads. `service-worker-updates.test.ts` covers deferring hidden-tab updates while offline or while a write remains active. A saved session restores display data and must be verified before account-bound writes resume.
+
 Manual: go offline during a disposable run, let the server reach a new state,
 then reconnect. Confirm task/run/attention data refresh without duplicate
 comments or decisions; reload and compare. A healthy websocket proves transport

@@ -5,6 +5,7 @@ import { companiesApi } from "./companies";
 import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";
 import { useBootstrapQuery } from "./bootstrap-query";
+import { hasUnverifiedSession } from "../lib/cached-session";
 
 export type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
@@ -140,7 +141,7 @@ export async function resolveAccountUserId(queryClient: QueryClient): Promise<st
   // breath. The entry is still `success`, still holding the *old* user, until a
   // refetch lands; trusting it would key the new account's list to the old
   // account's id, which is the misattribution this whole file exists to prevent.
-  if (state?.status === "success" && !state.isInvalidated) {
+  if (state?.status === "success" && !state.isInvalidated && !hasUnverifiedSession(queryClient)) {
     return state.data?.user.id ?? null;
   }
   const session = await queryClient.fetchQuery({ ...sessionQueryOptions, staleTime: 0 });

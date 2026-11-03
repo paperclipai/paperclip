@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hasPendingWrites } from "@/lib/reload-safety";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { useSignOut } from "./useSignOut";
@@ -62,6 +63,24 @@ describe("useDurableAutosave", () => {
 
   const advance = (ms: number) => act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+  });
+
+  it("blocks background reload during debounce and until the newest edit is saved", async () => {
+    let complete!: () => void;
+    const save = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; })).mockResolvedValue(undefined);
+    render({ save });
+    act(() => current.markDirty());
+    expect(hasPendingWrites()).toBe(true);
+    let saving!: ReturnType<typeof current.run>;
+    act(() => { saving = current.run("First draft"); });
+    act(() => current.markDirty());
+    await act(async () => { complete(); await saving; });
+    expect(hasPendingWrites()).toBe(true);
+    await act(async () => { await current.run("Second draft"); });
+    expect(hasPendingWrites()).toBe(false);
+    act(() => current.markDirty());
+    act(() => current.reset());
+    expect(hasPendingWrites()).toBe(false);
   });
 
   it("keeps a conflict verification read pending through an outage", async () => {
