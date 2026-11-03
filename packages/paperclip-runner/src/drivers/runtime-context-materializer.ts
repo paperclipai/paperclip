@@ -378,11 +378,11 @@ export function codexCustomProviders(
     const resolved = resolveProviderFields(entry, environment);
     if (!resolved) continue;
     if (typeof resolved.base_url !== "string" || resolved.base_url.trim().length === 0) continue;
-    // `env_http_headers` names variables Codex reads at launch, but the child
-    // environment is sanitized down to one provider variable. Keeping the name
-    // would ship a provider whose headers never resolve, so the entry is
-    // skipped instead.
-    if (isRecord(resolved.env_http_headers)) continue;
+    // Codex has no proxy in this path, so every header value it accepts is
+    // written into the agent-readable `config.toml`. `env_http_headers` would
+    // name a variable the sanitized child does not keep. Both forms are skipped
+    // rather than shipped either broken or in the clear.
+    if (isRecord(resolved.http_headers) || isRecord(resolved.env_http_headers)) continue;
     const envKey = typeof entry.env_key === "string" ? entry.env_key.trim() : "";
     const key = envKey ? environment?.[envKey] : undefined;
     if (key) {

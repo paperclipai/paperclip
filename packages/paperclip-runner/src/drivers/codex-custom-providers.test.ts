@@ -47,13 +47,32 @@ describe("codexCustomProviders", () => {
     expect(parsed.modelProvider).toBe("gateway");
   });
 
-  it("drops a credential field whatever its name", () => {
+  it("skips a provider that declares a literal header value", () => {
     const parsed = codexCustomProviders({
       PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
         providers: {
           gateway: {
             base_url: "https://gateway.test/v1",
-            http_headers: { "X-Auth": "{env:GATEWAY_KEY}", "X-Route": "eu" },
+            http_headers: { "X-Api-Key": "literal-secret" },
+          },
+        },
+      }),
+    });
+
+    // Codex has no proxy here, so a header value would land in the
+    // agent-readable config. Header names are arbitrary, so the entry is
+    // skipped rather than filtered by name.
+    expect(parsed.providers).toEqual({});
+    expect(JSON.stringify(parsed)).not.toContain("literal-secret");
+  });
+
+  it("drops an environment-backed header without dropping the provider", () => {
+    const parsed = codexCustomProviders({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        providers: {
+          gateway: {
+            base_url: "https://gateway.test/v1",
+            http_headers: { "X-Auth": "{env:GATEWAY_KEY}" },
           },
         },
       }),
@@ -61,9 +80,9 @@ describe("codexCustomProviders", () => {
     });
 
     const provider = parsed.providers.gateway as Record<string, unknown>;
-    // Header names are arbitrary, so every reference is dropped. Plain values stay.
-    expect(provider.http_headers).toEqual({ "X-Route": "eu" });
-    expect(JSON.stringify(parsed.providers)).not.toContain("gateway-key");
+    expect(provider.base_url).toBe("https://gateway.test/v1");
+    expect(provider.http_headers).toBeUndefined();
+    expect(JSON.stringify(parsed)).not.toContain("gateway-key");
   });
 
   it("ignores entries without their own endpoint", () => {
