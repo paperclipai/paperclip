@@ -479,6 +479,10 @@ describe("automatic retained workspace recovery", () => {
         companyId: f.companyId, runId: later.id, agentId: before.agentId, eventType: "adapter.invoke", stream: "system",
         level: "info", message: "Execution started before the contradictory bootstrap result.", payload: null,
       });
+      await issueRecoveryActionService(db).upsertSourceScoped({ companyId: f.companyId, sourceIssueId: f.issueId,
+        kind: "stranded_assigned_issue", cause: "stranded_assigned_issue", fingerprint: `latest-setup:${later.id}`,
+        ownerType: "board", nextAction: "Inspect the failed setup before continuing.",
+        evidence: { latestRunId: later.id, latestRunStatus: "failed", latestRunErrorCode: "setup_failed" } });
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId, status: "running" });
       const app = boardRecoveryApp(), retryIntent = { observedRunId: later.id, idempotencyKey: randomUUID() };
       const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
