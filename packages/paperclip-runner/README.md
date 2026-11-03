@@ -214,6 +214,60 @@ are unavailable. Accepting a native plan ends the planning run successfully whil
 the task waits for the next instruction. See the
 [Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
 
+Cursor Cloud is a separate experimental native provider (`cursor_cloud`, driver
+`cursor_cloud_api`). Configure `NativeProviderConfig` with `kind: "cursor_cloud"`,
+an explicit `model`, and a `cursorCloud` object using the
+`paperclip.cursor-cloud.config.v1` schema. That object requires either a repository
+list or a named Cursor Cloud environment. The launch environment supplies
+`CURSOR_API_KEY` and the scoped tool relay configuration. Native Cloud supports
+per-turn Runner lifecycle only; Cursor executes tools in its hosted VM. Configure
+hosted shell secrets in the Cursor Cloud environment.
+Paperclip native tools use the injected `paperclip` MCP server with
+controller-managed authentication; they need no Paperclip REST credentials in the
+Cloud VM.
+
+Cloud v1 provides no independent acknowledgment of the effective model or exact
+instruction digest. Runner records submitted inputs and treats this support as
+experimental. Cursor manages its own shell permissions; native permission,
+question and plan callbacks and fixed per-run dollar limits are unavailable.
+Paperclip planning tasks retain their pinned planning context and existing tool
+restrictions while using Cloud's default harness. Plan documents and
+revision-bound Paperclip confirmations use the normal semantic tools; this does
+not enable Cursor's native Plan API or native plan-decision callbacks.
+Production usage and dollar cost remain unknown; the Cloud usage API is not yet
+projected through the Runner facade. Stop cancels the exact Cloud run and requires
+a terminal provider receipt. Unknown cancellation remains unconfirmed. Recovery
+reuses the saved Agent/Run and stream cursor, keeps the original deadline, and does
+not replay an ambiguous paid mutation. Tool callbacks require the capability of
+the current turn, including fresh MCP initialization. Recovery retains that
+capability in the private checkpoint. Older active checkpoints without it permit
+cleanup, but cannot resume tool access. Read-only observation retries transient
+stream failures within the original deadline, with bounded backoff.
+
+Checkpoint acquisition and dead-owner takeover share a private, bounded local
+acquisition guard; no network work runs while it is held. Ordinary dead main-owner
+recovery remains automatic when that guard is absent. An abandoned or
+ownership-changed acquisition guard blocks reuse and archival as ambiguous state.
+It is retained for reconciliation, never reclaimed from its age or PID alone.
+
+Cloud deliverables use `cursor-artifact:<listed relative path>` with the exact
+byte count and SHA-256. Runner downloads the provider artifact to its private
+artifact root before normal deliverable registration. Fully verified bytes publish
+atomically without replacing an existing final file; existing files must match the
+claim. A crashed writer can leave an unreferenced private temporary file, which is
+retained rather than mistaken for a completed artifact. A completed publication
+alias is removed only for a proven inactive publisher and the exact verified
+private final inode. Active or unknown aliases remain fenced; successful handoff
+requires a single final link. A remote path never grants access to the controller's
+project files. Staging is experimental and bounded to 256 MiB and 256 new
+allocations/import attempts per artifact root, including zero-byte attempts.
+A durable reservation precedes each new download. Rejected, aborted or uncertain
+registration retains the charge and verified file for recovery. The bound survives
+session changes and seeds existing retained usage. Exact existing-file recovery
+still verifies current provider bytes without another body/temp allocation at
+capacity. An uncertain ledger, retained pending reservation or ownership lock
+blocks new imports rather than resetting the budget.
+
 Google Antigravity is an **unqualified, pending** native ACPX integration. The
 explicit `paperclipai runtime setup antigravity` command installs the verified
 Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
