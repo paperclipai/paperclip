@@ -45,7 +45,10 @@ for (const line of text.split("\n")) {
   const mRe = /\/skills\/(egm-[a-z-]+)\/SKILL\.md/.exec(p2);
   if (mRe) skills.add(mRe[1] + " (read)");
   if (tool === "write" || tool === "edit") writes.push(String(inp.filePath || inp.path || "").split("/").pop());
-  const sig = tool + "::" + String(inp.subagent_type || "") + "::" + String(inp.command || inp.filePath || inp.path || inp.pattern || "").slice(0, 90);
+  // firma completa (hash): dos scripts distintos con el mismo prefijo NO son un loop
+  const raw = String(inp.command || inp.filePath || inp.path || inp.pattern || "");
+  const h = require("crypto").createHash("sha1").update(raw).digest("hex").slice(0, 12);
+  const sig = tool + "::" + String(inp.subagent_type || "") + "::" + h;
   sigs[sig] = (sigs[sig] || 0) + 1;
 }
 

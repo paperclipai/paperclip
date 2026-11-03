@@ -253,6 +253,26 @@ se puede verificar, no está hecho.
 - **El gate EGM prácticamente no se aplicaba**: 2 despachos de oro en 705
   corridas. La metodología no era un default, era una intención.
 
+### Definición #3 PROBADA (2026-11-03 06:38Z)
+
+Ciclo completo verificado en **OMA-594** (proyecto `vicin`, `EGM=full`), run
+`28751208`:
+
+| Paso | Evidencia |
+|---|---|
+| issue → gate | el gate eligió `full` (artefacto con interfaces e invariantes) |
+| elefante | 15 steps, in 66.928 · out 9.606 · reasoning 7.624; leyó `egm-review` |
+| oro | **7 revisores** en sesiones nuevas y sólo lectura, en 2 tandas (4 + 3): `egm-zoom-out`, `egm-comprehension`, `egm-design`, `egm-structural`, `egm-style`, `egm-implementation-readiness`, `egm-codebase-details` |
+| artefacto | documento `plan` = 15.268 bytes, revisión `b938c5af` (borrador original + síntesis anexada, sin regenerar) |
+| veredicto | `EGM-VERDICT: full — el diseño es sano y la política elegida es defendible, pero el documento todavía no es un contrato: nueve bloqueantes (dueño del retry, Fase 0 falsa, almacenamiento que no sostiene el invariante 1, campos sin definir y Idempotency-Key que no pasa CORS) tienen que cerrarse antes del primer PR.` |
+| cierre | `status=done`, `completedAt=2026-11-03T06:38:51Z`, 23 comentarios (reportes de etapa + síntesis `90c71d00`) + handoff a hoke en OMA-290 |
+| gate de cierre | el gate lo **aceptó** (`sin-veredicto=0`): con veredicto, no se reabre |
+| anti-loop | 0 llamadas repetidas; el elefante no reintentó el write denegado |
+
+Coste del ciclo completo: **66.9k tokens in / 9.6k out / 7.6k reasoning** para un
+diseño con 7 revisiones — el precio de que el diseño llegue al board con nueve
+bloqueantes nombrados en vez de vacío.
+
 ### Hallazgos posteriores (2026-11-03, tarde)
 
 1. **`low_trust_review` es incompatible con los pulsos.** Con
