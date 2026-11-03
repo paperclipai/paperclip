@@ -1,5 +1,6 @@
 import { attentionReceiptText, type AttentionItem, type AttentionPersonalView, type DecisionHistoryItem, type DecisionHistoryOutcomeFilter } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
+import { isInlineResolvable } from "./attention";
 
 /**
  * The pending feed for one person and one view (PAP-749 plan §1). The key
@@ -9,6 +10,21 @@ import { queryKeys } from "./queryKeys";
  */
 export const coordinatorAttentionQueryKey = (companyId: string, userId: string | null, view: AttentionPersonalView) =>
   [...queryKeys.attention(companyId), userId, view, "coordinator", "pending"] as const;
+
+/**
+ * The title a Needs You card leads with, so a list of cards (the Withdraw all
+ * stale confirmation) names each one the way the card does (PAP-767). An
+ * inline interaction or stalled review card renders its own resolver, and its
+ * task link names it; every other card has a heading.
+ */
+export function coordinatorCardTitle(item: AttentionItem) {
+  const task = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
+  const inline = isInlineResolvable(item)
+    && (item.sourceKind === "issue_thread_interaction"
+      || (item.sourceKind === "review" && item.subject.kind === "issue" && item.subject.metadata?.reviewAttentionState === "stalled"));
+  if (inline && task?.title) return task.title;
+  return item.subject.title ?? item.whyNow;
+}
 
 /** Presentation-only assumption from the prototype, never a retention policy. */
 export const COORDINATOR_RECENT_DECISION_MS = 24 * 60 * 60 * 1_000;

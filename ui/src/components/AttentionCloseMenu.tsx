@@ -420,6 +420,7 @@ export function AttentionStaleGroup({
   busy = false,
   currentUserId,
   userLabelMap,
+  titleOf = attentionCardHeadline,
   children,
 }: {
   items: AttentionItem[];
@@ -429,6 +430,8 @@ export function AttentionStaleGroup({
   busy?: boolean;
   currentUserId: string | null | undefined;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  /** The title each card leads with in this layout, so the confirmation names cards as they read (PAP-767). */
+  titleOf?: (item: AttentionItem) => string;
   children: ReactNode;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -471,12 +474,12 @@ export function AttentionStaleGroup({
                 : `${forOthers.length} of these are for other people. Continue?`}
             </p>
           )}
-          <StaleItemList items={withdrawable} currentUserId={currentUserId} userLabelMap={userLabelMap} label="Will be withdrawn" />
+          <StaleItemList items={withdrawable} currentUserId={currentUserId} userLabelMap={userLabelMap} titleOf={titleOf} label="Will be withdrawn" />
           {required.length > 0 && (
-            <StaleItemList items={required} currentUserId={currentUserId} userLabelMap={userLabelMap} label="Stay open: required, withdraw one at a time" />
+            <StaleItemList items={required} currentUserId={currentUserId} userLabelMap={userLabelMap} titleOf={titleOf} label="Stay open: required, withdraw one at a time" />
           )}
           {kept.length > 0 && (
-            <StaleItemList items={kept} currentUserId={currentUserId} userLabelMap={userLabelMap} label="Stay open: no request to withdraw" />
+            <StaleItemList items={kept} currentUserId={currentUserId} userLabelMap={userLabelMap} titleOf={titleOf} label="Stay open: no request to withdraw" />
           )}
           <Textarea
             value={reason}
@@ -506,16 +509,23 @@ export function AttentionStaleGroup({
   );
 }
 
+/** The card title the classic row leads with (`AttentionQueueRow`). */
+function attentionCardHeadline(item: AttentionItem) {
+  return item.subject.title ?? item.whyNow;
+}
+
 function StaleItemList({
   items,
   label,
   currentUserId,
   userLabelMap,
+  titleOf,
 }: {
   items: AttentionItem[];
   label: string;
   currentUserId: string | null | undefined;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  titleOf: (item: AttentionItem) => string;
 }) {
   return (
     <div className="space-y-1">
@@ -526,7 +536,7 @@ function StaleItemList({
           const task = item.relatedIssue?.identifier ?? (item.subject.kind === "issue" ? item.subject.identifier : null);
           return (
             <li key={item.id} className="flex flex-wrap items-baseline gap-x-2" data-attention-stale-item={item.id}>
-              <span className="min-w-0 truncate font-medium text-foreground">{item.subject.title ?? item.whyNow}</span>
+              <span className="min-w-0 truncate font-medium text-foreground">{titleOf(item)}</span>
               {task && <span className="font-mono text-xs text-muted-foreground">{task}</span>}
               <span className="text-xs text-muted-foreground">{attentionStaleChipText(item)}</span>
               {otherUserId && <span className="text-xs text-muted-foreground">For @{attentionUserLabel(otherUserId, userLabelMap)}</span>}

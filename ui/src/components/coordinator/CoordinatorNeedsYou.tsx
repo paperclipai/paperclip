@@ -15,7 +15,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { useAttentionBadge, useAttentionCloseActions, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-import { COORDINATOR_RECENT_DECISION_MS, recentDecisionReceipts } from "@/lib/coordinator-attention";
+import { COORDINATOR_RECENT_DECISION_MS, coordinatorCardTitle, recentDecisionReceipts } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
@@ -240,7 +240,7 @@ export function CoordinatorNeedsYou() {
     const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
     const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
     const refetchAll = () => { void feed.refetch(); void recent.refetch(); };
-    const heading = <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p></>;
+    const heading = <><h2 className="text-lg font-medium">{coordinatorCardTitle(item)}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p></>;
     return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
     <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
       onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
@@ -303,7 +303,7 @@ export function CoordinatorNeedsYou() {
     {groups.map(([label, items]) => <div key={label} className="space-y-4">{label ? <h2 className="text-sm font-medium text-muted-foreground">{label}</h2> : null}{items.map(renderCard)}</div>)}
     {currentItems.length > renderLimit ? <Button variant="outline" onClick={() => setRenderLimit((value) => value + 40)}>Show more decisions</Button> : null}
     <AttentionStaleGroup items={staleItems} open={staleOpen} onToggle={() => setStaleOpen(open => !open)} onWithdrawAll={closeActions.withdrawAll}
-      busy={closeActions.bulkPending} currentUserId={userId} userLabelMap={userLabelMap}>
+      busy={closeActions.bulkPending} currentUserId={userId} userLabelMap={userLabelMap} titleOf={coordinatorCardTitle}>
       {staleItems.map(renderCard)}
     </AttentionStaleGroup>
     {/* Snoozed by you: each card says when it comes back (PAP-749 plan §3). */}

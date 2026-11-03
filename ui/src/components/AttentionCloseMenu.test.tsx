@@ -238,6 +238,26 @@ describe("AttentionStaleGroup", () => {
     expect(onWithdrawAll).toHaveBeenCalledWith([stale[0], stale[1]], "");
   });
 
+  it("names each card in the confirmation with the title the layout's card leads with (PAP-767)", async () => {
+    // The classic row leads with the card title.
+    await render(<AttentionStaleGroup items={stale} open={false} onToggle={vi.fn()} onWithdrawAll={vi.fn()} currentUserId={SCOTT} userLabelMap={labels}><p>cards</p></AttentionStaleGroup>);
+    await click(buttonWithText("Withdraw all stale", container));
+    let dialog = document.body.querySelector<HTMLElement>("[data-attention-stale-withdraw-dialog]")!;
+    expect(dialog.querySelector('[data-attention-stale-item="old"]')?.textContent).toContain("Card old");
+    await act(async () => root.unmount());
+    document.body.innerHTML = "";
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    // Needs You passes its own card title.
+    await render(<AttentionStaleGroup items={stale} open={false} onToggle={vi.fn()} onWithdrawAll={vi.fn()} currentUserId={SCOTT} userLabelMap={labels}
+      titleOf={(item) => `Task for ${item.id}`}><p>cards</p></AttentionStaleGroup>);
+    await click(buttonWithText("Withdraw all stale", container));
+    dialog = document.body.querySelector<HTMLElement>("[data-attention-stale-withdraw-dialog]")!;
+    expect(dialog.querySelector('[data-attention-stale-item="old"]')?.textContent).toContain("Task for old");
+    expect(dialog.textContent).not.toContain("Card old");
+  });
+
   it("offers no bulk withdraw when nothing can be withdrawn", async () => {
     await render(<AttentionStaleGroup items={[stale[2]!]} open={false} onToggle={vi.fn()} onWithdrawAll={vi.fn()} currentUserId={SCOTT} userLabelMap={labels}><p>cards</p></AttentionStaleGroup>);
     expect(container.textContent).toContain("Stale (1)");

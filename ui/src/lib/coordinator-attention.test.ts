@@ -3,6 +3,7 @@ import { attentionReceiptText, type AttentionItem, type DecisionHistoryItem } fr
 import {
   COORDINATOR_RECENT_DECISION_MS,
   DECISION_HISTORY_OUTCOME_OPTIONS,
+  coordinatorCardTitle,
   decisionHistoryContext,
   decisionHistoryHeadline,
   pendingDecisionTaskIds,
@@ -63,6 +64,20 @@ describe("Decision history presentation (PAP-749 task 2e)", () => {
     expect(decisionHistoryHeadline(decided, labels)).toBe("Decided by @Scott: Ship it");
     // An expired card has no actor: the label stays.
     expect(decisionHistoryHeadline(entry({ resultOutcome: null, label: "Expired", outcome: "expired", resolvedByUserId: null, action: null }), labels)).toBe("Expired");
+  });
+
+  it("titles a card the way Needs You shows it, for the Withdraw all stale list (PAP-767)", () => {
+    const base = {
+      id: "c", sourceKind: "issue_thread_interaction", inlineResolvable: true,
+      subject: { id: "i", kind: "interaction", title: "Lingering on a done task", metadata: {} },
+      relatedIssue: { id: "t", identifier: "PAP-19", title: "Confirmation on a done task" }, whyNow: "Why",
+    } as unknown as AttentionItem;
+    // An inline interaction card is named by its task link.
+    expect(coordinatorCardTitle(base)).toBe("Confirmation on a done task");
+    // Every other card leads with its heading.
+    expect(coordinatorCardTitle({ ...base, sourceKind: "approval", subject: { ...base.subject, kind: "approval", title: "Approve the plan" } } as AttentionItem))
+      .toBe("Approve the plan");
+    expect(coordinatorCardTitle({ ...base, inlineResolvable: false } as AttentionItem)).toBe("Lingering on a done task");
   });
 
   it("shows the task, or names an approval that has no task", () => {
