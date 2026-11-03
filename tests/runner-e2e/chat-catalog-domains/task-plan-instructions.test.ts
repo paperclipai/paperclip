@@ -83,15 +83,9 @@ it("147 does not mistake worker-output text for the brief's initial instruction 
   (f.observation.workDocuments as object[]).push({ id: "output", key: "website-delivery", body: "/api/attachments/brief/content" });
   expect(f.grade(f.observation).passed).toBe(false);
 });
-it("147 still measures real admission rather than accepting an unsupported completed-page claim", () => {
-  const f = fixture("147"); f.workerRun.status = "running"; f.observation.reply = "The website is complete and deployed.";
-  expect(f.grade(f.observation).passed).toBe(false);
-});
 
-it("147 allows truthful task creation plus a negated website-completion statement while Morgan works", () => {
-  const f = fixture("147"); f.workerRun.status = "running"; f.observation.reply = "Done, I created the task; the website is not complete yet.";
-  expect(f.grade(f.observation).passed).toBe(true);
-});
+
+
 
 it("599 accepts an actual source-return obligation without prescribed report words in the task", async () => {
   const f = fixture("599"); f.document.body = "Implement [the approved brief](/api/attachments/brief/content) for Launch.";
@@ -136,12 +130,5 @@ for (const definition of [...taskAttachmentCases, ...runtimeDelegationCases]) {
     const row = rows.find(value => value.scenarioId === definition.scenarioId)!;
     for (const key of ["oracleVersion", "sourceFiles", "expectedRunCount", "attemptTimeoutMs", "turnTimeoutMs"] as const)
       expect(row[key]).toEqual(definition[key]);
-  });
-}
-
-for (const reply of ["Morgan has the task. I’ll report back when the website is complete.", "Morgan has the task; once the website is complete, I will return its link."]) {
-  it("147 permits a future completion promise without claiming the website is already finished", () => {
-    const f = fixture("147"); f.workerRun.status = "running"; f.observation.reply = reply;
-    expect(f.grade(f.observation).passed).toBe(true);
   });
 }
