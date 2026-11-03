@@ -73,7 +73,7 @@ export const WorkspaceReconnect: Story = {
       return;
     }
     await expect(await canvas.findByRole("alert")).toHaveTextContent("Reconnect your Slack workspace to continue setting up this agent.");
-    await expect(canvas.getByRole("button", { name: "Reconnect Slack workspace" })).toBeEnabled();
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Reconnect Slack workspace" })).toBeEnabled());
     await expect(canvas.getByRole("button", { name: "Save & exit" })).toBeVisible();
     await expect(canvas.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
   },
