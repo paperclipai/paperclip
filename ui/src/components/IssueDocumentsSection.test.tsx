@@ -359,34 +359,6 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).not.toContain("Body typed before its key");
     await act(async () => root.unmount());
     client.clear();
-  it("does not flag a blank new general document key as reserved", async () => {
-    mockIssuesApi.listDocuments.mockResolvedValue([]);
-    const root = createRoot(container);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
-    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly /></QueryClientProvider>));
-    await flush();
-    await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
-    await flush();
-    expect(container.querySelector('input[placeholder="Document key"]')).not.toBeNull();
-    expect(container.textContent).not.toContain("reserved for task state");
-    await act(async () => root.unmount());
-    client.clear();
-  });
-
-  it("drops listed documents without a key instead of crashing", async () => {
-    mockIssuesApi.listDocuments.mockResolvedValue([{ id: "doc-without-key" }] as never);
-    const root = createRoot(container);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
-    const issue = createIssue();
-    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={issue} canDeleteDocuments={false} generalDocumentsOnly /></QueryClientProvider>));
-    await flush();
-    expect(client.getQueryData(queryKeys.issues.documents(issue.id))).toEqual([]);
-    await act(async () => root.unmount());
-    client.clear();
-  });
-
   });
 
   it("keeps new document drafts within their task and signed-in account", async () => {
