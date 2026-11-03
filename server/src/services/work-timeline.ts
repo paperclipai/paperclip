@@ -796,7 +796,11 @@ export function workTimelineService(db: Db) {
     }
 
     const actorMaps = await loadActorMaps(input.companyId, actorIds);
-    const publicActorIds = new Set(Array.from(actorIds).filter(id => !id.startsWith("user:") || actorMaps.users.has(id.slice("user:".length))));
+    const publicActorIds = new Set(Array.from(actorIds).filter(id => {
+      if (id.startsWith("agent:")) return actorMaps.agents.has(id.slice("agent:".length));
+      if (id.startsWith("user:")) return actorMaps.users.has(id.slice("user:".length));
+      return true;
+    }));
     const actors: WorkTimelineActor[] = Array.from(publicActorIds).map((id) => {
       const [type, rawId] = id.split(":", 2) as [TimelineActorType, string];
       if (type === "agent") {
@@ -813,7 +817,7 @@ export function workTimelineService(db: Db) {
 
     return {
       actors,
-      spans: Array.from(spanByRunId.values()).sort((left, right) => left.start.localeCompare(right.start)),
+      spans: Array.from(spanByRunId.values()).filter(span => publicActorIds.has(span.actorId)).sort((left, right) => left.start.localeCompare(right.start)),
       events: events.filter(event => publicActorIds.has(event.actorId)).sort((left, right) => left.at.localeCompare(right.at)),
       edges: edges.filter(edge => publicActorIds.has(edge.fromActorId) && publicActorIds.has(edge.toActorId)).sort((left, right) => left.at.localeCompare(right.at)),
       pagination: {
