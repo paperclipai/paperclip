@@ -45,10 +45,17 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
           if (request.method !== "POST" || request.url !== "/v1/chat/completions" || ++requests > 12) throw new Error("diagnostic_route");
           let size = 0; const chunks: Buffer[] = [];
           for await (const chunk of request) { size += chunk.length; if (size > 1024 * 1024) throw new Error("diagnostic_body_bound"); chunks.push(chunk); }
-          const scripted = identityResponse(JSON.parse(Buffer.concat(chunks).toString("utf8")), negative, justIssued);
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          const scripted = identityResponse(body, negative, justIssued);
           if (!scripted.auxiliary) justIssued = scripted.delta.tool_calls?.[0]?.id;
           for (const id of scripted.accepted) accepted.add(id);
           negativeObserved ||= scripted.negativeObserved;
+          if (scripted.auxiliary && body.stream !== true) {
+            response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ id: "synthetic-title",
+              object: "chat.completion", created: 1, model: "protocol-diagnostic", choices: [{ index: 0,
+                message: { role: "assistant", content: "Protocol diagnostic" }, finish_reason: "stop" }] }));
+            return;
+          }
           response.writeHead(200, { "Content-Type": "text/event-stream" });
           for (const [delta, finish_reason] of [[scripted.delta, null], [{}, scripted.finish]]) response.write(`data: ${JSON.stringify({
             id: "synthetic-diagnostic", object: "chat.completion.chunk", created: 1, model: "protocol-diagnostic", choices: [{ index: 0, delta, finish_reason }],

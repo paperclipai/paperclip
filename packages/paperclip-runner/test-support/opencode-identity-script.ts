@@ -30,7 +30,7 @@ export function identityAcceptanceComplete(messages: unknown): boolean {
 }
 export function identityResponse(body: unknown, negative = false, expectedPreviousId?: string) {
   const b = row(body);
-  if (b.model !== "protocol-diagnostic" || b.stream !== true || !Array.isArray(b.messages)) throw new Error("diagnostic_request_invalid");
+  if (b.model !== "protocol-diagnostic" || !Array.isArray(b.messages)) throw new Error("diagnostic_request_invalid");
   const tools = Array.isArray(b.tools) ? b.tools.map(value => row(row(value).function)) : [];
   const tool = tools.filter(value => /(?:^|_)get_identity$/.test(String(value.name)));
   const hasMainPrompt = b.messages.some(value => row(value).role === "user" && (JSON.stringify(row(value).content) ?? "").includes(diagnosticPrompt));
@@ -38,7 +38,7 @@ export function identityResponse(body: unknown, negative = false, expectedPrevio
   // consume the pending main-call response or advance the identity script.
   if (tool.length === 0) return { accepted: [], negativeObserved: false, auxiliary: true,
     delta: { role: "assistant", content: "Protocol diagnostic" }, finish: "stop" };
-  if (tool.length !== 1 || !hasMainPrompt) throw new Error("diagnostic_main_request_invalid");
+  if (tool.length !== 1 || !hasMainPrompt || b.stream !== true) throw new Error("diagnostic_main_request_invalid");
   if (expectedPreviousId && (!identityCallIds.includes(expectedPreviousId)
     || !b.messages.some(value => row(value).role === "tool" && row(value).tool_call_id === expectedPreviousId)))
     throw new Error("diagnostic_next_result_missing");

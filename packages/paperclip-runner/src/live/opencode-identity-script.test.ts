@@ -42,6 +42,8 @@ it("does not mistake auxiliary title requests for the next relevant main-provide
   const issued = identityResponse(body([])).delta.tool_calls![0]!.id;
   const title = identityResponse({ model: "protocol-diagnostic", stream: true, messages: [{ role: "user", content: "Create a title" }] }, false, issued);
   expect(title.auxiliary).toBe(true);
+  expect(identityResponse({ model: "protocol-diagnostic", stream: false, messages: [] }, false, issued).auxiliary).toBe(true);
+  expect(() => identityResponse({ ...body([]), stream: false })).toThrow("diagnostic_main_request_invalid");
   expect(title.accepted).toEqual([]);
   expect(() => identityResponse(body([]), false, issued)).toThrow("diagnostic_next_result_missing");
   expect(identityResponse(body([message(issued)]), false, issued).accepted).toEqual([issued]);
