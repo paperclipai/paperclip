@@ -39,10 +39,12 @@ if (!support.supported) console.warn(`Skipping response-wait database tests: ${s
       status: "succeeded", finishedAt: new Date(now), contextSnapshot: { issueId } });
     return { companyId, agentId, runId, issueId };
   }
-  async function wait(f: Awaited<ReturnType<typeof seed>>, change: Partial<typeof issueThreadInteractions.$inferInsert> = {}) {
+  // Waits persist as JSON and text, so a row can hold a value this build's contract no longer names.
+  type WaitChange = Omit<Partial<typeof issueThreadInteractions.$inferInsert>, "effectiveResolverPolicy" | "payload"> & { effectiveResolverPolicy?: string; payload?: unknown };
+  async function wait(f: Awaited<ReturnType<typeof seed>>, change: WaitChange = {}) {
     const [row] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
       kind: "ask_user_questions", status: "pending", sourceRunId: f.runId, effectiveResolverPolicy: "human_only",
-      continuationPolicy: "wake_assignee", payload: { version: 1 }, ...change }).returning();
+      continuationPolicy: "wake_assignee", payload: { version: 1, questions: [] }, ...change } as typeof issueThreadInteractions.$inferInsert).returning();
     return row!;
   }
 
@@ -61,7 +63,7 @@ if (!support.supported) console.warn(`Skipping response-wait database tests: ${s
   it.each(["human_only", "anyone"])("keeps automatically polled merge confirmations awake with %s audience", async policy => {
     const f = await seed("in_progress");
     const card = { kind: "request_confirmation", title: "Merge PaperclipAI/paperclip#39?", summary: null,
-      payload: { version: 1, prompt: "Merge the pull request?" } };
+      payload: { version: 1 as const, prompt: "Merge the pull request?" } };
     expect(getMergeConfirmationPullRequestReferences(card)).toHaveLength(1);
     await wait(f, { ...card, effectiveResolverPolicy: policy });
     expect(await read()).toEqual(present);
@@ -75,7 +77,7 @@ if (!support.supported) console.warn(`Skipping response-wait database tests: ${s
   it("allows human-only connection setup without reusable access, and reblocks when access appears", async () => {
     const f = await seed();
     await wait(f, { kind: "connection_intent", addresseeUserId: "fixture-user", payload: {
-      version: 1, serviceSlug: "fixture-service", requestingAgentId: f.agentId,
+      version: 1, serviceSlug: "fixture-service", serviceName: "Fixture service", requestingAgentId: f.agentId, requestingAgentName: "Idle owner", phase: "requested",
     } });
     expect(await read()).toEqual(none);
     const [app] = await db.insert(toolApplications).values({ companyId: f.companyId,
@@ -88,7 +90,7 @@ if (!support.supported) console.warn(`Skipping response-wait database tests: ${s
     const f = await seed();
     await wait(f, { kind: "connection_intent", addresseeUserId: mode === "no_addressee" ? null : "fixture-user",
       effectiveResolverPolicy: mode === "agent_resolver" ? "anyone" : "human_only", payload: {
-        version: 1, serviceSlug: "fixture-service", requestingAgentId: mode === "wrong_assignee" ? randomUUID() : f.agentId,
+        version: 1, serviceSlug: "fixture-service", serviceName: "Fixture service", requestingAgentId: mode === "wrong_assignee" ? randomUUID() : f.agentId, requestingAgentName: "Idle owner", phase: "requested",
         ...(mode === "unknown_purpose" ? { purpose: "future" } : {}),
       } });
     expect(await read()).toEqual(present);

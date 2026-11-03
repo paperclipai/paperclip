@@ -31,6 +31,7 @@ import {
   companySecrets,
   companySecretVersions,
   createDb,
+  type Db,
   heartbeatRuns,
   issueThreadInteractions,
   issues,
@@ -67,6 +68,7 @@ import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   getAvailableConnectionMethod,
   getConnectableAppDefinition,
+  type CreateToolConnection,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
 import {
@@ -126,6 +128,25 @@ function createTestToolAccessService(
   });
 }
 
+/**
+ * The service accepts parsed route input, where these fields carry schema defaults.
+ * transportConfig mirrors config, which is the service's own fallback when it is omitted.
+ */
+function connectionInput(
+  input: Omit<CreateToolConnection, "connectionPurpose" | "authKind" | "ownership" | "connectionKind" | "transportConfig" | "credentialSecretRefs">
+    & Partial<CreateToolConnection>,
+): CreateToolConnection {
+  return {
+    connectionPurpose: "tool",
+    authKind: "none",
+    ownership: "customer",
+    connectionKind: "managed",
+    credentialSecretRefs: [],
+    ...input,
+    transportConfig: input.transportConfig ?? input.config ?? {},
+  };
+}
+
 function optIntoAirtableDcrRegistration() {
   const method = APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods
     .find((entry) => entry.key === "mcp-oauth")!;
@@ -150,6 +171,7 @@ function fakeGoogleWorkspaceConnector(
     refreshToken: `${tokenPrefix}-refresh-token`,
     tokenType: "Bearer",
     accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    refreshTokenExpiresAt: null,
     scopes: [...profileDefinition.scopes],
     subject: userId,
     companyId,
@@ -167,7 +189,7 @@ function fakeGoogleWorkspaceConnector(
     claim: vi.fn(async () => credentials),
     refresh: vi.fn(async () => credentials),
     revoke: vi.fn(async () => undefined),
-  };
+  } satisfies Partial<PaperclipCloudConnector> as unknown as PaperclipCloudConnector;
 }
 
 function fakeGmailConnector(
@@ -209,7 +231,7 @@ function fakeGitHubConnector(
     setWebhookBinding: vi.fn(async () => undefined),
     leaseEvents: vi.fn(async () => null),
     acknowledgeEvents: vi.fn(async () => 0),
-  };
+  } satisfies Partial<PaperclipCloudConnector> as unknown as PaperclipCloudConnector;
 }
 
 function createToolGatewayService(
@@ -2496,7 +2518,7 @@ describeEmbeddedPostgres("tool access service", () => {
       },
     ]);
 
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Remote fixture",
       transport: "mcp_remote",
       config: {
@@ -2505,7 +2527,7 @@ describeEmbeddedPostgres("tool access service", () => {
       },
       enabled: true,
       status: "active",
-    });
+    }));
     const firstRefresh = await service.refreshCatalog(connection.id, {
       actorType: "user",
       actorId: "board",
@@ -2654,12 +2676,12 @@ describeEmbeddedPostgres("tool access service", () => {
     }
     const draft = await service.getConnection(connected.connectionId);
     expect(draft.status).toBe("draft");
-    expect(draft.config.workspaceSetup).toEqual({
+    expect(draft.config!.workspaceSetup).toEqual({
       version: 1, companyId: company.id, connectionId: draft.id, actorType: "user", actorId: userId,
       grantKind: "user", subjectId: userId,
       requestedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
     });
-    expect((draft.config.oauth as typeof configWithProposals.oauth).pendingWorkspaceServiceRequests).toEqual({ other: configWithProposals.oauth.pendingWorkspaceServiceRequests.other });
+    expect((draft.config!.oauth as typeof configWithProposals.oauth).pendingWorkspaceServiceRequests).toEqual({ other: configWithProposals.oauth.pendingWorkspaceServiceRequests.other });
     const retained = await service.connectGalleryApp(company.id, {
       galleryKey: "google-workspace", resumeConnectionId: draft.id,
       connectionMethodKey: mode === "managed" ? "paperclip-workspace" : "customer-workspace-oauth",
@@ -2893,7 +2915,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(service.startOAuth(company.id, connected.connectionId, {
       redirectUri, actor: { actorType: "user", actorId: otherUserId },
     })).rejects.toMatchObject({ status: 400 });
-    expect((await service.getConnection(connected.connectionId)).config.workspaceSetup).toMatchObject({ actorId: userId });
+    expect((await service.getConnection(connected.connectionId)).config!.workspaceSetup).toMatchObject({ actorId: userId });
   });
 
   it.each(["credentialPolicy", "credentialSource", "authKind", "transport", "createdByUserId", "sourceTemplateKey", "connectionMethodKey"] as const)("rejects a Workspace draft whose %s changes during authorization", async (field) => {
@@ -2911,7 +2933,7 @@ describeEmbeddedPostgres("tool access service", () => {
       changed.credentialSource = "vercel_connect";
       changed.credentialRefs = [];
       changed.credentialSecretRefs = [];
-      changed.externalCredential = { provider: "vercel_connect", connectorId: "fixture", connectorUid: "fixture", service: "google", principalMode: "user" };
+      changed.externalCredential = { provider: "vercel_connect", connectorId: "fixture", connectorUid: "fixture", service: "google", connectorType: "oauth", principalMode: "user", headerName: "authorization", scopes: [] };
     }
     else if (field === "authKind") changed.authKind = "none";
     else if (field === "transport") changed.transport = "rest_api";
@@ -2934,7 +2956,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(start(company.id, original.id, {
       redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor, workspaceServices: { gmail: "read" },
     })).rejects.toMatchObject({ status: 409 });
-    expect((await service.getConnection(original.id)).config.workspaceSetup).toBeUndefined();
+    expect((await service.getConnection(original.id)).config!.workspaceSetup).toBeUndefined();
     expect(await db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, original.id))).toHaveLength(0);
   });
 
@@ -3223,13 +3245,13 @@ describeEmbeddedPostgres("tool access service", () => {
             ]));
       });
 
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Streamable HTTP fixture",
       transport: "mcp_remote",
       config: { url: "http://127.0.0.1:8848/mcp" },
       enabled: true,
       status: "active",
-    });
+    }));
 
     const refresh = await service.refreshCatalog(connection.id, {
       actorType: "user",
@@ -3274,14 +3296,14 @@ describeEmbeddedPostgres("tool access service", () => {
       name: "REST regression fixture",
       type: "rest_api",
     });
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       applicationId: application.id,
       name: "REST regression fixture",
       transport: "rest_api",
       config,
       enabled: true,
       status: "active",
-    });
+    }));
     const fetchMock = vi.spyOn(globalThis, "fetch");
     const message = "This connection has no supported tool integration. Add a supported account or MCP connection from Connectors.";
 
@@ -3335,13 +3357,13 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
 
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Local echo fixture",
       transport: "local_stdio",
       config: { templateId: "paperclip.echo-calculator-time" },
       enabled: true,
       status: "active",
-    });
+    }));
     const health = await service.checkHealth(connection.id);
     const refresh = await service.refreshCatalog(connection.id);
     const runtimeSlots = await service.listRuntimeSlots(company.id);
@@ -3485,13 +3507,13 @@ describeEmbeddedPostgres("tool access service", () => {
       { actorType: "user", actorId: "board" },
     );
 
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Admin local echo",
       transport: "local_stdio",
       config: { templateId: "admin.local-echo" },
       enabled: true,
       status: "active",
-    });
+    }));
     const health = await service.checkHealth(connection.id);
     const refresh = await service.refreshCatalog(connection.id);
 
@@ -3509,26 +3531,26 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
 
     await expect(
-      service.createConnection(company.id, {
+      service.createConnection(company.id, connectionInput({
         name: "Rejected command config",
         transport: "local_stdio",
         config: { command: "node", args: ["./unapproved.js"] },
         enabled: true,
         status: "active",
-      }),
+      })),
     ).rejects.toThrow(
       "Local stdio MCP connections must use an approved templateId",
     );
 
     await service.disableStdioCommandTemplate(company.id, "admin.local-echo");
     await expect(
-      service.createConnection(company.id, {
+      service.createConnection(company.id, connectionInput({
         name: "Disabled admin template",
         transport: "local_stdio",
         config: { templateId: "admin.local-echo" },
         enabled: true,
         status: "active",
-      }),
+      })),
     ).rejects.toThrow(
       "Local stdio MCP connections must use an approved templateId",
     );
@@ -3596,13 +3618,13 @@ describeEmbeddedPostgres("tool access service", () => {
 
       try {
         await expect(
-          service.createConnection(company.id, {
+          service.createConnection(company.id, connectionInput({
             name: "Metadata endpoint",
             transport: "mcp_remote",
             config: { url: "http://169.254.169.254/latest/meta-data" },
             enabled: true,
             status: "active",
-          }),
+          })),
         ).rejects.toMatchObject({
           status: 400,
           details: { code: "remote_http_private_endpoint" },
@@ -3670,6 +3692,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const profile = await service.createProfile(company.id, {
       profileKey: `profile-${randomUUID()}`,
       name: "Email tools",
+      status: "active",
       defaultAction: "deny",
       entries: [
         {
@@ -3791,13 +3814,13 @@ describeEmbeddedPostgres("tool access service", () => {
       });
 
       await expect(
-        service.createConnection(company.id, {
+        service.createConnection(company.id, connectionInput({
           name: `Rejected broker ${randomUUID()}`,
           transport: "mcp_remote",
           config: { url: "https://93.184.216.34/mcp", ...brokerConfig },
           enabled: true,
           status: "active",
-        }),
+        })),
       ).rejects.toMatchObject({
         status: 400,
         details: { code: "remote_http_private_endpoint" },
@@ -3812,13 +3835,13 @@ describeEmbeddedPostgres("tool access service", () => {
       deploymentMode: "authenticated",
       deploymentExposure: "public",
     });
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Initially safe broker",
       transport: "mcp_remote",
       config: { url: "https://93.184.216.34/mcp" },
       enabled: true,
       status: "active",
-    });
+    }));
 
     await expect(
       service.updateConnection(connection.id, {
@@ -3848,7 +3871,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
 
     await expect(
-      service.createConnection(company.id, {
+      service.createConnection(company.id, connectionInput({
         name: "Internal Pages broker",
         transport: "mcp_remote",
         config: {
@@ -3860,7 +3883,7 @@ describeEmbeddedPostgres("tool access service", () => {
         },
         enabled: true,
         status: "active",
-      }),
+      })),
     ).resolves.toMatchObject({
       config: {
         tokenBroker: { tokenUrl: "http://127.0.0.1:9999/v1/tokens/exchange" },
@@ -4733,6 +4756,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const profile = await service.createProfile(company.id, {
       profileKey: `profile-${randomUUID()}`,
       name: "All except write tools",
+      status: "active",
       defaultAction: "allow",
       entries: [
         {
@@ -4744,7 +4768,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     await service.bindProfile(
       profile.id,
-      { targetType: "company", targetId: company.id },
+      { targetType: "company", targetId: company.id, priority: 100 },
       { actorType: "user", actorId: "board" },
     );
 
@@ -4850,6 +4874,7 @@ describeEmbeddedPostgres("tool access service", () => {
       service.createProfile(company.id, {
         profileKey: `company-default-${randomUUID()}`,
         name: "Company default",
+        status: "active",
         defaultAction: "deny",
         entries: [
           {
@@ -4862,6 +4887,7 @@ describeEmbeddedPostgres("tool access service", () => {
       service.createProfile(company.id, {
         profileKey: `agent-override-${randomUUID()}`,
         name: "Agent override",
+        status: "active",
         defaultAction: "deny",
       }),
     ]);
@@ -4959,6 +4985,7 @@ describeEmbeddedPostgres("tool access service", () => {
       service.createProfile(company.id, {
         profileKey: `company-read-${randomUUID()}`,
         name: "Company read",
+        status: "active",
         defaultAction: "deny",
         entries: [
           {
@@ -4971,6 +4998,7 @@ describeEmbeddedPostgres("tool access service", () => {
       service.createProfile(company.id, {
         profileKey: `agent-write-${randomUUID()}`,
         name: "Agent write",
+        status: "active",
         defaultAction: "deny",
         entries: [
           {
@@ -5020,6 +5048,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const profile = await service.createProfile(company.id, {
       profileKey: `profile-${randomUUID()}`,
       name: "Email tools source",
+      status: "active",
       defaultAction: "allow",
       entries: [
         {
@@ -5092,6 +5121,8 @@ describeEmbeddedPostgres("tool access service", () => {
     const profile = await service.createProfile(company.id, {
       profileKey: `profile-${randomUUID()}`,
       name: "Delete source",
+      status: "active",
+      defaultAction: "deny",
       entries: [
         {
           selectorType: "tool_name",
@@ -5102,7 +5133,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     await service.bindProfile(
       profile.id,
-      { targetType: "agent", targetId: agent!.id },
+      { targetType: "agent", targetId: agent!.id, priority: 100 },
       { actorType: "user", actorId: "board" },
     );
 
@@ -5134,11 +5165,12 @@ describeEmbeddedPostgres("tool access service", () => {
     const defaultProfile = await service.createProfile(company.id, {
       profileKey: `default-profile-${randomUUID()}`,
       name: "Company default delete guard",
+      status: "active",
       defaultAction: "allow",
     });
     await service.bindProfile(
       defaultProfile.id,
-      { targetType: "company", targetId: company.id },
+      { targetType: "company", targetId: company.id, priority: 100 },
       { actorType: "user", actorId: "board" },
     );
     await expect(
@@ -5179,6 +5211,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const profile = await service.createProfile(company.id, {
       profileKey: `route-profile-${randomUUID()}`,
       name: "Route profile",
+      status: "active",
       defaultAction: "deny",
     });
 
@@ -5186,7 +5219,6 @@ describeEmbeddedPostgres("tool access service", () => {
       type: "agent",
       companyId: company.id,
       agentId: agent.id,
-      runId: null,
       source: "agent_jwt",
     });
     const viewerApp = createRouteApp(
@@ -5245,6 +5277,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const profile = await service.createProfile(otherCompany.id, {
       profileKey: `other-profile-${randomUUID()}`,
       name: "Other company profile",
+      status: "active",
       defaultAction: "deny",
     });
     const entry = await service.addProfileEntry(profile.id, {
@@ -5297,11 +5330,11 @@ describeEmbeddedPostgres("tool access service", () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const service = createTestToolAccessService(db);
-    const connection = await service.createConnection(otherCompany.id, {
+    const connection = await service.createConnection(otherCompany.id, connectionInput({
       name: "Other company connection",
       transport: "mcp_remote",
       config: { url: "https://other-company.example/mcp" },
-    });
+    }));
     const oauthState = randomUUID();
     await db.insert(toolOauthStates).values({
       state: oauthState,
@@ -7221,7 +7254,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
 
     expect(reconnected.connectionId).toBe(first.connectionId);
-    expect(reconnected.connection.config.headerPolicy).toEqual({ metadata: { forward: [] } });
+    expect(reconnected.connection.config!.headerPolicy).toEqual({ metadata: { forward: [] } });
   });
 
   it("forwards Paperclip context headers by default for a Telem.AI connection", async () => {
@@ -7381,7 +7414,7 @@ describeEmbeddedPostgres("tool access service", () => {
       })
       .returning();
 
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       applicationName: "Discord",
       name: "Discord bot token",
       transport: "mcp_remote",
@@ -7398,7 +7431,7 @@ describeEmbeddedPostgres("tool access service", () => {
           projectionAllowlistKey: "discord.bot_token",
         },
       ],
-    });
+    }));
 
     expect(connection.credentialSecretRefs).toEqual([
       expect.objectContaining({
@@ -7452,7 +7485,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .returning();
 
     await expect(
-      service.createConnection(company.id, {
+      service.createConnection(company.id, connectionInput({
         applicationId: application!.id,
         name: "Blocked class-3 token",
         transport: "mcp_remote",
@@ -7469,7 +7502,7 @@ describeEmbeddedPostgres("tool access service", () => {
             projectionAllowlistKey: "github.token",
           },
         ],
-      }),
+      })),
     ).rejects.toMatchObject({
       status: 422,
       details: { code: "class_3_static_lease_not_allowed" },
@@ -7880,14 +7913,14 @@ describeEmbeddedPostgres("tool access service", () => {
       },
     });
 
-    expect(first.connection.config.allowedSpreadsheetIds).toEqual([
+    expect(first.connection.config!.allowedSpreadsheetIds).toEqual([
       "same-company-sheet",
     ]);
-    expect(updated.config.allowedSpreadsheetIds).toEqual([
+    expect(updated.config!.allowedSpreadsheetIds).toEqual([
       "same-company-sheet",
       "new-company-sheet",
     ]);
-    expect(updated.config.env).toEqual({
+    expect(updated.config!.env).toEqual({
       EXTRA_ENV: "preserved",
       GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS:
         "same-company-sheet,new-company-sheet",
@@ -9631,7 +9664,7 @@ describeEmbeddedPostgres("tool access service", () => {
           }),
         ]),
       );
-      expect(futureRefresh.connection.config.quarantineNewEntries).toBe(true);
+      expect(futureRefresh.connection.config!.quarantineNewEntries).toBe(true);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
@@ -10547,7 +10580,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(grant).toMatchObject({ kind: "user", status: "active" });
     // PAP-18538: this token response carries no `scope`, so the recorded scope is inferred
     // from the request rather than asserted by the provider. Keep the distinction visible.
-    expect(grant.providerTenant.oauth).toMatchObject({
+    expect(grant.providerTenant!.oauth).toMatchObject({
       scopes: ["channels:read"],
       scopeSource: "requested_fallback",
       unrequestedScopes: [],
@@ -11741,13 +11774,13 @@ describeEmbeddedPostgres("tool access service", () => {
       throw new Error(`unexpected fetch ${href}`);
     });
 
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: `Narrow generic ${randomUUID()}`,
       transport: "mcp_remote",
       config: { url: "https://narrow.example.test/mcp" },
       enabled: true,
       status: "active",
-    });
+    }));
     const started = await service.startOAuth(company.id, connection.id, {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
@@ -12335,7 +12368,7 @@ describeEmbeddedPostgres("tool access service", () => {
       galleryKey: "calendly", connectionMethodKey: "mcp-oauth", name: "Calendly",
     });
     const redirectUri = "http://localhost:3105/api/tools/oauth/callback";
-    let registrationBody: Record<string, unknown> | null = null;
+    let registrationBody = null as Record<string, unknown> | null;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
       if (href.includes("oauth-protected-resource")) return mcpHttpResponse({
@@ -14100,15 +14133,15 @@ describeEmbeddedPostgres("tool access service", () => {
       instanceId: "test-instance", environment: "staging" as const,
       provider: "asana" as const, profile: "asana.mcp" as const,
     };
-    const connector: PaperclipCloudConnector = {
-      getCapabilities: vi.fn(async () => ["asana.mcp"]),
+    const connector = {
+      getCapabilities: vi.fn(async () => ["asana.mcp" as const]),
       startAuthorization: vi.fn(async ({ returnState }) => ({
         authorizationUrl: `https://app.asana.com/-/oauth_authorize?state=${encodeURIComponent(returnState)}`,
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
       })),
       claim: vi.fn(async () => credentials), refresh: vi.fn(async () => credentials),
       revoke: vi.fn(async () => undefined),
-    };
+    } satisfies Partial<PaperclipCloudConnector> as unknown as PaperclipCloudConnector;
     const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
     const custom = await service.connectGalleryApp(company.id, {
       galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", name: "Asana", grantKind: "user",
@@ -14456,7 +14489,6 @@ describeEmbeddedPostgres("tool access service", () => {
         }
         if (href === "https://mcp.notion.com/register") {
           return mcpHttpResponse({
-            client_id: "notion-dcr-client",
             redirect_uris: [redirectUri],
             grant_types: ["authorization_code", "refresh_token"],
             response_types: ["code"],
@@ -14907,7 +14939,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_SECRET", "m2m-client-secret");
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Machine OAuth",
       transport: "mcp_remote",
       config: {
@@ -14921,7 +14953,7 @@ describeEmbeddedPostgres("tool access service", () => {
       },
       enabled: true,
       status: "active",
-    });
+    }));
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url, init) => {
@@ -17892,11 +17924,12 @@ describeEmbeddedPostgres("tool access service", () => {
     const existingAgentProfile = await service.createProfile(company.id, {
       profileKey: `existing-agent-profile-${randomUUID()}`,
       name: "Existing agent defaults",
+      status: "active",
       defaultAction: "deny",
     });
     await service.bindProfile(
       existingAgentProfile.id,
-      { targetType: "agent", targetId: agent.id },
+      { targetType: "agent", targetId: agent.id, priority: 100 },
       { actorType: "user", actorId: "board" },
     );
 
@@ -18474,13 +18507,13 @@ describeEmbeddedPostgres("tool access service", () => {
       now: () => new Date("2026-06-06T01:00:00.000Z"),
     });
 
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Restartable local fixture",
       transport: "local_stdio",
       config: { templateId: "paperclip.echo-calculator-time" },
       enabled: true,
       status: "active",
-    });
+    }));
     const health = await service.checkHealth(connection.id);
     expect(health.runtimeSlot).toMatchObject({
       connectionId: connection.id,
@@ -18541,13 +18574,13 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const app = createRouteApp(db);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Route local fixture",
       transport: "local_stdio",
       config: { templateId: "paperclip.echo-calculator-time" },
       enabled: true,
       status: "active",
-    });
+    }));
     const health = await service.checkHealth(connection.id);
     const slotId = health.runtimeSlot!.id;
 
@@ -18591,13 +18624,13 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     const actor = boardSessionActor(company.id, "operator", userId);
     const app = createRouteApp(db, actor);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Permissioned local fixture",
       transport: "local_stdio",
       config: { templateId: "paperclip.echo-calculator-time" },
       enabled: true,
       status: "active",
-    });
+    }));
     const health = await service.checkHealth(connection.id);
     const slotId = health.runtimeSlot!.id;
 
@@ -18746,14 +18779,14 @@ describeEmbeddedPostgres("tool access service", () => {
       name: "Viewer guarded app",
       type: "mcp_http",
     });
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       applicationId: application.id,
       name: "Viewer guarded connection",
       transport: "mcp_remote",
       config: { url: "https://viewer-guard.example/mcp" },
       status: "active",
       enabled: true,
-    });
+    }));
     const viewerApp = createRouteApp(
       db,
       boardSessionActor(company.id, "viewer", "viewer-user"),
@@ -18803,31 +18836,31 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     const otherDraft = await service.createConnection(
       company.id,
-      {
+      connectionInput({
         applicationId: application.id,
         name: "Other user's draft",
         transport: "mcp_remote",
         authKind: "oauth",
         status: "draft",
         config: { url: "https://other-draft.example/mcp" },
-      },
+      }),
       { actorType: "user", actorId: "other-user" },
     );
     const ownDraft = await service.createConnection(
       company.id,
-      {
+      connectionInput({
         applicationId: application.id,
         name: "Member's draft",
         transport: "mcp_remote",
         authKind: "oauth",
         status: "draft",
         config: { url: "https://own-draft.example/mcp" },
-      },
+      }),
       { actorType: "user", actorId: "member-user" },
     );
     const activeConnection = await service.createConnection(
       company.id,
-      {
+      connectionInput({
         applicationId: application.id,
         name: "Active connection",
         transport: "mcp_remote",
@@ -18835,7 +18868,7 @@ describeEmbeddedPostgres("tool access service", () => {
         status: "active",
         enabled: true,
         config: { url: "https://active.example/mcp" },
-      },
+      }),
       { actorType: "user", actorId: "other-user" },
     );
 
@@ -18881,6 +18914,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const profile = await service.createProfile(company.id, {
       profileKey: `viewer-guarded-profile-${randomUUID()}`,
       name: "Viewer guarded profile",
+      status: "active",
       defaultAction: "deny",
     });
     const entry = await service.addProfileEntry(profile.id, {
@@ -18890,7 +18924,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     await service.bindProfile(
       profile.id,
-      { targetType: "agent", targetId: agent.id },
+      { targetType: "agent", targetId: agent.id, priority: 100 },
       { actorType: "user", actorId: "board" },
     );
     const [firstPolicy, secondPolicy] = await db
@@ -19039,11 +19073,11 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const app = createRouteApp(db);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Guarded connection",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
-    });
+    }));
 
     const res = await request(app).delete(
       `/api/tool-applications/${connection.applicationId}`,
@@ -19062,13 +19096,13 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const app = createRouteApp(db);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Single connection",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       status: "active",
       enabled: true,
-    });
+    }));
 
     const res = await request(app).delete(
       `/api/tool-connections/${connection.id}`,
@@ -19117,22 +19151,22 @@ describeEmbeddedPostgres("tool access service", () => {
       name: "Shared app",
       type: "mcp_http",
     });
-    const first = await service.createConnection(company.id, {
+    const first = await service.createConnection(company.id, connectionInput({
       applicationId: application.id,
       name: "First connection",
       transport: "mcp_remote",
       config: { url: "https://one.example/mcp" },
       status: "active",
       enabled: true,
-    });
-    await service.createConnection(company.id, {
+    }));
+    await service.createConnection(company.id, connectionInput({
       applicationId: application.id,
       name: "Second connection",
       transport: "mcp_remote",
       config: { url: "https://two.example/mcp" },
       status: "active",
       enabled: true,
-    });
+    }));
 
     const res = await request(app).delete(`/api/tool-connections/${first.id}`);
 
@@ -19168,18 +19202,18 @@ describeEmbeddedPostgres("tool access service", () => {
       type: "mcp_http",
     });
 
-    const first = await service.createConnection(company.id, {
+    const first = await service.createConnection(company.id, connectionInput({
       applicationId: firstApplication.id,
       name: "Foo Bar",
       transport: "mcp_remote",
       config: { url: "https://one.example/mcp" },
-    });
-    const second = await service.createConnection(company.id, {
+    }));
+    const second = await service.createConnection(company.id, connectionInput({
       applicationId: secondApplication.id,
       name: "foo-bar",
       transport: "mcp_remote",
       config: { url: "https://two.example/mcp" },
-    });
+    }));
 
     expect(first.uid).not.toBe(second.uid);
     expect(first.uid).toMatch(/\/foo-bar-[0-9a-f]{8}$/);
@@ -19189,11 +19223,11 @@ describeEmbeddedPostgres("tool access service", () => {
   it("fails closed at the database when a connection races an application delete (no silent cascade)", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Racy connection",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
-    });
+    }));
 
     // Simulate the delete-vs-create race: skip the endpoint's "any connections?" pre-check and
     // issue the raw DELETE it would run afterwards, standing in for a connection created in the
@@ -19221,11 +19255,11 @@ describeEmbeddedPostgres("tool access service", () => {
   it("still cascades application + connection deletes when the owning company is removed", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Company-scoped connection",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
-    });
+    }));
 
     // NO ACTION (not RESTRICT) must keep the company teardown cascade intact: deleting the
     // company cascades to both tool_applications and tool_connections in one statement, and the
@@ -19546,7 +19580,7 @@ describeEmbeddedPostgres("tool access service", () => {
         toolName: "Mark done",
         policyDecision: "require_approval",
         approvalState: "approved",
-        status: "completed",
+        status: "succeeded",
       })
       .returning();
     await db.insert(authUsers).values({
@@ -19814,7 +19848,7 @@ describeEmbeddedPostgres("tool access service", () => {
         slotKey: `${connection.id}:remote`,
         ownerScopeType: "connection",
         ownerScopeId: connection.id,
-        runtimeKind: "mcp_remote",
+        runtimeKind: "remote_session",
         status: "running",
         reuseKey: connection.id,
         provider: "paperclip",
@@ -19832,7 +19866,7 @@ describeEmbeddedPostgres("tool access service", () => {
       status: 422,
       details: expect.objectContaining({
         code: "runtime_control_unsupported",
-        runtimeKind: "mcp_remote",
+        runtimeKind: "remote_session",
       }),
     });
   });
@@ -20055,13 +20089,13 @@ describeEmbeddedPostgres("tool access service", () => {
     });
 
     await expect(
-      hostedService.createConnection(company.id, {
+      hostedService.createConnection(company.id, connectionInput({
         name: "Hosted local stdio",
         transport: "local_stdio",
         config: { templateId: "paperclip.echo-calculator-time" },
         enabled: true,
         status: "active",
-      }),
+      })),
     ).rejects.toMatchObject({
       status: 422,
       message: expect.stringContaining("cannot be enabled"),
@@ -20073,13 +20107,13 @@ describeEmbeddedPostgres("tool access service", () => {
       trustedLocalStdioRuntimeHost: "trusted-worker-1",
     });
     await expect(
-      trustedService.createConnection(company.id, {
+      trustedService.createConnection(company.id, connectionInput({
         name: "Trusted hosted local stdio",
         transport: "local_stdio",
         config: { templateId: "paperclip.echo-calculator-time" },
         enabled: true,
         status: "active",
-      }),
+      })),
     ).resolves.toMatchObject({
       transport: "local_stdio",
       enabled: true,
@@ -20131,13 +20165,13 @@ describeEmbeddedPostgres("tool access service", () => {
   it("fails closed when credential secrets cannot be resolved and writes value-free audit", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Secret-backed remote",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
-    });
+    }));
     await db
       .update(toolConnections)
       .set({
@@ -20246,13 +20280,13 @@ describeEmbeddedPostgres("tool access service", () => {
       healthStatus: "ok",
       healthCheckedAt: null,
     }).returning();
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Swept remote",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
-    });
+    }));
 
     const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 1 });
     const [updatedConnection] = await db
@@ -20292,20 +20326,20 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
 
-    const used = await service.createConnection(company.id, {
+    const used = await service.createConnection(company.id, connectionInput({
       name: "Used remote",
       transport: "mcp_remote",
       config: { url: "https://used.example/mcp" },
       enabled: true,
       status: "active",
-    });
-    const unused = await service.createConnection(company.id, {
+    }));
+    const unused = await service.createConnection(company.id, connectionInput({
       name: "Unused remote",
       transport: "mcp_remote",
       config: { url: "https://unused.example/mcp" },
       enabled: true,
       status: "active",
-    });
+    }));
 
     const older = new Date("2026-06-01T00:00:00.000Z");
     const newest = new Date("2026-06-09T12:30:00.000Z");
@@ -20525,11 +20559,11 @@ describeEmbeddedPostgres("tool access service", () => {
     await grantBoardUser(db, company.id, admin.userId!, [], "admin");
     const connection = await createTestToolAccessService(db).createConnection(
       company.id,
-      {
+      connectionInput({
         name: "Creator-owned connection",
         transport: "mcp_remote",
         config: { url: PUBLIC_MCP_FIXTURE_URL },
-      },
+      }),
       { actorType: "user", actorId: creator.userId! },
     );
 
@@ -20580,11 +20614,11 @@ describeEmbeddedPostgres("tool access service", () => {
     const agent = await createAgent(db, company.id);
     const connection = await createTestToolAccessService(db).createConnection(
       company.id,
-      {
+      connectionInput({
         name: "Shared organization connection",
         transport: "mcp_remote",
         config: { url: PUBLIC_MCP_FIXTURE_URL },
-      },
+      }),
       { actorType: "user", actorId: creator.userId! },
     );
     const app = createRouteApp(db, member);
@@ -20798,13 +20832,15 @@ describe("classifyRisk", () => {
 });
 
 describe("projectedConnectionHeaders", () => {
+  type ProjectedConnection = Parameters<typeof projectedConnectionHeaders>[0];
+
   it.each([undefined, "managed", "mcp-key"])(
     "adds Actions to the default GitHub toolsets for method %s without saved configuration",
     (connectionMethodKey) => {
-      const connection = {
+      const connection: ProjectedConnection = {
         transport: "mcp_remote",
         config: { sourceTemplateKey: "github", connectionMethodKey },
-      } as typeof toolConnections.$inferSelect;
+      };
       expect(projectedConnectionHeaders(connection)).toEqual({
         "X-MCP-Toolsets": "default,actions",
       });
@@ -20813,11 +20849,11 @@ describe("projectedConnectionHeaders", () => {
   );
 
   it("recognizes GitHub in legacy transport configuration", () => {
-    const connection = {
+    const connection: ProjectedConnection = {
       transport: "mcp_remote",
       config: {},
       transportConfig: { sourceTemplateKey: "github" },
-    } as typeof toolConnections.$inferSelect;
+    };
     expect(projectedConnectionHeaders(connection)).toEqual({
       "X-MCP-Toolsets": "default,actions",
     });
@@ -20827,8 +20863,8 @@ describe("projectedConnectionHeaders", () => {
     for (const connection of [
       { transport: "mcp_remote", config: { url: "https://fixture.example/mcp" } },
       { transport: "mcp_remote", config: { sourceTemplateKey: "notion" } },
-    ]) {
-      expect(projectedConnectionHeaders(connection as typeof toolConnections.$inferSelect)).toEqual({});
+    ] satisfies ProjectedConnection[]) {
+      expect(projectedConnectionHeaders(connection)).toEqual({});
     }
   });
 });

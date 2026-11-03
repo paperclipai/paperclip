@@ -14,7 +14,7 @@ import { agents, companies, completionContracts, createDb, environmentLeases, en
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { environmentRuntimeService, type EnvironmentDriver } from "../services/environment-runtime.js";
+import { environmentRuntimeService, type EnvironmentRuntimeDriver } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../services/native-runtime/native-environment-settlement-work.js";
 import { notifyNativeEnvironmentSettlement } from "../services/native-environment-settlement-notifications.js";
@@ -53,7 +53,7 @@ describe("native environment release scheduling", () => {
   let db: Db, root: string;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<ReturnType<typeof nativeEnvironmentSettlementWork>["register"]> | undefined;
-  let release: ReturnType<typeof vi.fn<EnvironmentDriver["releaseRunLease"]>>;
+  let release: ReturnType<typeof vi.fn<EnvironmentRuntimeDriver["releaseRunLease"]>>;
   let failing = false, admitted = true;
   let stopOnly: ReturnType<typeof vi.fn>;
   const companyId = randomUUID(), agentId = randomUUID();
@@ -91,7 +91,7 @@ describe("native environment release scheduling", () => {
     else process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = priorLogs;
   });
   async function start(runtimeEnv?: NodeJS.ProcessEnv) {
-    const runtime = environmentRuntimeService(db, { drivers: ["local", "sandbox"].map(driver => ({ driver, releaseRunLease: release, retryPendingSandboxTeardown: stopOnly }) as EnvironmentDriver) });
+    const runtime = environmentRuntimeService(db, { drivers: ["local", "sandbox"].map(driver => ({ driver, releaseRunLease: release, retryPendingSandboxTeardown: stopOnly }) as unknown as EnvironmentRuntimeDriver) });
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
       onError: error => errors.push(error) });
     worker = heartbeatService(db, { environmentRuntime: runtime, runtimeEnv }).registerNativeEnvironmentSettlementWork(coordinator, () => admitted);
@@ -225,7 +225,7 @@ describe("native environment release scheduling", () => {
     await quiet();
   });
   it("drains a backlog without globally rediscovering it after each lease release", async () => {
-    const bindings = [];
+    const bindings: Awaited<ReturnType<typeof committed>>[] = [];
     for (let index = 0; index < 6; index += 1) {
       const binding = await committed(); await lease(binding); bindings.push(binding);
     }
@@ -400,7 +400,7 @@ describe("native environment release scheduling", () => {
   it.each([true, false])("delegates only periodic environment settlement, keeping manual behavior and other callbacks: %s", async delegated => {
     const binding = await committed(), acquired = await lease(binding);
     const runtimeRelease = vi.spyOn(workspaceRuntime, "releaseRuntimeServicesForRun");
-    const runtime = environmentRuntimeService(db, { drivers: ["local", "sandbox"].map(driver => ({ driver, releaseRunLease: release, retryPendingSandboxTeardown: stopOnly }) as EnvironmentDriver) });
+    const runtime = environmentRuntimeService(db, { drivers: ["local", "sandbox"].map(driver => ({ driver, releaseRunLease: release, retryPendingSandboxTeardown: stopOnly }) as unknown as EnvironmentRuntimeDriver) });
     await heartbeatService(db, { environmentRuntime: runtime }).reapOrphanedRuns({ staleThresholdMs: 300_000,
       skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true,
       skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true,

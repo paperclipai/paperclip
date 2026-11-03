@@ -7,7 +7,7 @@ import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-clea
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { companies, createDb, sandboxCreationOperations, environmentLeases, environments, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -28,7 +28,7 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
   let companyId: string, environmentId: string, draining: boolean, failing: boolean;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerEnvironmentCleanupWork> | undefined;
-  let releases: ReturnType<typeof vi.fn>, inspections: ReturnType<typeof vi.fn>, reads: ReturnType<typeof vi.spyOn>;
+  let releases: ReturnType<typeof vi.fn>, inspections: Mock<(row: { providerLeaseId: string | null }) => Promise<{ providerLeaseId: string | null; state: string }>>, reads: ReturnType<typeof vi.spyOn>;
   const errors: unknown[] = [], disposers: Array<() => void> = [];
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("environment-cleanup-work-");
@@ -127,7 +127,7 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
       expect.objectContaining({ state: "needs_reconciliation", metadata: expect.objectContaining({ creationReconciliationReason: "company_deleted" }) }),
     ]));
     if (contextual) await recordSandboxCreationResource(db, { id: String(created.metadata!.creationOperationId), companyId, environmentId,
-      providerLeaseId: created.providerLeaseId });
+      providerLeaseId: created.providerLeaseId! });
     await quiet();
     worker!.stop(); await coordinator!.stop();
     await start(); await quiet();

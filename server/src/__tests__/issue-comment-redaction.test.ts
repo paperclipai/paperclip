@@ -157,7 +157,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       issueId,
       authorUserId: "board-user-1",
       body: "secret deleted body",
-      presentation: { kind: "system_notice", tone: "warning" },
+      presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
       metadata: {
         version: 1,
         sections: [{ rows: [{ type: "text", text: "secret metadata" }] }],

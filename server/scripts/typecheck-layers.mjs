@@ -11,6 +11,7 @@
 //   cycle  the largest import cycle, reading `below` as declarations
 //   above  files that depend on the cycle, reading both as declarations
 //   tests  test files, reading all three as declarations
+//   test-tree-N  src/__tests__, in shards, reading the source layers as declarations
 //
 // The layers come from the import graph on every run, so nothing has to move
 // and no list can go stale. The import scan does not have to be perfect: if it
@@ -25,14 +26,17 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { crc32 } from "node:zlib";
 import { runTsc } from "../../scripts/run-tsc.mjs";
 
 const IMPORT_SPECIFIER = /(?:from\s+|import\s*\(\s*|import\s+)["'](\.[^"']+)["']/g;
 const OUTPUT_DIRECTORY = path.join("node_modules", ".cache", "paperclip-typecheck");
+// One program over this tree peaks at 3.9 GiB on one thread. Three peak at 2.5 GiB.
+const TEST_TREE_SHARDS = 3;
 
 const isTestFile = (file) => /\.test\.tsx?$/.test(file) || file.split("/").includes("__tests__");
-// tsconfig.json excludes this tree. A test reaches its helpers through imports.
-const isExcludedFromProgram = (file) => file.startsWith("src/__tests__/");
+// tsconfig.json excludes this tree, so the test-tree layers check it.
+const isTestTreeFile = (file) => file.startsWith("src/__tests__/");
 
 export function listSourceFiles(serverRoot) {
   const files = [];
@@ -170,7 +174,12 @@ export function planLayers(files) {
   const dependents = reachableFrom(cycle, reversed);
   const above = [...dependents].filter((file) => !cycle.has(file));
   const below = [...graph.keys()].filter((file) => !dependents.has(file));
-  const tests = [...candidates.keys()].filter((file) => isTestFile(file) && !isExcludedFromProgram(file));
+  const tests = [...candidates.keys()].filter((file) => isTestFile(file) && !isTestTreeFile(file));
+  // A hash keeps each file in its shard when other files are added or removed.
+  const testTree = Array.from({ length: TEST_TREE_SHARDS }, () => []);
+  for (const file of candidates.keys()) {
+    if (isTestTreeFile(file)) testTree[crc32(file) % TEST_TREE_SHARDS].push(file);
+  }
 
   const layer = (name, members, references) => {
     const sorted = [...members].sort();
@@ -182,6 +191,10 @@ export function planLayers(files) {
     layer("cycle", cycle, ["below"]),
     layer("above", above, ["below", "cycle"]),
     layer("tests", tests, ["below", "cycle", "above"]),
+    ...testTree.map((shard, index) => ({
+      ...layer(`test-tree-${index}`, shard, ["below", "cycle", "above"]),
+      testTree: true,
+    })),
   ].filter((candidate) => candidate.sourceFiles.length > 0);
 }
 
@@ -191,6 +204,15 @@ export function layerConfig(layer, { emptyLayers = new Set() } = {}) {
   const references = layer.references
     .filter((name) => !emptyLayers.has(name))
     .map((name) => ({ path: `./tsconfig.${name}.json` }));
+  // Editors read the same options from this file.
+  if (layer.testTree) {
+    return {
+      extends: fromOutput("src/__tests__/tsconfig.json"),
+      files: layer.files.map(fromOutput),
+      include: [],
+      references,
+    };
+  }
   const output =
     layer.name === "tests"
       ? { composite: false, declaration: false, declarationMap: false, sourceMap: false, noEmit: true }

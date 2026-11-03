@@ -64,6 +64,8 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     warnings: [],
     baseCwdFallback: false,
     materializationFailures: [],
+    additionalWorkspaces: [],
+    referencedProjectFailures: [],
     ...overrides,
   };
 }
@@ -96,6 +98,7 @@ function buildWorkspaceValidationInput(
       worktreePath: null,
       warnings: [],
       created: false,
+      branchCreatedByRuntime: false,
       baseRefSha: null,
     },
     persistedExecutionWorkspace: {
@@ -104,15 +107,16 @@ function buildWorkspaceValidationInput(
       projectId: "project-1",
       projectWorkspaceId: "workspace-1",
       sourceIssueId: "issue-1",
-      mode: "project_workspace",
+      mode: "shared_workspace",
       strategyType: "project_primary",
       name: "Primary workspace",
       status: "active",
+      deliveryState: "unknown",
       cwd: "/tmp/project",
       repoUrl: null,
       baseRef: null,
       branchName: null,
-      providerType: "local_path",
+      providerType: "local_fs",
       providerRef: null,
       derivedFromExecutionWorkspaceId: null,
       lastUsedAt: new Date("2026-06-06T00:00:00.000Z"),
@@ -296,7 +300,7 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
       buildWorkspaceValidationInput({
         executionWorkspace: {
           ...input.executionWorkspace,
-          cwd: null,
+          cwd: "",
         },
       }),
       "missing_effective_cwd",
@@ -1404,8 +1408,8 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       baseRefSha: null,
     });
 
-    expect(metadata.createdByRuntime).toBe(false);
-    expect(metadata.gitBranchOwnershipVersion).toBe(1);
+    expect(metadata?.createdByRuntime).toBe(false);
+    expect(metadata?.gitBranchOwnershipVersion).toBe(1);
   });
 
   it("does not downgrade recorded runtime ownership after worktree reuse", () => {
@@ -1425,8 +1429,8 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       baseRefSha: null,
     });
 
-    expect(metadata.createdByRuntime).toBe(true);
-    expect(metadata.gitBranchOwnershipVersion).toBe(1);
+    expect(metadata?.createdByRuntime).toBe(true);
+    expect(metadata?.gitBranchOwnershipVersion).toBe(1);
   });
 
   it("merges config snapshot for newly realized workspaces", () => {

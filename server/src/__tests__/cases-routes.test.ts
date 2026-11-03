@@ -76,6 +76,7 @@ describeEmbeddedPostgres("cases routes", () => {
   const storage: StorageService = {
     provider: "local_disk",
     async putFile(input) {
+      if (!Buffer.isBuffer(input.body)) throw new Error("Expected bounded bytes");
       return {
         provider: "local_disk",
         objectKey: `${input.namespace}/${randomUUID()}`,

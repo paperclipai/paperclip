@@ -8,6 +8,7 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { voiceInboundRetention } from "../services/voice/voice-inbound-retention.js";
 import { notifyVoiceInbound } from "../services/voice/voice-inbound-notifications.js";
+import type { InternalSetupState } from "../services/chat-channels/runtime-types.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_VOICE_RETENTION_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -32,7 +33,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(issues).values({ id: issueId, companyId, title: "Voice", assigneeAgentId: agentId, status: "in_progress" });
     await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Voice", type: "chat" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Voice", uid: connectionId, transport: "voice", connectionPurpose: "channel", enabled: true, status: "active" });
-    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, assignedAgentId: agentId, publicId: endpointId, provider: "speko", status: "active", setup: { step: "complete", runtimeGeneration: 1 } });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, assignedAgentId: agentId, publicId: endpointId, provider: "speko", status: "active", setup: { step: "complete", runtimeGeneration: 1 } as InternalSetupState });
     await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: conversationId, externalThreadId: conversationId, externalLabel: "Voice", isDirectMessage: true });
     return { companyId, endpointId, agentId, issueId, conversationId };
   }
@@ -55,7 +56,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(errors).toEqual([]);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
-  async function admission(patch: Partial<typeof chatVoiceInboundCalls.$inferInsert> = {}, writer = db) {
+  async function admission(patch: Partial<typeof chatVoiceInboundCalls.$inferInsert> = {}, writer: Pick<typeof db, "transaction"> = db) {
     const id = patch.id ?? randomUUID();
     return writer.transaction(async tx => {
       await notifyVoiceInbound(tx, { kind: "admission", id });
@@ -192,13 +193,13 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("defers nested writes until outer commit and discards rollback", async () => {
     await start(); await flush(); let committed!: string;
     await db.transaction(async tx => {
-      committed = (await admission({}, tx as typeof db)).id;
+      committed = (await admission({}, tx)).id;
       await vi.advanceTimersByTimeAsync(5000);
       expect(await row(committed)).toBeUndefined();
       expect(await tx.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, committed))).toHaveLength(1);
     });
     await flush(); expect(await row(committed)).toBeUndefined(); await quiet();
-    await expect(db.transaction(async tx => { await admission({}, tx as typeof db); throw new Error("rollback"); })).rejects.toThrow("rollback");
+    await expect(db.transaction(async tx => { await admission({}, tx); throw new Error("rollback"); })).rejects.toThrow("rollback");
     await flush(); expect(coordinator!.nextWakeAt()).toBeNull(); await quiet();
   });
   it("keeps the first write during drain and runs it on resume", async () => {

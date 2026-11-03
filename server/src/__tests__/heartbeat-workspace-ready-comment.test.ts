@@ -17,6 +17,7 @@ describe("heartbeat workspace-ready comment", () => {
       worktreePath: "/repo/.paperclip/worktrees/PAP-16051",
       warnings: [],
       created: true,
+      branchCreatedByRuntime: true,
     };
     const runtimeServices: RuntimeServiceRef[] = [];
     const addComment = vi.fn().mockResolvedValue({ id: "comment-id" });

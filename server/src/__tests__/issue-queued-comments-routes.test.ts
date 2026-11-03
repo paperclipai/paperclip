@@ -459,7 +459,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       continuationPolicy: "wake_assignee", requestedResolverPolicy: "human_only",
       effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
       title: "Build the app", payload: { version: 1, prompt: "Build the app?" },
-      result: { decision: "accepted" },
+      result: { version: 1, outcome: "accepted" },
     });
     const context = { issueId: seeded.issueId, interactionId, interactionKind: "request_confirmation",
       interactionStatus: "accepted", planReviewInteraction: { id: interactionId,

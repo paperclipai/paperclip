@@ -320,7 +320,6 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     if (agentEnvironmentId) {
       await db.insert(environments).values({
         id: agentEnvironmentId,
-        companyId,
         name: `Workspace busy ${agentEnvironmentDriver} ${agentEnvironmentId}`,
         driver: agentEnvironmentDriver,
         status: "active",
@@ -506,7 +505,6 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     });
     await db.insert(environments).values({
       id: randomUUID(),
-      companyId: fixture.companyId,
       name: `Managed Kubernetes ${fixture.companyId}`,
       driver: "sandbox",
       status: "active",

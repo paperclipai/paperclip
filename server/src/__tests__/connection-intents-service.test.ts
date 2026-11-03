@@ -980,7 +980,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const access = toolAccessService(db);
     const effective = await access.getEffectiveProfilesForAgent(f.company.id, f.agent.id);
     const profile = effective.profiles.find(profile => profile.profileKey.startsWith("connection-intent:"))!;
-    await access.deleteProfile(profile.id, {});
+    await access.deleteProfile(profile.id, { force: false });
     expect((await access.getEffectiveProfilesForAgent(f.company.id, f.agent.id)).allowedTools).toEqual([]);
     for (const tool of f.catalog.slice(0, 2)) {
       const decision = await toolAccessPolicyService(db).decide({

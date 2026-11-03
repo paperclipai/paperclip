@@ -37,7 +37,7 @@ const support = await getEmbeddedPostgresTestSupport();
       { id: closedIssueId, companyId, title: "Closed" },
       { id: foreignIssueId, companyId: foreignCompanyId, title: "Foreign" },
     ]);
-    await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "native" });
+    await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "chat" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel" });
     await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId, assignedAgentId: agentId });
     await db.insert(chatConversations).values([
@@ -74,7 +74,7 @@ const support = await getEmbeddedPostgresTestSupport();
           (id, company_id, agent_id, status, scope_kind, issue_id, native_issue_id, context_snapshot, updated_at)
           values ($1, $2, $3, 'running', $4, $5, $6, $7::jsonb, $8)`,
         [runId, companyId, agentId, "runIssueId" in item ? "issue" : "company",
-          "runIssueId" in item ? item.runIssueId : null, "nativeIssueId" in item ? item.nativeIssueId : null,
+          "runIssueId" in item ? item.runIssueId ?? null : null, "nativeIssueId" in item ? item.nativeIssueId ?? null : null,
           JSON.stringify(item.context), (item.updatedAt ?? since).toISOString()]);
         if (item.matches) expectedIds.push(runId);
       }

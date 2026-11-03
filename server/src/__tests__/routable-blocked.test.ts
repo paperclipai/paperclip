@@ -52,7 +52,7 @@ describe("routable blocked notifications", () => {
   });
 
   it("deduplicates one transition and notifies again after a blocked flap", async () => {
-    const wakeup = vi.fn(async () => undefined);
+    const wakeup = vi.fn(async (_agentId: string, _options: unknown) => undefined);
     const markNotified = vi.fn(async () => undefined);
     const firstTransition = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1);
     const secondTransition = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 2);

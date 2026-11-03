@@ -7,13 +7,13 @@ import { startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 
 const manifest = { id: "test.idle", apiVersion: 1 as const, version: "1.0.0", displayName: "Idle fixture",
   description: "Idle fixture", author: "Paperclip", categories: ["automation" as const], capabilities: [], entrypoints: { worker: "worker.cjs" } };
-function worker(write = false, hostHandler = async () => undefined) {
+function worker(write = false, hostHandler: () => Promise<void> = async () => undefined) {
   return createPluginWorkerHandle("test.idle", {
     entrypointPath: fileURLToPath(new URL("./fixtures/plugin-worker-idle.cjs", import.meta.url)),
     execArgv: ["--import", createRequire(import.meta.url).resolve("tsx")],
     manifest, config: {}, instanceInfo: { instanceId: "fixture", hostVersion: "1.0.0" }, apiVersion: 1,
     env: { IDLE_TEST_WRITE: write ? "1" : "0" },
-    hostHandlers: { "state.set": hostHandler, "events.subscribe": async () => ({}) },
+    hostHandlers: { "state.set": hostHandler, "events.subscribe": async () => undefined },
   });
 }
 function hold() {

@@ -51,7 +51,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       stopDb = () => closeRegisteredClients(externalTestDatabaseUrl);
     } else {
       const started = await startEmbeddedPostgresTestDatabase("environment-service");
-      stopDb = started.stop;
+      stopDb = started.cleanup;
       db = createDb(started.connectionString);
     }
     svc = environmentService(db);
@@ -143,7 +143,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
   }
 
   it("clears user metadata to null when no private platform proof exists", async () => {
-    const created = await svc.create({ name: "User metadata clear", driver: "sandbox", config: { provider: "daytona" }, metadata: { userNote: "remove" } });
+    const created = await svc.create({ name: "User metadata clear", driver: "sandbox", status: "active", envVars: {}, config: { provider: "daytona" }, metadata: { userNote: "remove" } });
     expect((await svc.update(created.id, { metadata: null }))?.metadata).toBeNull();
   });
 
@@ -153,7 +153,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       const config = { provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}` };
       const staleProof = { v: 1, marker: "old" };
       const freshProof = { v: 1, marker: "new" };
-      const created = await svc.create({ name: "Concurrent metadata", driver: "sandbox", config,
+      const created = await svc.create({ name: "Concurrent metadata", driver: "sandbox", status: "active", envVars: {}, config,
         metadata: { userNote: "old", _paperclipManagedArchiveToken: "old-archive-token",
           [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: staleProof } } });
       const patches: Record<typeof operation, UpdateEnvironment> = {
@@ -1740,6 +1740,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Daytona",
       driver: "sandbox",
       status: "active",
+      envVars: {},
       config: { provider: "daytona", target: "us" },
     });
     expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
@@ -1777,6 +1778,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Daytona",
       driver: "sandbox",
       status: "active",
+      envVars: {},
       config: { provider: "daytona", target: "us" },
     });
     expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
@@ -1810,6 +1812,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Daytona",
       driver: "ssh",
       status: "active",
+      envVars: {},
       config: {
         host: "fixture.example.test",
         port: 22,
@@ -1839,6 +1842,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Shared Fixture",
       driver: "ssh",
       status: "active",
+      envVars: {},
       config: {
         host: "fixture.example.test",
         port: 22,
@@ -1851,6 +1855,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Shared Fixture",
       driver: "sandbox",
       status: "active",
+      envVars: {},
       config: {
         provider: "fake-plugin",
         image: "fake:test",
@@ -1969,6 +1974,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
     await svc.create(companyId, {
       name: "Fake Sandbox",
       driver: "sandbox",
+      status: "active",
+      envVars: {},
       config: { provider: "fake", image: "busybox", reuseLease: false },
     });
 
@@ -1991,6 +1998,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
     await svc.create(companyId, {
       name: "Tenant K8s Sandbox",
       driver: "sandbox",
+      status: "active",
+      envVars: {},
       config: { provider: "kubernetes", reuseLease: false },
     });
 
@@ -2020,11 +2029,15 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const first = await svc.create(companyId, {
       name: "Production SSH",
       driver: "ssh",
+      status: "active",
+      envVars: {},
       config: { host: "prod.example.com", username: "deploy" },
     });
     const second = await svc.create(companyId, {
       name: "Staging SSH",
       driver: "ssh",
+      status: "active",
+      envVars: {},
       config: { host: "staging.example.com", username: "deploy" },
     });
 

@@ -4,7 +4,8 @@ import { listSkillSourceBranches } from '../services/skill-source-branches.js';
 
 const source = { fullName: 'acme/skills', repositoryId: '42' };
 function reader(branches: unknown, defaultBranch = 'master', id = 42) {
-  return vi.fn(async (request: string) => request === '/repos/acme/skills' ? { id, default_branch: defaultBranch } : branches);
+  const read = vi.fn(async (request: string) => request === '/repos/acme/skills' ? { id, default_branch: defaultBranch } : branches);
+  return Object.assign(read, { openSnapshot: vi.fn(async () => { throw new Error('Branch discovery must not open a snapshot'); }) });
 }
 describe('skill source branch discovery', () => {
   it('includes the default even when it is outside the bounded first page', async () => {

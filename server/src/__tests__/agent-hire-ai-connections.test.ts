@@ -286,7 +286,7 @@ describe("agent-created hires use managed AI connections", () => {
     const otherOwner = `other-${f.companyId}`;
     await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: otherOwner, membershipRole: "member", status: "active" });
     const account = await aiConnectionService(db).save(f.companyId, otherOwner, { provider: "openai", method: "api_key", ownership: "shared", name: "Shared credential, restricted installation", apiKey: "fixture", agentIds: [f.agentId], allAgents: false }, "fixture");
-    await toolAccessService(db).replaceConnectionGrantMembers(account.connectionId, account.grantId, [f.userId], { userId: otherOwner });
+    await toolAccessService(db).replaceConnectionGrantMembers(account.connectionId, account.grantId, [f.userId], { actorType: "user", actorId: otherOwner });
     const member: AiConnectionPoolMember = { id: randomUUID(), binding: { ...account, provider: "openai", method: "api_key", mode: "shared" }, profile: { provider: "codex", model: "gpt-5.6-sol" } };
     const p = await poolFixture(f, [member]);
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agents`).send({ name: "Restricted pool teammate", role: "engineer", adapterType: f.adapterType, runtimeConfig: { aiConnection: p.binding } }));

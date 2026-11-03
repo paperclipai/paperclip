@@ -190,7 +190,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("wakes from batch-imported PR work products", async () => {
     const target = await issue(), approval = await pending(target.id);
     await start(); await quiet();
-    await workProductService(db).createManyForImport([{ companyId, issueId: target.id, type: "pull_request", provider: "github", title: "Imported PR", status: "open", reviewState: "none", isPrimary: false, healthStatus: "unknown" }]);
+    await workProductService(db).createManyForImport([{ companyId, issueId: target.id, projectId: null, type: "pull_request", provider: "github", externalId: null, title: "Imported PR", url: null, status: "open", reviewState: "none", isPrimary: false, healthStatus: "unknown", summary: null, metadata: null, executionWorkspaceId: null, runtimeServiceId: null, createdByRunId: null, sourceTrust: null }]);
     await seeded(approval.id); await quiet();
   });
 
