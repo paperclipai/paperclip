@@ -18,6 +18,8 @@ backing chat and saved history while advancing `conversationSessionGeneration`
 from zero to one. The final request does not reveal the remembered phrase. Its
 reply must use the fresh-context marker, with a different native session, no
 prior session on admission, and no old phrase in the new native task context.
+The independent run detail must include its `sessionIdBefore` column explicitly
+set to `null`; a missing or empty field is not session-boundary evidence.
 Saved history is not removed or rewritten by the fixture.
 
 Every reply is read from the actual rendered chat after reload using the
@@ -49,6 +51,10 @@ have its canonical activity identity, and leave the response below that limit.
 Mixed or truncated results fail; the client never filters a global response
 into an apparent pass. Unrelated company history therefore does not limit this
 fresh agent's proof, while any owned task, project or teammate creation fails.
+Activity identifies the acting agent, not the created entity. Board provisioning
+therefore has no agent actor even when its `entityId` is this new agent. Creation
+attributed to the owned agent is rejected, including activity before the first
+chat message; the fresh-agent contract does not grandfather that work.
 
 This case covers browser reload/reopen and explicit session reset. Controller
 restart remains covered by the separate existing Agent Chat journeys. Local

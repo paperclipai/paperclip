@@ -137,7 +137,8 @@ export function gradeChatContinuity(scope: ChatContinuityScope, points: ChatCont
   const boundary = exactTurns && Boolean(first && second && last && resetRun && freshRuns.length === 1
     && reset!.chat.conversationSessionGeneration === 1 && fresh!.chat.conversationSessionGeneration === 1
     && reopened!.chat.conversationSessionGeneration === 1 && last.contextSnapshot?.conversationSessionGeneration === 1
-    && resetRun.contextSnapshot?.conversationSessionGeneration === 1 && !last.sessionIdBefore
+    && resetRun.contextSnapshot?.conversationSessionGeneration === 1
+    && Object.hasOwn(last, "sessionIdBefore") && last.sessionIdBefore === null
     && last.nativeSessionId !== first.nativeSessionId && last.nativeSessionId !== second.nativeSessionId
     && typeof last.contextSnapshot?.paperclipTaskMarkdown === "string"
     && !last.contextSnapshot.paperclipTaskMarkdown.includes(scenario.remembered)

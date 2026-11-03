@@ -23,7 +23,8 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 async function fixture(options: { preexisting?: boolean; intentFails?: boolean; sendFails?: boolean; foreignRun?: boolean;
-  compactRuns?: boolean; unrelatedActivity?: number; ignoreActivityScope?: boolean; priorAgentStatus?: string; mixedAgentHistory?: boolean } = {}) {
+  compactRuns?: boolean; unrelatedActivity?: number; ignoreActivityScope?: boolean; priorAgentStatus?: string; mixedAgentHistory?: boolean;
+  provisioningActor?: "board" | "owned-agent" } = {}) {
   const f = options.compactRuns ? compactChatContinuityFixture() : chatContinuityFixture();
   const directory = await mkdtemp(path.join(os.tmpdir(), "chat-continuity-flow-"));
   directories.push(directory);
@@ -33,8 +34,13 @@ async function fixture(options: { preexisting?: boolean; intentFails?: boolean; 
   vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
     realTimeout(callback, delay === 1000 ? 0 : delay, ...args)) as typeof setTimeout);
   const current = () => f.points[stage]!;
-  const companyActivity = Array.from({ length: options.unrelatedActivity ?? 0 }, (_, index) => ({ id: `unrelated-${index}`,
-    companyId: f.scope.companyId, agentId: "other-agent", runId: "other-run", action: "project.created", entityType: "project", entityId: `other-project-${index}` }));
+  const companyActivity = [
+    ...Array.from({ length: options.unrelatedActivity ?? 0 }, (_, index) => ({ id: `unrelated-${index}`,
+      companyId: f.scope.companyId, agentId: "other-agent", runId: "other-run", action: "project.created", entityType: "project", entityId: `other-project-${index}` })),
+    ...(options.provisioningActor ? [{ id: "provisioned-agent", companyId: f.scope.companyId,
+      agentId: options.provisioningActor === "board" ? null : f.scope.agentId, runId: null,
+      action: "agent.created", entityType: "agent", entityId: f.scope.agentId }] : []),
+  ];
   const companyRuns = Array.from({ length: options.unrelatedActivity ?? 0 }, (_, index) => ({ id: `unrelated-run-${index}`,
     companyId: f.scope.companyId, agentId: "other-agent", status: "succeeded" }));
   if (options.priorAgentStatus) companyRuns.push({ id: "prior-owned-run", companyId: f.scope.companyId, agentId: f.scope.agentId, status: options.priorAgentStatus });
@@ -89,7 +95,7 @@ async function fixture(options: { preexisting?: boolean; intentFails?: boolean; 
     return structuredClone(point.reply!);
   });
   mocks.capture.mockResolvedValue(undefined);
-  return { ...f, context, evidence, own, directory, messages, actions, page, get,
+  return { ...f, context, evidence, own, directory, messages, actions, page, get, companyActivity,
     run: () => runChatContinuity(context, { own } as unknown as TargetSession, f.scope.campaignId, evidence,
       { directory, deadlineAt: Date.now() + 10_000 }) };
 }
@@ -126,6 +132,19 @@ describe("chat continuity journey controls", () => {
     const f = await fixture({ unrelatedActivity, ignoreActivityScope: true });
     await expect(f.run()).rejects.toThrow("chat_continuity_observation_incomplete");
     expect(f.messages).toEqual([f.scenario.remember]);
+  });
+  it("accepts board provisioning whose created entity is the owned agent, rather than treating its entity id as the actor", async () => {
+    const f = await fixture({ provisioningActor: "board", unrelatedActivity: 750 });
+    expect(f.companyActivity.at(-1)).toMatchObject({ action: "agent.created", agentId: null, entityId: f.scope.agentId });
+    await f.run();
+    expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+    const saved = JSON.parse(await readFile(path.join(f.directory, "chat-continuity.json"), "utf8"));
+    expect(saved.points.every((point: { activity: unknown[] }) => point.activity.length === 0)).toBe(true);
+  });
+  it("rejects creation attributed to the fresh owned agent even if that activity predates the first send", async () => {
+    const f = await fixture({ provisioningActor: "owned-agent" });
+    await expect(f.run()).rejects.toThrow("chat_continuity_evidence_failed");
+    expect(f.evidence.checks.find(check => check.id === "chat-no-unrequested-work")?.passed).toBe(false);
   });
   it.each(["succeeded", "running", "queued", "failed"])("rejects prior %s work on a reused agent before any send", async priorAgentStatus => {
     const f = await fixture({ priorAgentStatus, unrelatedActivity: 750 });
