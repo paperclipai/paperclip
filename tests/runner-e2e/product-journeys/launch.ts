@@ -17,13 +17,17 @@ import { projectTaskContext } from "./project-context-flow.js";
 import { runAgentJourney } from "./agent-flows.js";
 import { runActiveFollowup } from "./active-followup-flow.js";
 import { runClarificationJourney } from "./clarification-flow.js";
+import { runRepositoryContinuation } from "./repository-continuation-flow.js";
+import { runScheduledRoutine } from "./routine-schedule-flow.js";
+import { runInputFile } from "./input-file-flow.js";
+import { inboxTriage } from "./inbox-triage-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
 import type { RunnerE2EResult } from "../types.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 import { resolveRunnerE2ESource } from "../source.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
 import { validateJourneyCollection } from "./collection.js";
-import { captureProductScreenshot } from "./product-screenshot.js";
+import { captureProductScreenshot, isProductScreenshotUrl } from "./product-screenshot.js";
 import { validateOnboardingArtifact } from "./artifact-evidence.js";
 
 const cleanupGraceMs = 600_000;
@@ -108,7 +112,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   try { sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Packaged harnesses may not include Git metadata. */ }
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
-  for (const name of ["catalog.ts", "task-properties.ts", "task-search-filter.ts", "task-search-evidence.ts", "basic-flows.ts", "basic-evidence.ts", "task-document-flow.ts", "task-document-evidence.ts", "project-context-flow.ts", "project-context-readback.ts", "project-context-evidence.ts", "agent-flows.ts", "hire-delegate-flow.ts", "hire-delegate-composer.ts", "hire-delegate-evidence.ts", "active-followup-flow.ts", "active-followup-evidence.ts", "stop-redirect-evidence.ts", "clarification-flow.ts", "clarification-evidence.ts", "../question-resume-ui.ts", "../question-resume-scoring.ts", "../runtime-question-readiness.ts", "../chat-flow.ts", "../continuation-readiness.ts", "../continuation-cases.ts", "success-contract.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts", "../../../ui/src/lib/markdown-reply-content.ts", "../../../ui/src/lib/issue-reference.ts", "../../../ui/src/lib/company-routes.ts", "../../../ui/package.json"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  for (const name of ["observation-read.ts", "../connection-config.ts", "catalog.ts", "repository-continuation-flow.ts", "repository-continuation-contract.ts", "repository-continuation-evidence.ts", "../registered-artifact.ts", "../user-actions.ts", "../connection-target.ts", "../../../packages/shared/src/project-mentions.ts", "routine-schedule-flow.ts", "routine-schedule-evidence.ts", "input-file-flow.ts", "input-file-evidence.ts", "inbox-triage-flow.ts", "inbox-triage-evidence.ts", "inbox-triage-fixture.ts", "inbox-author-contract.ts", "task-properties.ts", "task-search-filter.ts", "task-search-evidence.ts", "basic-flows.ts", "basic-evidence.ts", "task-document-flow.ts", "task-document-evidence.ts", "project-context-flow.ts", "project-context-readback.ts", "project-context-evidence.ts", "agent-flows.ts", "hire-delegate-flow.ts", "hire-delegate-composer.ts", "hire-delegate-evidence.ts", "active-followup-flow.ts", "active-followup-evidence.ts", "stop-redirect-evidence.ts", "clarification-flow.ts", "clarification-evidence.ts", "../question-resume-ui.ts", "../question-resume-scoring.ts", "../runtime-question-readiness.ts", "../chat-flow.ts", "../continuation-readiness.ts", "../continuation-cases.ts", "success-contract.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts", "../../../ui/src/lib/markdown-reply-content.ts", "../../../ui/src/lib/issue-reference.ts", "../../../ui/src/lib/company-routes.ts", "../../../ui/package.json"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
   for (const file of ["catalog.ts", "api.ts", "run-observations.ts", "native-task-reply.ts", "native-event-envelope.ts", "user-actions.ts", "plan-revision-flow.ts", "skill-studio-flow.ts", "protected-action-flow.ts", "story-artifact.ts", "stop-redirect-flow.ts", "everyday-cases.ts", "everyday-delivery.ts", "chat-hardening.ts", "everyday-decisions.ts", "connection-guidance-evidence.ts", "everyday-artifact.py"]) definitionHash.update(await readFile(path.join(import.meta.dirname, "..", file)));
   definitionHash.update(runnerSuites.flatMap(suite => suite.tasks).find(task => task.id === "ask-question")!.buildPrompt("definition"));
   const suiteDefinitionHash = definitionHash.digest("hex");
@@ -204,7 +208,13 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             result.provider = ready.agent.provider;
             result.model = ready.agent.model;
             result.runtimeMode = ready.agent.runtimeMode;
-            if (id === "ask-question") await askQuestion(ready, session!, campaignId, evidence);
+            if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "ask-question") await askQuestion(ready, session!, campaignId, evidence);
             else if (id === "followup-while-running") await runActiveFollowup(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "question-answer-resume") await runClarificationJourney(ready, session!, campaignId, evidence, { deadlineAt,
@@ -221,7 +231,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
                 await mkdir(directory, { recursive: true, mode: 0o700 });
                 await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file), deadlineAt);
               } });
-          } else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
+          } else if (id === "inbox-triage") await inboxTriage(ready, session!, campaignId, evidence);
+          else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
           else if (id === "task-document-persistence") await taskDocumentPersistence(ready, session!, campaignId, evidence);
           else if (id === "project-task-context") await projectTaskContext(ready, session!, campaignId, evidence);
           else if (id === "task-search-filter") await taskSearchFilter(ready, session!, campaignId, evidence);
@@ -247,8 +258,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         // Retain failed product screens only after tenant setup, never login screens.
         if (ready && phase === "journey") {
           try {
-            const url = new URL(ready.page.url());
-            if (url.origin === ready.api.origin && /^\/[^/]+\/(issues|search)(\/|$)/.test(url.pathname)) {
+            if (isProductScreenshotUrl(ready.page.url(), ready.api.origin)) {
               const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
               await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
               await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}-failed.png`), deadlineAt);

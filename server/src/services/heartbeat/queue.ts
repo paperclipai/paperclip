@@ -2518,6 +2518,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // retain distinct durable receipts even when the same gate blocks them.
     const coalesceExecutionWait =
       opts.requestedByActorType === "system" &&
+      opts.allowRunCoalescing !== false &&
       !receiptRequest &&
       !wakeCommentId &&
       queuedCommentIdsFromRunContext(enrichedContextSnapshot).length === 0 &&

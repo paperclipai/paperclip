@@ -1,3 +1,4 @@
+import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { museRunnerBroker } from "../muse-runner-broker.js";
 import { assertEphemeralNativeLifecycle, readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
@@ -927,7 +928,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       if (!lockedRun) throw new Error("native_runtime_run_missing");
       // Cancellation and runtime selection serialize on this row. A
       // stopped preparation must never create a new native coordinator.
-      if (lockedRun.status !== "running" || lockedRun.resultJson?.startupCancellation) return false;
+      const stopRecovery = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
+        && runOptions.nativeRestartRecovery.runId === lockedRun.id
+        && runOptions.nativeRestartRecovery.leaseOwner === runOptions.nativeLeaseOwner
+        && await readClaimedNativeStopRecovery(tx as unknown as Db, lockedRun, runOptions.nativeLeaseOwner);
+      if (lockedRun.status !== "running" || (lockedRun.resultJson?.startupCancellation && !stopRecovery)) return false;
       if (lockedRun.runtimeMode === "legacy" && lockedRun.controllerBootId &&
           !(await renewLegacyControllerLease(tx as unknown as Db, lockedRun))) {
         onNativeOwnershipHeld();

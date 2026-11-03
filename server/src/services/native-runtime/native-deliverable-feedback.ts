@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { assets, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issueWorkProducts, mcpAttachmentUploads, dotRunnerAssignments, type Db } from "@paperclipai/db";
+import { assets, companies, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issues, issueWorkProducts, mcpAttachmentUploads, dotRunnerAssignments, type Db } from "@paperclipai/db";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
 function evidenceRefs(value: unknown): string[] {
@@ -184,8 +184,11 @@ export function explicitlyRequestsTaskDocumentOutput(objective: string): boolean
  */
 export async function publishedTaskDocuments(db: Db, binding: { companyId: string; issueId: string }) {
   const saved = await db.select({ id: documents.id, revisionId: documents.latestRevisionId,
-    key: issueDocuments.key, resultJson: heartbeatRuns.resultJson })
+    key: issueDocuments.key, resultJson: heartbeatRuns.resultJson,
+    issuePrefix: companies.issuePrefix, issueIdentifier: issues.identifier })
     .from(issueDocuments)
+    .innerJoin(issues, and(eq(issues.id, issueDocuments.issueId), eq(issues.companyId, binding.companyId)))
+    .innerJoin(companies, eq(companies.id, issues.companyId))
     .innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, binding.companyId)))
     .innerJoin(documentRevisions, and(eq(documentRevisions.id, documents.latestRevisionId),
       eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, binding.companyId)))
@@ -197,7 +200,8 @@ export async function publishedTaskDocuments(db: Db, binding: { companyId: strin
     const receipt = record(value), result = record(receipt.result), published = record(result.document);
     return receipt.operationId === "write_document" && ["applied", "duplicate"].includes(String(result.disposition))
       && published.id === document.id && published.latestRevisionId === document.revisionId;
-  })).map(({ id, revisionId, key }) => ({ id, revisionId, key }));
+  })).map(({ id, revisionId, key, issuePrefix, issueIdentifier }) => ({ id, revisionId, key,
+    href: `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueIdentifier ?? binding.issueId)}#document-${encodeURIComponent(key)}` }));
 }
 
 /** Files cited as completed output must be reachable outside the agent workspace. */
@@ -209,17 +213,21 @@ export async function validateNativeDeliverableEvidence(
   if (result.reportedWorkDisposition !== "done") return;
   const fileRequested = explicitlyRequestsFileOutput(binding.objective);
   const taskDocumentRequested = explicitlyRequestsTaskDocumentOutput(binding.objective);
-  const publishedTaskDocument = taskDocumentRequested && (await publishedTaskDocuments(db, binding)).length > 0;
   const artifactRefs = new Set(evidenceRefs(result.artifacts));
   const refs = new Set([
     ...evidenceRefs(result.evidence),
     ...artifactRefs,
     ...result.completionClaim.criteria.flatMap(({ evidenceRefs }) => evidenceRefs),
   ]);
+  const citesTaskDocument = [...refs].some(ref => /^\/[^/?#]+\/issues\/[^/?#]+#document-[^/?#]+$/u.test(ref.trim()));
+  const publishedDocuments = taskDocumentRequested || citesTaskDocument ? await publishedTaskDocuments(db, binding) : [];
+  const publishedTaskDocument = taskDocumentRequested && publishedDocuments.length > 0;
+  const documentHrefs = new Set(publishedDocuments.map(document => document.href));
   let registeredAttachment = false;
   for (const value of refs) {
     if (typeof value !== "string") continue;
     const ref = value.trim();
+    if (documentHrefs.has(ref)) continue;
     const attachmentPath = /^\/api\/attachments\/([^/?#]+)\/content(?:[?#].*)?$/u.exec(ref);
     if (ref.startsWith("deliverable:") || attachmentPath) {
       const id = attachmentPath?.[1] ?? ref.slice("deliverable:".length);

@@ -255,6 +255,8 @@ Gaps: Watchdog execution/recovery acceptance remains [recovery](recovery.md), be
 
 Capability ID: `tasks/discussion`.
 
+Native deferred-reply recovery: the server can publish an accepted ordinary-task `needs_review` reply from its completed final-message event after workspace finalization. It uses the same company/run/turn, result-digest and publication authorization checks as completed-task recovery. It does not publish a semantic summary as a substitute, resolve a pending review, or start provider work. Conversation and external governed-response rules retain their separate gates. The [database recovery suite](../../server/src/services/native-runtime/agent-chat-response-recovery.test.ts) covers publication once, pending-review preservation, and rejection of missing/wrong-turn output, invalid digest and suppressed comments. This is local integration evidence; live acceptance is recorded in the pull request.
+
 Review: `operation-reviewed`.
 
 Read, append/retry, author-delete or queued-cancel messages, attach allowed files, and distinguish human feedback from agent reporting.

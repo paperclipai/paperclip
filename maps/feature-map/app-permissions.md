@@ -49,6 +49,8 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Prep
 
 ### `permissions`
 
+The page loads saved profiles for the displayed connection through the configuration read. It preserves complete app bindings for saves and the install fallback when bindings are empty. It does not request profile summaries or pending-review counts.
+
 Automated: [app detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers agent/action controls, quarantined actions, and navigation using mocked requests.
 
 [Installation permission regressions](../../server/src/__tests__/tool-connection-installs.test.ts)
@@ -96,6 +98,20 @@ still need live account qualification.
 ### `test-and-maintain`
 
 Automated: [app detail tests](../../ui/src/pages/apps/AppDetail.test.tsx) cover test-dialog/UI contracts. Real provider execution and revocation require the selected provider’s live check.
+
+AI account details share the Permissions page's grants query. Account and grants
+reads have a 15-second deadline. The AI panel retries a transient failure once,
+then shows an error with Retry. A background failure keeps loaded controls visible.
+[AI account loading tests](../../ui/src/components/ai-connections/ManagedAiConnectionDetails.test.tsx)
+exercise stalled account/grants reads, cancellation, retry recovery and cached grants.
+
+The account-details section shows the provider email and organization when
+available, beside the sign-in method and Paperclip ownership. Anthropic profile
+permission denial shows an explicit unavailable message without changing the
+connection's connected state. Account identity loads independently of maintenance
+controls, has a bounded wait and a separate retry for temporary failures, and
+is refreshed after a credential grant changes. [Account-details tests](../../ui/src/components/ai-connections/AiConnectionAccountDetails.test.tsx)
+cover these states and prevent one grant's email from appearing for another.
 
 Manual: Run a read-only action with explicit inputs and inspect returned data and activity. Refresh discovery and review new actions. Revoke or disconnect only the disposable credential, then verify subsequent use fails with an actionable reconnect state.
 
@@ -146,3 +162,9 @@ Sources: Source: [PermissionsPanel.tsx](../../ui/src/pages/apps/app-detail/Permi
 ### `delegated-configuration`
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+The contextual connection sidebar reads only the selected connection's pending
+signed action request and quarantined action counts. Its Review badge is the
+pending request count plus one when any action is quarantined. It refreshes every
+30 seconds and after existing attention invalidations. Archived connections show
+no badge. The full Apps attention view keeps its existing company-wide read.

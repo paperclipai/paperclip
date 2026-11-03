@@ -643,7 +643,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     if (name === "chat-catalog-testops.yml") {
       assert.match(triggerHeader, /^  workflow_dispatch:/m);
       assert.doesNotMatch(triggerHeader, /^  (?:push|pull_request|workflow_call|workflow_run):/m);
-      assert.doesNotMatch(workflow, providerSecretReference);
+      const callerBlocks = ["chat", "chat_external"].map(id => workflow.split(`  ${id}:\n`)[1].split(/\n  [a-z_]+:\n/)[0]);
+      assert.doesNotMatch(callerBlocks.reduce((rest, block) => rest.replace(block, ""), workflow), providerSecretReference);
       assert.match(workflow, /group: chat-catalog-testops-streaming-v1/);
       for (const id of ["chat", "chat_external"]) {
         const block = workflow.split(`  ${id}:\n`)[1].split(/\n  [a-z_]+:\n/)[0];
@@ -653,14 +654,23 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
         assert.match(block, /needs: \[authorize, select, build\]/);
         assert.match(block, /uses: \.\/\.github\/workflows\/chat-catalog-testops-case\.yml/);
         assert.match(block, /protocol: streaming-v1/);
-        assert.match(block, /secrets:\n      OPENROUTER_API_KEY: ''\n      ANTHROPIC_API_KEY: ''\n      ALLURE_TOKEN: ''/);
-        assert.doesNotMatch(block, /secrets: inherit|secrets\./);
+        const mapping = block.split("\n    secrets:\n");
+        assert.equal(mapping.length, 2);
+        assert.deepEqual(mapping[1].trim().split("\n").map(line => line.trim()), [
+          "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}",
+          "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}",
+          "ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}",
+        ]);
+        assert.doesNotMatch(block, /secrets: inherit/);
         assert.match(block, /fail-fast: false/);
         };
         assertCaller(block);
         const lane = id === "chat" ? "native" : "external";
         for (const mutant of [block.replace("needs.authorize.outputs.operation == 'evaluate' && ", ""),
-          block.replace(`needs.select.outputs.${lane}_count != '0'`, 'true')]) assert.throws(() => assertCaller(mutant));
+          block.replace(`needs.select.outputs.${lane}_count != '0'`, 'true'),
+          block.replace('${{ secrets.OPENROUTER_API_KEY }}', "''"),
+          block + '\n      EXTRA: ${{ secrets.EXTRA }}',
+          block.replace(/\n    secrets:[\s\S]*/, '\n    secrets: inherit')]) assert.throws(() => assertCaller(mutant));
       }
       const final = workflow.split("  verify:\n")[1];
       assert.match(final, /chat-completion-testops-cli\.mjs verify-stream/);
