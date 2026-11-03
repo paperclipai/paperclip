@@ -21,9 +21,11 @@ import { runAgentSettings } from "./agent-settings-flow.js";
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
-async function fixture(nativeFailure = false) {
+async function fixture(nativeFailure = false, unscopedActivity = false) {
   let f = settingsEvidenceFixture(), content = f.original, rendered = content, draft = content, dirty = false, dispatched = false;
-  const saves: string[] = [], owns: any[] = [], apiWrites: string[] = [];
+  const saves: string[] = [], owns: any[] = [], apiWrites: string[] = [], activityReads: string[] = [];
+  const unrelatedActivity = Array.from({ length: 600 }, (_, index) => ({ id: `unrelated-${index}`,
+    companyId: f.scope.companyId, entityType: "agent", entityId: "another-agent", details: {} }));
   const current = () => content === f.original
     ? dispatched ? f.evidence.restored! : f.evidence.original!
     : dispatched ? f.evidence.afterWork! : f.evidence.saved!;
@@ -49,7 +51,17 @@ async function fixture(nativeFailure = false) {
     if (route === "/api/agents/agent/instructions-bundle") return structuredClone(current().bundle);
     if (route === "/api/agents/agent/instructions-bundle/file?path=AGENTS.md") return structuredClone(current().file);
     if (route.includes("/heartbeat-runs?agentId=agent")) return structuredClone(current().runs);
-    if (route.includes("/activity?entityType=agent")) return structuredClone(current().activity);
+    if (route.startsWith("/api/companies/company/activity?")) {
+      activityReads.push(route);
+      const query = new URL(route, api.origin).searchParams;
+      expect(query.get("entityType")).toBe("agent"); expect(query.get("entityId")).toBe("agent");
+      expect(query.get("limit")).toBe("200");
+      if (unscopedActivity) return [unrelatedActivity[0]];
+      return structuredClone([...unrelatedActivity, ...current().activity]
+        .filter(row => row.entityType === query.get("entityType") && row.entityId === query.get("entityId"))
+        .slice(0, Number(query.get("limit"))).map(row => ({ ...row,
+          details: { ...row.details, privateFixturePayload: "must-not-be-retained" } })));
+    }
     if (route === "/api/issues/task") return structuredClone(f.evidence.task!.issue);
     if (route === "/api/issues/task/runs") return [{ runId: "run" }];
     if (route === "/api/issues/task/interactions") return [];
@@ -71,7 +83,7 @@ async function fixture(nativeFailure = false) {
   const session = { async own(resource: any) { owns.push(resource); } } as TargetSession;
   const evidence: JourneyEvidence = { outcome: "passed", startingState: "recipe", phases: [], checks: [], resourceDisposition: "retained", privacy: "private" };
   const directory = await mkdtemp(path.join(os.tmpdir(), "qa-settings-flow-")); directories.push(directory);
-  return { context, session, evidence, directory, saves, owns, apiWrites, original: f.original,
+  return { context, session, evidence, directory, saves, owns, apiWrites, activityReads, unrelatedActivity, original: f.original,
     currentContent: () => content, options: { directory, deadlineAt: Date.now() + 30000 } };
 }
 
@@ -84,8 +96,20 @@ describe("agent settings production-surface orchestration", () => {
     expect(f.owns.map(row => row.id ?? "intent")).toEqual(["intent", "task"]);
     const artifact = await readFile(path.join(f.directory, "agent-settings-observations.json"), "utf8");
     expect(artifact).not.toContain(f.original); expect(artifact).not.toContain("adapterConfig");
+    expect(artifact).not.toContain("must-not-be-retained");
     const saved = JSON.parse(artifact); expect(saved.checks.every((row: any) => row.passed)).toBe(true);
     expect(saved.checkpoints.original.contentHash).toBe(saved.checkpoints.restored.contentHash);
+    expect(saved.saveAudits).toEqual({ saved: { id: "save", companyId: "company", actorType: "user", actorId: "user",
+      agentId: null, runId: null, action: "agent.files_updated", entityType: "agent", entityId: "agent", path: "AGENTS.md",
+      contentHash: saved.checkpoints.saved.contentHash, source: "board" }, restored: { id: "restore", companyId: "company",
+      actorType: "user", actorId: "user", agentId: null, runId: null, action: "agent.files_updated", entityType: "agent",
+      entityId: "agent", path: "AGENTS.md", contentHash: saved.checkpoints.restored.contentHash, source: "board" } });
+    expect(f.unrelatedActivity).toHaveLength(600); expect(f.activityReads.length).toBeGreaterThan(0);
+  });
+  it("rejects a wrongly unscoped activity response before any settings edit", async () => {
+    const f = await fixture(false, true);
+    await expect(runAgentSettings(f.context, f.session, "campaign-1", f.evidence, f.options)).rejects.toThrow("agent_settings_read_coverage_unavailable");
+    expect(f.saves).toEqual([]); expect(f.owns).toEqual([]);
   });
   it("requires scoped settings-write capability before any configuration edit", async () => {
     const f = await fixture(); f.context.capabilities = ["company", "board-user", "task-write", "agent"];

@@ -6,7 +6,7 @@ import { createTaskThroughUi } from "../user-actions.js";
 import { waitFor } from "./agent-flows.js";
 import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
-import { AGENT_SETTINGS_CHECKS, gradeAgentSettings, instructionDigest, settingsInstructionContent,
+import { AGENT_SETTINGS_CHECKS, gradeAgentSettings, instructionDigest, matchedBoardSaveAudit, settingsInstructionContent,
   settingsDocumentKey, settingsTaskPrompt, type AgentSettingsEvidence, type AgentSettingsScope,
   type SettingsSnapshot } from "./agent-settings-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
@@ -33,7 +33,10 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
       read.get<Row[]>(agentRunsRoute), read.get<Row[]>(activityRoute),
     ]);
     if (typeof bundle?.entryFile !== "string" || !bundle.entryFile || !Array.isArray(runs) || runs.length >= 100
-      || !Array.isArray(activity) || activity.length >= 200) throw new JourneyError("failed", "agent_settings_read_coverage_unavailable");
+      || !Array.isArray(activity) || activity.length >= 200
+      || activity.some(row => row.companyId !== scope.companyId || row.entityType !== "agent" || row.entityId !== agent.id)) {
+      throw new JourneyError("failed", "agent_settings_read_coverage_unavailable");
+    }
     const file = await read.get<Row>(`${agentRoute}/instructions-bundle/file?path=${encodeURIComponent(bundle.entryFile)}`);
     return { agent: current, bundle, file, runs, activity };
   };
@@ -139,6 +142,8 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
         })),
         issueId: observations.task?.issue.id ?? null, runIds: observations.task?.runs.map(row => row.id) ?? [],
         documentId: observations.task?.document.id ?? null, documentRevisionId: observations.task?.revision.id ?? null,
+        saveAudits: { saved: matchedBoardSaveAudit(observations.saved, observations.original, scope),
+          restored: matchedBoardSaveAudit(observations.restored, observations.afterWork, scope) },
         checks: gradeAgentSettings(scope, observations),
       }, null, 2), { mode: 0o600 });
     } catch (error) { if (!failed) throw error; }

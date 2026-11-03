@@ -14,11 +14,16 @@ does not edit the shared source agent, provider, model, accounts, or feature fla
 3. Reload Instructions. Require the exact saved bytes in both the browser and
    the normal read API. Verify a new `agent.files_updated` audit event with the
    signed-in user, exact owned agent, entry path, and content hash.
+   Activity reads use both entity filters before the API limit. Unrelated company
+   history cannot consume that page. A full owned page or foreign entity fails
+   the coverage check rather than being silently filtered.
 4. Create one ordinary task through the shared composer. The agent must use the
    saved procedure to produce the `settings-proof` task document. Require the
    exact reference, one committed native run on the configured provider, model,
    and environment, and current-run document authorship. Pending questions,
    checkout, or recovery cannot pass.
+   The dedicated `nativePhase` column must be `committed`. The grader does not
+   require `resultJson.finalizationPhase`, which normal bounded run reads can omit.
 5. Reload the task and read the saved document. Verify the entry file is still
    unchanged after the agent's task.
 6. Restore the original bytes through the same Instructions controls. Verify the
@@ -38,7 +43,9 @@ work; the target's normal cleanup stops and terminates that owned agent.
 
 Private evidence consists of `agent-settings-observations.json` and
 `observation-read-failures.json` under this case's `private-stories` directory.
-The first contains closed IDs, hashes, the synthetic reference, and checks. It
+The first contains closed IDs, hashes, the synthetic reference, checks, and both
+matched board-save receipts. Each receipt includes its audit ID, actor, agent
+entity, entry path, content hash, and save source. It
 does not contain raw instruction files, account bindings, or provider payloads.
 Discovery and local controls do not qualify a staging run. The daily plan may
 admit this case only after a genuine staging pass and reviewed source merge.
