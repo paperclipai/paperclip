@@ -2721,7 +2721,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock, container.textContent ?? "").toHaveBeenCalled();
     expect(startOAuthMock, container.textContent ?? "").toHaveBeenCalledWith("conn-github", { asCurrentUser: true });
     expect(onComplete).not.toHaveBeenCalled();
-    popup.location.href = `${window.location.origin}/CO/apps/conn-github/permissions?success=1`;
+    // AppDetail removes the success flag as soon as its toast is shown.
+    popup.location.href = `${window.location.origin}/CO/apps/conn-github/permissions`;
     await act(async () => {
       await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: "conn-github" }), { timeout: 2500 });
     });

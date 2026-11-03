@@ -1,3 +1,4 @@
+import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { StepHeader } from "./ConnectionSetupHeader";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
 import type { GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
@@ -924,17 +925,14 @@ function StandardConnectionSetupFlow({
         setOAuthError("The sign-in window closed. Try again to finish connecting.");
         return;
       }
-      let returned: URL;
-      try { returned = new URL(popup.location.href); } catch { return; }
-      if (returned.origin !== window.location.origin) return;
-      if (!returned.pathname.includes(dialogOAuthConnectionId) && returned.searchParams.get("resume") !== dialogOAuthConnectionId) return;
-      if (returned.searchParams.has("oauth")) {
+      const outcome = readOAuthWindowOutcome(popup, dialogOAuthConnectionId);
+      if (outcome === "waiting") return;
+      if (outcome !== "connected") {
         setDialogOAuthConnectionId(null);
         setOAuthPhase("error");
         setOAuthError("Authorization did not complete. Finish setup in the sign-in window or try again.");
         return;
       }
-      if (returned.searchParams.get("success") !== "1") return;
       checking = true;
       try {
         const connection = await toolsApi.getConnection(dialogOAuthConnectionId);

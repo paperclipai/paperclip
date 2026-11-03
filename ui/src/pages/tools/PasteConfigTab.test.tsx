@@ -441,7 +441,8 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     popup.location.href = `${window.location.origin}/CO/apps/other-connection/permissions?success=1`;
     await act(async () => { window.dispatchEvent(new Event("focus")); });
     expect(toolsApiMock.getConnection).not.toHaveBeenCalled();
-    popup.location.href = `${window.location.origin}/CO/apps/conn-1/permissions?success=1`;
+    // Simulate AppDetail consuming success=1 before the opener polls.
+    popup.location.href = `${window.location.origin}/CO/apps/conn-1/permissions`;
     await act(async () => { window.dispatchEvent(new Event("focus")); });
     expect(toolsApiMock.getConnection).toHaveBeenCalledWith("conn-1");
     expect(mockNavigate).not.toHaveBeenCalled();

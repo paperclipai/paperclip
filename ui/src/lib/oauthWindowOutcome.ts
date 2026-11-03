@@ -13,7 +13,12 @@ export function readOAuthWindowOutcome(
       && url.searchParams.get("reconnect") !== connectionId) return "waiting";
     const outcome = url.searchParams.get("oauth");
     if (outcome === "denied" || outcome === "failed") return outcome;
-    return url.searchParams.get("success") === "1" ? "connected" : "waiting";
+    // AppDetail consumes success=1 on mount. The exact permissions route is
+    // also the durable callback destination after that query flag is removed.
+    // Callers must still verify the saved connection before reporting success.
+    return url.searchParams.get("success") === "1"
+      || url.pathname.endsWith(`/apps/${connectionId}/permissions`)
+      ? "connected" : "waiting";
   } catch {
     // Reading location is forbidden while the window is at the provider.
     return "waiting";
