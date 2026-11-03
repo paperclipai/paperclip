@@ -253,7 +253,8 @@
       "chat-catalog-domains/internal-privacy.ts",
       "chat-catalog-domains/identity-auth.ts",
       "chat-catalog-domains/internal-routine-audit.ts",
-      "../e2e/fetch-allowed-port.ts"
+      "../e2e/fetch-allowed-port.ts",
+      "../../server/src/services/native-runtime/status-decision-committer.ts"
     ],
     "oracleVersion": "paperclip.chat-catalog.internal.v1",
     "coverageGaps": [],
