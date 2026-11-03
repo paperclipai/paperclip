@@ -7,7 +7,7 @@ import { createTaskThroughUi } from "../user-actions.js";
 import { validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
-import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadReceipts, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
+import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadReceipts, savedSkillReadRuntimeName, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
@@ -89,7 +89,8 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
       && !state.comments.some(row => row.authorUserId && String(row.body ?? "").includes(fixture.expected.reference)));
     const events = await collectRunEvents<Row>(
       (afterSeq, limit) => read.get(`/api/heartbeat-runs/${binding.runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
-    const receipts = savedSkillReadReceipts(events, binding, fixture);
+    const runtimeName = savedSkillReadRuntimeName(skill, assignments, state.taskRuns[0]!);
+    const receipts = savedSkillReadReceipts(events, binding, fixture, runtimeName);
     checkpoint = { ...checkpoint, events, receipts };
     check("saved-skill-native-read-attributed", receipts.length > 0);
     const documents = await read.get<Row[]>(`${route}/documents`);
@@ -107,6 +108,7 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
     const [reopened, retainedSkill, retainedVersion, retainedAssignments] = await Promise.all([
       read.get<Row>(documentRoute), read.get<Row>(skillRoute), read.get<Row>(versionRoute), read.get<Row>(assignmentRoute),
     ]);
+    checkpoint = { ...checkpoint, reopened, retainedSkill, retainedVersion, retainedAssignments };
     check("saved-skill-result-reopened", reopened.latestRevisionId === document.latestRevisionId
       && savedSkillDocumentAttributed(reopened, revision, fixture, binding));
     check("saved-skill-source-preserved", savedSkillSourceMatches(retainedSkill, retainedVersion, retainedAssignments, fixture, context.company.id)

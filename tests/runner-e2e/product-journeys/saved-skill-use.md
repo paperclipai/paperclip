@@ -46,10 +46,16 @@ A pass requires all seven closed checks:
 
 The read oracle accepts a completed built-in file read with the exact skill
 directory target, or OpenCode's native `skill` load with its exact named
-`skill_content` wrapper. The provider must expose enough evidence for one of
-these paths. A generic read whose target is omitted does not establish which
-file was read. Discovery, shell output, model prose, failed or truncated reads,
-foreign run receipts and marker-only output cannot pass.
+`skill_content` wrapper. Deployed OpenCode can instead report a native `read`
+with an unknown operation and null target. That path requires its complete file
+result wrapper: the file path must name the exact materialized skill directory.
+Both the saved assignment entry and the admitted native execution input must
+bind that runtime name to the same canonical key and immutable created version.
+The native read must remain read-only, successful, paired by call/turn/runner,
+untruncated and byte-complete, and its content must contain the full procedure.
+A targetless read without this bound file wrapper cannot qualify. Discovery,
+shell output, model prose, failed or truncated reads, foreign run receipts and
+marker-only output cannot pass.
 
 The existing campaign deadline bounds observations. Only failed read transport
 operations can be retried; task input, skill creation and execution are not

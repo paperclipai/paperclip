@@ -19,7 +19,7 @@ vi.mock("@playwright/test", () => ({ expect: (locator: { textContent(): Promise<
 const directories: string[] = [];
 afterEach(async () => { vi.clearAllMocks(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
-async function setup(change: (kind: string, row: any) => any = (_kind, row) => row, campaignId = "campaign", betaSkillsEnabled = false) {
+async function setup(change: (kind: string, row: any) => any = (_kind, row) => row, campaignId = "campaign", betaSkillsEnabled = false, wrappedRead = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "saved-skill-flow-")); directories.push(directory);
   let fixture: SavedSkillFixture;
   let skill: Row, assigned = false, issueCreated = false, reloaded = false;
@@ -58,6 +58,7 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
       });
       if (route === "/api/agents/agent/skills?companyId=company") return change("assignment", {
         desiredSkillEntries: assigned ? [{ key: skill.key, versionId: null }] : [],
+        entries: assigned ? [{ key: skill.key, versionId: "version", runtimeName: `${fixture.slug}--0123456789` }] : [],
       });
       if (!issueCreated) throw new Error("Measured result was read before browser dispatch");
       if (route === "/api/issues/issue") return { id: "issue", identifier: "QA-1", companyId: "company", assigneeAgentId: "agent", status: "done",
@@ -67,12 +68,20 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
       if (route === "/api/heartbeat-runs/run") return change("run", { id: "run", companyId: "company", agentId: "agent", issueId: "issue",
         status: "succeeded", runtimeMode: "native", nativePhase: "committed", resultJson: null,
         contextSnapshot: { paperclipEnvironment: { id: "environment" }, skillSelectionSnapshot: true, skillVersions: { [skill.key]: "version" } },
-        runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "model" } } } });
+        runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "model" },
+          runtimeContext: { skills: [{ key: skill.key, versionId: "version", runtimeName: `${fixture.slug}--0123456789` }] } } } });
       if (route.startsWith("/api/heartbeat-runs/run/events?")) {
         return ["pending", "completed"].map((status, i) => {
           const p = canonicalProviderEventsFromOpenCodePart({ id: "load", type: "tool", tool: "skill", state: {
             status, output: `<skill_content name="${fixture.slug}">\n${fixture.procedure}\n</skill_content>`,
           } })[0]!;
+          if (wrappedRead) {
+            const output = `<path>/workspace/.claude/skills/${fixture.slug}--0123456789/SKILL.md</path>\n<type>file</type>\n<content>\n`
+              + fixture.markdown.trimEnd().split("\n").map((line, index) => `${index + 1}: ${line}`).join("\n")
+              + "\n(End of file - total 12 lines)\n</content>";
+            Object.assign(p.payload, { name: "read", operation: "unknown", readOnly: true, target: null,
+              output: status === "completed" ? output : "", outputBytes: status === "completed" ? Buffer.byteLength(output) : 0 });
+          }
           return change("event", { runId: "run", companyId: "company", agentId: "agent", seq: i + 1, eventType: p.eventType,
             sourceEventId: `event-${i}`, sourceInstanceId: "instance", sourceSeq: i + 1, protocolSchemaVersion: 1,
             payload: { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", runId: "run", turnId: "turn",
@@ -120,6 +129,29 @@ describe("saved skill journey orchestration", () => {
     expect(f.evidence.checks.every(check => check.passed)).toBe(true);
     const receipt = JSON.parse(await readFile(path.join(f.directory, "saved-skill-use-checks.json"), "utf8"));
     expect(receipt.receipts).toEqual([{ runId: "run", executionId: "load", seq: 2 }]);
+    expect(receipt.reopened).toEqual(receipt.document);
+    expect(receipt.retainedSkill).toEqual(receipt.skill);
+    expect(receipt.retainedVersion).toEqual(receipt.version);
+    expect(receipt.retainedAssignments).toEqual(receipt.assignments);
+  });
+  it("verifies the deployed wrapped native read and then independently checks the saved result and reload", async () => {
+    const f = await setup(undefined, "campaign", false, true); await f.run();
+    expect(f.evidence.checks).toHaveLength(7);
+    expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+    expect(f.page.reload).toHaveBeenCalledOnce();
+    expect(f.api.get.mock.calls.some(([route]) => route.includes("/documents/saved-skill-result/revisions/"))).toBe(true);
+  });
+  it.each([
+    ["missing native skill", "run", (row: Row) => { row.runnerProfileJson.nativeExecutionInput.runtimeContext.skills = []; }],
+    ["wrong native version", "run", (row: Row) => { row.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0].versionId = "stale"; }],
+    ["wrong native name", "run", (row: Row) => { row.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0].runtimeName = "foreign"; }],
+    ["wrong assigned version", "assignment", (row: Row) => { row.entries[0].versionId = "stale"; }],
+    ["wrong assigned name", "assignment", (row: Row) => { row.entries[0].runtimeName = "foreign"; }],
+  ] as const)("rejects a complete wrapped read with %s before inspecting its document", async (_label, target, mutate) => {
+    const f = await setup((kind, row) => { if (kind === target) mutate(row); return row; }, "campaign", false, true);
+    await expect(f.run()).rejects.toMatchObject({ outcome: "failed", code: "saved_skill_native_read_attributed" });
+    expect(f.api.get.mock.calls.some(([route]) => route.includes("/documents"))).toBe(false);
+    expect(f.page.reload).not.toHaveBeenCalled();
   });
   it.each([false, true])("uses ordinary Latest assignment with Beta skills %s and no setting read or write", async betaSkillsEnabled => {
     const f = await setup(undefined, "campaign", betaSkillsEnabled); await f.run();

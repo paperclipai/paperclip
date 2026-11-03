@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canonicalProviderEventsFromOpenCodePart } from "../../../packages/paperclip-runner/src/provider-events.js";
-import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadReceipts, savedSkillResultMatches, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
+import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadReceipts, savedSkillReadRuntimeName, savedSkillResultMatches, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
 
 type Row = Record<string, any>;
 const fixture = savedSkillFixture("campaign-id", "62ff548dfec748da8fef6d5fbf6cc23d");
@@ -15,6 +15,16 @@ function readEvents(): Row[] {
     transport: "builtin", readOnly: true, target: `/workspace/.agents/skills/${fixture.slug}/SKILL.md` };
   return [native(1, "tool.execution.started", { ...payload, status: "running" }),
     native(2, "tool.execution.completed", { ...payload, status: "completed", output: fixture.markdown, outputBytes: Buffer.byteLength(fixture.markdown), outputTruncated: false })];
+}
+const runtimeName = `${fixture.slug}--0123456789`;
+function wrappedReadEvents(): Row[] {
+  const output = `<path>/workspace/.claude/skills/${runtimeName}/SKILL.md</path>\n<type>file</type>\n<content>\n`
+    + fixture.markdown.trimEnd().split("\n").map((line, index) => `${index + 1}: ${line}`).join("\n")
+    + "\n(End of file - total 12 lines)\n</content>";
+  const events = readEvents();
+  for (const row of events) Object.assign(row.payload.prpEvent.payload, { operation: "unknown", target: null });
+  Object.assign(events[1]!.payload.prpEvent.payload, { output, outputBytes: Buffer.byteLength(output) });
+  return events;
 }
 function source() {
   const skill: Row = { id: "skill", companyId: binding.companyId, key: `company/${binding.companyId}/${fixture.slug}`, sourceType: "managed", name: fixture.name, slug: fixture.slug,
@@ -96,6 +106,65 @@ describe("saved skill use evidence", () => {
       expect(savedSkillReadReceipts(wrong, binding, fixture)).toEqual([]);
     }
     expect(savedSkillReadReceipts([], binding, fixture)).toEqual([]);
+  });
+  it("accepts the deployed OpenCode read wrapper for its exact version-bound runtime skill directory", () => {
+    expect(savedSkillReadReceipts(wrappedReadEvents(), binding, fixture, runtimeName)).toHaveLength(1);
+    expect(savedSkillReadReceipts(wrappedReadEvents(), binding, fixture)).toEqual([]);
+  });
+  it.each([
+    ["foreign path", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = e[1]!.payload.prpEvent.payload.output.replace(runtimeName, "foreign"); }],
+    ["relative path", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = e[1]!.payload.prpEvent.payload.output.replace("/workspace/", "workspace/"); }],
+    ["path traversal", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = e[1]!.payload.prpEvent.payload.output.replace("/workspace/", "/workspace/../"); }],
+    ["wrong file type", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = e[1]!.payload.prpEvent.payload.output.replace("<type>file</type>", "<type>directory</type>"); }],
+    ["missing wrapper", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = fixture.procedure; }],
+    ["partial procedure", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = e[1]!.payload.prpEvent.payload.output.replace("Do not create other tasks or deliverables.", ""); }],
+    ["copied shell output", (e: Row[]) => { for (const row of e) row.payload.prpEvent.payload.name = "bash"; }],
+    ["execute operation", (e: Row[]) => { for (const row of e) row.payload.prpEvent.payload.operation = "execute"; }],
+    ["not read only", (e: Row[]) => { e[1]!.payload.prpEvent.payload.readOnly = false; }],
+    ["start not read only", (e: Row[]) => { e[0]!.payload.prpEvent.payload.readOnly = false; }],
+    ["failed read", (e: Row[]) => { e[1]!.payload.prpEvent.payload.status = "failed"; }],
+    ["truncated read", (e: Row[]) => { e[1]!.payload.prpEvent.payload.outputTruncated = true; }],
+    ["missing start", (e: Row[]) => { e.shift(); }],
+    ["call mismatch", (e: Row[]) => { e[0]!.payload.prpEvent.payload.executionId = "another-call"; }],
+    ["foreign runner", (e: Row[]) => { e[0]!.sourceInstanceId = e[0]!.payload.prpEvent.sourceInstanceId = "another-runner"; }],
+    ["foreign run", (e: Row[]) => { e[1]!.runId = e[1]!.payload.prpEvent.runId = "another-run"; }],
+    ["foreign turn", (e: Row[]) => { e[1]!.payload.prpEvent.turnId = "another-turn"; }],
+  ] as const)("rejects a wrapped native read with %s", (_label, mutate) => {
+    const events = wrappedReadEvents(); mutate(events);
+    const completed = events.find(row => row.eventType === "tool.execution.completed")!;
+    completed.payload.prpEvent.payload.outputBytes = Buffer.byteLength(completed.payload.prpEvent.payload.output);
+    expect(savedSkillReadReceipts(events, binding, fixture, runtimeName)).toEqual([]);
+  });
+  it("requires both API and admitted native input to bind the same immutable skill runtime name", () => {
+    const { skill } = source();
+    const good = () => ({ assignments: { entries: [{ key: skill.key, runtimeName, versionId: "version" }] },
+      run: { contextSnapshot: { skillSelectionSnapshot: true, skillVersions: { [skill.key]: "version" } },
+        runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode" },
+          runtimeContext: { skills: [{ key: skill.key, runtimeName, versionId: "version" }] } } } } });
+    const valid = good();
+    expect(savedSkillReadRuntimeName(skill, valid.assignments, valid.run)).toBe(runtimeName);
+    const changes: Array<(value: ReturnType<typeof good>) => void> = [
+      v => { v.assignments.entries = []; },
+      v => { v.assignments.entries[0]!.key = "foreign"; },
+      v => { v.assignments.entries[0]!.versionId = "stale"; },
+      v => { v.assignments.entries[0]!.runtimeName = "foreign"; },
+      v => { v.assignments.entries.push(v.assignments.entries[0]!); },
+      v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills = []; },
+      v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!.key = "foreign"; },
+      v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!.versionId = "stale"; },
+      v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!.runtimeName = "foreign"; },
+      v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills.push(v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!); },
+      v => { v.run.contextSnapshot.skillSelectionSnapshot = false; },
+      v => { v.run.contextSnapshot.skillVersions[skill.key] = "stale"; },
+      v => { v.run.runnerProfileJson.nativeExecutionInput.provider.kind = "other"; },
+      v => { v.assignments.entries[0]!.runtimeName = v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!.runtimeName = "../foreign"; },
+    ];
+    for (const mutate of changes) {
+      const wrong = good(); mutate(wrong);
+      const name = savedSkillReadRuntimeName(skill, wrong.assignments, wrong.run);
+      expect(name).toBeUndefined();
+      expect(savedSkillReadReceipts(wrappedReadEvents(), binding, fixture, name)).toEqual([]);
+    }
   });
   it("accepts the real OpenCode native skill-loader mapping, including its completed provider output", () => {
     const part = (status: string) => ({ id: "load-skill", type: "tool", tool: "skill", state: {
