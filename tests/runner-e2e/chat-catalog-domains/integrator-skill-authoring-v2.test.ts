@@ -60,7 +60,7 @@ it("rejects invented inspection receipts and keeps other skill cases on their or
  expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.explicit-restriction")!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v1");
 });
 it("cannot extend an exhausted original case budget to inspect a finished artifact",async()=>{
- const f=fixture();f.ctx.observationDeadlineAt=Date.now()-1;
+ const f=fixture();Object.assign(f.ctx,{observationDeadlineAt:Date.now()-1});
  await expect(inspectAuthoredSkill(f.ctx,f.state,f.o)).rejects.toThrow("budget");expect(f.events).toEqual([]);
 });
 
