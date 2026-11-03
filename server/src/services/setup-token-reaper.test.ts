@@ -125,9 +125,6 @@ describe("setup-token reaper", () => {
   });
 
   it("removes a reapable record without a lease id without calling the lease provider", async () => {
-    // A nullable provider_lease_id from an interrupted or legacy session maps
-    // to an empty string. An environment lease id is a UUID, so no provider
-    // lease can exist for this record.
     const store = createMemoryStore();
     store.seed({ sessionId: "orphan-without-lease", leaseId: "", state: "failed" });
     const leases = createFakeLeases();

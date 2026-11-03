@@ -339,10 +339,6 @@ export async function reapSetupTokenLeases(
   let failed = 0;
   for (const record of records) {
     try {
-      // `provider_lease_id` is nullable for legacy or interrupted rows. It
-      // cannot identify an environment lease when it is blank: that primary
-      // key is a UUID. Remove the terminal cleanup record without asking the
-      // provider to release an impossible lease id.
       if (record.leaseId.trim()) await deps.leases.releaseById(record.leaseId);
       await deps.store.remove({
         sessionId: record.sessionId,
