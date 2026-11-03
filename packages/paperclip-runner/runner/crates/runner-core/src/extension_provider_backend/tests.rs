@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Stdio};
 use uuid::Uuid;
 
 struct Fixture {
@@ -155,6 +155,133 @@ fn command(kind: &str, payload: Value) -> Command {
         precondition: None,
         payload,
     }
+}
+
+fn assert_native_node_entrypoint(filename: &str, esm: bool) {
+    let mut fixture = Fixture::new();
+    let dependency = fixture.root.join("node_modules/fixture-dependency");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        dependency.join("package.json"),
+        r#"{"name":"fixture-dependency","main":"index.cjs"}"#,
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("index.cjs"),
+        "module.exports='bare-dependency';",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("relative.cjs"),
+        "module.exports='relative-dependency';",
+    )
+    .unwrap();
+    let mut source =
+        fs::read_to_string(&fixture.profile.entrypoint.as_ref().unwrap().path).unwrap();
+    let preamble = if esm {
+        source = source.replace(
+            "const readline = require('node:readline');",
+            "import readline from 'node:readline';",
+        );
+        r#"import dependency from 'fixture-dependency';
+import relative from './relative.cjs';
+import {realpathSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+await Promise.resolve();
+if(dependency!=='bare-dependency'||relative!=='relative-dependency'||fileURLToPath(import.meta.url)!==realpathSync(process.argv[1])||process.argv[2]!=='fixture-argument') throw Error('ESM package resolution changed');
+"#
+    } else {
+        r#"const dependency=require('fixture-dependency');
+const relative=require('./relative.cjs');
+if(dependency!=='bare-dependency'||relative!=='relative-dependency'||__filename!==require('node:fs').realpathSync(process.argv[1])||require.main!==module||process.argv[2]!=='fixture-argument') throw Error('CommonJS package resolution changed');
+"#
+    };
+    let entrypoint = fixture.root.join(filename);
+    fs::write(&entrypoint, format!("{preamble}{source}")).unwrap();
+    fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o400)).unwrap();
+    fixture.profile.entrypoint = Some(artifact(entrypoint.clone()));
+    fixture.profile.args = vec!["fixture-argument".to_owned()];
+
+    let initialize = json!({"schema":WIRE_SCHEMA,"id":1,"method":"initialize","params":{"identity":fixture.profile.identity}});
+    let mut setup = ProcessCommand::new(&fixture.profile.command.path)
+        .arg(&entrypoint)
+        .args(&fixture.profile.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(setup.stdin.take().unwrap(), "{initialize}").unwrap();
+    let output = setup.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "setup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        receipt["result"]["identity"],
+        json!(fixture.profile.identity)
+    );
+
+    let mut executor = fixture.executor();
+    executor.execute(&fixture.prepare()).unwrap();
+    executor
+        .execute(&command("session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command("turn.start", json!({"complete":true})))
+        .unwrap();
+    let events = executor.poll_events().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "item.completed"
+            && event.payload["item"]["text"] == "verified output"));
+    assert_eq!(events.last().unwrap().event_type, "run.terminal");
+    executor.shutdown().unwrap();
+
+    let launch = fixture.profile.verified_launch().unwrap();
+    fs::remove_file(&entrypoint).unwrap();
+    fs::write(
+        &entrypoint,
+        "throw Error('unverified replacement executed');",
+    )
+    .unwrap();
+    fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o400)).unwrap();
+    let mut process = SupervisedProcess::spawn_verified_with_environment_keys(
+        &launch,
+        Duration::from_secs(2),
+        MAX_FRAME_BYTES,
+        &[],
+    )
+    .unwrap();
+    process.send(&initialize).unwrap();
+    let result = loop {
+        match process.recv_timeout(REQUEST_TIMEOUT).unwrap() {
+            crate::process_supervisor::ProcessOutput::Stdout(line) => {
+                break parse_frame(&line).unwrap()
+            }
+            crate::process_supervisor::ProcessOutput::Stderr(line) => {
+                panic!("verified entrypoint failed: {line}")
+            }
+            _ => panic!("verified entrypoint closed without initialization"),
+        }
+    };
+    assert_eq!(
+        result["result"]["identity"],
+        json!(fixture.profile.identity)
+    );
+    process.terminate_group().unwrap();
+}
+
+#[test]
+fn native_node_entrypoint_preserves_esm_package_loading_and_verified_source() {
+    assert_native_node_entrypoint("entry.mjs", true);
+}
+
+#[test]
+fn native_node_entrypoint_preserves_commonjs_dependencies_and_verified_source() {
+    assert_native_node_entrypoint("entry.cjs", false);
 }
 
 #[test]

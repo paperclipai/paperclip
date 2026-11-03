@@ -10,6 +10,21 @@ use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_a
 
 use super::{bounded_text, invalid, EXTENSION_LAUNCH_PROFILE_ENV};
 
+const VERIFIED_NODE_ENTRYPOINT_LOADER: &str = r#"const fs=require('node:fs');
+const Module=require('node:module');
+const {pathToFileURL}=require('node:url');
+const filename=process.argv[2];
+const source=fs.readFileSync(process.argv[1]);
+const target=pathToFileURL(filename).href;
+let admitted=false;
+Module.registerHooks({load(url,context,nextLoad){
+  if(!admitted){if(url!==target)throw Error('Verified extension entrypoint resolution changed');admitted=true;}
+  if(url===target)return {...nextLoad(url,{...context,source}),source};
+  return nextLoad(url,context);
+}});
+process.argv.splice(1,1);
+Module.runMain(filename);"#;
+
 fn sha256(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64
@@ -135,11 +150,23 @@ impl ExtensionLaunchProfile {
             verify_executable_launch_artifact(&self.command.qualified()?, "extension command")?;
         let mut args = Vec::new();
         if let Some(entrypoint) = &self.entrypoint {
-            // The entrypoint is a bundled CommonJS artifact. It may load only
-            // its declared runtime closure; Node's ambient module path is empty.
-            args.push(VerifiedProcessArgument::CommonJsArtifact(
-                verify_launch_artifact(&entrypoint.qualified()?, "extension entrypoint")?,
+            let filename = std::fs::canonicalize(&entrypoint.path)
+                .map_err(|_| invalid("extension entrypoint path is unavailable"))?;
+            let source = verify_launch_artifact(&entrypoint.qualified()?, "extension entrypoint")?;
+            if std::fs::canonicalize(&entrypoint.path).ok().as_ref() != Some(&filename) {
+                return Err(invalid(
+                    "extension entrypoint path changed during verification",
+                ));
+            }
+            let filename = filename
+                .to_str()
+                .ok_or_else(|| invalid("extension entrypoint path is not UTF-8"))?;
+            args.push(VerifiedProcessArgument::Literal("--eval".to_owned()));
+            args.push(VerifiedProcessArgument::Literal(
+                VERIFIED_NODE_ENTRYPOINT_LOADER.to_owned(),
             ));
+            args.push(VerifiedProcessArgument::Artifact(source));
+            args.push(VerifiedProcessArgument::Literal(filename.to_owned()));
         }
         args.extend(
             self.args
