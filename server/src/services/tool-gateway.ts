@@ -11152,6 +11152,7 @@ export function createToolGatewayService(
         },
       });
 
+      let resultSettledByThisCall = false;
       try {
         await assertCurrentGatewayIssuer(session, tool, effectiveParameters, invocationId, !!input.approvedActionRequestId);
         const executionTimeoutMs = timeoutMs(input.timeoutMs, tool);
@@ -11237,6 +11238,7 @@ export function createToolGatewayService(
           .where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing")))
           .returning({ id: toolInvocations.id });
         if (!settledInvocation.length) throw new ToolGatewayHttpError(409, "The external outcome requires review", "tool_execution_outcome_unknown");
+        resultSettledByThisCall = true;
         if (input.approvedActionRequestId) {
           const actionRequestId = input.approvedActionRequestId;
           const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
@@ -11364,12 +11366,14 @@ export function createToolGatewayService(
                 : status === 429
                   ? "rate_limited"
                   : "failed",
-            errorCode: reasonCode,
+            errorCode: resultSettledByThisCall ? "tool_execution_outcome_unknown" : reasonCode,
             errorMessage: message,
             completedAt,
             updatedAt: completedAt,
           })
-          .where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing")));
+          .where(and(eq(toolInvocations.id, invocationId), resultSettledByThisCall
+            ? inArray(toolInvocations.status, ["executing", "succeeded"])
+            : eq(toolInvocations.status, "executing")));
         void emitConnectionInvoked(db, invocationId);
         if (input.approvedActionRequestId) {
           const actionRequestId = input.approvedActionRequestId;
@@ -11611,6 +11615,7 @@ export function createToolGatewayService(
       });
 
       const startedAt = Date.now();
+      let resultSettledByThisCall = false;
       try {
         const result = await pluginToolDispatcher.executeTool(
           input.tool,
@@ -11636,6 +11641,7 @@ export function createToolGatewayService(
           .where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing")))
           .returning({ id: toolInvocations.id });
         if (!settledInvocation.length) throw new ToolGatewayHttpError(409, "The external outcome requires review", "tool_execution_outcome_unknown");
+        resultSettledByThisCall = true;
         await writeToolCallEvent({
           invocationId,
           session: sessionLike,
@@ -11688,12 +11694,14 @@ export function createToolGatewayService(
           .update(toolInvocations)
           .set({
             status: status === 504 ? "timed_out" : "failed",
-            errorCode: reasonCode,
+            errorCode: resultSettledByThisCall ? "tool_execution_outcome_unknown" : reasonCode,
             errorMessage: message,
             completedAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing")));
+          .where(and(eq(toolInvocations.id, invocationId), resultSettledByThisCall
+            ? inArray(toolInvocations.status, ["executing", "succeeded"])
+            : eq(toolInvocations.status, "executing")));
         void emitConnectionInvoked(db, invocationId);
         await writeToolCallEvent({
           invocationId,
