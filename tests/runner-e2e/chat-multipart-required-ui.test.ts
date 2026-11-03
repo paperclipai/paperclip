@@ -8,7 +8,7 @@ import type { ChatCatalogContext } from "./chat-catalog-contract.js";
 function fixture(options: { advancesMissing?: boolean; missingValidation?: boolean; createsWork?: boolean; resumesWork?: boolean; wrongPrompt?: boolean; changedPayload?: boolean; prematurelyResolved?: boolean } = {}) {
   let page = 0, answered = false, reads = 0, submitted = false, attemptedMissing = false;
   const clicks: string[] = [], answers: Record<string, string> = {};
-  const original = { id: "question", kind: "ask_user_questions", status: "pending", payload: { questionSet: { questions: [
+  const original = { id: "question", companyId: "company", issueId: "source", kind: "ask_user_questions", status: "pending", payload: { questionSet: { questions: [
     { id: "audience", prompt: "Who is the audience?", required: true }, { id: "tone", prompt: "What tone should we use?", required: true }, { id: "headline", prompt: "What is your custom headline?", required: true },
   ] } } };
   const form: any = { isVisible: () => true, getByText: (prompt: string) => ({ isVisible: () => prompt === "This question is required."
@@ -25,13 +25,15 @@ function fixture(options: { advancesMissing?: boolean; missingValidation?: boole
     }),
     getByTestId: () => ({ isVisible: async () => page === 2, locator: () => ({ first: () => ({ fill: async (value: string) => { answers.headline = value; } }) }) }),
   };
-  const ctx = { issue: () => ({ id: "source", conversationState: "waiting" }), refreshIssue: async () => {}, allRuns: async () => [{ id: "native", status: "succeeded" }, ...(options.resumesWork && attemptedMissing ? [{ id: "forbidden-continuation", status: "running" }] : [])],
-    input: { fixtures: { company: { id: "company" } }, page: { locator: () => ({ click: async () => {} }), getByTestId: () => form }, api: { get: async (url: string) => {
+  const query = "Help me choose the details for the launch page before you build it.";
+  const ctx = { observationDeadlineAt: Date.now() + 300_000, scenario: { query }, issue: () => ({ id: "source", conversationState: "waiting" }), refreshIssue: async () => {}, allRuns: async () => [{ id: "native", companyId: "company", agentId: "ceo", contextSnapshot: { issueId: "source", commentId: "human" }, status: "succeeded" }, ...(options.resumesWork && attemptedMissing ? [{ id: "forbidden-continuation", status: "running" }] : [])],
+    input: { fixtures: { company: { id: "company" }, agent: { id: "ceo" } }, page: { locator: () => ({ click: async () => {} }), getByTestId: () => form }, api: { get: async (url: string) => {
+      if (url.endsWith("comments?order=asc")) return [{ id: "human", issueId: "source", authorUserId: "person", body: query }];
       if (url.endsWith("interactions")) { reads++; return [{ ...original, status: options.prematurelyResolved ? "resolved" : "pending", payload: options.changedPayload && reads >= 2 ? { replaced: true } : original.payload }]; }
       return options.createsWork && attemptedMissing && url.includes("/issues?") ? [{ id: "forbidden-work" }] : [];
     } } },
   } as unknown as ChatCatalogContext;
-  return { ctx, state: { original, answer: "Acorn unchanged human answer" } as Record<string, unknown>, clicks, answers, submitted: () => submitted };
+  return { ctx, state: { sourceId: "source", original, answer: "Acorn unchanged human answer" } as Record<string, unknown>, clicks, answers, submitted: () => submitted };
 }
 it("actual multipart act clicks enabled Next to observe required blocking, retains earlier choice and submits the exact supplied answer", async () => {
   const f = fixture(), c = questionIdentityCases.find(row => row.scenarioId === "questions-and-approvals.multi-part-question")!;

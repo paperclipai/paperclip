@@ -203,11 +203,29 @@ export const questionIdentityCases = [
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
     expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v2",
     async act(ctx, state) {
-      await waitForReply(ctx);
-      const row = ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${entity(state, "original").id}`)}]`);
+      const remaining = () => remainingIdentityObservationBudget(ctx);
+      remaining();
+      await waitForReply(ctx, ctx.observationDeadlineAt);
+      remaining();
+      const source = ctx.issue(), original = entity(state, "original") as Interaction;
+      if (!source || source.id !== state.sourceId || original.companyId !== ctx.input.fixtures.company.id
+        || original.issueId !== source.id || original.kind !== "ask_user_questions" || original.status !== "pending")
+        throw new Error("Multipart initial response does not match its saved question source");
+      const [runs, comments] = await Promise.all([
+        ctx.allRuns(),
+        ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments?order=asc`, { timeout: remaining() }),
+      ]);
+      remaining();
+      const canonical = comments.filter(comment => comment.authorUserId && !comment.createdByRunId && comment.body?.trim() === ctx.scenario.query.trim());
+      const run = runs[0];
+      if (ctx.issue()?.id !== source.id || source.conversationState !== "waiting"
+        || runs.length !== 1 || !run || run.status !== "succeeded" || run.companyId !== ctx.input.fixtures.company.id
+        || run.agentId !== ctx.input.fixtures.agent.id || run.contextSnapshot?.issueId !== source.id
+        || canonical.length !== 1 || run.contextSnapshot?.commentId !== canonical[0]?.id)
+        throw new Error("Multipart initial response does not match the saved question and canonical source run");
+      const row = ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${original.id}`)}]`);
       await row.click();
       const form = ctx.input.page.getByTestId("task-chat-composer-takeover");
-      const original = entity(state, "original") as Interaction;
       const firstQuestion = original.payload.questionSet?.questions[0];
       if (!firstQuestion?.required) throw new Error("Multipart first question must retain its saved required contract");
       const before = (await cards(ctx)).find(card => card.id === original.id);
