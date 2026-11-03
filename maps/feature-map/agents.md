@@ -67,6 +67,13 @@ resource allocation waits for approval.
 
 ### `agent-configuration`
 
+Claude **Advanced → Run policies** includes import mode, optional profile source,
+per-agent transcript retention, and retention days. Typed fields override legacy
+environment bindings without changing unset defaults. The
+[selector regression](../../ui/src/adapters/claude-local/config-fields.test.tsx)
+covers create/edit saves, legacy environment fallback, and preservation of secret
+references. Live plugin execution remains a separate provider check.
+
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
 The agent nav has two sections: **Agent** (Overview, Identity at
 `/agents/:agentId/identity`, Harness / Runtime, Secrets & variables,

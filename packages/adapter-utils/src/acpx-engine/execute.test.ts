@@ -12,6 +12,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
+import { managedAiHomeEnvironment } from "@paperclipai/adapter-utils/server-utils";
 
 // Wrap the staging seam + both sandbox bridges in call-recording spies that
 // still delegate to the real implementations (a runner-backed sandbox test
@@ -30,6 +31,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
 import {
   buildAcpxRunSummary,
   createAcpxEngineExecutor,
+  evictStaleSessionRecord,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
@@ -189,6 +191,8 @@ async function runExecutor(
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    onEnsureSession?: (input: Record<string, unknown>) => void;
+    sessionEnvironmentIdentity?: (env: Readonly<Record<string, string>>, config: Record<string, unknown>) => Record<string, string>;
   } = {},
 ) {
   // Skill reconciliation must never inspect or modify the developer's real
@@ -198,6 +202,7 @@ async function runExecutor(
     defaultGeminiTestHome ??= await makeTempRoot();
     config = { ...config, env: { ...configuredEnv, HOME: defaultGeminiTestHome } };
   }
+  const { onEnsureSession } = options;
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
   const sessionInputs: Record<string, unknown>[] = [];
@@ -207,6 +212,7 @@ async function runExecutor(
   const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
   const receipts: unknown[] = [];
   const execute = createAcpxEngineExecutor({
+    sessionEnvironmentIdentity: options.sessionEnvironmentIdentity,
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
@@ -214,7 +220,10 @@ async function runExecutor(
       runtimeOptions.push(options as unknown as Record<string, unknown>);
       return buildRuntime(
         ({ key, value }) => configOptions.push({ key, value }),
-        (input) => sessionInputs.push(input),
+        (input) => {
+          sessionInputs.push(input);
+          onEnsureSession?.(input);
+        },
         (input) => turnInputs.push(input),
       ) as never;
     },
@@ -2199,6 +2208,108 @@ describe("shared ACPX engine runtime behavior", () => {
     const changed = await withScratch(path.join(root, "run-3"), "/custom/tmp-2");
     expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
     expect(changed.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+  });
+
+  it("normalizes generated adapter paths for identity without changing the launch environment", async () => {
+    const root = await makeTempRoot();
+    const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    const identity = (env: Readonly<Record<string, string>>) => ({ ...env, GENERATED_ASSET_DIR: "<generated-asset>" });
+    async function run(dir: string, revision: string, normalize = true) {
+      return runExecutor({ ...config, env: { GENERATED_ASSET_DIR: dir, ASSET_REVISION: revision } }, {
+        sessionEnvironmentIdentity: normalize ? identity : undefined,
+      });
+    }
+    const first = await run(path.join(root, "run-1"), "v1");
+    const second = await run(path.join(root, "run-2"), "v1");
+    expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+    expect((second.sessionInputs[0]?.sessionOptions as { env: Record<string, string> }).env.GENERATED_ASSET_DIR).toBe(path.join(root, "run-2"));
+    expect((await run(path.join(root, "run-2"), "v2")).result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+    expect((await run(path.join(root, "run-2"), "v1", false)).result.sessionParams?.configFingerprint).not.toBe((await run(path.join(root, "run-1"), "v1", false)).result.sessionParams?.configFingerprint);
+  });
+
+  it("keeps the rotated managed-AI credential home out of session identity while retaining real adapter env changes", async () => {
+    const root = await makeTempRoot();
+    const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    async function fingerprint(home: string, opts: { model?: string; userHome?: string; flagged?: boolean } = {}) {
+      const env: Record<string, string> = { ...managedAiHomeEnvironment(home), ANTHROPIC_MODEL: opts.model ?? "claude-opus-4-7" };
+      if (opts.userHome) env.HOME = opts.userHome;
+      const run = await runExecutor(
+        { ...config, env },
+        { context: { taskId: "issue-1", ...(opts.flagged === false ? {} : { managedAiRetainedHome: home }) } },
+      );
+      return run.result.sessionParams?.configFingerprint;
+    }
+    const home1 = path.join(root, "ai-home-1");
+    const home2 = path.join(root, "ai-home-2");
+    const first = await fingerprint(home1);
+
+    expect(await fingerprint(home2)).toBe(first);
+    expect(await fingerprint(home2, { model: "claude-sonnet-5" })).not.toBe(first);
+    expect(await fingerprint(home2, { userHome: path.join(root, "user-home") }))
+      .not.toBe(await fingerprint(home2, { userHome: path.join(root, "other-user-home") }));
+    expect(await fingerprint(home2, { flagged: false })).not.toBe(await fingerprint(home1, { flagged: false }));
+  });
+
+  function staleSessionRecord(sessionKey: string, cwd: string, stateDir: string): AcpSessionRecord {
+    return {
+      schema: "acpx.session.v1", acpxRecordId: sessionKey, acpSessionId: "stale-backend-session",
+      agentCommand: "fixture-provider", cwd, name: "fixture", createdAt: "2026-10-20T00:00:00.000Z",
+      lastUsedAt: "2026-10-20T00:00:01.000Z", lastSeq: 0,
+      eventLog: { active_path: path.join(stateDir, "fixture.jsonl"), segment_count: 1, max_segment_bytes: 1024, max_segments: 2 },
+      messages: [], updated_at: "2026-10-20T00:00:01.000Z", cumulative_token_usage: {}, request_token_usage: {},
+    };
+  }
+
+  it("flags a stale persisted session record so acpx starts a fresh session", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const store = createRuntimeStore({ stateDir });
+    await store.save(staleSessionRecord("fixture-session-key", root, stateDir));
+
+    await evictStaleSessionRecord(store, "fixture-session-key");
+    const flagged = await store.load("fixture-session-key");
+    expect(flagged?.acpx?.reset_on_next_ensure).toBe(true);
+    expect(flagged?.acpSessionId).toBe("stale-backend-session");
+
+    await expect(evictStaleSessionRecord(store, "fixture-session-key")).resolves.toBeUndefined();
+    await expect(evictStaleSessionRecord(store, "no-such-session-key")).resolves.toBeUndefined();
+  });
+
+  it("evicts a stale persisted record when a run starts fresh, but never when a run resumes", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const config = { agentCommand: "node ./fake-acp.js", cwd: root, stateDir };
+    const first = await runExecutor(config);
+    const sessionKey = first.sessionInputs[0]!.sessionKey as string;
+    const store = first.runtimeOptions[0]!.sessionStore as AcpSessionStore;
+
+    await store.save(staleSessionRecord(sessionKey, root, stateDir));
+    await runExecutor(config, { runtime: { sessionParams: first.result.sessionParams } });
+    expect((await store.load(sessionKey))?.acpx?.reset_on_next_ensure).not.toBe(true);
+
+    await store.save(staleSessionRecord(sessionKey, root, stateDir));
+    await runExecutor(config, { runtime: { sessionParams: {} } });
+    expect((await store.load(sessionKey))?.acpx?.reset_on_next_ensure).toBe(true);
+  });
+
+  it("evicts a stale persisted record before the fresh retry after a failed resume", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const config = { agentCommand: "node ./fake-acp.js", cwd: root, stateDir };
+    const first = await runExecutor(config);
+    const sessionKey = first.sessionInputs[0]!.sessionKey as string;
+    const store = first.runtimeOptions[0]!.sessionStore as AcpSessionStore;
+
+    await store.save(staleSessionRecord(sessionKey, root, stateDir));
+    const retried = await runExecutor(config, {
+      runtime: { sessionParams: first.result.sessionParams },
+      onEnsureSession: (input) => {
+        if (input.resumeSessionId) throw new Error("session not found");
+      },
+    });
+
+    expect(retried.sessionInputs.map((input) => Boolean(input.resumeSessionId))).toEqual([true, false]);
+    expect((await store.load(sessionKey))?.acpx?.reset_on_next_ensure).toBe(true);
   });
 
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {

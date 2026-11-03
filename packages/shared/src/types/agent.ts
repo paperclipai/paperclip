@@ -103,6 +103,8 @@ export interface Agent {
   capabilities: string | null;
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
+  /** Read-only presentation of inherited non-secret choices; never saved as adapter configuration. */
+  adapterConfigDefaults?: Record<string, unknown>;
   /** Non-fatal options ignored by this configuration write; not persisted. */
   configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   runtimeConfig: AgentRuntimeConfig;

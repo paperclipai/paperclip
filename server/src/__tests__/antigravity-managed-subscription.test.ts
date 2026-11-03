@@ -90,6 +90,13 @@ afterEach(async () => {
 });
 
 describe("managed Antigravity subscription projection and writeback", () => {
+  it("keeps Antigravity's managed home unique per run", async () => {
+    const first = await prepare();
+    const second = await prepare();
+
+    expect(first.home).not.toBe(second.home);
+  });
+
   it("returns a bounded cleanup diagnostic and retains the selected home until native retirement and refresh handoff", async () => {
     let confirmRetirement!: () => void;
     const retired = new Promise<void>(resolve => { confirmRetirement = resolve; });

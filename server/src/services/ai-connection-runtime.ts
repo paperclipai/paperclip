@@ -4,7 +4,7 @@ import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credent
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
-import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, rename, lstat, realpath, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -29,6 +29,8 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { assertAiCredentialCleanupSettled, bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup, type RetainedAiCleanupScope } from "./retained-ai-credential-cleanup.js";
+import { managedClaudeTranscriptRetentionEnabled } from "./managed-claude-transcripts.js";
+import { withWorktreePortRegistryLock } from "@paperclipai/shared/worktree-port-registry";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -209,6 +211,129 @@ function managedAiHomeEnvironment(home: string): Record<string, string> {
   };
 }
 
+const MANAGED_AI_HOME_CLAIM_FILE = ".paperclip-home-claim.json";
+export const MANAGED_AI_STABLE_HOME_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+
+async function pidStartTimeMs(pid: number): Promise<number | undefined> {
+  try {
+    return (await lstat(`/proc/${pid}`)).ctimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+async function claimOwnerGone(claim: { pid?: unknown; startedAtMs?: unknown }): Promise<boolean> {
+  const pid = claim.pid;
+  if (typeof pid !== "number") return true;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+  if (typeof claim.startedAtMs !== "number") return false;
+  const currentStartedAtMs = await pidStartTimeMs(pid);
+  return currentStartedAtMs !== undefined && Math.abs(currentStartedAtMs - claim.startedAtMs) > 2000;
+}
+
+async function isOwnedPrivateDirectory(target: string): Promise<boolean> {
+  try {
+    const stat = await lstat(target);
+    return stat.isDirectory() && stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureOwnedPrivateDirectory(target: string): Promise<boolean> {
+  try {
+    await mkdir(target, { recursive: true, mode: 0o700 });
+    let stat = await lstat(target);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.()) return false;
+    if ((stat.mode & 0o077) !== 0) {
+      await chmod(target, 0o700);
+      stat = await lstat(target);
+    }
+    return stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function managedAiHomeClaimMayBeStale(baseDir: string, now: () => number): Promise<boolean> {
+  if (!(await isOwnedPrivateDirectory(baseDir))) return false;
+  let claim: { pid?: unknown; claimedAt?: unknown; startedAtMs?: unknown; retryPending?: unknown } | undefined;
+  try { claim = JSON.parse(await readFile(path.join(baseDir, MANAGED_AI_HOME_CLAIM_FILE), "utf8")); } catch {}
+  if (claim?.retryPending || typeof claim?.claimedAt !== "number") return false;
+  return now() - claim.claimedAt >= MANAGED_AI_STABLE_HOME_STALE_AFTER_MS && await claimOwnerGone(claim);
+}
+
+async function writeManagedAiHomeClaim(
+  baseDir: string,
+  claim: { pid: number; claimedAt: number; startedAtMs?: number; retryPending?: true },
+): Promise<void> {
+  await writeFile(path.join(baseDir, MANAGED_AI_HOME_CLAIM_FILE), JSON.stringify(claim), { mode: 0o600 });
+}
+
+async function reclaimStaleManagedAiHome(baseDir: string, now: () => number): Promise<boolean> {
+  if (!(await isOwnedPrivateDirectory(baseDir))) return false;
+  let claim: { pid?: unknown; claimedAt?: unknown; startedAtMs?: unknown; retryPending?: unknown } | undefined;
+  try {
+    claim = JSON.parse(await readFile(path.join(baseDir, MANAGED_AI_HOME_CLAIM_FILE), "utf8"));
+  } catch {}
+  if (claim?.retryPending) return false;
+  const claimedAt = typeof claim?.claimedAt === "number" ? claim.claimedAt : undefined;
+  const expired = claimedAt !== undefined && now() - claimedAt >= MANAGED_AI_STABLE_HOME_STALE_AFTER_MS;
+  if (!expired || !(await claimOwnerGone(claim ?? {}))) return false;
+  const graveyard = `${baseDir}.stale-${process.pid}-${now()}`;
+  try {
+    await rename(baseDir, graveyard);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  await rm(graveyard, { recursive: true, force: true });
+  return true;
+}
+
+async function reclaimManagedAiHomeWithLock(baseDir: string, now: () => number): Promise<boolean> {
+  const identity = process.platform === "win32" ? path.resolve(baseDir).toLowerCase() : path.resolve(baseDir);
+  const lockKey = createHash("sha256").update(identity).digest("hex");
+  const lockRoot = path.join(os.tmpdir(), "paperclip-ai-home-claims");
+  const lockHome = path.join(lockRoot, lockKey);
+  if (!(await ensureOwnedPrivateDirectory(lockRoot)) || !(await ensureOwnedPrivateDirectory(lockHome))) return false;
+  return withWorktreePortRegistryLock(lockHome, () => reclaimStaleManagedAiHome(baseDir, now));
+}
+
+export async function claimManagedAiHome(
+  baseDir: string,
+  now: () => number = Date.now,
+): Promise<{ home: string; stable: boolean }> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(baseDir, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (attempt === 0 && await managedAiHomeClaimMayBeStale(baseDir, now)) {
+        if (await reclaimManagedAiHomeWithLock(baseDir, now)) continue;
+      }
+      break;
+    }
+    try {
+      const startedAtMs = await pidStartTimeMs(process.pid);
+      await writeManagedAiHomeClaim(baseDir, {
+        pid: process.pid,
+        claimedAt: now(),
+        ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      });
+    } catch {
+      await rm(baseDir, { recursive: true, force: true }).catch(() => {});
+      break;
+    }
+    return { home: baseDir, stable: true };
+  }
+  return { home: await mkdtemp(`${baseDir}-`), stable: false };
+}
+
 /** Only the server-created credential home is volatile; retain all other config. */
 export function managedAiSessionFingerprintConfig(
   config: Record<string, unknown>,
@@ -334,20 +459,41 @@ export async function prepareManagedAiRuntime(
     })();
     const antigravitySubscription = harness === "antigravity_runtime" && selection.attribution.method === "subscription";
     const originalCredential = antigravitySubscription ? sanitizeAntigravityCredential(value) : value;
-    home = await mkdtemp(
-      path.join(
-        os.tmpdir(),
-        `paperclip-ai-${input.companyId}-${selection.grant.id}-`,
-      ),
-    );
-    if (harness === "antigravity_runtime") home = await realpath(home);
-    const providerHome = path.join(home, "provider");
-    await mkdir(providerHome, { mode: 0o700 });
+    const rawAgentEnv = input.config.env && typeof input.config.env === "object"
+      ? input.config.env as Record<string, unknown>
+      : {};
+    const configuredClaudeConfigDir = harness === "claude_local" && typeof rawAgentEnv.CLAUDE_CONFIG_DIR === "string" && rawAgentEnv.CLAUDE_CONFIG_DIR.trim()
+      ? path.resolve(rawAgentEnv.CLAUDE_CONFIG_DIR.trim())
+      : undefined;
+    const agentEnv = stripAiAuthBindings(rawAgentEnv);
+    const configuredClaudeHome = harness === "claude_local" && typeof agentEnv.HOME === "string" && agentEnv.HOME.trim()
+      ? path.resolve(agentEnv.HOME.trim())
+      : undefined;
+    // Keep Paperclip's per-run home unless transcript retention is explicitly
+    // enabled. Explicit agent paths are never included in this cleanup target.
+    let stableHome = false;
+    if (configuredClaudeHome) {
+      home = undefined;
+    } else if (harness === "claude_local" && managedClaudeTranscriptRetentionEnabled()) {
+      const claimed = await claimManagedAiHome(
+        path.join(os.tmpdir(), `paperclip-ai-${input.companyId}-${selection.grant.id}`),
+      );
+      home = claimed.home;
+      stableHome = claimed.stable;
+    } else {
+      // Other managed runtimes retain Paperclip's existing per-run isolation.
+      home = await mkdtemp(path.join(os.tmpdir(), `paperclip-ai-${input.companyId}-${selection.grant.id}-`));
+    }
+    if (harness === "antigravity_runtime" && home) home = await realpath(home);
+    const effectiveHome = configuredClaudeHome ?? home!;
+    const providerHome = path.join(effectiveHome, "provider");
+    await mkdir(providerHome, { recursive: true, mode: 0o700 });
     if (retainedCleanupScope) releaseCredentialHome = bindRetainedAiCredentialHome(providerHome, retainedCleanupScope);
     const env: Record<string, unknown> = {
-      ...stripAiAuthBindings(input.config.env),
+      ...agentEnv,
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
-      ...managedAiHomeEnvironment(home),
+      ...managedAiHomeEnvironment(effectiveHome),
+      ...(configuredClaudeConfigDir ? { CLAUDE_CONFIG_DIR: configuredClaudeConfigDir } : {}),
       ...(input.binding.provider === "github" ? { GH_TOKEN: "", GITHUB_TOKEN: "" } : {}),
     };
     const capability =
@@ -383,7 +529,7 @@ export async function prepareManagedAiRuntime(
     if (!routing && input.binding.provider === "google" && harness === "gemini_local") {
       // Gemini headless CLI requires an explicit auth choice even with an API key.
       // Seed only the disposable connection home, never the operator's settings.
-      const geminiHome = path.join(home, ".gemini");
+      const geminiHome = path.join(effectiveHome, ".gemini");
       await mkdir(geminiHome, { mode: 0o700 });
       await writeFile(path.join(geminiHome, "settings.json"), JSON.stringify({
         selectedAuthType: "gemini-api-key",
@@ -600,6 +746,15 @@ export async function prepareManagedAiRuntime(
         return await (antigravitySubscription
           ? withAccountHomeSecretMutationLock(undefined, input.companyId, cleanup) : cleanup());
       } catch (error) {
+        if (stableHome && home && subscriptionFile && !homeRemoved) {
+          const startedAtMs = await pidStartTimeMs(process.pid);
+          await writeManagedAiHomeClaim(home, {
+            pid: process.pid,
+            claimedAt: Date.now(),
+            ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+            retryPending: true,
+          }).catch(() => {});
+        }
         if (retainedCleanupScope && !homeRemoved) retainAiCredentialCleanup({ scope: retainedCleanupScope, cleanup: cleanupRuntime });
         throw error;
       }
@@ -615,6 +770,12 @@ export async function prepareManagedAiRuntime(
         ...input.config,
         ...projected?.config,
         ...(routing ? { managedAiRouting: routing } : {}),
+        ...(harness === "claude_local" ? {
+          managedAiHomeOverrides: {
+            home: Boolean(configuredClaudeHome),
+            claudeConfigDir: Boolean(configuredClaudeConfigDir),
+          },
+        } : {}),
         env,
         managedAiConnection: { ...attribution, identity, sessionIdentity },
       },

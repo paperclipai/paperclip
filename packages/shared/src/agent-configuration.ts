@@ -38,7 +38,7 @@ export type AgentConfigurationSource = Omit<Pick<Agent, "id" | keyof AgentConfig
   role: string;
   adapterType: string;
 };
-export type AgentConfigurationResponse = AgentConfigurationSource & { configurationRevision: string };
+export type AgentConfigurationResponse = AgentConfigurationSource & Pick<Agent, "adapterConfigDefaults"> & { configurationRevision: string };
 
 export function agentConfigurationSpec(agent: AgentConfigurationSource) {
   return {

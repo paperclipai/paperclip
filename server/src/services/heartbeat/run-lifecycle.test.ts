@@ -261,23 +261,31 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
   it.each(["setRunStatus", "setRunStatusIfRunning"] as const)("wakes retained cleanup only after the outer %s terminal write commits", async operation => {
     const { run } = await fixture();
     const hints: unknown[] = [];
+    const transcriptHints: unknown[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.retainedNativeSessionCleanup, (event, scopes) => {
       if (event === "settled") for (const scope of scopes ?? []) hints.push(JSON.parse(scope));
+    });
+    const unsubscribeTranscripts = subscribeDatabaseWork(db, DELIVERY_QUEUES.managedClaudeTranscriptCleanup, (event, scopes) => {
+      if (event === "settled") for (const scope of scopes ?? []) transcriptHints.push(scope);
     });
     try {
       await db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
         await createHeartbeatLifecycle(tx, callbacks(tx))[operation](run.id, "succeeded", { finishedAt: new Date() });
         expect(hints).toEqual([]);
+        expect(transcriptHints).toEqual([]);
         expect((await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("succeeded");
       });
       expect(hints).toEqual([{ companyId: run.companyId, runId: run.id }]);
+      expect(transcriptHints).toEqual([run.id]);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].finishedAt).not.toBeNull();
       hints.length = 0;
+      transcriptHints.length = 0;
 
       await createHeartbeatLifecycle(db, callbacks(db)).setRunStatus(run.id, "succeeded", { error: "repaired metadata" });
       expect(hints).toEqual([{ companyId: run.companyId, runId: run.id }]);
-    } finally { unsubscribe(); }
+      expect(transcriptHints).toEqual([run.id]);
+    } finally { unsubscribe(); unsubscribeTranscripts(); }
   });
 
   it("does not wake retained cleanup for running progress", async () => {

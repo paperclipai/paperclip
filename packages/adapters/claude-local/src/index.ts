@@ -1,4 +1,6 @@
 export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-opus-5-5";
+export { resolveClaudeRuntimeSettings } from "./runtime-settings.js";
+export type { ClaudeProfileImportMode } from "./runtime-settings.js";
 
 /** Resolve Paperclip's default without replacing an explicit provider model. */
 export function resolveClaudeModel(
@@ -66,6 +68,10 @@ Core fields:
 - model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex without an explicit model retain their provider default.
 - effort (string, optional): model-specific reasoning effort passed via --effort (low|medium|high; current Opus, Sonnet 5/5.5, and Fable models also support xhigh|max)
 - chrome (boolean, optional): pass --chrome when running Claude
+- profileImportMode (off|copy|cache, optional): local managed skills/plugin import; overrides PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE
+- profileSourceDir (string, optional): read-only source profile; overrides the legacy source binding; empty selects automatic discovery
+- transcriptRetentionEnabled (boolean, optional): per-agent managed transcript retention; overrides agent environment and instance defaults
+- transcriptRetentionDays (positive integer, optional): task closure/inactivity retention window recorded on its next retained run
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local and remote targets receive --dangerously-skip-permissions for all built-in and connected tools. Managed sandbox targets also identify themselves to Claude so root container launches support bypass. Non-sandbox root processes must run Claude as a non-root user; Paperclip does not silently downgrade the requested mode.

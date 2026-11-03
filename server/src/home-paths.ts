@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const FRIENDLY_PATH_SEGMENT_RE = /[^a-zA-Z0-9._-]+/g;
@@ -53,6 +54,14 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
     throw new Error(`Invalid agent id for workspace path '${agentId}'.`);
   }
   return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmed);
+}
+
+export function resolveManagedClaudeTranscriptsDir(companyId: string, agentId: string, sessionIdentity: string, taskKey: string): string {
+  for (const id of [companyId, agentId]) {
+    if (!PATH_SEGMENT_RE.test(id)) throw new Error(`Invalid id for transcript path '${id}'.`);
+  }
+  const scope = createHash("sha256").update(JSON.stringify([sessionIdentity, taskKey])).digest("hex").slice(0, 16);
+  return path.resolve(resolvePaperclipInstanceRoot(), "companies", companyId, "agents", agentId, "claude-transcripts", scope);
 }
 
 function sanitizeFriendlyPathSegment(value: string | null | undefined, fallback = "_default"): string {

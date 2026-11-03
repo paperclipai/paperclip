@@ -47,6 +47,7 @@ import {
   issueService,
   readIssueCommentRunLogText,
 } from "../services/issues.ts";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { getRunLogStore } from "../services/run-log-store.js";
 import * as nativeRunLogRecovery from "../services/native-runtime/native-run-log-recovery.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
@@ -651,6 +652,23 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(rejected?.status === "rejected" && rejected.reason)
       .toMatchObject({ status: 409, details: { code: "issue_status_version_changed" } });
     expect(await svc.getById(issueId)).toMatchObject({ status: "todo", statusVersion: original.statusVersion + 1 });
+  });
+
+  it("wakes managed Claude transcript cleanup when an issue status changes", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await seedIssueCompany(db, companyId);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Transcript cleanup", status: "in_progress" });
+    const wake = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.managedClaudeTranscriptCleanup, wake);
+    try {
+      await svc.update(issueId, { status: "done" });
+      expect(wake).toHaveBeenCalledTimes(1);
+      await svc.update(issueId, { title: "No status transition" });
+      expect(wake).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("rejects guarded writes outside backlog promotion without changing the task", async () => {
