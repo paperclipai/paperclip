@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "07f71dbd75a77b6d2ff96e3d4d289d1947538091",
+  "targetSha": "2cb9a6204008e57ac74556a48f4aad404934295b",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -1544,7 +1544,7 @@
           "compileQualification": {
             "baselineSourceSha": "124232037eebe73a513907b08f0e96bfdd454c82",
             "compiledSourceSha": "6abe5739a713d0a8bb0308b1495846881b82d253",
-            "acceptedSourceSha": "6a8e096a577fd0da562f2032b6a7472b3b408b61",
+            "acceptedSourceSha": "6fc5ab6937617d48815b7ffabfdf0bf793a4bab4",
             "all506InputGitBlobsMatched": true,
             "owningSharedAndPluginSdkTypeScriptBuildsPassed": true,
             "changedRuntimeJavaScriptFiles": 0,
@@ -1578,7 +1578,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "07f71dbd75a77b6d2ff96e3d4d289d1947538091",
+        "targetSha": "2cb9a6204008e57ac74556a48f4aad404934295b",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
