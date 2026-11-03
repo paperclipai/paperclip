@@ -238,10 +238,16 @@ for (const status of [403, 404]) test(`a genuine ${status} replaces cached task 
 test("signing out clears saved query data before a later outage reload", async ({ page, request }) => {
   const data = await fixture(request);
   let signedOut = false;
+  const additionalCompanies: Array<{ id: string }> = [];
   try {
+    // Exercise native Storage deletion with multiple company records; a
+    // single-company run can conceal key reordering during removal.
+    for (let i = 0; i < 6; i += 1) additionalCompanies.push(await json(await request.post("/api/companies", { data: { name: `Sign-out cache scope ${i}` } })));
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expectCachedTask(page, data.issue);
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key =>
+      key.startsWith("paperclip:query-cache:v1:") && !key.endsWith(":active")).length)).toBeGreaterThanOrEqual(8);
     await page.getByRole("button", { name: "Open account menu", exact: true }).click();
     await page.getByRole("link", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
@@ -254,11 +260,12 @@ test("signing out clears saved query data before a later outage reload", async (
     page.once("dialog", dialog => dialog.accept());
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await expect.poll(() => signedOut).toBe(true);
-    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")).length)).toBe(0);
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")))).toEqual([]);
     await page.goto(data.route);
     await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
     expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")))).toEqual([]);
   } finally {
+    for (const company of additionalCompanies) await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
     await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
   }
 });
