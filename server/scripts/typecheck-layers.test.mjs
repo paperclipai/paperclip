@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
+import { emitOnlyTscArgs, lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
 import { STEPS, typecheckLowMemory } from "../../scripts/typecheck-low-memory.mjs";
 import { layerConfig, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
 
@@ -361,6 +361,34 @@ describe("typecheckLowMemory", () => {
 });
 
 describe("runTsc", () => {
+  it("emits JavaScript without checks or declarations in emit-only mode", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "run-tsc-emit-only-"));
+    try {
+      mkdirSync(path.join(root, "src"));
+      mkdirSync(path.join(root, "node_modules"));
+      symlinkSync(
+        realpathSync(path.join(serverRoot, "node_modules", "typescript")),
+        path.join(root, "node_modules", "typescript"),
+      );
+      writeFileSync(
+        path.join(root, "tsconfig.json"),
+        `${JSON.stringify({
+          compilerOptions: { declaration: true, declarationMap: true, types: [], outDir: "dist", rootDir: "src" },
+          include: ["src"],
+        })}\n`,
+      );
+      writeFileSync(path.join(root, "src", "a.ts"), `export const value: number = "not a number";\n`);
+
+      const { status } = runTsc([], { cwd: root, env: { ...process.env, PAPERCLIP_TSC_EMIT_ONLY: "1" } });
+
+      expect(status).toBe(0);
+      expect(existsSync(path.join(root, "dist", "a.js"))).toBe(true);
+      expect(existsSync(path.join(root, "dist", "a.d.ts"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("accepts build mode with low-memory mode on", () => {
     const { status } = runTsc(["-b", "--dry"], {
       cwd: serverRoot,
@@ -368,6 +396,25 @@ describe("runTsc", () => {
     });
 
     expect(status).toBe(0);
+  });
+});
+
+describe("emitOnlyTscArgs", () => {
+  it("removes checks and declarations only in emit-only mode", () => {
+    expect(emitOnlyTscArgs({ PAPERCLIP_TSC_EMIT_ONLY: "1" })).toEqual([
+      "--noCheck",
+      "--declaration",
+      "false",
+      "--declarationMap",
+      "false",
+    ]);
+    expect(emitOnlyTscArgs({})).toEqual([]);
+  });
+
+  it("is what the Dockerfile selects for the server build", () => {
+    const dockerfile = readFileSync(path.join(serverRoot, "..", "Dockerfile"), "utf8");
+
+    expect(dockerfile).toContain("RUN PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build\n");
   });
 });
 
