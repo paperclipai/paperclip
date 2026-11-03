@@ -14,10 +14,14 @@ not an unlimited claim that no execution can ever occur.
 
 The person completes the blocker through the task's status control. Paperclip must
 then start exactly one native run automatically. Its durable wake must name the
-same resolved blocker, `issue_blockers_resolved`, and `issue.blocker_done`; manual
+same resolved blocker, reason `issue_blockers_resolved`, and saved source
+`issue.blockers_resolved`; `blocker_done` is the producer's separate mutation
+payload. Manual
 Run or a follow-up message cannot substitute. The run starts after the saved
 blocker completion, uses the configured provider/model/environment, commits its
-result, and completes the dependent. A task document named `dependency-proof`
+result through the durable committed native phase, and completes the dependent.
+The public API may omit or compact `resultJson`; duplicate finalization metadata
+in that optional object is not required. A task document named `dependency-proof`
 contains the review reference and blocker identifier. Its current revision must
 be authored by this agent and run. Reloading the task must show that same saved
 revision and preserve the two tasks' descriptions, dependency, and board-owned
@@ -25,7 +29,14 @@ blocker completion audit. No agent work is permitted on the human-owned blocker.
 
 The case requires `company`, `board-user`, `task-write`, and `agent`. It declares
 one work run, uses the existing bounded case budget, and shares the original
-campaign deadline. Agent setup usage is outside task-run accounting; missing
+campaign deadline. It saves the agent's starting run history and retains those
+records while checking only newly appearing runs for this case. Earlier terminal
+campaign work stays in the accounting and does not count as new execution.
+Owned-task activity reads are complete and uncapped; the separate agent-filtered
+activity read fails closed if its 500-row bound is reached. The agent run list
+likewise fails closed at the public API's 1000-row cap. Unrelated company history
+does not enter these completeness checks.
+Agent setup usage is outside task-run accounting; missing
 provider prices remain unknown. The owning target provider controls normal
 cancellation, termination, retained history, and evidence cleanup. It never
 changes a shared source agent, company budget, or execution environment.

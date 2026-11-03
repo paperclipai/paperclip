@@ -17,15 +17,22 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign((locator: any) => ({
 }) }) }));
 import { taskDependencyResume } from "./task-dependency-resume.js";
 
-async function fixture(premature = false) {
+interface FixtureOptions { priorRuns?: number; unrelatedActivity?: number; ownedActivity?: number; agentActivity?: number; missingActivity?: boolean; activePrior?: boolean }
+async function fixture(premature = false, options: FixtureOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dependency-flow-"));
   const f = dependencyEvidenceFixture(), s = f.scope;
   const blocker = { ...f.created.blocker }, dependent = { ...f.created.dependent };
-  const actions: string[] = [], owned: any[] = [], writes: unknown[] = [];
+  const actions: string[] = [], owned: any[] = [], writes: unknown[] = [], reads: string[] = [];
   let completed = false, assigned = false;
   const reference = () => /review reference is ([a-f0-9]{32})/.exec(blocker.description)?.[1];
   const output = () => JSON.stringify({ reference: reference(), blockerIdentifier: s.blockerIdentifier });
   const runs = () => assigned && (completed || premature) ? [structuredClone(f.finished.dependentRuns[0]!)] : [];
+  const priorRuns = Array.from({ length: options.priorRuns ?? 0 }, (_, i) => ({ ...structuredClone(f.finished.agentRuns[0]!),
+    id: `prior-${i}`, nativeIssueId: `prior-task-${i}`, contextSnapshot: { issueId: `prior-task-${i}` },
+    startedAt: "2019-12-31T23:00:00Z", status: options.activePrior ? "running" : i % 2 ? "failed" : "succeeded" }));
+  const activity = (count: number, entityId: string, agentId?: string) => Array.from({ length: count }, (_, i) => ({
+    id: `${entityId}-activity-${i}`, companyId: s.companyId, entityType: "issue", entityId, agentId,
+    actorType: agentId ? "agent" : "user", actorId: agentId ?? s.userId, action: "issue.observed" }));
   const taskDocument = () => ({ ...f.finished.document, body: output() });
   const revision = () => ({ ...f.finished.revision, body: output() });
   controls.create.mockImplementation(async (input: any) => {
@@ -65,12 +72,19 @@ async function fixture(premature = false) {
     async goto(url: string) { actions.push(`goto:${url}`); }, async reload() { actions.push("reload"); },
   };
   const api: any = { origin: "https://qa.example.test", async get(route: string) {
+    reads.push(route);
     if (route === `/api/issues/${s.blockerId}`) return structuredClone(blocker);
     if (route === `/api/issues/${s.dependentId}`) return structuredClone(dependent);
     if (route === `/api/issues/${s.blockerId}/runs`) return [];
-    if (route === `/api/issues/${s.dependentId}/runs` || route.includes("/heartbeat-runs?")) return runs().map(r => ({ runId: r.id }));
+    if (route === `/api/issues/${s.dependentId}/runs`) return runs().map(r => ({ runId: r.id }));
+    if (route.includes("/heartbeat-runs?")) return [...runs(), ...structuredClone(priorRuns)];
     if (route === "/api/heartbeat-runs/run") return runs()[0];
-    if (route.includes("/activity?")) return completed ? structuredClone(f.reopened.activity) : [];
+    if (route === `/api/issues/${s.blockerId}/activity`) return completed ? structuredClone(f.reopened.activity) : [];
+    if (route === `/api/issues/${s.dependentId}/activity`) return activity(options.ownedActivity ?? 0, s.dependentId);
+    if (route === `/api/companies/${s.companyId}/activity?agentId=${s.agentId}&limit=500`) {
+      return options.missingActivity ? undefined : activity(options.agentActivity ?? 0, "prior-task", s.agentId);
+    }
+    if (route === `/api/companies/${s.companyId}/activity?limit=500`) return activity(options.unrelatedActivity ?? 0, "unrelated-task").slice(0, 500);
     if (route === `/api/issues/${s.dependentId}/documents`) return completed ? [taskDocument()] : [];
     if (route.endsWith("/documents/dependency-proof")) return taskDocument();
     if (route.endsWith("/revisions/revision")) return revision();
@@ -81,12 +95,19 @@ async function fixture(premature = false) {
     capabilities: ["company", "board-user", "task-write", "agent"], agent: { id: s.agentId, name: "Fixture agent", provider: s.provider, model: s.model, runtimeMode: "native" } } as JourneyContext;
   const session = { own: vi.fn(async resource => { owned.push(resource); }) } as unknown as TargetSession;
   const evidence = { checks: [] } as unknown as JourneyEvidence;
-  return { directory, context, session, evidence, actions, owned, writes };
+  return { directory, context, session, evidence, actions, owned, writes, reads };
 }
 afterEach(() => { vi.useRealTimers(); controls.create.mockReset(); });
 describe("dependency browser flow orchestration", () => {
-  it("measures browser actions and waits before completing the blocker; API observations never write the output", async () => {
-    const f = await fixture(); vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+  it.each([
+    ["empty history", {}],
+    ["completed earlier campaign runs", { priorRuns: 3 }],
+    ["more than 100 earlier campaign runs", { priorRuns: 150 }],
+    ["more than 500 unrelated company events", { unrelatedActivity: 800 }],
+    ["more than 500 owned task events", { ownedActivity: 600 }],
+    ["prior agent events", { priorRuns: 2, agentActivity: 300 }],
+  ] as const)("uses browser actions with %s and never writes output through API observations", async (_name, options) => {
+    const f = await fixture(false, options); vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
     try {
       const operation = taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
         { deadlineAt: Date.now() + 60_000, directory: f.directory });
@@ -102,6 +123,24 @@ describe("dependency browser flow orchestration", () => {
       const saved = JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"));
       expect(saved.stage).toBe("complete"); expect(saved.scope.prompt).not.toContain(saved.scope.reference);
       expect(saved.waiting.at(-1).observedAt - saved.waiting[0].observedAt).toBeGreaterThanOrEqual(10_000);
+      expect(saved.startingAgentRuns).toHaveLength("priorRuns" in options ? options.priorRuns : 0);
+      expect(saved.reopened.agentRuns).toHaveLength(saved.startingAgentRuns.length + 1);
+      expect(f.reads.some(route => route.startsWith("/api/heartbeat-runs/prior-"))).toBe(false);
+      expect(f.reads).toContain("/api/issues/blocker/activity"); expect(f.reads).toContain("/api/issues/dependent/activity");
+      expect(f.reads).not.toContain("/api/companies/company/activity?limit=500");
+    } finally { await rm(f.directory, { recursive: true, force: true }); }
+  });
+  it.each([
+    ["truncated agent activity", { agentActivity: 500 }, "dependency_activity_coverage_unavailable"],
+    ["missing agent activity", { missingActivity: true }, "dependency_activity_coverage_unavailable"],
+    ["active earlier work", { priorRuns: 1, activePrior: true }, "dependency_starting_agent_not_idle"],
+    ["saturated run history", { priorRuns: 1000 }, "dependency_run_coverage_unavailable"],
+  ] as const)("rejects %s before completing the blocker", async (_name, options, code) => {
+    const f = await fixture(false, options);
+    try {
+      await expect(taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 60_000, directory: f.directory })).rejects.toThrow(code);
+      expect(f.actions).not.toContain("click:Done"); expect(f.writes).toEqual([]);
     } finally { await rm(f.directory, { recursive: true, force: true }); }
   });
   it("premature work fails before the browser completes the blocker and preserves its observations", async () => {

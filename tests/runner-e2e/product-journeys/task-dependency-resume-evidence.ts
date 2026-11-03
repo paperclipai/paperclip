@@ -15,20 +15,25 @@ export interface DependencyScope {
 export interface DependencyPoint {
   observedAt: number; blocker: Row; dependent: Row;
   blockerRuns: Row[]; dependentRuns: Row[]; agentRuns: Row[]; activity: Row[];
+  activityCoverage: { blocker: boolean; dependent: boolean; agent: boolean };
   document?: Row; revision?: Row; resultVisible?: boolean;
 }
 export interface DependencyEvidence {
-  scope: DependencyScope; created: DependencyPoint; waiting: DependencyPoint[];
+  scope: DependencyScope; startingAgentRuns: Row[]; created: DependencyPoint; waiting: DependencyPoint[];
   releaseRequestedAt: number; released: DependencyPoint; finished: DependencyPoint; reopened: DependencyPoint;
 }
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const date = (value: unknown) => typeof value === "string" ? Date.parse(value) : NaN;
 const exactId = (rows: unknown, id: string) => Array.isArray(rows) && rows.length === 1 && rows[0] === id;
 const runFacts = (run: Row) => JSON.stringify([run.id, run.companyId, run.agentId, dependencyRunIssueId(run), run.status,
-  run.runtimeMode, run.nativePhase, run.invocationSource, run.triggerDetail, run.startedAt, run.resultJson?.finalizationPhase,
+  run.runtimeMode, run.nativePhase, run.invocationSource, run.triggerDetail, run.startedAt,
   run.contextSnapshot?.wakeReason, run.contextSnapshot?.source, run.contextSnapshot?.resolvedBlockerIssueId,
   run.contextSnapshot?.blockerIssueIds, run.contextSnapshot?.paperclipEnvironment?.id,
   run.runnerProfileJson?.nativeExecutionInput?.provider?.kind, run.runnerProfileJson?.nativeExecutionInput?.provider?.model]);
+export function dependencyNewAgentRuns(runs: Row[], startingRuns: Row[]) {
+  const priorIds = new Set(startingRuns.map(run => run.id));
+  return runs.filter(run => !priorIds.has(run.id));
+}
 export function dependencyRunIssueId(run: Row) {
   const ids = [run.issueId, run.nativeIssueId, run.contextSnapshot?.issueId, run.contextSnapshot?.taskId].filter(value => value != null);
   return ids.length && ids.every(nonempty) && new Set(ids).size === 1 ? ids[0] as string : undefined;
@@ -45,15 +50,24 @@ export function dependencyOutputMatches(body: unknown, scope: Pick<DependencySco
 
 export function gradeTaskDependencyResume(value: DependencyEvidence | undefined) {
   const fail = () => TASK_DEPENDENCY_RESUME_CHECKS.map(id => ({ id, passed: false }));
-  if (!value?.scope || !value.created || !Array.isArray(value.waiting) || value.waiting.length < 2
+  if (!value?.scope || !Array.isArray(value.startingAgentRuns) || !value.created || !Array.isArray(value.waiting) || value.waiting.length < 2
     || !value.released || !value.finished || !value.reopened) return fail();
-  const { scope: s, created, waiting, released, finished, reopened } = value;
+  const { scope: s, startingAgentRuns, created, waiting, released, finished, reopened } = value;
   const points = [created, ...waiting, released, finished, reopened];
   if (Object.values(s).some(item => !nonempty(item)) || s.blockerId === s.dependentId || s.prompt.includes(s.reference)
     || !s.blockerDescription.includes(s.reference)
     || points.some(p => !p?.blocker || !p.dependent || !Number.isFinite(p.observedAt)
       || [p.blockerRuns, p.dependentRuns, p.agentRuns, p.activity].some(rows => !Array.isArray(rows)))) return fail();
-  const scoped = points.every(p => p.blocker.id === s.blockerId && p.dependent.id === s.dependentId
+  const startingIds = startingAgentRuns.map(run => run.id);
+  const historyComplete = startingIds.every(nonempty) && new Set(startingIds).size === startingIds.length
+    && startingAgentRuns.every(run => run.companyId === s.companyId && run.agentId === s.agentId
+      && ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)
+      && ![s.blockerId, s.dependentId].includes(dependencyRunIssueId(run) ?? ""))
+    && points.every(p => new Set(p.agentRuns.map(run => run.id)).size === p.agentRuns.length
+      && p.agentRuns.every(run => nonempty(run.id) && run.companyId === s.companyId && run.agentId === s.agentId)
+      && startingAgentRuns.every(prior => p.agentRuns.some(run => runFacts(run) === runFacts(prior))));
+  const newRuns = (point: DependencyPoint) => dependencyNewAgentRuns(point.agentRuns, startingAgentRuns);
+  const scoped = historyComplete && points.every(p => p.blocker.id === s.blockerId && p.dependent.id === s.dependentId
     && p.blocker.companyId === s.companyId && p.dependent.companyId === s.companyId
     && p.blocker.title === s.blockerTitle && p.dependent.title === s.dependentTitle
     && p.blocker.description === s.blockerDescription && p.dependent.description === s.prompt
@@ -62,12 +76,12 @@ export function gradeTaskDependencyResume(value: DependencyEvidence | undefined)
     && p.blocker.assigneeUserId === s.userId && p.blocker.assigneeAgentId === null);
   const linked = scoped && [created.blocker, created.dependent].every(task => task.status === "todo")
     && created.dependent.assigneeUserId === s.userId && created.dependent.assigneeAgentId === null
-    && [created.blockerRuns, created.dependentRuns, created.agentRuns].every(rows => rows.length === 0)
+    && [created.blockerRuns, created.dependentRuns, newRuns(created)].every(rows => rows.length === 0)
     && points.slice(1).every(p => p.dependent.assigneeAgentId === s.agentId && p.dependent.assigneeUserId === null
       && exactId(p.dependent.blockedByIssueIds, s.blockerId));
   const held = linked && waiting.every(p => p.blocker.status === "todo" && p.dependent.status === "blocked"
     && !p.dependent.executionRunId && !p.dependent.checkoutRunId
-    && [p.blockerRuns, p.dependentRuns, p.agentRuns].every(rows => rows.length === 0))
+    && [p.blockerRuns, p.dependentRuns, newRuns(p)].every(rows => rows.length === 0))
     && waiting.every((p, index) => index === 0 || p.observedAt >= waiting[index - 1]!.observedAt)
     && waiting[waiting.length - 1]!.observedAt - waiting[0]!.observedAt >= DEPENDENCY_IDLE_MS
     && waiting[0]!.observedAt >= created.observedAt
@@ -83,15 +97,14 @@ export function gradeTaskDependencyResume(value: DependencyEvidence | undefined)
     && !finished.dependent.executionRunId && !finished.dependent.checkoutRunId
     && !reopened.dependent.executionRunId && !reopened.dependent.checkoutRunId
     && finished.dependentRuns.length === 1 && reopened.dependentRuns.length === 1
-    && finished.agentRuns.length === 1 && reopened.agentRuns.length === 1
-    && nonempty(run?.id) && [reopened.dependentRuns[0], finished.agentRuns[0], reopened.agentRuns[0]].every(row => runFacts(row) === runFacts(run))
+    && newRuns(finished).length === 1 && newRuns(reopened).length === 1
+    && nonempty(run?.id) && [reopened.dependentRuns[0], newRuns(finished)[0], newRuns(reopened)[0]].every(row => runFacts(row) === runFacts(run))
     && run.companyId === s.companyId && run.agentId === s.agentId && dependencyRunIssueId(run) === s.dependentId
     && run.status === "succeeded" && run.invocationSource === "automation" && run.triggerDetail === "system"
-    && run.contextSnapshot?.wakeReason === "issue_blockers_resolved" && run.contextSnapshot?.source === "issue.blocker_done"
+    && run.contextSnapshot?.wakeReason === "issue_blockers_resolved" && run.contextSnapshot?.source === "issue.blockers_resolved"
     && run.contextSnapshot?.resolvedBlockerIssueId === s.blockerId && exactId(run.contextSnapshot?.blockerIssueIds, s.blockerId)
     && Number.isFinite(date(run.startedAt)) && date(run.startedAt) >= date(released.blocker.completedAt);
   const runtime = oneRun && run.runtimeMode === "native" && run.nativePhase === "committed"
-    && run.resultJson?.finalizationPhase === "committed"
     && run.runnerProfileJson?.nativeExecutionInput?.provider?.kind === s.provider
     && run.runnerProfileJson?.nativeExecutionInput?.provider?.model === s.model
     && run.contextSnapshot?.paperclipEnvironment?.id === s.environmentId;
@@ -106,7 +119,8 @@ export function gradeTaskDependencyResume(value: DependencyEvidence | undefined)
     && reopened.document!.id === finished.document!.id && reopened.document!.latestRevisionId === finished.document!.latestRevisionId
     && reopened.document!.body === finished.document!.body;
   const history = resultReopened && points.every(p => p.blockerRuns.length === 0)
-    && reopened.activity.length < 500 && !reopened.activity.some(row => row.runId === run?.id
+    && points.every(p => p.activityCoverage?.blocker === true && p.activityCoverage?.dependent === true && p.activityCoverage?.agent === true)
+    && !reopened.activity.some(row => row.runId === run?.id
       && ["issue.created", "issue.child_created", "project.created", "agent.created", "agent.hire_created"].includes(row.action))
     && reopened.blocker.completedAt === released.blocker.completedAt;
   const values = [linked, held, completedByBoard, oneRun, authored, resultReopened, history, runtime];
