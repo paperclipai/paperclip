@@ -164,6 +164,9 @@ history, changed PR heads and unverifiable ancestry still deny AWS execution.
 Missing or malformed settings
 and unverifiable authorization use GitHub-hosted runners. A maintainer rerunning
 an outside contributor's PR does not grant it AWS access.
+Both `full-ci` and `profile-ci` label events use this same authorization path.
+The labels request CI scope; they do not grant AWS access or move an authorized
+CODEOWNER run to GitHub-hosted capacity. Other label events do not request CI.
 Authorized test jobs and the final `verify` and `e2e` aggregates use the selected
 AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
