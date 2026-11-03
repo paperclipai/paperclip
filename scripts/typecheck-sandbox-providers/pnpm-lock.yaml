@@ -90,7 +90,7 @@ importers:
   ../../packages/plugins/sandbox-providers/e2b:
     dependencies:
       e2b:
-        specifier: ^2.62.1
+        specifier: ^2.19.0
         version: 2.62.1
     devDependencies:
       '@types/node':
