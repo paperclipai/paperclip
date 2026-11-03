@@ -2,6 +2,8 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
+import { readCurrentIssueWaitTarget } from "./issue-wait-target.js";
+import { readRecurringLoopDisposition, type RecurringLoopDisposition } from "./recurring-loop-disposition.js";
 import { documentService } from "./documents.js";
 import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
@@ -128,7 +130,8 @@ export function extractContinuationSummaryNextAction(body: string | null | undef
   return extractPreviousNextAction(body);
 }
 
-export function continuationSummaryParksExecutor(body: string | null | undefined) {
+export function continuationSummaryParksExecutor(body: string | null | undefined, hasCurrentWaitTarget?: boolean) {
+  if (hasCurrentWaitTarget === false) return false;
   const nextAction = extractContinuationSummaryNextAction(body);
   if (!nextAction) return false;
   return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction);
@@ -139,6 +142,8 @@ export function buildContinuationSummaryMarkdown(input: {
   run: RunSummaryInput;
   agent: AgentSummaryInput;
   previousSummaryBody?: string | null;
+  hasCurrentWaitTarget?: boolean;
+  recurringLoop?: RecurringLoopDisposition | null;
 }) {
   const { issue, run, agent } = input;
   const resultSummary = readResultSummary(run.resultJson);
@@ -159,7 +164,13 @@ export function buildContinuationSummaryMarkdown(input: {
   const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
-  const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
+  const previousNextAction = extractPreviousNextAction(input.previousSummaryBody);
+  const obsoleteWait = input.hasCurrentWaitTarget === false &&
+    previousNextAction !== null && WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(previousNextAction);
+  const nextAction = input.recurringLoop && issue.status === "todo" && run.status === "succeeded" &&
+    input.hasCurrentWaitTarget === false
+    ? `Wait for the next scheduled sweep at ${input.recurringLoop.nextRunAt.toISOString()}.`
+    : inferNextAction(issue, run, obsoleteWait ? null : previousNextAction);
 
   const body = [
     "# Continuation Summary",
@@ -254,15 +265,7 @@ export async function refreshIssueContinuationSummary(input: {
   const { db, issueId, run, agent } = input;
   const [issue, existing] = await Promise.all([
     db
-      .select({
-        id: issues.id,
-        conversationAgentId: issues.conversationAgentId,
-        identifier: issues.identifier,
-        title: issues.title,
-        description: issues.description,
-        status: issues.status,
-        priority: issues.priority,
-      })
+      .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null),
@@ -270,11 +273,17 @@ export async function refreshIssueContinuationSummary(input: {
   ]);
 
   if (!issue || issue.conversationAgentId) return null;
+  const [hasCurrentWaitTarget, recurringLoop] = await Promise.all([
+    readCurrentIssueWaitTarget(db, issue),
+    readRecurringLoopDisposition(db, issue),
+  ]);
   const body = buildContinuationSummaryMarkdown({
     issue,
     run,
     agent,
     previousSummaryBody: existing?.body ?? null,
+    hasCurrentWaitTarget,
+    recurringLoop,
   });
   const result = await documentService(db).upsertIssueDocument({
     issueId,
