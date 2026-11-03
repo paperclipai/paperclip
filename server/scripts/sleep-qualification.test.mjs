@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { configuredSleepFeatures, evaluateSleepQualification, observeConfiguredSignals, sleepConfigurationDigest, finalizeLocalSleepReceipt } from '../../scripts/sleep-qualification/evidence.mjs';
+import { configuredSleepFeatures, evaluateSleepQualification, observeConfiguredSignals, observeIncomingHttpWindow, sleepConfigurationDigest, finalizeLocalSleepReceipt } from '../../scripts/sleep-qualification/evidence.mjs';
 const configuration = { automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetryOrigin: 'http://127.0.0.1:4318/telemetry', otelOrigin: 'http://127.0.0.1:4318', serveUi: true };
 // Independent preflight contract, not copied from the receipt/digest implementation.
 const configDigest = createHash('sha256').update(JSON.stringify({ automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetry: true, otel: { enabled: true, protocol: 'http/json' }, serveUi: true, managedInstance: false, deploymentMode: 'local_trusted', storageProvider: 'local_disk' })).digest('hex');
@@ -17,7 +17,10 @@ function fixture() {
     signalObservation: { telemetryRequests: 1, traceRequests: 1, exportedSpans: 1, qualificationSpans: 1, metricRequests: 0, logRequests: 0, malformedTraceRequests: 0, unexpectedRequests: 0 },
     backupCheckpoint: { owner: 'normal-idle-checkpoint', startedAt: '2099-01-01T00:12:31Z', observedAt: '2099-01-01T00:13:00Z', wakeMarkerObserved: true, failureObserved: false, archives: [{ name: 'owned.sql.gz', bytes: 128, sqlBytes: 256, sha256: 'd'.repeat(64), gzipVerified: true, fixtureIdentifierFound: true, createdAt: '2099-01-01T00:12:45Z', createdAtSource: 'birthtime' }] }, startedAt: '2099-01-01T00:00:00Z', finishedAt: '2099-01-01T01:00:00Z',
     features: { telemetry: true, announcements: true, automaticBackups: true, otel: true, exportedSpans: 1 },
-    quiet: { startedAt: '2099-01-01T00:11:00Z', finishedAt: '2099-01-01T00:12:30Z', elapsedMs: 90_000, clock: 'real', sqlQueries: 0, connectionsOpened: 0, connectionsRemaining: 0, nonDatabaseRequests: 0, nonDatabaseBytes: 0, observerRequests: [] },
+    quiet: { startedAt: '2099-01-01T00:11:00Z', finishedAt: '2099-01-01T00:12:30Z', elapsedMs: 90_000, clock: 'real', sqlQueries: 0, connectionsOpened: 0, connectionsRemaining: 0, nonDatabaseRequests: 0, nonDatabaseBytes: 0,
+      observerRequests: observeIncomingHttpWindow(
+        { source: 'node-http-server-events', captureId: '11111111-1111-4111-8111-111111111111', installed: true, valid: true, requests: 12, observedAt: '2099-01-01T00:11:00Z' },
+        { source: 'node-http-server-events', captureId: '11111111-1111-4111-8111-111111111111', installed: true, valid: true, requests: 12, observedAt: '2099-01-01T00:12:30Z' }) },
     eligibility: { observedAt: '2099-01-01T00:13:00Z', backgroundWork: 'none', ownedHold: true, unchangedGeneration: true, apiCooldownElapsedMs: 600_000 } };
 }
 function deployed() {
@@ -38,10 +41,39 @@ test('wrong source, target and configuration evidence cannot be combined', () =>
 });
 test('fake time, a no-op exporter, open connections, observer health requests and a shortened cooldown fail', () => {
   for (const change of [f => f.quiet.clock = 'qualified', f => f.features.exportedSpans = 0, f => f.quiet.connectionsRemaining = 1,
-    f => f.quiet.observerRequests.push({ path: '/api/health' }), f => f.quiet.nonDatabaseBytes = 1, f => f.quiet.elapsedMs = 89_999]) {
+    f => { f.quiet.observerRequests.after.requests++; f.quiet.observerRequests.requests++; }, f => f.quiet.nonDatabaseBytes = 1, f => f.quiet.elapsedMs = 89_999]) {
     const f = fixture(); change(f); assert.equal(evaluateSleepQualification(f, expected).layers.workerQuiet.verdict, 'NOT VERIFIED');
   }
   const f = fixture(); f.eligibility.apiCooldownElapsedMs = 599_999; assert.equal(evaluateSleepQualification(f, expected).layers.eligibility.verdict, 'NOT VERIFIED');
+});
+test('incoming HTTP observation must be installed, intact and cover the whole window; legacy empty lists are not evidence', () => {
+  const changes = [f => f.quiet.observerRequests = [], f => delete f.quiet.observerRequests,
+    f => f.quiet.observerRequests.before.installed = false, f => f.quiet.observerRequests.after.installed = false,
+    f => f.quiet.observerRequests.before.valid = false, f => f.quiet.observerRequests.after.valid = false,
+    f => delete f.quiet.observerRequests.before, f => delete f.quiet.observerRequests.after,
+    f => f.quiet.observerRequests.before.source = 'harness-api-only', f => f.quiet.observerRequests.after.source = 'unknown',
+    f => f.quiet.observerRequests.after.captureId = '22222222-2222-4222-8222-222222222222',
+    f => f.quiet.observerRequests.before.captureId = '',
+    f => f.quiet.observerRequests.before.observedAt = '2099-01-01T00:11:00.001Z',
+    f => f.quiet.observerRequests.after.observedAt = '2099-01-01T00:12:29.999Z',
+    f => f.quiet.observerRequests.before.observedAt = '2098-12-31T23:59:59Z',
+    f => f.quiet.observerRequests.after.observedAt = '2099-01-01T01:00:01Z',
+    f => f.quiet.observerRequests.after.observedAt = 'invalid',
+    f => f.quiet.observerRequests.after.requests--,
+    // A forged zero cannot hide an actual request while SQL and outbound counters remain zero.
+    f => f.quiet.observerRequests.after.requests++,
+    f => f.quiet.observerRequests.requests = 1];
+  for (const point of ['before', 'after']) {
+    for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '12']) {
+      changes.push(f => f.quiet.observerRequests[point].requests = value);
+    }
+  }
+  for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '0']) changes.push(f => f.quiet.observerRequests.requests = value);
+  for (const change of changes) {
+    const f = fixture(); change(f);
+    assert.equal(f.quiet.sqlQueries, 0); assert.equal(f.quiet.nonDatabaseRequests, 0);
+    assert.equal(evaluateSleepQualification(f, expected).layers.workerQuiet.verdict, 'NOT VERIFIED');
+  }
 });
 test('configured feature claims require complete announcement and integer collector observations', () => {
   const changes = [f => delete f.announcement, f => f.announcement.intercepted = false,

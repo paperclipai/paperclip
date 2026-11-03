@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createDb } from '@paperclipai/db';
 import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
-import { configuredSleepFeatures, finalizeLocalSleepReceipt, observeConfiguredSignals, sleepConfigurationDigest } from '../../../scripts/sleep-qualification/evidence.mjs';
+import { configuredSleepFeatures, finalizeLocalSleepReceipt, observeConfiguredSignals, observeIncomingHttpWindow, observedNoIncomingHttp, sleepConfigurationDigest } from '../../../scripts/sleep-qualification/evidence.mjs';
 import { idleBackupArchiveNames, observeIdleBackupCheckpoint } from './helpers/maintenance/backup-observation.js';
 import { stabilizeEarlyDiagnostics } from './helpers/maintenance/early-diagnostic-stabilization.js';
 import { createMaintenanceS3Boundary } from './helpers/maintenance/s3-boundary.js';
@@ -146,13 +146,15 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const wallStart = performance.now(), quietStartedAt = new Date().toISOString();
         phase('first-real-ninety-second-quiet-window');
         await delay(quietMs);
-        const elapsedMs = performance.now() - wallStart, after = await server.snapshot(), finalTransport = server.proxy.transport;
-        const quiet = { startedAt: quietStartedAt, finishedAt: new Date().toISOString(), elapsedMs, clock: 'real',
+        const elapsedMs = performance.now() - wallStart, quietFinishedAt = new Date().toISOString();
+        const after = await server.snapshot(), finalTransport = server.proxy.transport;
+        const quiet = { startedAt: quietStartedAt, finishedAt: quietFinishedAt, elapsedMs, clock: 'real',
           sqlQueries: server.proxy.queries.length - queries,
           connectionsOpened: finalTransport.connectionsOpened - transport.connectionsOpened,
           connectionsRemaining: finalTransport.connectionsOpened - finalTransport.connectionsClosed,
           nonDatabaseRequests: after.outgoingHttpRequests - before.outgoingHttpRequests,
-          nonDatabaseBytes: after.network.nonDatabaseBytesWritten - before.network.nonDatabaseBytesWritten, observerRequests: [] };
+          nonDatabaseBytes: after.network.nonDatabaseBytesWritten - before.network.nonDatabaseBytesWritten,
+          observerRequests: observeIncomingHttpWindow(before.incomingHttp, after.incomingHttp) };
         await writeFile(path.join(server.directory, 'sleep-first-frozen-quiet.json'), JSON.stringify({ quiet, announcementBefore: before.announcement, announcementAfter: after.announcement }, null, 2));
         const signalObservation = observeConfiguredSignals(collectorRequests);
         await writeFile(path.join(server.directory, 'sleep-first-signal-observation.json'), JSON.stringify(signalObservation, null, 2));
@@ -166,6 +168,9 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(quiet.connectionsRemaining).toBe(0);
         expect(quiet.nonDatabaseRequests).toBe(0);
         expect(quiet.nonDatabaseBytes).toBe(0);
+        // The installed listener must have observed the actual setup HTTP traffic.
+        expect(quiet.observerRequests.before.requests).toBeGreaterThan(0);
+        expect(observedNoIncomingHttp(quiet.observerRequests, quiet)).toBe(true);
         expect(after.announcement).toEqual(before.announcement);
         const backupNamesBefore = await idleBackupArchiveNames(server.directory);
         const checkpointStartedAt = new Date().toISOString();
@@ -230,15 +235,16 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const resumedStart = performance.now(), resumedStartedAt = new Date().toISOString();
         phase('reactivation-real-ninety-second-quiet-window');
         await delay(quietMs);
-        const resumedElapsedMs = performance.now() - resumedStart;
+        const resumedElapsedMs = performance.now() - resumedStart, resumedFinishedAt = new Date().toISOString();
         const resumedEnd = await server.snapshot(), resumedFinalTransport = server.proxy.transport;
         // Freeze every measurement before signed drain/proof requests do SQL.
-        const resumedQuiet = { startedAt: resumedStartedAt, finishedAt: new Date().toISOString(), elapsedMs: resumedElapsedMs, clock: 'real',
+        const resumedQuiet = { startedAt: resumedStartedAt, finishedAt: resumedFinishedAt, elapsedMs: resumedElapsedMs, clock: 'real',
           sqlQueries: server.proxy.queries.length - resumedQueries,
           connectionsOpened: resumedFinalTransport.connectionsOpened - resumedTransport.connectionsOpened,
           connectionsRemaining: resumedFinalTransport.connectionsOpened - resumedFinalTransport.connectionsClosed,
           nonDatabaseRequests: resumedEnd.outgoingHttpRequests - resumed.outgoingHttpRequests,
-          nonDatabaseBytes: resumedEnd.network.nonDatabaseBytesWritten - resumed.network.nonDatabaseBytesWritten, observerRequests: [] };
+          nonDatabaseBytes: resumedEnd.network.nonDatabaseBytesWritten - resumed.network.nonDatabaseBytesWritten,
+          observerRequests: observeIncomingHttpWindow(resumed.incomingHttp, resumedEnd.incomingHttp) };
         await writeFile(path.join(server.directory, 'sleep-resumed-frozen-quiet.json'), JSON.stringify({ quiet: resumedQuiet, announcementBefore: resumed.announcement, announcementAfter: resumedEnd.announcement }, null, 2));
         const resumedSignals = observeConfiguredSignals(collectorRequests);
         await writeFile(path.join(server.directory, 'sleep-resumed-signal-observation.json'), JSON.stringify(resumedSignals, null, 2));
@@ -252,6 +258,8 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(resumedQuiet.connectionsRemaining).toBe(0);
         expect(resumedQuiet.nonDatabaseRequests).toBe(0);
         expect(resumedQuiet.nonDatabaseBytes).toBe(0);
+        expect(resumedQuiet.observerRequests.before.requests).toBeGreaterThan(0);
+        expect(observedNoIncomingHttp(resumedQuiet.observerRequests, resumedQuiet)).toBe(true);
         expect(resumedEnd.announcement).toEqual(resumed.announcement);
         expect(resumedEnd.announcement?.unmatched).toEqual([]);
         const resumedDrain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));

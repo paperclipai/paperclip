@@ -2,6 +2,7 @@ import { channel } from "node:diagnostics_channel";
 import { mock } from "node:test";
 import type { Db } from "@paperclipai/db";
 import type { Socket } from "node:net";
+import { observeMaintenanceIncomingHttp } from "./incoming-http-observation.js";
 
 const realTimeout = globalThis.setTimeout, realInterval = globalThis.setInterval, clearRealInterval = globalThis.clearInterval, realNow = Date.now;
 const fakeClock = process.env.PAPERCLIP_MAINTENANCE_FAKE_CLOCK === "true";
@@ -42,6 +43,7 @@ channel("http.client.request.start").subscribe(observeRequest);
 
 let workCapture: Awaited<ReturnType<typeof import('./idle-work-capture.js')['installMaintenanceIdleWorkCapture']>> | undefined;
 let databaseCapture: ReturnType<typeof import('@paperclipai/db/response-capture')['databaseResponseCaptureFromEnv']>;
+let incomingHttp: ReturnType<typeof observeMaintenanceIncomingHttp> | undefined;
 try {
   // Must precede the announcement wrapper's first import of the real app graph.
   if (process.env.PAPERCLIP_MAINTENANCE_IDLE_WORK_CAPTURE === '1') {
@@ -62,8 +64,17 @@ try {
     return () => ({ isCloudManaged: isCloudManagedInstance(), deploymentMode: config.deploymentMode,
       storageProvider: config.storageProvider, apiActivityActive: idleApiActivity.active() });
   })() : undefined;
-  try { announcement?.assertIntercepted(); } catch (error) { await server.shutdown(); throw error; }
   const app = server.server.listeners("request")[0] as unknown as { locals: { paperclipDb: Db } };
+  try { incomingHttp = observeMaintenanceIncomingHttp(server.server); }
+  catch (error) {
+    try { await server.shutdown(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "Incoming HTTP observation and owned startup cleanup failed"); }
+    throw error;
+  }
+  async function shutdownServer() {
+    try { await server.shutdown(); } finally { incomingHttp?.dispose(); }
+  }
+  try { announcement?.assertIntercepted(); } catch (error) { await shutdownServer(); throw error; }
   process.send?.({ kind: "ready", port: server.listenPort });
   process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }; github?: { companyId?: string; connectionId?: string; grantId?: string } }) => {
     try {
@@ -77,7 +88,7 @@ try {
         if (message.command === "drain") startTaskDrain({ purpose: "idle" });
         if (message.command === "resume") stopTaskDrain();
         if (fakeClock) mock.timers.tick(0);
-        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now(), announcement: announcement?.snapshot(), managed: managedObservation?.(), workCapture: workCapture?.snapshot() });
+        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), incomingHttp: incomingHttp?.snapshot(), now: Date.now(), announcement: announcement?.snapshot(), managed: managedObservation?.(), workCapture: workCapture?.snapshot() });
       } else if (message.command === "prepareGitHub" || message.command === "settleGitHub") {
         const { prepareGitHubConfiguration, settleGitHubConfiguration } = await import("./github-configuration-producer.js");
         const input = message.github;
@@ -121,7 +132,7 @@ try {
           const failures: unknown[] = [];
           let before: ReturnType<typeof workCapture.summary> | undefined;
           try { before = workCapture.summary(); } catch (error) { failures.push(error); }
-          try { await server.shutdown(); } catch (error) { failures.unshift(error); }
+          try { await shutdownServer(); } catch (error) { failures.unshift(error); }
           // A passive flush failure must not replace the original shutdown error.
           try { databaseCapture?.flush(); } catch (error) { failures.push(error); }
           try {
@@ -130,7 +141,7 @@ try {
           finally { try { workCapture.dispose(); } catch (error) { failures.push(error); } }
           if (failures.length > 1) throw new AggregateError(failures, 'Owned shutdown and passive evidence failed');
           if (failures.length) throw failures[0];
-        } else await server.shutdown();
+        } else await shutdownServer();
         if (bootClock) { clearRealInterval(bootClock); bootClock = undefined; }
         process.send?.({ id: message.id, kind: "stopped", outgoingHttpRequests });
         if (fakeClock) mock.timers.reset();
@@ -140,6 +151,7 @@ try {
     } catch (error) { process.send?.({ id: message.id, kind: "error", error: error instanceof Error ? error.stack : String(error) }); }
   });
 } catch (error) {
+  incomingHttp?.dispose();
   if (workCapture) {
     try {
       // Existing bounded DB capture performs no SQL while flushing metadata.

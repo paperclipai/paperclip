@@ -28,6 +28,21 @@ export interface SleepSignalObservation {
   telemetryRequests: number; traceRequests: number; exportedSpans: number; qualificationSpans: number;
   metricRequests: number; logRequests: number; malformedTraceRequests: number; unexpectedRequests: number;
 }
+export interface IncomingHttpSnapshot {
+  source: 'node-http-server-events';
+  captureId: string;
+  installed: boolean;
+  valid: boolean;
+  requests: number;
+  observedAt: string;
+}
+export interface IncomingHttpWindow {
+  before: IncomingHttpSnapshot;
+  after: IncomingHttpSnapshot;
+  requests: number;
+}
+export function observeIncomingHttpWindow(before: IncomingHttpSnapshot, after: IncomingHttpSnapshot): IncomingHttpWindow;
+export function observedNoIncomingHttp(observation: unknown, quiet: { startedAt: string; finishedAt: string }): boolean;
 export function observeConfiguredSignals(requests: ReadonlyArray<{ path: string; body: unknown }>): SleepSignalObservation;
 export function configuredSleepFeatures(observations: Record<string, unknown>): {
   telemetry: boolean; announcements: boolean; automaticBackups: boolean; otel: boolean; exportedSpans: number;

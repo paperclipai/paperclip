@@ -15,6 +15,22 @@ const observedAnnouncement = announcement => announcement?.intercepted === true
 const signalKeys = ['telemetryRequests', 'traceRequests', 'exportedSpans', 'qualificationSpans', 'metricRequests', 'logRequests', 'malformedTraceRequests', 'unexpectedRequests'];
 const knownSignalCounts = signal => signal && signalKeys.every(key => Number.isSafeInteger(signal[key]) && signal[key] >= 0);
 
+/** Preserve actual cumulative app-server snapshots; IPC reads create no HTTP traffic. */
+export function observeIncomingHttpWindow(before, after) {
+  return { before, after, requests: after?.requests - before?.requests };
+}
+const knownIncomingHttpSnapshot = snapshot => snapshot?.source === 'node-http-server-events'
+  && typeof snapshot.captureId === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(snapshot.captureId)
+  && snapshot.installed === true && snapshot.valid === true
+  && Number.isSafeInteger(snapshot.requests) && snapshot.requests >= 0 && stamp(snapshot.observedAt);
+export const observedNoIncomingHttp = (observation, quiet) => knownIncomingHttpSnapshot(observation?.before)
+  && knownIncomingHttpSnapshot(observation?.after) && observation.before.captureId === observation.after.captureId
+  && stamp(quiet?.startedAt) && stamp(quiet?.finishedAt) && Date.parse(quiet.finishedAt) >= Date.parse(quiet.startedAt)
+  && Date.parse(observation.before.observedAt) <= Date.parse(quiet.startedAt)
+  && Date.parse(observation.after.observedAt) >= Date.parse(quiet.finishedAt)
+  && Number.isSafeInteger(observation.requests) && observation.requests === 0
+  && observation.after.requests - observation.before.requests === observation.requests;
+
 /** Count actual collector requests and OTLP span records, never request-as-span estimates. */
 export function observeConfiguredSignals(requests) {
   const observed = Object.fromEntries(signalKeys.map(key => [key, 0]));
@@ -119,7 +135,8 @@ export function evaluateSleepQualification(receipt, expected) {
       && Date.parse(quiet.finishedAt) - Date.parse(quiet.startedAt) >= 90_000 && quiet.elapsedMs >= 90_000
       && quiet.clock === 'real' && finite(quiet.sqlQueries) && finite(quiet.connectionsOpened)
       && finite(quiet.connectionsRemaining) && finite(quiet.nonDatabaseRequests) && finite(quiet.nonDatabaseBytes)
-      && Array.isArray(quiet.observerRequests) && quiet.observerRequests.length === 0
+      && observedNoIncomingHttp(quiet.observerRequests, quiet)
+      && inRun(quiet.observerRequests.before.observedAt) && inRun(quiet.observerRequests.after.observedAt)
       && observedFeatures.telemetry && observedFeatures.announcements && observedFeatures.otel
       && Object.entries(observedFeatures).every(([key, value]) => receipt.features?.[key] === value)
       && receipt.features?.telemetry === true && receipt.features?.announcements === true

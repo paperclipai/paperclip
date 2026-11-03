@@ -1,4 +1,5 @@
 import type { IdleWorkCaptureSnapshot } from './idle-work-capture.js';
+import type { IncomingHttpSnapshot } from '../../../../../scripts/sleep-qualification/evidence.mjs';
 import { fork } from "node:child_process";
 import type { Server as HttpServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -44,6 +45,7 @@ export async function withMaintenanceProvider<T>(provider: HttpServer, run: (ori
 }
 
 type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number;
+  incomingHttp: IncomingHttpSnapshot;
   managed?: { isCloudManaged: boolean; deploymentMode: string; storageProvider: string; apiActivityActive: boolean };
   workCapture?: IdleWorkCaptureSnapshot;
   announcement?: { intercepted: boolean; requests: string[]; unmatched: string[]; boundary: string } };

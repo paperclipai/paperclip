@@ -61,7 +61,16 @@ normal automatic backups, announcements, first-party telemetry and OTel enabled.
 It creates an agent, useful completed process execution, API credential and future
 routine through normal APIs. It waits the real ten-minute authenticated-use
 cooldown, then measures at least 90 real seconds without tenant HTTP/SQL observer
-polling. IPC snapshots and the passive protocol proxy measure effects. It obtains
+polling. A passive listener on the actual app HTTP server counts incoming requests
+and WebSocket upgrades, including direct clients outside the harness API helper.
+It requires the app's existing request and upgrade handlers before installing;
+it cannot become the sole upgrade listener and change unsupported-upgrade handling.
+IPC snapshots record its capture identity, installation/validity, cumulative safe-integer
+counts and observation times. Both snapshots must enclose the complete quiet interval,
+remain valid and yield an exact zero delta. No URL, headers or body are recorded;
+snapshot reads themselves make no HTTP requests or SQL queries. Missing or detached
+capture, malformed counts and the legacy empty `observerRequests` list cannot prove
+quiet. The passive protocol proxy separately measures database effects. It obtains
 two owned signed safety reports after the window and preserves fixture history.
 After ordinary API reactivation it waits another full real ten-minute cooldown,
 measures another 90 seconds of quiet and requests fresh owned eligibility proof.
@@ -135,6 +144,12 @@ The selected timestamp and its source are recorded. Existing names, old positive
 birthtimes, malformed timestamps and future chronology remain disqualifying.
 Original receipts are retained as produced; the new evidence fields are not
 retroactively added to earlier runs.
+The historical Full Y at `487e450b` and short composition at `57744f4e` wrote an
+unmeasured empty observer-request list. Their recorded SQL, connection, outbound,
+browser and producer observations remain pinned to those runs, but that list does
+not meet the corrected inbound-observation contract. A new combined qualification
+requires both real cooldowns and quiet windows with the installed incoming counter;
+a short injected-poll regression cannot retroactively establish observer absence.
 Receipt finalization follows all observations and runs the same evaluator before
 writing the final receipt. A return-to-idle claim also needs explicit in-run quiet
 start/end timestamps spanning at least 90 real seconds after the latest wake;
