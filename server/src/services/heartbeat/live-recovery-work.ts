@@ -60,6 +60,11 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
               : Date.parse(String((row.metadata?.legacyShutdownWorkspaceSettlement as Record<string, unknown>)?.deadlineAt)) || Date.now(),
           }));
         } else {
+          // Retirement may commit before Stop acknowledgement. This is only a
+          // work hint; the owner rechecks the complete provider/process proof.
+          const pendingApiStop = and(eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.driverKind, "cursor_cloud_api"),
+            sql`${heartbeatRuns.runnerProfileJson}->>'backend' = 'cursor_cloud_api'`,
+            sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`);
           const candidates = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
             nextAttemptAt: nativeRunFinalizations.nextAttemptAt, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt })
             .from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
@@ -76,9 +81,9 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
                   : kind === "active" ? and(eq(heartbeatRuns.status, "running"),
                     sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`)
                     : and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["failed", "cancelled", "timed_out", "interrupted"]),
-                      isNotNull(heartbeatRuns.finishedAt), or(isNotNull(heartbeatRuns.processPid),
-                        isNotNull(heartbeatRuns.processGroupId), isNotNull(heartbeatRuns.processStartedAt)),
-                      settledNativeProcessIdentityCondition(db)),
+                      isNotNull(heartbeatRuns.finishedAt), or(pendingApiStop,
+                        and(or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId),
+                          isNotNull(heartbeatRuns.processStartedAt)), settledNativeProcessIdentityCondition(db)))),
             )).orderBy(asc(heartbeatRuns.id)).limit(100);
           rows = candidates.map(row => ({ id: row.id, companyId: row.companyId, dueAt: kind === "native"
             ? Math.max(Date.now(), row.nextAttemptAt?.getTime() ?? 0, row.leaseExpiresAt?.getTime() ?? 0) : Date.now() }));

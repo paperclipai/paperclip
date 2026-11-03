@@ -8,6 +8,8 @@ import { MemoryRouter } from "@/lib/router";
 import { useLocation } from "react-router-dom";
 import { Issues } from "./Issues";
 import type { IssueSort } from "../lib/issue-sort";
+import { ApiError } from "../api/client";
+import { queryKeys } from "../lib/queryKeys";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("../context/DesignSandboxContext", () => ({ useDesignSandbox: () => false }));
@@ -33,6 +35,42 @@ vi.mock("../components/IssuesList", () => ({ IssuesList: ({ issues, routineTasks
 </> }));
 
 afterEach(() => { localStorage.clear(); vi.clearAllMocks(); });
+
+it.each([403, 404, 429])("handles a %s task-list refresh using the shared read state", async status => {
+  mocks.list.mockResolvedValue([{ id: "retained-task" }]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/issues?view=all"]}><Issues /></MemoryRouter></QueryClientProvider>));
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("retained-task"));
+    mocks.list.mockRejectedValue(new ApiError("request_failed", status, null));
+    await client.invalidateQueries({ queryKey: queryKeys.issues.list("company") });
+    if (status === 429) {
+      expect(host.querySelector("output")?.textContent).toBe("retained-task");
+      expect(host.querySelector('[data-query-view="error"]')).toBeNull();
+    } else {
+      await vi.waitFor(() => expect(host.querySelector('[data-query-view="error"]')).not.toBeNull());
+      expect(host.querySelector("output")).toBeNull();
+      expect(host.textContent).not.toContain("request_failed");
+    }
+  } finally { flushSync(() => root.unmount()); client.clear(); host.remove(); }
+});
+
+it("offers retry after an exhausted initial task-list 429", async () => {
+  mocks.list.mockRejectedValue(new ApiError("rate_limited", 429, null));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/issues?view=all"]}><Issues /></MemoryRouter></QueryClientProvider>));
+    await vi.waitFor(() => expect(host.querySelector('[data-query-view="error"]')).not.toBeNull());
+    expect(host.querySelector("output")).toBeNull();
+    mocks.list.mockResolvedValue([{ id: "recovered-task" }]);
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent?.trim() === "Retry")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("recovered-task"));
+  } finally { flushSync(() => root.unmount()); client.clear(); host.remove(); }
+});
 
 it("fetches routine tasks before pagination and removes the URL filter when unchecked", async () => {
   mocks.list.mockImplementation(async (_company, filters) => filters.originKind === "routine_execution"

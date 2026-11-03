@@ -2081,7 +2081,7 @@ function StreamlinedIssuesList({
       {collectionLoading && !externalObjectFilterError && <PageSkeleton variant="issues-list" collectionHeading={viewState.groupBy !== "none" ? "group"
         : viewState.showDateGroupSeparators && issueDateSeparatorField(viewState) && rowPresentation === "task" ? "date" : null} />}
       {error && !isTransientError(error) && <p role="alert" className="text-sm text-destructive">{describeError(error).body}</p>}
-      {externalObjectFilterError && !isTransientError(externalObjectFilterError) && (
+      {externalObjectFilterError && (
         <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
           <p>Unable to filter tasks by external status: {describeError(externalObjectFilterError).body}</p>
           <Button variant="outline" size="sm" onClick={retryExternalObjectSummaries}>Retry external statuses</Button>
@@ -2097,7 +2097,7 @@ function StreamlinedIssuesList({
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
-      {hierarchy.error && !isTransientError(hierarchy.error) ? <p role="alert" className="text-sm text-destructive">{describeError(hierarchy.error, { action: "load task hierarchy" }).body}</p> : null}
+      {hierarchy.error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><p>{describeError(hierarchy.error, { action: "load task hierarchy" }).body}</p><Button variant="outline" size="sm" onClick={hierarchy.refetch}>Retry hierarchy</Button></div> : null}
       {!collectionLoading && !externalObjectFilterError && visibleListRowCount === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
