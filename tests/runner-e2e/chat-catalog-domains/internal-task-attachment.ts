@@ -1,3 +1,4 @@
+import { currentWorkerTaskPlan, type TaskPlanReadEvidence } from "./task-plan-instructions.js";
 import { createHash } from "node:crypto";
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
@@ -7,7 +8,7 @@ import { openStandingChat } from "./identity-support.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
 import { checks, entity, hasLink, observation, observeInternal, type Entity, type InternalObservation } from "./internal-support.js";
 
-interface BriefObservation extends InternalObservation {
+interface BriefObservation extends InternalObservation, TaskPlanReadEvidence {
   sourceId?: string; originalBytesHash: string; sourceAttachments: ChatQueryAttachmentReceipt[];
   workAttachments: ChatQueryAttachmentReceipt[]; workDocuments: Entity[];
   workerTaskStatus?: number; workerDownloadStatus?: number; workerDownloadedHash?: string; durablePath?: string;
@@ -24,11 +25,18 @@ export function gradeAttachmentBrief(value: unknown) {
   c.add("actual-human-upload-retained", !!receipt && receipt.companyId === o.companyId && o.sourceAttachments.some(row => row.id === receipt.id && row.issueId === o.sourceId && row.companyId === o.companyId
     && row.createdByUserId === receipt.createdByUserId && row.createdByAgentId == null && row.issueCommentId && row.sha256 === o.state.briefHash)
     && o.originalBytesHash === o.state.briefHash, "The original signed-in person's uploaded brief and its exact bytes remain attached to the actual source human comment.");
+  const creation = saved && o.activity.find(row => row.action === "issue.created" && row.entityId === saved.id && row.agentId === o.leadId);
+  const workerRun = o.runs.find(run => run.agentId === worker.id && (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) === saved?.id);
+  const describedWebsite = /\b(?:website|landing.page|web page)\b/i.test(`${saved?.title ?? ""} ${saved?.description ?? ""}`);
+  const plan = currentWorkerTaskPlan({ ...o, task: saved, sourceId: o.sourceId, workerId: worker.id,
+    creatorRun: o.runs.find(run => run.id === (creation as (Entity & { runId?: string }) | undefined)?.runId),
+    workerRun });
   c.add("one-contextual-ordinary-work-task", work.length === 1 && !!saved && saved.companyId === o.companyId && saved.assigneeAgentId === worker.id
-    && /\b(?:website|landing.page|web page)\b/i.test(`${saved.title} ${saved.description ?? ""}`)
+    && /\b(?:website|landing.page|web page)\b/i.test(`${saved.title} ${saved.description ?? ""}\n${plan}`)
     && o.activity.some(row => row.action === "issue.created" && row.entityId === saved.id && row.agentId === o.leadId)
-    && hasLink(o, "issues", saved), "One actual CEO-created website task is delegated to the intended Morgan and linked in chat.");
-  const context = `${saved?.description ?? ""}\n${o.workDocuments.map(row => row.body ?? "").join("\n")}`;
+    && hasLink(o, "issues", saved)
+    && !(workerRun?.status !== "succeeded" && /\b(?:website|landing.page|web page|page)\b[^.!?\n]{0,40}\b(?:is|has been)\s+(?:(?:already|now)\s+)?(?:complete|completed|built|implemented|published|deployed)\b/i.test(o.reply)), "One actual CEO-created website task is delegated to the intended Morgan and linked in chat.");
+  const context = `${saved?.description ?? ""}\n${describedWebsite ? o.workDocuments.map(row => row.body ?? "").join("\n") : plan}`;
   const copied = o.workAttachments.some(row => row.issueId === saved?.id && row.companyId === o.companyId && row.sha256 === o.state.briefHash
     && o.durablePath === row.contentPath);
   const originalReference = !!receipt && context.includes(receipt.contentPath) && o.durablePath === receipt.contentPath;
@@ -41,7 +49,7 @@ export function gradeAttachmentBrief(value: unknown) {
     "Morgan's real admitted run belongs to the new work task, separate from the source conversation.");
   return c.result();
 }
-async function workerReads(ctx: ChatCatalogContext, workerId: string, taskId: string, path: string | undefined) {
+async function workerReads(ctx: ChatCatalogContext, workerId: string, taskId: string, path: string | undefined, hasPlan: boolean) {
   const key = workerProbeKeys.get(ctx);
   if (!key || key.workerId !== workerId) throw new Error("Attempt-private Morgan probe credential is unavailable");
   const get = (value: string) => {
@@ -49,13 +57,18 @@ async function workerReads(ctx: ChatCatalogContext, workerId: string, taskId: st
     if (url.origin !== ctx.input.api.baseURL || !/^\/api\/(?:issues|attachments)\//.test(url.pathname)) throw new Error("Worker brief read escaped isolated resources");
     return fetch(url, { redirect: "error", signal: AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${key.token}` } });
   };
-  const taskRead = await get(`/api/issues/${taskId}`); const workerTaskStatus = taskRead.status; await taskRead.body?.cancel();
-  if (!path) return { workerTaskStatus };
+  const taskRead = await get(`/api/issues/${taskId}`); const workerTaskStatus = taskRead.status;
+  const workerTask = taskRead.ok ? await taskRead.json() as Entity : undefined; if (!taskRead.ok) await taskRead.body?.cancel();
+  let workerDocument: Entity | undefined;
+  if (hasPlan) { const response = await get(`/api/issues/${taskId}/documents/plan`);
+    if (response.ok) workerDocument = await response.json() as Entity; else await response.body?.cancel(); }
+  const planReads = { workerTaskStatus, workerTask, workerDocument };
+  if (!path) return planReads;
   const response = await get(path); const workerDownloadStatus = response.status;
-  if (!response.ok) { await response.body?.cancel(); return { workerTaskStatus, workerDownloadStatus }; }
+  if (!response.ok) { await response.body?.cancel(); return { ...planReads, workerDownloadStatus }; }
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength > 65_536) throw new Error("Delegated brief unexpectedly exceeds its fixture size bound");
-  return { workerTaskStatus, workerDownloadStatus, workerDownloadedHash: hash(bytes) };
+  return { ...planReads, workerDownloadStatus, workerDownloadedHash: hash(bytes) };
 }
 const base = makeDefinition("tasks.attachment-brief", async ctx => {
   const worker = await fixtureWorker(ctx); const source = await openStandingChat(ctx);
@@ -74,9 +87,9 @@ const base = makeDefinition("tasks.attachment-brief", async ctx => {
   return { worker, sourceId: source.id, briefAttachment: receipt, briefHash: hash(Buffer.from(briefBody)), workerProbeKeyId: key.id };
 }, gradeAttachmentBrief);
 export const taskAttachmentCases: readonly ChatCatalogCase[] = [{ ...base, authentication: "human-session",
-  queryAttachments: [{ stateKey: "briefAttachment", filename: "website-brief.md" }], expectedRunCount: 3, minimumRunCount: 2,
+  oracleVersion: "paperclip.chat-catalog.attachment-plan.v2", queryAttachments: [{ stateKey: "briefAttachment", filename: "website-brief.md" }], expectedRunCount: 3, minimumRunCount: 2,
   runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
-  sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-attachment.ts", "chat-catalog-domains/identity-support.ts", "chat-query-attachments.ts"],
+  sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-attachment.ts", "chat-catalog-domains/identity-support.ts", "chat-query-attachments.ts", "chat-catalog-domains/task-plan-instructions.ts", "../../server/src/services/task-plan-context.ts", "../../server/src/services/documents.ts", "../../packages/paperclip-runner/src/protocol-actions/create-task.ts", "../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts", "../../server/src/services/issues.ts", "../../server/src/services/heartbeat/task-markdown.ts"],
   async observe(ctx, state): Promise<BriefObservation> {
     const o = await observeInternal(ctx, state); const source = ctx.issue();
     const sourceAttachments = source ? await ctx.input.api.get<ChatQueryAttachmentReceipt[]>(`/api/issues/${source.id}/attachments`) : [];
@@ -91,8 +104,10 @@ export const taskAttachmentCases: readonly ChatCatalogCase[] = [{ ...base, authe
     const context = `${saved?.description ?? ""}\n${workDocuments.map(row => row.body ?? "").join("\n")}`;
     const durablePath = workAttachments.find(row => row.sha256 === state.briefHash)?.contentPath
       ?? (context.includes(receipt.contentPath) ? receipt.contentPath : undefined);
-    const reads = saved ? await workerReads(ctx, entity(state, "worker").id, saved.id, durablePath) : {};
-    return { ...o, sourceId: source?.id, sourceAttachments, originalBytesHash, workAttachments, workDocuments, durablePath, ...reads };
+    const document = workDocuments.find(row => row.key === "plan");
+    const revision = saved && document?.latestRevisionId ? await ctx.input.api.get<Entity>(`/api/issues/${saved.id}/documents/plan/revisions/${encodeURIComponent(document.latestRevisionId)}`) : undefined;
+    const reads = saved ? await workerReads(ctx, entity(state, "worker").id, saved.id, durablePath, !!document) : {};
+    return { ...o, document, revision, sourceId: source?.id, sourceAttachments, originalBytesHash, workAttachments, workDocuments, durablePath, ...reads };
   },
   async cleanup(ctx, state) {
     const key = workerProbeKeys.get(ctx); workerProbeKeys.delete(ctx);

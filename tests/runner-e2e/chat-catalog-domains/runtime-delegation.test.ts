@@ -1,16 +1,22 @@
+import { completionDelivery } from "../completion-updates.js";
 import { expect, it } from "vitest";
 import { gradeDelegation, hasLaunchHeadline, completeLaunchBrief, launchPageReflectsBrief } from "./runtime-delegation.js";
 function valid() {
-  const task = { id: "website", parentId: "launch", companyId: "company", assigneeAgentId: "morgan", status: "done", description: "Implement the approved design brief and report the completed result back." };
+  const task = { id: "website", parentId: "launch", companyId: "company", assigneeAgentId: "morgan", status: "done", completedAt: "2026-11-03T10:00:00Z", description: "Implement the approved design brief /api/attachments/brief/content and report the completed result back." };
+  const sourceComment = { id: "response", companyId: "company", issueId: "chat", authorAgentId: "ceo", createdByRunId: "report", createdAt: "2026-11-03T10:00:01Z", body: "Morgan completed Website; the actual saved page is available on the child task." };
+  const report = { id: "report", companyId: "company", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "chat", chatCompletionUpdates: [{ id: task.id, status: "done" }] } };
+  const rawDelivery = completionDelivery({ sourceId: "chat", worker: task, marker: "marker", documents: [{ id: "output", issueId: task.id, key: "website-delivery", body: "marker" }],
+    comments: [sourceComment], runs: [report], renderedLinks: [{ commentId: sourceComment.id, href: "/issues/website" }] });
+  const delivery = { ...rawDelivery, response: rawDelivery.response! };
   return { scenarioId: "task-coordination.delegate-with-context", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
     tasks: [{ id: "launch" }, task], activity: [{ id: "created", action: "issue.created", entityId: "website", agentId: "ceo" }],
     runs: [{ id: "context", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "chat" } }, { id: "delegate", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "chat" } },
-      { id: "implement", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "website" } }, { id: "report", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "chat" } }],
+      { id: "implement", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "website" } }, report],
     state: { parent: { id: "launch" }, task, worker: { id: "morgan" }, humanId: "human", briefCommentId: "human-brief", briefHash: "original-hash", briefDownloadedHash: "original-hash",
-      briefAttachment: { id: "brief", issueId: "launch", companyId: "company", createdByAgentId: null, createdByUserId: "human", issueCommentId: "human-brief", sha256: "original-hash" },
+      sourceId: "chat", sourceReturnComments: [sourceComment], briefAttachment: { id: "brief", contentPath: "/api/attachments/brief/content", issueId: "launch", companyId: "company", createdByAgentId: null, createdByUserId: "human", issueCommentId: "human-brief", sha256: "original-hash" },
       parentOwnedByCeo: true, parentContextRetained: true, createdFromSource: true, childHasBrief: true, linkedToLaunch: false, workerBriefReadStatus: 200, workerBriefHash: "original-hash", briefContextKind: "direct-attachment-reference", workerTaskReadStatus: 200, workerParentReadStatus: 200, parentLinkInspectable: true, durableBriefComplete: false,
       workerWasReallyWaiting: true, actualWebsiteArtifact: true,
-      delivery: { checks: [{ id: "correlated", passed: true }], response: { body: "Morgan completed Website; the actual saved page is available on the child task." } } } };
+      delivery } };
 }
 it("accepts one genuinely contextual child and correlated actual result", () => expect(gradeDelegation(valid()).passed).toBe(true));
 it("accepts natural correct-worker result reporting", () => { const o = valid(); o.state.delivery.response.body = "The page Morgan built is ready. Open Website for the delivered result from that implementation."; expect(gradeDelegation(o).passed).toBe(true); });
@@ -34,7 +40,7 @@ it("rejects a parent reference with the wrong brief bytes", () => { const o = va
 it("accepts a complete durable brief with actual grounded delivery without copying its attachment", () => { const o = valid(); o.state.briefContextKind = "faithful-durable-copy"; o.state.durableBriefComplete = true; o.state.workerBriefReadStatus = 404; o.state.workerBriefHash = ""; expect(gradeDelegation(o).passed).toBe(true); });
 it("rejects an incomplete durable brief", () => { const o = valid(); o.state.briefContextKind = "faithful-durable-copy"; expect(gradeDelegation(o).passed).toBe(false); });
 it("rejects a durable copy without the worker's actual access to its task", () => { const o = valid(); o.state.briefContextKind = "faithful-durable-copy"; o.state.durableBriefComplete = true; o.state.workerTaskReadStatus = 403; expect(gradeDelegation(o).passed).toBe(false); });
-it.each(["Notify the CEO in this conversation when the page is ready", "Implement the brief and let me know when done"])("accepts a clear natural completion request: %s", description => { const o = valid(); o.state.task.description = description; expect(gradeDelegation(o).passed).toBe(true); });
+it.each(["Notify the CEO in this conversation when the page is ready", "Implement the brief and let me know when done"])("accepts a clear natural completion request: %s", description => { const o = valid(); o.state.task.description = `${description} /api/attachments/brief/content`; expect(gradeDelegation(o).passed).toBe(true); });
 it("recognizes complete substantive durable brief content", () => expect(completeLaunchBrief("Reference: Launch brief nonce. Build semantic markup with accessible input labels, one primary join button, and the headline Research without the busywork.", "Launch brief nonce")).toBe(true));
 it.each(["Unrelated headline; semantic HTML, accessible labels, one primary signup action. Launch brief nonce", "Research without the busywork. Launch brief nonce", "Research without the busywork; semantic HTML, accessible labels, one primary signup action. Other reference"])("rejects wrong or incomplete durable content", text => expect(completeLaunchBrief(text, "Launch brief nonce")).toBe(false));
 it("verifies actual semantic output and its labelled signup control", () => expect(launchPageReflectsBrief('<main><h1>Research without the busywork</h1><label for="email">Email</label><input id="email"><button>Join now</button></main>')).toBe(true));

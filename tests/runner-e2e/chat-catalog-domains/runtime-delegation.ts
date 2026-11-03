@@ -1,3 +1,4 @@
+import { currentWorkerTaskPlan, finalSourceReturn, type TaskPlanReadEvidence } from "./task-plan-instructions.js";
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "../chat-catalog-contract.js";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -50,14 +51,31 @@ export function gradeDelegation(value: unknown) {
     && receipt.createdByAgentId == null && receipt.createdByUserId === s.humanId && receipt.issueCommentId === s.briefCommentId && receipt.sha256 === s.briefHash
     && s.briefDownloadedHash === s.briefHash && s.parentContextRetained === true,
   "The real Launch task remains owned by the CEO and its human comment retains the exact uploaded design brief.");
+  const creation = task && o.activity.find(row => row.action === "issue.created" && row.entityId === task.id && row.agentId === o.leadId);
+  const plan = currentWorkerTaskPlan({ ...(s.taskPlanRead as TaskPlanReadEvidence | undefined), task, companyId: o.companyId,
+    sourceId: String(s.sourceId ?? ""), leadId: o.leadId, workerId: (s.worker as Entity).id,
+    document: o.documents?.find(row => row.key === "plan" && row.issueId === task?.id),
+    creatorRun: o.runs.find(run => run.id === (creation as (Entity & { runId?: string }) | undefined)?.runId),
+    workerRun: o.runs.find(run => run.agentId === (s.worker as Entity).id && (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) === task?.id) });
+  const returned = finalSourceReturn({ task, sourceId: s.sourceId, companyId: o.companyId, leadId: o.leadId,
+    delivery: s.delivery, sourceComments: s.sourceReturnComments, runs: o.runs });
+  const workerRun = o.runs.find(run => run.agentId === (s.worker as Entity).id && (run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) === task?.id);
+  const workerDocuments = Array.isArray(s.workerDocumentReads) ? s.workerDocumentReads as Entity[] : [];
+  const otherReference = typeof receipt?.contentPath === "string" && workerDocuments.some(doc => doc.key !== "plan"
+    && doc.issueId === task?.id && doc.companyId === o.companyId && doc.createdByAgentId === o.leadId
+    && Number.isFinite(Date.parse(doc.updatedAt ?? "")) && Number.isFinite(Date.parse(workerRun?.startedAt ?? ""))
+    && Date.parse(doc.updatedAt!) <= Date.parse(workerRun!.startedAt!)
+    && o.documents.some(current => current.id === doc.id && current.latestRevisionId === doc.latestRevisionId && current.body === doc.body)
+    && (doc.body ?? "").includes(receipt.contentPath));
+  const instructionReference = typeof receipt?.contentPath === "string" && ((task?.description ?? "").includes(receipt.contentPath) || plan.includes(receipt.contentPath) || otherReference);
   c.add("one-authorized-child-with-durable-context", !!task && (task.parentId === parent.id || s.linkedToLaunch === true) && task.companyId === o.companyId && task.assigneeAgentId === (s.worker as Entity).id
     && s.createdFromSource === true && o.tasks.length === 2 && s.childHasBrief === true && availableBrief && s.workerTaskReadStatus === 200
     && o.activity.some(row => row.action === "issue.created" && row.entityId === task.id && row.agentId === o.leadId)
-    && /report|return|complete|finish|deliver|notify.{0,60}(?:CEO|here|conversation|ready)|let (?:me|us|the CEO) know.{0,60}(?:done|ready|page|result)/i.test(task.description ?? ""),
-  "The canonical request creates one real Morgan child linked to Launch, with accessible durable brief bytes and an explicit completion request.");
+    && (s.briefContextKind !== "direct-attachment-reference" || instructionReference),
+  "The canonical request creates one real Morgan child linked to Launch with accessible durable brief bytes; its return obligation is verified on the actual completion route.");
   const delivery = s.delivery as ReturnType<typeof completionDelivery> | undefined;
   c.add("actual-morgan-result-incorporated-back-here", s.workerWasReallyWaiting === true && task.status === "done" && s.actualWebsiteArtifact === true
-    && !!delivery && delivery.checks.every(row => row.passed) && /done|complete|finish|ready|delivered/i.test(delivery.response?.body ?? "")
+    && !!delivery && returned && /done|complete|finish|ready|delivered/i.test(delivery.response?.body ?? "")
     && !/I (?:ran|executed|built|implemented).{0,40}(?:Launch|parent)|built (?:it|the site) myself/i.test(delivery.response?.body ?? ""),
   "Morgan produces the actual brief-based page and the same source receives its correlated accessible result, without pretending the parent executed another agent's work.");
   c.add("separate-native-ownership-and-no-duplicate-work", o.runs.length === 4 && o.runs.every(row => row.status === "succeeded")
@@ -95,8 +113,8 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
     humanId: session.user.id, briefCommentId: briefComment.id, briefAttachment: attachment, briefHash: hash(Buffer.from(brief)),
     briefDownloadedHash: hash(await ctx.input.api.getAttachmentContent(attachment.id)), sourceId: ctx.issue()!.id };
 }, gradeDelegation, {
-  authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 4, attemptTimeoutMs: 900_000,
-  sourceFiles: ["chat-catalog-domains/runtime-delegation.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "completion-update-flow.ts", "completion-updates.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml"],
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.delegation-return.v2", setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 4, attemptTimeoutMs: 900_000,
+  sourceFiles: ["chat-catalog-domains/runtime-delegation.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "completion-update-flow.ts", "completion-updates.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml", "chat-catalog-domains/task-plan-instructions.ts", "../../server/src/services/task-plan-context.ts", "../../server/src/services/documents.ts", "../../packages/paperclip-runner/src/protocol-actions/create-task.ts", "../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts", "../../server/src/services/issues.ts", "../../server/src/services/heartbeat/task-markdown.ts", "../../server/src/services/chat-completion-delivery.ts"],
   async act(ctx, state) {
     const phase = await pollUntil({ label: "Canonical source creates exactly one actual Morgan child with Launch context", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns(), waiting: await readFile((state.gate as { ready: string }).ready, "utf8").catch(() => ""),
@@ -127,13 +145,25 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
       return fetch(target, { redirect: "error", signal: AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${key!.token}` } });
     }
     const ownRead = await workerRead(`/api/issues/${task.id}`); state.workerTaskReadStatus = ownRead.status;
+    const taskPlanRead: TaskPlanReadEvidence = {};
+    const plan = bodies.find(doc => doc.key === "plan");
+    if (plan?.latestRevisionId) taskPlanRead.revision = await ctx.input.api.get<Entity>(`/api/issues/${task.id}/documents/plan/revisions/${encodeURIComponent(plan.latestRevisionId)}`);
+    state.taskPlanRead = taskPlanRead;
+    const workerDocumentReads: Entity[] = [];
     let workerContext = "";
     if (ownRead.ok) { const own = await ownRead.json() as Entity;
       if (own.id !== task.id || own.companyId !== ctx.input.fixtures.company.id || own.assigneeAgentId !== key.workerId) throw new Error("Worker task read returned a foreign owner or scope");
+      taskPlanRead.workerTask = own;
       workerContext = own.description ?? "";
       for (const doc of documents) { const response = await workerRead(`/api/issues/${task.id}/documents/${encodeURIComponent(doc.key!)}`);
-        if (response.ok) workerContext += `\n${(await response.json() as Entity).body ?? ""}`; else await response.body?.cancel(); }
+        if (response.ok) { const body = await response.json() as Entity; workerContext += `\n${body.body ?? ""}`;
+          if (body.id !== doc.id || body.issueId !== task.id || body.companyId !== ctx.input.fixtures.company.id
+            || body.key !== doc.key || body.latestRevisionId !== doc.latestRevisionId || body.latestRevisionNumber !== doc.latestRevisionNumber || body.body !== bodies.find(row => row.id === doc.id)?.body)
+            throw new Error("Worker document read returned a foreign or obsolete task revision");
+          workerDocumentReads.push(body);
+          if (doc.key === "plan") taskPlanRead.workerDocument = body; } else await response.body?.cancel(); }
     } else await ownRead.body?.cancel();
+    state.workerDocumentReads = workerDocumentReads;
     state.durableBriefComplete = completeLaunchBrief(workerContext, String(state.marker));
     if (path) state.briefContextKind = copied ? "copied-attachment" : "direct-attachment-reference";
     else if (state.parentLinkInspectable) {
@@ -158,6 +188,7 @@ export const runtimeDelegationCases = [runtimeDefinition("task-coordination.dele
     await writeFile((state.gate as { gate: string }).gate, "The human has authorized this delegated page implementation. Read the actual task-bound approved design brief, implement its headline and signup design as website.html, retain its exact reference in the delivery document, and complete this same work task. Do not publish or create further tasks.", "utf8");
     const delivered = await observeCompletionUpdate({ page: ctx.input.page, api: ctx.input.api, sourceId: String(state.sourceId), workerId: task.id,
       marker: String(state.marker), fixtureRequest: ctx.scenario.query, allRuns: () => ctx.allRuns(), evidence: ctx.input.evidence, capture: ctx.input.capture });
+    state.sourceReturnComments = delivered.comments;
     state.delivery = completionDelivery(delivered);
   },
   async observe(ctx, state) {
