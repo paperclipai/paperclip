@@ -10,7 +10,7 @@ import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
-import { createNativeControllerRecovery, deferNativeControllerRecovery, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
@@ -171,9 +171,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
       runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
       turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
+      remoteCwd: "/workspace", sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "retained-sandbox" } } as const;
+    const readSandbox = (override: Record<string, unknown> = {}) => assertNativeRetainedSandboxBinding(db,
+      { ...fixture.scope, target: { ...target, ...override } as never });
     const inspect = (overrides: Partial<Parameters<typeof inspectRemoteWarmSessionRecovery>[0]> = {}) => inspectRemoteWarmSessionRecovery({ db, execution: current,
-      target: { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
-        remoteCwd: "/workspace", sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "retained-sandbox" } } as never,
+      target: target as never,
       identity, readControlState: () => ({ identity, commands: [{ type: "turn.start", status: "completed" }],
         committedEvents: [{ eventType: "run.terminal", envelope: identity }] }),
       matchesExecution: saved => saved.binding.runId === fixture.scope.runId,
@@ -183,14 +186,17 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     await expect(inspect({ execution: { ...current, binding: { ...current.binding, companyId: randomUUID() } } }))
       .rejects.toThrow(denied);
     await expect(inspect({ matchesExecution: () => false })).rejects.toThrow(denied);
+    await expect(readSandbox({ remoteCwd: "/unrelated" })).rejects.toThrow("retained_sandbox_binding");
     for (const leaseExpiresAt of [null, new Date(Date.now() - 1_000)]) {
       await db.update(nativeRunFinalizations).set({ leaseExpiresAt }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
       await expect(inspect()).rejects.toThrow(denied);
+      await expect(readSandbox()).rejects.toThrow("retained_sandbox_binding");
     }
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: deadline }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
     await expect(inspect()).rejects.toThrow(denied);
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+    await expect(readSandbox()).rejects.toMatchObject({ retryAt: deadline });
     const waiting = await inspect().catch(error => error);
     expect(waiting).toBeInstanceOf(NativeControllerRecoveryWaitingError);
     expect(waiting.retryAt).toEqual(deadline);
@@ -200,6 +206,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
     await db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    await expect(readSandbox()).resolves.toBeUndefined();
     await expect(inspect({ readControlState: () => ({ identity, commands: [{ status: "pending" }],
       committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toThrow(denied);
     const recovered = await inspect();
