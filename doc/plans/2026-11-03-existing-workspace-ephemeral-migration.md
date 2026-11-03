@@ -77,7 +77,8 @@ provider termination evidence, or permission to delete the original allocation.
 After independently verified sandbox preservation, the task accepts the exact
 migrated snapshot receipt for continuation without requiring a fresh workspace.
 Accepted results with unfinished copyback remain blockers. Once the original
-sync receipt is finalized, assessment and status effects can continue from their
+sync reference is finalized and its successful `workspace_finalize` operation
+receipt exists, assessment and status effects can continue from their
 existing database coordinator independently of the file storage migration.
 
 Offline maintenance stops writers; it does not silently change workspace

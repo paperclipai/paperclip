@@ -28,6 +28,7 @@ import { workspaceOperationService } from "./workspace-operations.js";
 import { resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
 import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
 import { claimNativeRestartRecoveries } from "./native-runtime/native-restart-recovery.js";
+import { attemptNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalizer.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents } from "./git-workspace-contents.js";
 
@@ -214,7 +215,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         legacyWorkspaceRecoveryMigration: { workspaceId: f.workspaceId } },
     });
   });
-  it.each(["prepared", "finalized"])("keeps accepted-result finalization independent of migrated file storage (%s)", async state => {
+  it.each(["prepared", "finalized", "missing-receipt", "failed-receipt"])("keeps accepted-result finalization independent of migrated file storage (%s)", async mode => {
+    const state = mode === "prepared" ? "prepared" : "finalized";
     const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     const contractId = randomUUID(), resultId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId, revision: 1,
@@ -226,14 +228,21 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
       completionContractId: contractId, serverFingerprint: "saved-result", schemaStatus: "accepted", resultJson: { saved: true }, canonicalSha256: "34".repeat(32) });
     await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", resultId }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const operationId = randomUUID();
+    if (mode === "finalized" || mode === "failed-receipt") await db.insert(workspaceOperations).values({ id: operationId,
+      companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId, issueId: f.issueId,
+      phase: "workspace_finalize", status: mode === "finalized" ? "succeeded" : "failed" });
     const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     const migrate = () => migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
-    if (state === "prepared") await expect(migrate()).rejects.toThrow("remote_copyback_unresolved");
+    if (mode !== "finalized") await expect(migrate()).rejects.toThrow(state === "prepared"
+      ? "remote_copyback_unresolved" : "execution_finalization_unresolved");
     else {
       await migrate();
       expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson)
         .not.toHaveProperty("legacyWorkspaceRecoveryMigration");
+      expect(await attemptNativeWorkspaceFinalization({ db, runId: f.runId }))
+        .toMatchObject({ kind: "completed", operation: { id: operationId } });
     }
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
   });

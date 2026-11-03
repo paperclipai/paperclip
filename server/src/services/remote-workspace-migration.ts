@@ -137,9 +137,18 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       && !(row.run.controllerLeaseExpiresAt && row.run.controllerLeaseExpiresAt > new Date())
       && !(row.leaseOwner && (!row.leaseExpiresAt || row.leaseExpiresAt > new Date()));
     const reference = readNativeWorkspaceSyncReference(row.run.runnerProfileJson?.nativeWorkspaceSync);
-    // Finalized copyback has no outstanding local writer. Assessment/status
-    // effects stay with their existing durable coordinator after the move.
-    if (stopped && reference?.state === "finalized") continue;
+    // The finalizer retries from its operation receipt, not the sync descriptor.
+    // Without that receipt it would try exporting the newly migrated workspace,
+    // which intentionally has no live location. Keep the local authority until
+    // the existing owner records completion; then assessment/status can resume.
+    if (stopped && reference?.state === "finalized") {
+      const [finalized] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+        eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.heartbeatRunId, row.id),
+        eq(workspaceOperations.issueId, row.run.nativeIssueId!), eq(workspaceOperations.phase, "workspace_finalize"),
+        eq(workspaceOperations.status, "succeeded"),
+      )).limit(1);
+      if (finalized) continue;
+    }
     if (stopped && reference && reference.workspaceId !== workspace.id) {
       const [other] = await db.select({ providerType: executionWorkspaces.providerType, cwd: executionWorkspaces.cwd,
         sourceIssueId: executionWorkspaces.sourceIssueId, metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
