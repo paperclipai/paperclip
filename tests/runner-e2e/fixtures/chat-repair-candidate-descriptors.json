@@ -253,7 +253,8 @@
       "chat-catalog-domains/internal-privacy.ts",
       "chat-catalog-domains/identity-auth.ts",
       "chat-catalog-domains/internal-routine-audit.ts",
-      "../e2e/fetch-allowed-port.ts"
+      "../e2e/fetch-allowed-port.ts",
+      "../../server/src/services/native-runtime/status-decision-committer.ts"
     ],
     "oracleVersion": "paperclip.chat-catalog.internal.v1",
     "coverageGaps": [],
@@ -814,6 +815,7 @@
       "../../server/src/routes/issues.ts",
       "../../server/src/routes/tool-access.ts",
       "../../server/src/services/tool-gateway.ts",
+      "../../server/src/services/tool-action-replay-intent.ts",
       "../../server/src/services/tool-action-review.ts",
       "../../server/src/services/tool-action-delivery.ts",
       "../../server/src/services/tool-access-policy.ts",
@@ -3575,7 +3577,9 @@
       "harness-env.ts",
       "../../packages/shared/src/announcements.ts",
       "../../server/src/services/announcement-feed.ts",
-      "../../server/src/routes/announcements.ts"
+      "../../server/src/routes/announcements.ts",
+      "../../ui/src/pages/Projects.tsx",
+      "../../ui/src/components/AnnouncementWell.tsx"
     ],
     "oracleVersion": "paperclip.chat-catalog.announcement-dismissal.v2",
     "expectedRunCount": 1,
@@ -4196,6 +4200,7 @@
       "chat-catalog-domains/identity-hire-model-choice.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
+      "chat-rendered-links.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
     "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v3",
@@ -4887,6 +4892,8 @@
       "chat-catalog-domains/external-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/identity-support.ts",
+      "live-fixtures.ts",
+      "../../server/src/services/secrets.ts",
       "run-observations.ts",
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
@@ -5064,7 +5071,9 @@
       "chat-catalog-domains/integrator-skills.ts",
       "chat-scenarios/skills.yaml",
       "chat-catalog-domains/integrator-skill-versions.ts",
-      "chat-catalog-domains/identity-support.ts"
+      "chat-catalog-domains/identity-support.ts",
+      "../../ui/src/components/MarkdownEditor.tsx",
+      "../../ui/src/pages/SkillStudio.tsx"
     ],
     "oracleVersion": "paperclip.chat-catalog.skill-authoring.v2",
     "expectedRunCount": 1,

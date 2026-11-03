@@ -9,6 +9,7 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   return (count as number) >= minimum && (count as number) <= maximum;
 }
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
+  "company-access-isolation": ["isolation-owner-resource-controls", "cloud-workspace-switch-and-return", "workspace-data-scoped", "restricted-agent-positive-controls", "cross-workspace-agent-read-write-denied", "isolation-credential-revoked", "no-agent-work"],
   "repository-continuation": ["repository-configured-source-bound", "repository-first-commit-verified", "repository-original-files-saved", "repository-followup-stored-once", "repository-same-workspace-retained", "repository-second-commit-verified", "repository-original-and-result-reopened", "configured-model-and-environment"],
   "routine-scheduled-run": ["routine-browser-created", "routine-scheduler-created-execution", "routine-result-attributed", "routine-history-preserved", "routine-pause-prevented-next-run", "routine-result-reopened", "configured-model-and-environment"],
   "inbox-triage": ["inbox-external-human-activity", "inbox-read-persisted", "inbox-archive-persisted", "inbox-archive-preserved-task-status", "inbox-relevant-activity-resurfaced", "no-agent-work"],

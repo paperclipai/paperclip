@@ -1907,6 +1907,7 @@ impl CodexCommandExecutor {
                 "failed to start {} provider: {error}",
                 state.config.provider
             ))
+            .with_provider_failure(error.provider_failure())
         })
     }
 
@@ -2051,6 +2052,7 @@ impl CodexCommandExecutor {
                 DurableRunnerError::invalid(format!(
                     "failed to resume {provider_name} provider: {error}"
                 ))
+                .with_provider_failure(error.provider_failure())
             })?;
         let admission = (|| -> Result<(), DurableRunnerError> {
             provider.enable_durable_tool_call_replays();
@@ -2535,6 +2537,7 @@ impl CodexCommandExecutor {
                 .start_observed_provider(ProviderStartupTrigger::Ensure, process_generation)
                 .map_err(|error| {
                     DurableRunnerError::invalid(format!("failed to start Codex provider: {error}"))
+                        .with_provider_failure(error.provider_failure())
                 })?;
             let admission = (|| -> Result<(), DurableRunnerError> {
                 provider.enable_durable_tool_call_replays();

@@ -1,4 +1,4 @@
-import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { hash, validateSelection, reject } from './chat-completion-testops-contract.mjs';
 import { readPilotExport, exportPilotAllure } from './chat-completion-testops-results.mjs';
@@ -95,33 +95,68 @@ export async function publishCaseBundle(api, root, output, prepared, context, se
     verification: verification.verification, results: verification.results };
 }
 
+// Artifact names remain authoritative. Singleton downloads must use an exact
+// action `name` and that named child destination: the pinned downloader flattens
+// a one-artifact pattern result even with merge-multiple:false.
+async function artifactDirectories(root, kind, context, selection) {
+  if (context.catalog !== 'full') reject('stream_scope');
+  const rows = validateSelection(selection, context, selection.allureJobRunId);
+  const stat = await lstat(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(root) !== path.resolve(root)) reject('stream_publications');
+  const names = rows.map((_, index) => `chat-catalog-case-${kind}-${context.runId}-1-${index}`);
+  const actual = await readdir(root);
+  if (actual.length !== names.length || actual.some(name => !names.includes(name))) reject('stream_publications');
+  const directories = names.map(name => path.join(root, name));
+  for (const directory of directories) {
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink()) reject('stream_publications');
+    const wanted = kind === 'bundle' ? ['allure', 'prepared.json', 'projection'] : ['publication.json', 'once-upload_case.json'];
+    const entries = await readdir(directory);
+    if (entries.some(name => !wanted.includes(name))
+      || (kind === 'bundle' ? entries.length !== wanted.length : !entries.includes('publication.json'))) reject('stream_publications');
+    if (kind === 'publication' && entries.includes('once-upload_case.json')) {
+      const marker = await artifactJson(directory, 'once-upload_case.json');
+      if (Object.keys(marker).sort().join() !== 'stage,status' || marker.stage !== 'upload_case'
+        || marker.status !== 'STARTED_NO_AUTOMATIC_RESEND') reject('stream_publications');
+    }
+  }
+  return directories;
+}
+async function artifactJson(directory, name) {
+  const file = path.join(directory, name), stat = await lstat(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 65_536) reject('stream_publications');
+  return JSON.parse(await readFile(file, 'utf8'));
+}
+
+// Copy only authenticated safe projections. UUID-bearing Allure bytes are read
+// for integrity, never regenerated or uploaded by this metadata-only command.
+export async function gatherCaseProjections(bundlesRoot, output, context, selection, selectionSha256) {
+  const bundles = await artifactDirectories(bundlesRoot, 'bundle', context, selection);
+  for (const [index, bundle] of bundles.entries()) {
+    const prepared = await artifactJson(bundle, 'prepared.json');
+    await readCaseBundle(path.join(bundle, 'projection'), path.join(bundle, 'allure'), prepared, context,
+      selection, selection.cases[index].executionId, selectionSha256);
+  }
+  await mkdir(output, { mode: 0o700 });
+  for (const [index, bundle] of bundles.entries()) {
+    const destination = path.join(output, path.basename(bundle));
+    await cp(path.join(bundle, 'projection'), destination, { recursive: true, force: false, errorOnExist: true });
+    await readPilotExport(destination, context, caseSelection(selection, context, selection.cases[index].executionId));
+  }
+}
+
 // The finalizer authenticates the already-emitted bytes and their original
 // grades. It never calls the random-UUID exporter or the upload endpoint.
 export async function publicationSet(bundlesRoot, publicationsRoot, context, selection, selectionSha256) {
   const rows = validateSelection(selection, context, selection.allureJobRunId);
-  const roots = [bundlesRoot, publicationsRoot];
-  for (const [index, root] of roots.entries()) {
-    if (await realpath(root) !== path.resolve(root)) reject('stream_publications');
-    const prefix = `chat-catalog-case-${index === 0 ? 'bundle' : 'publication'}-${context.runId}-1-`;
-    const names = await readdir(root);
-    if (names.length !== rows.length || names.some(name => !rows.some((_, i) => name === `${prefix}${i}`))) reject('stream_publications');
-  }
+  const bundles = await artifactDirectories(bundlesRoot, 'bundle', context, selection);
+  const publications = await artifactDirectories(publicationsRoot, 'publication', context, selection);
   const exported = [];
   for (const [index, row] of rows.entries()) {
-    const bundle = path.join(bundlesRoot, `chat-catalog-case-bundle-${context.runId}-1-${index}`);
-    const publication = path.join(publicationsRoot, `chat-catalog-case-publication-${context.runId}-1-${index}`);
-    for (const directory of [bundle, publication]) {
-      const stat = await lstat(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) reject('stream_publications');
-    }
-    const read = async (directory, name) => {
-      const stat = await lstat(path.join(directory, name));
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 65_536) reject('stream_publications');
-      return JSON.parse(await readFile(path.join(directory, name), 'utf8'));
-    };
-    const prepared = await read(bundle, 'prepared.json');
+    const bundle = bundles[index], publication = publications[index];
+    const prepared = await artifactJson(bundle, 'prepared.json');
     await readCaseBundle(path.join(bundle, 'projection'), path.join(bundle, 'allure'), prepared, context, selection, row.executionId, selectionSha256);
-    const value = await read(publication, 'publication.json');
+    const value = await artifactJson(publication, 'publication.json');
     const expected = { ...identity(selection, context, row.executionId, selectionSha256), schema: 'paperclip.chat-catalog-testops-case-publication/v1' };
     if (Object.entries(expected).some(([key, wanted]) => value[key] !== wanted)
       || value.payloadSha256 !== prepared.payloadSha256 || value.projectionBindingSha256 !== prepared.projectionBindingSha256
