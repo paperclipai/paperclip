@@ -338,6 +338,7 @@ describe("codex remote execution", () => {
 
   it("keeps host credentials, configuration, skills and inherited secrets out of an empty remote home", async () => {
     vi.stubEnv("PAPERCLIP_FIXTURE_HOST_SECRET", "fictional-only-host-secret");
+    vi.stubEnv("PATH", "/fictional/custom/host/bin");
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-allowlist-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -456,10 +457,12 @@ describe("codex remote execution", () => {
     expect(ensureCommandResolvable).toHaveBeenCalled();
     for (const call of ensureCommandResolvable.mock.calls as unknown as Array<[unknown, unknown, Record<string, string>]>) {
       expect(call[2].PAPERCLIP_FIXTURE_HOST_SECRET).toBeUndefined();
+      expect(call[2].PATH).toBeUndefined();
     }
     expect(resolveCommandForLogs).toHaveBeenCalled();
     for (const call of resolveCommandForLogs.mock.calls as unknown as Array<[unknown, unknown, Record<string, string>]>) {
       expect(call[2].PAPERCLIP_FIXTURE_HOST_SECRET).toBeUndefined();
+      expect(call[2].PATH).toBeUndefined();
       expect(Object.values(call[2])).not.toContain("HOST_ONLY_RUNTIME_MARKER");
     }
     expect(runChildProcess).toHaveBeenCalled();

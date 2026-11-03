@@ -1098,7 +1098,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
     const runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv(externalHome ? env : effectiveEnv)).filter(
+      Object.entries(externalHome ? env : ensurePathInEnv(effectiveEnv)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
