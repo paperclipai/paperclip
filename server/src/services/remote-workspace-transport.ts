@@ -165,7 +165,10 @@ async function installArchiveHelper(target: RemoteWorkspaceTarget, remoteCwd: st
    for(const s of root.split('/').filter(Boolean)){p=path.join(p,s);await fs.mkdir(p,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});const st=await fs.lstat(p);if(st.isSymbolicLink()||!st.isDirectory())throw Error('unsafe');}
    for(const s of path.relative(root,dir).split('/')){p=path.join(p,s);await fs.mkdir(p,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});const st=await fs.lstat(p);if(st.isSymbolicLink()||!st.isDirectory())throw Error('unsafe');}
    const existing=await fs.lstat(file).catch(e=>{if(e.code==='ENOENT')return null;throw e});if(existing&&(!existing.isFile()||existing.isSymbolicLink()))throw Error('unsafe');
-   const temp=file+'.'+require('node:crypto').randomUUID()+'.tmp';await fs.writeFile(temp,Buffer.from(body,'base64'),{mode:0o600,flag:'wx'});await fs.rename(temp,file);
+   const temp=file+'.'+require('node:crypto').randomUUID()+'.tmp';
+   // A failed write can leave partial bytes. Remove only the temporary file this run created.
+   try{await fs.writeFile(temp,Buffer.from(body,'base64'),{mode:0o600,flag:'wx'});await fs.rename(temp,file);}
+   catch(e){if(e?.code!=='EEXIST')await fs.rm(temp,{force:true}).catch(()=>{});throw e;}
   })().catch(error=>{if(diskFull(error))process.stderr.write(${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)});process.exitCode=1});`;
   await command(target, ["-e", install, remoteCwd, directory, helper, Buffer.from(remoteWorkspaceArchiveScript()).toString("base64")]);
   return { directory, helper, archive: path.posix.join(directory, "workspace.pcws"), receipt: path.posix.join(directory, "receipt.json") };
