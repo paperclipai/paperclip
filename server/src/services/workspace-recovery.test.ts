@@ -184,7 +184,7 @@ describe("automatic retained workspace recovery", () => {
       ownerType: "board", cause: mode === "native" ? "native_continuation_requires_reconciliation" : "legacy_execution_requires_reconciliation",
       fingerprint: runId, nextAction: "Manual repair required", evidence: { runId, workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery } });
     const runtime = { resumeRunLease: vi.fn(async (_input: { lease: EnvironmentLease }) => ({ providerLeaseId, metadata: { remoteCwd: remote } })),
-      retryPendingSandboxTeardown: vi.fn(async () => ({ providerLeaseId, state: "stopped" })) };
+      retryPendingSandboxTeardown: vi.fn(async (_input: { lease: EnvironmentLease }) => ({ providerLeaseId, state: "stopped" })) };
     const environmentRuntime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
       acquireRunLease: vi.fn(), releaseRunLease: vi.fn(), ...runtime,
       resolveCapabilities: async () => classifyEnvironmentCapabilities({ verifiedMethods: [], declared: null, narrowing: null }),
@@ -195,10 +195,10 @@ describe("automatic retained workspace recovery", () => {
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
-  it.each(["retained", "removed", "child", "expired-owner"])("preserves an old sandbox after storage migration without writing its old host (%s)", async mode => {
+  it.each(["retained", "removed", "child", "expired-owner", "no-descriptor"])("preserves an old sandbox after storage migration without writing its old host (%s)", async mode => {
     vi.stubEnv("DATABASE_URL", connectionString);
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "63".repeat(32));
-    const f = await seed();
+    const f = await seed("native", mode !== "no-descriptor");
     // The fixture's command runner supports native copyback; the provider
     // snapshot boundary separately needs its real-file syncOut capability.
     targets.get(f.lease.id)!.runner!.syncIn = async operations => {
@@ -211,6 +211,25 @@ describe("automatic retained workspace recovery", () => {
         await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
       return { filesTransferred: 2, bytesTransferred: 0, operations: [] };
     };
+    if (mode === "no-descriptor") {
+      const secondId = randomUUID(), secondProviderId = randomUUID(), secondRemote = path.join(root, secondId);
+      await cp(f.remote, secondRemote, { recursive: true });
+      const second: typeof f.lease = { ...f.lease, id: secondId, providerLeaseId: secondProviderId,
+        metadata: { ...f.lease.metadata, remoteCwd: secondRemote } };
+      second.metadata = { ...second.metadata,
+        remoteExecutionTermination: remoteTerminationReceipt(second, { providerLeaseId: secondProviderId, state: "stopped" }) };
+      await db.insert(environmentLeases).values(second);
+      targets.set(secondId, { ...targets.get(f.lease.id)!, leaseId: secondId, remoteCwd: secondRemote });
+      f.runtime.retryPendingSandboxTeardown.mockImplementation(async ({ lease }) => ({
+        providerLeaseId: lease.providerLeaseId!, state: "stopped",
+      }));
+      f.runtime.resumeRunLease.mockImplementation(async ({ lease }) => ({ providerLeaseId: lease.providerLeaseId!,
+        metadata: { remoteCwd: lease.metadata!.remoteCwd as string } }));
+      const source = await run(f.runId);
+      await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id, secondId] },
+      } }).where(eq(heartbeatRuns.id, f.runId));
+    }
     const sourceIssueId = mode === "child" ? randomUUID() : f.issueId;
     if (mode === "child") {
       await db.insert(issues).values({ id: sourceIssueId, companyId: f.companyId, title: "Ancestor workspace owner" });
@@ -219,7 +238,7 @@ describe("automatic retained workspace recovery", () => {
     await db.insert(executionWorkspaces).values({ id: f.issueId, companyId: f.companyId, sourceIssueId,
       name: "Existing files", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.host });
     await db.update(issues).set({ executionWorkspaceId: f.issueId }).where(eq(issues.id, f.issueId));
-    if (mode === "expired-owner") await db.update(nativeRunFinalizations).set({ phase: "observed",
+    if (mode === "expired-owner" || mode === "no-descriptor") await db.update(nativeRunFinalizations).set({ phase: "observed",
       leaseOwner: "stopped-old-controller", leaseExpiresAt: new Date(Date.now() - 60_000) })
       .where(eq(nativeRunFinalizations.runId, f.runId));
     vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
@@ -231,17 +250,35 @@ describe("automatic retained workspace recovery", () => {
       await recoverRetainedWorkspace(f.input);
       expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
       expect(await readFile(path.join(f.host, "saved.txt")).catch(() => null)).toBeNull();
-      expect(await run(f.runId)).toMatchObject({ status: "failed", runnerProfileJson: { nativeWorkspaceSync: { state: "prepared" } } });
+      expect(await run(f.runId)).toMatchObject({ status: "failed", runnerProfileJson: mode === "no-descriptor" ? {} : { nativeWorkspaceSync: { state: "prepared" } } });
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ workspaceRepairRequired: false });
       const restored = path.join(root, randomUUID()); await mkdir(restored);
       const copies = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
         sourceRunIds: [f.runId], cwd: restored });
-      expect(copies).toHaveLength(1);
+      expect(copies).toHaveLength(mode === "no-descriptor" ? 2 : 1);
       expect(await readFile(path.join(copies[0]!.path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
-      if (mode === "child" || mode === "expired-owner") {
+      if (mode === "no-descriptor") {
+        const source = await run(f.runId);
+        await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+          workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] },
+        } }).where(eq(heartbeatRuns.id, f.runId));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        await db.update(heartbeatRuns).set({ resultJson: source.resultJson }).where(eq(heartbeatRuns.id, f.runId));
+        for (const copy of copies) {
+          await db.update(workspaceOperations).set({ status: "running" }).where(eq(workspaceOperations.id, copy.operationId));
+          expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+          await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, copy.operationId));
+        }
+        const [allocation] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        await db.update(environmentLeases).set({ providerLeaseId: randomUUID() }).where(eq(environmentLeases.id, f.lease.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        await db.update(environmentLeases).set({ providerLeaseId: allocation.providerLeaseId }).where(eq(environmentLeases.id, f.lease.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      }
+      if (mode === "child" || mode === "expired-owner" || mode === "no-descriptor") {
         // The parent must not receive the child's task-scoped recovery copy.
         if (mode === "child") expect(await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: sourceIssueId,
           sourceRunIds: [f.runId], cwd: restored })).toHaveLength(0);
@@ -252,7 +289,7 @@ describe("automatic retained workspace recovery", () => {
         const continuationInput = { db, companyId: f.companyId, issueId: f.issueId,
           agentId: sourceRun.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
           commentId: comment.id, successorRunId: nextRunId };
-        if (mode === "expired-owner") {
+        if (mode === "expired-owner" || mode === "no-descriptor") {
           for (const changed of [{ phase: "retryable_failure", leaseOwner: null }, { phase: "observed", leaseOwner: "new-controller" }]) {
             await db.update(nativeRunFinalizations).set(changed).where(eq(nativeRunFinalizations.runId, f.runId));
             expect(await admitExplicitNativeContinuation({ ...continuationInput, dryRun: true })).toBeNull();
@@ -281,7 +318,7 @@ describe("automatic retained workspace recovery", () => {
         expect(await readFile(path.join(prepared.remoteRoot, ".paperclip-recovered", copies[0]!.operationId, "files", "saved.txt"), "utf8"))
           .toBe("finished work\n");
       }
-      if (mode === "retained") {
+      if (mode === "retained" || mode === "no-descriptor") {
         const [receipt] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, copies[0]!.operationId));
         for (const metadata of [{ ...receipt.metadata, leaseId: randomUUID() }, { ...receipt.metadata, providerLeaseId: randomUUID() },
           { ...receipt.metadata, recoveryActionId: randomUUID() }, { ...receipt.metadata, archive: { broken: true } }]) {

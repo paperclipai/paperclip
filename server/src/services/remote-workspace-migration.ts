@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
-  executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaceSnapshots, executionWorkspaces,
+  environmentLeases, executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaceSnapshots, executionWorkspaces,
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, workspaceRuntimeServices, type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
@@ -18,7 +18,7 @@ import { materializeTaskDirectorySnapshot, removeTaskDirectoryTree } from "./iso
 import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, validateTaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
 import { inspectArchivedGitMigrationSource, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { isLegacyWorkspaceTaskRelated, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
+import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
@@ -161,6 +161,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     if (stopped && row.run.runnerProfileJson?.nativeWorkspaceSync == null && row.run.runnerProfileJson?.remoteWorkspace == null
       && row.resultId === null && ["observed", "retryable_failure"].includes(row.phase)) {
       legacyRecoverySources.push({ runId: row.id, issueId: row.run.nativeIssueId!, reference: null,
+        recoveryAllocations: await readLegacyWorkspaceRecoveryAllocations(db, row.run),
         unresolvedFinalization: { phase: row.phase, leaseOwner: row.leaseOwner,
           leaseExpiresAt: row.leaseExpiresAt?.toISOString() ?? null } });
       continue;
@@ -317,6 +318,9 @@ export async function migrateRemoteWorkspace(input: {
             .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, source.runId))).for("update");
           await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
             .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, source.runId))).for("update");
+          for (const allocation of source.recoveryAllocations ?? []) await tx.select({ id: environmentLeases.id })
+            .from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+              eq(environmentLeases.id, allocation.leaseId))).for("update");
         }
         const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
         if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");

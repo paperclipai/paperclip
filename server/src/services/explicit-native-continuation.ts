@@ -384,7 +384,7 @@ export async function admitExplicitNativeContinuation(input: {
     // before admitting new user input; never apply or replay the old result.
     const legacyReference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
     const migratedSource = coordinator && !coordinator.resultId && !coordinator.leaseOwner
-      && ["observed", "retryable_failure"].includes(coordinator.phase) && legacyReference
+      && ["observed", "retryable_failure"].includes(coordinator.phase)
       && await hasVerifiedWorkspaceRepair(db, run)
       ? await readMigratedLegacyWorkspaceSource(db, { companyId, runId: run.id, reference: legacyReference }) : null;
     // Offline migration fenced this exact unfinished turn and preserved its

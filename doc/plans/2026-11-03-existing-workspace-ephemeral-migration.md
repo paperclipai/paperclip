@@ -76,6 +76,12 @@ use the retained sources and remote workspace. This is not successful recovery,
 provider termination evidence, or permission to delete the original allocation.
 After independently verified sandbox preservation, the task accepts the exact
 migrated snapshot receipt for continuation without requiring a fresh workspace.
+For older runs without a synchronization descriptor, the migration journals
+all declared recovery lease/allocation/directory identities under row locks.
+Continuation requires the unchanged complete set and a verified snapshot for
+every source. Missing or ambiguous source identity remains held; a partial
+archive cannot certify recovery. The recovery journey covers two allocations,
+removal of the old filesystem, and the files appearing in the next remote turn.
 Accepted results with unfinished copyback remain blockers. Once the original
 sync reference is finalized and its successful `workspace_finalize` operation
 receipt exists, assessment and status effects can continue from their

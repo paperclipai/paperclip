@@ -8,7 +8,7 @@ import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, completionContracts, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
+import { activityLog, agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, completionContracts, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
   executionWorkspaceRuntimeLeases, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -265,6 +265,25 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       return result;
     };
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("remote_workspace_migration_source_changed");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("rejects a descriptor-free allocation changed during upload", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.insert(environmentLeases).values({ id: f.reference.leaseId, companyId: f.companyId,
+      issueId: f.issueId, heartbeatRunId: f.runId, provider: "daytona", providerLeaseId: f.reference.providerLeaseId,
+      status: "released", metadata: { remoteCwd: f.reference.remoteCwd } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {}, resultJson: {
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.reference.leaseId] },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => {
+      const result = await put(input);
+      await db.update(environmentLeases).set({ providerLeaseId: randomUUID() }).where(eq(environmentLeases.id, f.reference.leaseId));
+      return result;
+    };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true }))
+      .rejects.toThrow("remote_workspace_migration_source_changed");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
   it("does not release a coordinator whose expired owner changed during upload", async () => {
