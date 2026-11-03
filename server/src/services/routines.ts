@@ -64,7 +64,7 @@ import {
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
-import { badRequest, conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -3013,6 +3013,7 @@ export function routineService(
             throw badRequest("Timestamped HMAC replay protection uses trigger-scoped receipts");
           }
         } catch (error) {
+          if (!(error instanceof HttpError) || error.status < 400 || error.status >= 500) throw error;
           await recordDelivery("rejected");
           return { routine, trigger, hmacReplayKey, testReceived: false, error };
         }

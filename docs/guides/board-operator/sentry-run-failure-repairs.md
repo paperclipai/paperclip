@@ -70,6 +70,15 @@ its task and run identifiers inside `data.event.tags`; it does not supply
 Paperclip's top-level routine variables. Do not make `task_id`, `run_id`, or
 `task_identifier` required template variables for this setup.
 
+The normal webhook stores the sender's full JSON in company-readable routine
+history and copies it into the execution task. It does not apply a
+Sentry-specific field allowlist or a general payload scrubber. `task_shareable`
+describes the source task's access scope; it does not certify that every event
+field is safe to share. Configure [Sentry data scrubbing](https://docs.sentry.io/platforms/javascript/guides/node/data-management/sensitive-data/)
+for request data, credentials, and other sensitive fields. Inspect a representative
+scrubbed event in Sentry before enabling the alert action. Keep connection tests
+in trigger setup mode, where they create no execution task or run.
+
 Use instructions such as:
 
 ```text
@@ -223,7 +232,10 @@ answers whether a delivery already has an execution receipt.
 
 ## Missing or retained history
 
-Paperclip bounds the ancestry walk to 100 tasks and 16 levels. Missing, foreign,
+Paperclip bounds the ancestry walk to 100 tasks, 16 levels, and 32 database reads.
+The Sentry lookup stops starting ancestry reads after a 750 ms budget; an
+in-flight query can finish, but the walk then stops. The SDK still waits at most
+one second for enrichment. Exhausted budgets, missing, foreign,
 cyclic, or unresolved legacy creation records produce `unknown`. Five UUIDs fit
 in the routine-ID tag; longer routine ancestry is available in bounded event
 context but is also marked `unknown` for alert filtering. Slow or unavailable

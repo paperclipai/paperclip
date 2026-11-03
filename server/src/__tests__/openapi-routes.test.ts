@@ -328,7 +328,7 @@ describe("openapi routes", () => {
       expect.objectContaining({ in: "header", name: "X-Paperclip-Source-Run-Token", required: false }),
       expect.objectContaining({ in: "header", name: "X-Paperclip-Idempotency-Scope", required: false }),
     ]));
-    expect(operation.responses).toHaveProperty("202");
+    for (const status of ["202", "400", "401", "404", "409", "415", "422"]) expect(operation.responses).toHaveProperty(status);
     expect(operation.requestBody.content).toHaveProperty("application/json");
     expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
   });

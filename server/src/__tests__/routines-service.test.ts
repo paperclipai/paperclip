@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { subscribeDatabaseWork } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -347,6 +347,57 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(await readTaskCreationProvenance(db, f.companyId, rootId)).toEqual({ status: "complete", routineIds: [f.routine.id], shareable: true });
     await db.update(routineRuns).set({ createdByRunId: randomUUID() }).where(eq(routineRuns.id, receipt.id));
     expect(await readTaskCreationProvenance(db, f.companyId, rootId)).toMatchObject({ status: "unknown", routineIds: [f.routine.id] });
+  });
+
+  it("bounds the provenance query count for a long creator chain", async () => {
+    const f = await seedFixture();
+    const root = await f.svc.runRoutine(f.routine.id, { source: "manual" }, {});
+    let taskId = root.linkedIssueId!;
+    for (let n = 0; n < 12; n++) {
+      const [creator] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        nativeIssueId: taskId, status: "succeeded" }).returning();
+      const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Standalone created task",
+        createdByAgentId: f.agentId, originRunId: creator!.id }).returning();
+      taskId = task!.id;
+    }
+    const selects = vi.spyOn(db, "select");
+    try {
+      expect(await readTaskCreationProvenance(db, f.companyId, taskId)).toMatchObject({ status: "unknown" });
+      expect(selects).toHaveBeenCalledTimes(32);
+    } finally { selects.mockRestore(); }
+  });
+
+  it("does not read expired provenance after an upstream lookup spent its deadline", async () => {
+    const f = await seedFixture();
+    const root = await f.svc.runRoutine(f.routine.id, { source: "manual" }, {});
+    const selects = vi.spyOn(db, "select");
+    try {
+      expect(await readTaskCreationProvenance(db, f.companyId, root.linkedIssueId!, Date.now() - 1))
+        .toEqual({ status: "unknown", routineIds: [], shareable: null });
+      expect(selects).not.toHaveBeenCalled();
+    } finally { selects.mockRestore(); }
+  });
+
+  it("preserves the original database error and permits retry after a provenance lookup outage", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    const f = await seedFixture();
+    const configured = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const source = await f.issueSvc.create(f.companyId, { title: "Caller source" });
+    const [caller] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: source.id, status: "running" }).returning();
+    const delivery = { authorizationHeader: `Bearer ${configured.secretMaterial!.webhookSecret}`,
+      sourceRunToken: createLocalAgentJwt(f.agentId, f.companyId, "codex_local", caller!.id)!, idempotencyKey: "database-retry" };
+    await db.execute(sql`ALTER TABLE heartbeat_runs RENAME TO routine_test_unavailable_runs`);
+    try {
+      await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, delivery))
+        .rejects.toMatchObject({ cause: { code: "42P01" } });
+    } finally {
+      await db.execute(sql`ALTER TABLE routine_test_unavailable_runs RENAME TO heartbeat_runs`);
+    }
+    expect(await db.select().from(routineRuns)).toHaveLength(0);
+    expect(f.wakeups).toEqual([]);
+    await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, delivery))
+      .resolves.toMatchObject({ status: "issue_created", createdByRunId: caller!.id });
   });
 
   it("resolves legacy creation activity and bounds excessive ancestry", async () => {

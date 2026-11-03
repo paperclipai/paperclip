@@ -17,6 +17,7 @@ export const unknownTaskCreationProvenance = (): TaskCreationProvenance => ({
 
 const MAX_TASKS = 100;
 const MAX_DEPTH = 16;
+const MAX_QUERIES = 32;
 const taskReference = (run: { nativeIssueId?: string | null; issueId?: string | null; contextSnapshot?: Record<string, unknown> | null }) =>
   run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.contextSnapshot?.taskKey;
 
@@ -39,8 +40,15 @@ export async function validateCreationRun(db: Db, companyId: string, agentId: st
   return run.id;
 }
 
-export async function readTaskCreationProvenance(db: Db, companyId: string, taskId: string | null): Promise<TaskCreationProvenance> {
+export async function readTaskCreationProvenance(db: Db, companyId: string, taskId: string | null, deadlineAt = Infinity): Promise<TaskCreationProvenance> {
   if (!taskId || !isUuidLike(taskId)) return unknownTaskCreationProvenance();
+  let queries = 0;
+  const read = async <T>(query: () => PromiseLike<T>): Promise<T | null> => {
+    if (queries >= MAX_QUERIES || Date.now() >= deadlineAt) return null;
+    queries++;
+    const rows = await query();
+    return Date.now() >= deadlineAt ? null : rows;
+  };
   const visited = new Set<string>(), routineIds = new Set<string>();
   const edges = new Map<string, Set<string>>();
   let pending = [taskId], complete = true, shareable: boolean | null = null;
@@ -54,14 +62,16 @@ export async function readTaskCreationProvenance(db: Db, companyId: string, task
     if (!batch.length) break;
     if (depth >= MAX_DEPTH || visited.size + batch.length > MAX_TASKS) { complete = false; break; }
     batch.forEach(id => visited.add(id));
-    const tasks = await db.select({ id: issues.id, parentId: issues.parentId,
+    const tasks = await read(() => db.select({ id: issues.id, parentId: issues.parentId,
       originKind: issues.originKind, originRunId: issues.originRunId, createdByAgentId: issues.createdByAgentId,
       visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId, projectId: issues.projectId,
-    }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, batch)));
+    }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, batch))));
+    if (!tasks) { complete = false; break; }
     if (tasks.length !== batch.length) complete = false;
     const projectIds = [...new Set(tasks.flatMap(task => task.projectId ? [task.projectId] : []))];
-    const publicProjects = projectIds.length ? await db.select({ id: projects.id }).from(projects)
-      .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds), eq(projects.visibility, "open"))) : [];
+    const publicProjects = projectIds.length ? await read(() => db.select({ id: projects.id }).from(projects)
+      .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds), eq(projects.visibility, "open")))) : [];
+    if (!publicProjects) { complete = false; break; }
     const publicProjectIds = new Set(publicProjects.map(project => project.id));
     for (const task of tasks) {
       const publicTask = task.visibility === "open" && !task.privacyRootIssueId
@@ -71,15 +81,17 @@ export async function readTaskCreationProvenance(db: Db, companyId: string, task
       if (task.parentId) connect(task.id, task.parentId);
     }
     const originIds = [...new Set(tasks.flatMap(task => task.originRunId && isUuidLike(task.originRunId) ? [task.originRunId] : []))];
-    const receipts = originIds.length ? await db.select({ id: routineRuns.id, routineId: routineRuns.routineId,
+    const receipts = originIds.length ? await read(() => db.select({ id: routineRuns.id, routineId: routineRuns.routineId,
       linkedIssueId: routineRuns.linkedIssueId, createdByRunId: routineRuns.createdByRunId, source: routineRuns.source,
-    }).from(routineRuns).where(and(eq(routineRuns.companyId, companyId), inArray(routineRuns.id, originIds))) : [];
+    }).from(routineRuns).where(and(eq(routineRuns.companyId, companyId), inArray(routineRuns.id, originIds)))) : [];
+    if (!receipts) { complete = false; break; }
     const receiptMap = new Map(receipts.map(receipt => [receipt.id, receipt]));
     const creators: Array<{ taskId: string; runId: string; agentId: string | null }> = [];
     const legacyTasks = tasks.filter(task => !task.originRunId && task.createdByAgentId);
-    const events = legacyTasks.length ? await db.select({ taskId: activityLog.entityId, runId: activityLog.runId }).from(activityLog)
+    const events = legacyTasks.length ? await read(() => db.select({ taskId: activityLog.entityId, runId: activityLog.runId }).from(activityLog)
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"),
-        inArray(activityLog.entityId, legacyTasks.map(task => task.id)), inArray(activityLog.action, ["issue.created", "issue.child_created"]))) : [];
+        inArray(activityLog.entityId, legacyTasks.map(task => task.id)), inArray(activityLog.action, ["issue.created", "issue.child_created"])))) : [];
+    if (!events) { complete = false; break; }
     for (const task of tasks) {
       const receipt = task.originRunId ? receiptMap.get(task.originRunId) : undefined;
       if (receipt?.linkedIssueId === task.id) {
@@ -98,15 +110,17 @@ export async function readTaskCreationProvenance(db: Db, companyId: string, task
       }
     }
     const creatorIds = [...new Set(creators.map(creator => creator.runId))];
-    const runs = creatorIds.length ? await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId,
+    const runs = creatorIds.length ? await read(() => db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId,
       nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
       contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
         'taskId', ${heartbeatRuns.contextSnapshot}->'taskId', 'taskKey', ${heartbeatRuns.contextSnapshot}->'taskKey')`,
-    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, creatorIds))) : [];
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, creatorIds)))) : [];
+    if (!runs) { complete = false; break; }
     const runMap = new Map(runs.map(run => [run.id, run]));
     const identifiers = [...new Set(runs.map(taskReference).filter((ref): ref is string => typeof ref === "string" && !isUuidLike(ref)))];
-    const identified = identifiers.length ? await db.select({ id: issues.id, identifier: issues.identifier }).from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.identifier, identifiers))) : [];
+    const identified = identifiers.length ? await read(() => db.select({ id: issues.id, identifier: issues.identifier }).from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.identifier, identifiers)))) : [];
+    if (!identified) { complete = false; break; }
     const taskIds = new Map(identified.map(task => [task.identifier, task.id]));
     for (const creator of creators) {
       const run = runMap.get(creator.runId), reference = run && taskReference(run);

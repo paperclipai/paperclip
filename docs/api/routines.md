@@ -241,6 +241,12 @@ runs asynchronously, so acceptance does not mean the agent has finished.
 Concurrency policy can coalesce or skip a delivery while work is active.
 Payload fields or a nested `variables` object supply declared routine variables;
 nested values take precedence. The full payload is retained in run history.
+For app-webhook triggers, the sender's JSON is also copied into the execution
+task. Normal webhook intake does not apply a provider-specific field allowlist
+or a general payload scrubber. Send only data suitable for company-readable
+routine history; authentication and creation provenance do not certify the
+payload's privacy. See the [Sentry tutorial](../guides/board-operator/sentry-run-failure-repairs.md)
+for source-side scrubbing and setup checks.
 
 For bearer, GitHub HMAC, and unsigned triggers, send a stable `Idempotency-Key`
 when retrying a delivery to receive the original run without creating another

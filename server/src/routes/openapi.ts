@@ -5328,7 +5328,8 @@ registry.registerPath({
     }),
     body: jsonBody(z.record(z.string(), z.unknown())),
   },
-  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound,
+    409: r.conflict, 415: { ...r.badRequest, description: "Unsupported media type" }, 422: r.unprocessable },
 });
 
 // ─── Goals ───────────────────────────────────────────────────────────────────
