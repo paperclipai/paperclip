@@ -55,6 +55,7 @@ function mockSentryPackage() {
   }));
 
   vi.doMock("@sentry/node", () => ({
+    getClient: () => ({ on: vi.fn() }),
     init,
     captureException,
     close,
