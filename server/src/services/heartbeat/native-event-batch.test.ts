@@ -3,9 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { agents, companies, createDb, heartbeatRunEventCursors, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
-import { appendHeartbeatRunEvent, appendHeartbeatRunEvents, type AppendHeartbeatRunEventInput } from "../services/heartbeat-run-events.js";
-import { rebuildNativeEventCursorPage } from "../services/heartbeat/native-event-cursors.js";
-import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
+import { appendHeartbeatRunEvent, appendHeartbeatRunEvents, type AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
+import { rebuildNativeEventCursorPage } from "./native-event-cursors.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 
 describe("bounded native text batch persistence", () => {
   let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
