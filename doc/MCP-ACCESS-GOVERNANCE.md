@@ -138,6 +138,14 @@ capture quotas and audit path. A failure to save a completed action remains an
 uncertain delivery outcome; it must not invite an automatic repeat of the action.
 Saved provider content remains untrusted.
 
+The named gateway's `tools/list` response only advertises a context wrapper when
+the same token allows its underlying action. `paperclip_list_resources` requires
+`resources/list`; `paperclip_read_resource` requires `resources/read`;
+`paperclip_list_prompts` requires `prompts/list`; and `paperclip_get_prompt`
+requires `prompts/get`. A heartbeat token limited to `tools/list` and `tools/call`
+does not advertise those four wrappers. Listing a tool does not bypass the
+existing authorization checks when the agent calls it.
+
 Connected tool names reserve the `mcp__paperclip-assigned__` provider prefix
 within the 128-character limit. Short existing names stay compatible. Longer
 names use a readable prefix and a stable hash of the connection, application,

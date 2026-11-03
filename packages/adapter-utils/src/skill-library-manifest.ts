@@ -27,6 +27,12 @@ function sanitizeManifestText(value: string, maxLength: number): string {
   return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
+const INVOCABLE_SKILL_NAME_MAX_LENGTH = 255;
+
+function isInvocableSkillName(value: string): boolean {
+  return value.length > 0 && value.length <= INVOCABLE_SKILL_NAME_MAX_LENGTH && !/[\s`]/.test(value);
+}
+
 export function buildSkillLibraryManifestMarkdown(input: {
   entries: readonly PaperclipSkillEntry[];
   desiredSkillKeys: ReadonlySet<string>;
@@ -41,7 +47,13 @@ export function buildSkillLibraryManifestMarkdown(input: {
         const detail = entry.missingDetail ? sanitizeManifestText(entry.missingDetail, 200) : "";
         return `- ${key} — enabled but unavailable${detail ? `: ${detail}` : ""}`;
       }
-      return `- ${key} — ${enabled ? "enabled" : "installed, not enabled for you"}`;
+      if (enabled) {
+        const invokeHint = isInvocableSkillName(entry.runtimeName)
+          ? ` (invoke as \`${entry.runtimeName}\`)`
+          : "";
+        return `- ${key}${invokeHint} — enabled`;
+      }
+      return `- ${key} — installed, not enabled for you`;
     });
   return [
     "## Company skill library",
