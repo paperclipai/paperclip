@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createDb } from '@paperclipai/db';
 import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
-import { finalizeLocalSleepReceipt, sleepConfigurationDigest } from '../../../scripts/sleep-qualification/evidence.mjs';
+import { configuredSleepFeatures, finalizeLocalSleepReceipt, observeConfiguredSignals, sleepConfigurationDigest } from '../../../scripts/sleep-qualification/evidence.mjs';
 import { idleBackupArchiveNames, observeIdleBackupCheckpoint } from './helpers/maintenance/backup-observation.js';
 import { stabilizeEarlyDiagnostics } from './helpers/maintenance/early-diagnostic-stabilization.js';
 import { createMaintenanceS3Boundary } from './helpers/maintenance/s3-boundary.js';
@@ -139,9 +139,9 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         // No fake clock, production timing override, tenant health poll or SQL observer.
         await delay(apiCooldownMs + 100);
         await server.settled();
-        const exported = collectorRequests.filter(entry => entry.path === '/v1/traces');
-        expect(exported.some(entry => JSON.stringify(entry.body).includes('sleep-qualification-stimulus'))).toBe(true);
-        expect(collectorRequests.some(entry => entry.path === '/telemetry')).toBe(true);
+        const activeSignals = observeConfiguredSignals(collectorRequests);
+        expect(activeSignals.qualificationSpans).toBeGreaterThan(0);
+        expect(activeSignals.telemetryRequests).toBeGreaterThan(0);
         const before = await server.snapshot(), queries = server.proxy.queries.length, transport = server.proxy.transport;
         const wallStart = performance.now(), quietStartedAt = new Date().toISOString();
         phase('first-real-ninety-second-quiet-window');
@@ -154,6 +154,12 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
           nonDatabaseRequests: after.outgoingHttpRequests - before.outgoingHttpRequests,
           nonDatabaseBytes: after.network.nonDatabaseBytesWritten - before.network.nonDatabaseBytesWritten, observerRequests: [] };
         await writeFile(path.join(server.directory, 'sleep-first-frozen-quiet.json'), JSON.stringify({ quiet, announcementBefore: before.announcement, announcementAfter: after.announcement }, null, 2));
+        const signalObservation = observeConfiguredSignals(collectorRequests);
+        await writeFile(path.join(server.directory, 'sleep-first-signal-observation.json'), JSON.stringify(signalObservation, null, 2));
+        expect(signalObservation.qualificationSpans).toBeGreaterThan(0);
+        expect(signalObservation.telemetryRequests).toBeGreaterThan(0);
+        expect(signalObservation.metricRequests).toBe(0); expect(signalObservation.logRequests).toBe(0);
+        expect(signalObservation.malformedTraceRequests).toBe(0); expect(signalObservation.unexpectedRequests).toBe(0);
         expect(quiet.elapsedMs).toBeGreaterThanOrEqual(quietMs);
         expect(quiet.sqlQueries).toBe(0);
         expect(quiet.connectionsOpened).toBe(0);
@@ -191,7 +197,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const backupCheckpoint = await observeIdleBackupCheckpoint(server.directory, backupNamesBefore, checkpointStartedAt, company.id);
         const observations = { version: 1, ...expected, startedAt,
           configuration, browser, s3: s3.snapshot(), announcement: after.announcement, chatHistory, toolHistory, githubContinuity, brokerBinding, brokerBoundary: broker.boundary, backupCheckpoint,
-          features: { automaticBackups: backupCheckpoint.archives.length > 0 && backupCheckpoint.wakeMarkerObserved, announcements: true, telemetry: true, otel: true, exportedSpans: exported.length },
+          signalObservation, features: configuredSleepFeatures({ announcement: after.announcement, signalObservation, backupCheckpoint }),
           quiet,
           eligibility: { observedAt: new Date().toISOString(), backgroundWork: proof.backgroundWork, ownedHold: final.ownerId === drain.ownerId, apiCooldownElapsedMs: performance.now() - lastApiActivity,
             unchangedGeneration: /^[a-f0-9]{64}$/.test(proof.deadlineProof?.generation ?? '') && initial.idleSleepSafety.deadlineProof?.generation === proof.deadlineProof?.generation }, initial, final,
@@ -234,6 +240,12 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
           nonDatabaseRequests: resumedEnd.outgoingHttpRequests - resumed.outgoingHttpRequests,
           nonDatabaseBytes: resumedEnd.network.nonDatabaseBytesWritten - resumed.network.nonDatabaseBytesWritten, observerRequests: [] };
         await writeFile(path.join(server.directory, 'sleep-resumed-frozen-quiet.json'), JSON.stringify({ quiet: resumedQuiet, announcementBefore: resumed.announcement, announcementAfter: resumedEnd.announcement }, null, 2));
+        const resumedSignals = observeConfiguredSignals(collectorRequests);
+        await writeFile(path.join(server.directory, 'sleep-resumed-signal-observation.json'), JSON.stringify(resumedSignals, null, 2));
+        expect(resumedSignals.qualificationSpans).toBeGreaterThan(0);
+        expect(resumedSignals.telemetryRequests).toBeGreaterThan(0);
+        expect(resumedSignals.metricRequests).toBe(0); expect(resumedSignals.logRequests).toBe(0);
+        expect(resumedSignals.malformedTraceRequests).toBe(0); expect(resumedSignals.unexpectedRequests).toBe(0);
         expect(resumedQuiet.elapsedMs).toBeGreaterThanOrEqual(quietMs);
         expect(resumedQuiet.sqlQueries).toBe(0);
         expect(resumedQuiet.connectionsOpened).toBe(0);
@@ -263,6 +275,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
           version: 1, actualProducer: 'POST company issues with process assignee using the retained opaque key after owned drain release', executions: executions.count,
           realApiCooldownElapsedMs: performance.now() - reactivationApiAt,
           quiet: resumedQuiet,
+          signalObservation: resumedSignals,
           realElapsedMs: resumedQuiet.elapsedMs, sqlQueries: resumedQuiet.sqlQueries,
           networkRequests: resumedQuiet.nonDatabaseRequests,
           initial: resumedInitial,

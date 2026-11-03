@@ -28,6 +28,16 @@ setup receipt and temporary package lock. A version mismatch fails without
 replacing an installed package. An opt-in CI job must run the same setup command;
 setting an OTLP endpoint alone does not qualify an exporter.
 
+The helper records its exact symlink targets in
+`server/node_modules/.paperclip-sleep-otel-links.json`. If an owned temporary prefix
+disappears, rerunning repairs only those matching recorded symlinks. Existing
+matching packages are left alone. An unrecorded dangling link or other entry is
+preserved with a recovery error; its pathname is not evidence of ownership.
+`node scripts/sleep-qualification/setup-otel.mjs --cleanup` unlinks only matching
+owned links. It preserves foreign replacements and keeps temporary install
+prefixes for setup evidence. Remove those owned prefixes separately when their
+receipts are no longer needed.
+
 Set `PAPERCLIP_SLEEP_CONFIGURED_ACCEPTANCE=1`,
 `PAPERCLIP_SLEEP_ACCEPTANCE_TEST_DATABASE_URL` to the owned migrated fixture and
 `PAPERCLIP_SLEEP_CLOUD_SHA` to the exact reviewed Cloud source SHA. Set
@@ -96,6 +106,15 @@ evaluator recomputes the receipt digest. Keep actual `collectorOrigins.telemetry
 and `.otel` separately, matching the actual configuration and optional expected
 origin bindings.
 
+Configured coverage must also have recorded observations. Announcements require
+actual interception, a request for the expected feed, and no unmatched URL.
+`signalObservation` records telemetry requests, trace requests, actual OTLP span
+records and the named qualification span separately. Metric, log, malformed-trace
+and unexpected request counts must be explicitly zero. The assembled case freezes
+these observations after each quiet window; feature booleans are derived from
+them and the observed backup checkpoint. Missing or malformed counts fail local
+qualification even when a feature flag claims success.
+
 Before the normal cooldown, a signed diagnostic-only inventory saves both raw
 reports. It explicitly expects the active API cooldown aggregate and the skipped
 backup diagnostic; every other reported blocker must be absent. Aggregate local
@@ -110,6 +129,12 @@ owned gzip through its trailer, hashes compressed bytes, checks nonempty SQL for
 the fixture identifier without retaining contents, and observes the wake marker
 and absence of backup failure markers. This local evidence carries no provider
 volume or restore claim. The owning backup suite separately qualifies restoration.
+Archive provenance uses a positive finite opened-file birthtime, falling back to
+positive finite content mtime only when the filesystem reports birthtime as zero.
+The selected timestamp and its source are recorded. Existing names, old positive
+birthtimes, malformed timestamps and future chronology remain disqualifying.
+Original receipts are retained as produced; the new evidence fields are not
+retroactively added to earlier runs.
 Receipt finalization follows all observations and runs the same evaluator before
 writing the final receipt. A return-to-idle claim also needs explicit in-run quiet
 start/end timestamps spanning at least 90 real seconds after the latest wake;

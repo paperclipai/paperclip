@@ -7,12 +7,63 @@ const finite = value => typeof value === 'number' && Number.isFinite(value) && v
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const layers = ['workerQuiet', 'eligibility', 'databaseSuspension', 'hostSuspension', 'backupPersistence', 'inboundWake', 'timedWake', 'returnToIdle'];
 const result = (verdict, reason) => ({ verdict, reason });
+const announcementFeed = 'https://pages.paperclip.ing/announcements/v1/current.json';
+const observedAnnouncement = announcement => announcement?.intercepted === true
+  && Array.isArray(announcement.requests) && announcement.requests.length > 0
+  && announcement.requests.every(url => url === announcementFeed)
+  && Array.isArray(announcement.unmatched) && announcement.unmatched.length === 0;
+const signalKeys = ['telemetryRequests', 'traceRequests', 'exportedSpans', 'qualificationSpans', 'metricRequests', 'logRequests', 'malformedTraceRequests', 'unexpectedRequests'];
+const knownSignalCounts = signal => signal && signalKeys.every(key => Number.isSafeInteger(signal[key]) && signal[key] >= 0);
+
+/** Count actual collector requests and OTLP span records, never request-as-span estimates. */
+export function observeConfiguredSignals(requests) {
+  const observed = Object.fromEntries(signalKeys.map(key => [key, 0]));
+  for (const request of requests) {
+    if (typeof request?.path !== 'string' || !request.path.startsWith('/') || request.path.startsWith('//')) { observed.unexpectedRequests++; continue; }
+    const pathname = new URL(request.path, 'http://owned-collector').pathname;
+    if (pathname === '/telemetry') { observed.telemetryRequests++; continue; }
+    if (pathname === '/v1/metrics') { observed.metricRequests++; continue; }
+    if (pathname === '/v1/logs') { observed.logRequests++; continue; }
+    if (pathname !== '/v1/traces') { observed.unexpectedRequests++; continue; }
+    observed.traceRequests++;
+    try {
+      if (!Array.isArray(request.body?.resourceSpans)) throw new Error('Missing resourceSpans');
+      let spans = 0, qualificationSpans = 0;
+      for (const resource of request.body.resourceSpans) {
+        if (!Array.isArray(resource?.scopeSpans)) throw new Error('Missing scopeSpans');
+        for (const scope of resource.scopeSpans) {
+          if (!Array.isArray(scope?.spans)) throw new Error('Missing spans');
+          for (const span of scope.spans) {
+            if (typeof span?.name !== 'string' || !span.name) throw new Error('Invalid span');
+            spans++; if (span.name === 'sleep-qualification-stimulus') qualificationSpans++;
+          }
+        }
+      }
+      observed.exportedSpans += spans; observed.qualificationSpans += qualificationSpans;
+    } catch { observed.malformedTraceRequests++; }
+  }
+  return observed;
+}
+
+/** Coverage booleans come from recorded activity; the evaluator also checks their provenance. */
+export function configuredSleepFeatures({ announcement, signalObservation, backupCheckpoint }) {
+  const known = knownSignalCounts(signalObservation);
+  return { telemetry: Boolean(known && signalObservation.telemetryRequests > 0), announcements: Boolean(observedAnnouncement(announcement)),
+    automaticBackups: backupCheckpoint?.owner === 'normal-idle-checkpoint' && backupCheckpoint.wakeMarkerObserved === true
+      && backupCheckpoint.failureObserved === false && Array.isArray(backupCheckpoint.archives) && backupCheckpoint.archives.length > 0,
+    otel: Boolean(known && signalObservation.traceRequests > 0 && signalObservation.exportedSpans > 0
+      && signalObservation.qualificationSpans > 0 && signalObservation.qualificationSpans <= signalObservation.exportedSpans
+      && signalObservation.metricRequests === 0 && signalObservation.logRequests === 0
+      && signalObservation.malformedTraceRequests === 0 && signalObservation.unexpectedRequests === 0),
+    exportedSpans: known ? signalObservation.exportedSpans : 0 };
+}
 const validBackupCheckpoint = (backup, inRun, quietFinishedAt) => backup?.owner === 'normal-idle-checkpoint' && backup.wakeMarkerObserved === true
   && backup.failureObserved === false && inRun(backup.startedAt) && inRun(backup.observedAt)
   && Date.parse(backup.startedAt) >= Date.parse(quietFinishedAt) && Date.parse(backup.observedAt) >= Date.parse(backup.startedAt) && Array.isArray(backup.archives) && backup.archives.length > 0
   && backup.archives.every(archive => typeof archive.name === 'string' && /^[^/\\]+\.sql\.gz$/.test(archive.name)
     && finite(archive.bytes) && archive.bytes > 0 && finite(archive.sqlBytes) && archive.sqlBytes > 0
     && /^[a-f0-9]{64}$/.test(archive.sha256 ?? '') && archive.gzipVerified === true && archive.fixtureIdentifierFound === true
+    && ['birthtime', 'mtime'].includes(archive.createdAtSource)
     && inRun(archive.createdAt) && Date.parse(archive.createdAt) >= Date.parse(backup.startedAt) && Date.parse(archive.createdAt) <= Date.parse(backup.observedAt));
 
 /** Canonical logical configuration: ephemeral collector addresses are bound separately. */
@@ -63,11 +114,14 @@ export function evaluateSleepQualification(receipt, expected) {
   const inRun = value => stamp(value) && Date.parse(value) >= Date.parse(receipt.startedAt) && Date.parse(value) <= Date.parse(receipt.finishedAt);
   const quiet = receipt.quiet;
   if (quiet) {
+    const observedFeatures = configuredSleepFeatures(receipt);
     const valid = inRun(quiet.startedAt) && inRun(quiet.finishedAt) && finite(quiet.elapsedMs)
       && Date.parse(quiet.finishedAt) - Date.parse(quiet.startedAt) >= 90_000 && quiet.elapsedMs >= 90_000
       && quiet.clock === 'real' && finite(quiet.sqlQueries) && finite(quiet.connectionsOpened)
       && finite(quiet.connectionsRemaining) && finite(quiet.nonDatabaseRequests) && finite(quiet.nonDatabaseBytes)
       && Array.isArray(quiet.observerRequests) && quiet.observerRequests.length === 0
+      && observedFeatures.telemetry && observedFeatures.announcements && observedFeatures.otel
+      && Object.entries(observedFeatures).every(([key, value]) => receipt.features?.[key] === value)
       && receipt.features?.telemetry === true && receipt.features?.announcements === true
       && receipt.features?.automaticBackups === true && validBackupCheckpoint(receipt.backupCheckpoint, inRun, quiet.finishedAt)
       && receipt.features?.otel === true && receipt.features?.exportedSpans > 0;

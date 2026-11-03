@@ -6,14 +6,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { evaluateSleepQualification, sleepConfigurationDigest, finalizeLocalSleepReceipt } from '../../scripts/sleep-qualification/evidence.mjs';
+import { configuredSleepFeatures, evaluateSleepQualification, observeConfiguredSignals, sleepConfigurationDigest, finalizeLocalSleepReceipt } from '../../scripts/sleep-qualification/evidence.mjs';
 const configuration = { automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetryOrigin: 'http://127.0.0.1:4318/telemetry', otelOrigin: 'http://127.0.0.1:4318', serveUi: true };
 // Independent preflight contract, not copied from the receipt/digest implementation.
 const configDigest = createHash('sha256').update(JSON.stringify({ automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetry: true, otel: { enabled: true, protocol: 'http/json' }, serveUi: true, managedInstance: false, deploymentMode: 'local_trusted', storageProvider: 'local_disk' })).digest('hex');
 const expected = { appSha: 'a'.repeat(40), cloudSha: 'b'.repeat(40), target: 'owned-fixture', configDigest };
 function fixture() {
   return { version: 1, ...expected, configuration: structuredClone(configuration), collectorOrigins: { telemetry: configuration.telemetryOrigin, otel: configuration.otelOrigin },
-    backupCheckpoint: { owner: 'normal-idle-checkpoint', startedAt: '2099-01-01T00:12:31Z', observedAt: '2099-01-01T00:13:00Z', wakeMarkerObserved: true, failureObserved: false, archives: [{ name: 'owned.sql.gz', bytes: 128, sqlBytes: 256, sha256: 'd'.repeat(64), gzipVerified: true, fixtureIdentifierFound: true, createdAt: '2099-01-01T00:12:45Z' }] }, startedAt: '2099-01-01T00:00:00Z', finishedAt: '2099-01-01T01:00:00Z',
+    announcement: { intercepted: true, requests: ['https://pages.paperclip.ing/announcements/v1/current.json'], unmatched: [] },
+    signalObservation: { telemetryRequests: 1, traceRequests: 1, exportedSpans: 1, qualificationSpans: 1, metricRequests: 0, logRequests: 0, malformedTraceRequests: 0, unexpectedRequests: 0 },
+    backupCheckpoint: { owner: 'normal-idle-checkpoint', startedAt: '2099-01-01T00:12:31Z', observedAt: '2099-01-01T00:13:00Z', wakeMarkerObserved: true, failureObserved: false, archives: [{ name: 'owned.sql.gz', bytes: 128, sqlBytes: 256, sha256: 'd'.repeat(64), gzipVerified: true, fixtureIdentifierFound: true, createdAt: '2099-01-01T00:12:45Z', createdAtSource: 'birthtime' }] }, startedAt: '2099-01-01T00:00:00Z', finishedAt: '2099-01-01T01:00:00Z',
     features: { telemetry: true, announcements: true, automaticBackups: true, otel: true, exportedSpans: 1 },
     quiet: { startedAt: '2099-01-01T00:11:00Z', finishedAt: '2099-01-01T00:12:30Z', elapsedMs: 90_000, clock: 'real', sqlQueries: 0, connectionsOpened: 0, connectionsRemaining: 0, nonDatabaseRequests: 0, nonDatabaseBytes: 0, observerRequests: [] },
     eligibility: { observedAt: '2099-01-01T00:13:00Z', backgroundWork: 'none', ownedHold: true, unchangedGeneration: true, apiCooldownElapsedMs: 600_000 } };
@@ -40,6 +42,41 @@ test('fake time, a no-op exporter, open connections, observer health requests an
     const f = fixture(); change(f); assert.equal(evaluateSleepQualification(f, expected).layers.workerQuiet.verdict, 'NOT VERIFIED');
   }
   const f = fixture(); f.eligibility.apiCooldownElapsedMs = 599_999; assert.equal(evaluateSleepQualification(f, expected).layers.eligibility.verdict, 'NOT VERIFIED');
+});
+test('configured feature claims require complete announcement and integer collector observations', () => {
+  const changes = [f => delete f.announcement, f => f.announcement.intercepted = false,
+    f => f.announcement.requests = [], f => f.announcement.requests = ['https://foreign.example/feed'],
+    f => f.announcement.unmatched.push('https://foreign.example/feed'), f => delete f.announcement.unmatched,
+    f => delete f.signalObservation, f => f.signalObservation.telemetryRequests = 0,
+    f => f.signalObservation.traceRequests = 0, f => f.signalObservation.exportedSpans = 0,
+    f => f.signalObservation.qualificationSpans = 0, f => f.signalObservation.qualificationSpans = 2,
+    f => f.signalObservation.metricRequests = 1, f => f.signalObservation.logRequests = 1,
+    f => f.signalObservation.malformedTraceRequests = 1, f => f.signalObservation.unexpectedRequests = 1,
+    f => f.features.telemetry = false, f => f.features.announcements = false, f => f.features.otel = false];
+  for (const key of Object.keys(fixture().signalObservation)) {
+    changes.push(f => delete f.signalObservation[key]);
+    for (const value of [-1, 0.5, NaN, Infinity, '1']) changes.push(f => f.signalObservation[key] = value);
+  }
+  for (const change of changes) { const f = fixture(); change(f); assert.equal(evaluateSleepQualification(f, expected).layers.workerQuiet.verdict, 'NOT VERIFIED'); }
+});
+test('assembled receipts derive coverage from actual named spans and requests, including unwanted exporters', () => {
+  const requests = [{ path: '/telemetry', body: {} }, { path: '/v1/traces', body: { resourceSpans: [{ scopeSpans: [{ spans: [
+    { name: 'ordinary-http' }, { name: 'sleep-qualification-stimulus' },
+  ] }] }] } }];
+  const f = fixture(); f.signalObservation = observeConfiguredSignals(requests); f.features = configuredSleepFeatures(f);
+  assert.deepEqual(f.signalObservation, { telemetryRequests: 1, traceRequests: 1, exportedSpans: 2, qualificationSpans: 1,
+    metricRequests: 0, logRequests: 0, malformedTraceRequests: 0, unexpectedRequests: 0 });
+  assert.equal(f.features.exportedSpans, 2); // One trace request contained two real span records.
+  assert.equal(finalizeLocalSleepReceipt(f, expected, () => f.finishedAt).report.layers.workerQuiet.verdict, 'VERIFIED');
+  for (const extra of [{ path: '/v1/metrics?batch=1', body: {} }, { path: '/v1/logs', body: {} },
+    { path: '/unmatched', body: {} }, { path: '/v1/traces', body: { resourceSpans: [{}] } }]) {
+    const changed = fixture(); changed.signalObservation = observeConfiguredSignals([...requests, extra]); changed.features = configuredSleepFeatures(changed);
+    assert.equal(evaluateSleepQualification(changed, expected).layers.workerQuiet.verdict, 'NOT VERIFIED');
+  }
+  const noop = fixture(); noop.signalObservation = observeConfiguredSignals([{ path: '/telemetry', body: {} },
+    { path: '/v1/traces', body: { resourceSpans: [{ scopeSpans: [{ spans: [{ name: 'other', attributes: [{ value: 'sleep-qualification-stimulus' }] }] }] }] } }]);
+  noop.features = configuredSleepFeatures(noop); assert.equal(noop.signalObservation.qualificationSpans, 0);
+  assert.equal(evaluateSleepQualification(noop, expected).layers.workerQuiet.verdict, 'NOT VERIFIED');
 });
 test('registry sleep, incomplete deployment inventory and a failed metadata read cannot prove providers stopped', () => {
   const f = deployed(); f.provider.neon = { currentState: 'sleeping', identityVerified: true }; f.provider.railway.services = [];
@@ -136,6 +173,7 @@ test('configured backup feature requires observed verified owned archives and a 
     f => f.backupCheckpoint.archives[0].gzipVerified = false, f => f.backupCheckpoint.archives[0].fixtureIdentifierFound = false,
     f => f.backupCheckpoint.archives[0].bytes = 0, f => f.backupCheckpoint.archives[0].sha256 = 'invalid',
     f => f.backupCheckpoint.archives[0].createdAt = '2098-01-01T00:00:00Z',
+    f => f.backupCheckpoint.archives[0].createdAtSource = 'unknown',
     f => f.backupCheckpoint.startedAt = '2099-01-01T00:11:00Z']) {
     const f = fixture(); change(f); assert.equal(evaluateSleepQualification(f, expected).layers.workerQuiet.verdict, 'NOT VERIFIED');
   }
