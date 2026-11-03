@@ -102,17 +102,6 @@ export function AppNotConnected() {
   if (!applicationId || !activeTab) {
     return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "permissions") : "/apps"} replace />;
   }
-  if (
-    applicationsQuery.isLoading || connectionsQuery.isLoading
-    || applicationsView.kind === "reconnecting" || connectionsView.kind === "reconnecting"
-  ) {
-    return (
-      <div className="max-w-3xl space-y-3">
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-40 w-full" />
-      </div>
-    );
-  }
   const loadFailure = [applicationsView, connectionsView].find((view) => view.kind === "error");
   if (loadFailure) {
     return (
@@ -123,6 +112,17 @@ export function AppNotConnected() {
         onRetry={loadFailure.retry}
         retrying={loadFailure.isFetching}
       />
+    );
+  }
+  if (
+    applicationsQuery.isLoading || connectionsQuery.isLoading
+    || applicationsView.kind === "reconnecting" || connectionsView.kind === "reconnecting"
+  ) {
+    return (
+      <div className="max-w-3xl space-y-3">
+        <Skeleton className="h-10 w-64" />
+        <Skeleton className="h-40 w-full" />
+      </div>
     );
   }
   if (!application) {
