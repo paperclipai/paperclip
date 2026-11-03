@@ -395,6 +395,7 @@ export const appReviewExternalCases = [
         "../../server/src/routes/issues.ts",
         "../../server/src/routes/tool-access.ts",
         "../../server/src/services/tool-gateway.ts",
+        "../../server/src/services/tool-action-replay-intent.ts",
         "../../server/src/services/tool-action-review.ts",
         "../../server/src/services/tool-action-delivery.ts",
         "../../server/src/services/tool-access-policy.ts",
