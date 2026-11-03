@@ -122,12 +122,12 @@ fn supervised_processes_do_not_inherit_protection() {
     }
     let directory = private_directory();
     let result = directory.join("score");
-    let _process = SupervisedProcess::spawn(
+    let mut process = SupervisedProcess::spawn(
         Path::new("/bin/sh"),
         &[
             "-c".to_owned(),
             format!(
-                "cat /proc/self/oom_score_adj > {}.tmp; mv {0}.tmp {0}; read -r finish",
+                "read -r start; cat /proc/self/oom_score_adj > {}.tmp; mv {0}.tmp {0}; read -r finish",
                 result.display()
             ),
         ],
@@ -135,6 +135,8 @@ fn supervised_processes_do_not_inherit_protection() {
         1024,
     )
     .unwrap();
+    // Read the score only after spawn returns, which is when Runner has reset it.
+    process.send(&"start").unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !result.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
