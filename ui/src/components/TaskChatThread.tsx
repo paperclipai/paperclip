@@ -143,6 +143,7 @@ import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
+import { isRunStopConfirmed } from "@/lib/wait-for-stopped-runs";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
 const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
@@ -587,6 +588,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     resumeAssigneePending = false,
     onOpenSkill,
   } = props;
+  const confirmedStoppedRunIds = useMemo(() => new Set((linkedRuns ?? []).filter((run) =>
+    companyId && (run.runtimeMode === "legacy" || run.runtimeMode === "native") && isRunStopConfirmed({
+      id: run.runId, companyId, status: run.status, runtimeMode: run.runtimeMode, resultJson: run.resultJson ?? null,
+    }),
+  ).map((run) => run.runId)), [companyId, linkedRuns]);
   const retryFailedRunHandler =
     isTerminalIssueStatus(issueStatus) ||
     interactions?.some((interaction) => interaction.status === "pending") ||
@@ -3485,6 +3491,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             !("clientStatus" in comment && comment.clientStatus)
                           ).map((comment) => comment.clientRequestId!))}
                           onStop={liveRun ? onCancelRun : undefined}
+                          confirmedStoppedRunIds={confirmedStoppedRunIds}
                           stopPending={stopPending}
                           stopScope={stopScope}
                           workMode={issueWorkMode}

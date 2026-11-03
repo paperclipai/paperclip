@@ -212,7 +212,7 @@ describe("Cursor Cloud replay bundle treatment", () => {
 it("the actual driver reconnects the real client with its saved cursor and deduplicates the replayed frame without creating another prompt", async () => {
   const directory = await root(), events: PrpEvent[] = [], proofs: CursorCloudReplayFaultProof[] = [];
   const nativeRun = "run-33333333-3333-4333-8333-333333333333", time = "2026-10-28T00:00:00Z";
-  let nativeAgent = "", creates = 0, streams = 0;
+  let nativeAgent = "", creates = 0, streams = 0, cancelled = false;
   const requests: Array<{ path: string; headers: Headers }> = [];
   const peer: typeof fetch = async (resource, init) => {
     const path = new URL(String(resource)).pathname, headers = new Headers(init?.headers); requests.push({ path, headers });
@@ -226,7 +226,8 @@ it("the actual driver reconnects the real client with its saved cursor and dedup
       const withheld = 'event: assistant\nid: withheld\ndata: {"text":"must be replayed"}\n\n';
       return bytes([Buffer.from(first + withheld + (streams === 1 ? "" : `event: assistant\nid: new-cursor\ndata: {"text":"Recovered."}\n\nevent: result\nid: terminal\ndata: {"runId":"${nativeRun}","status":"FINISHED"}\n\n`))]);
     }
-    if (path.endsWith(nativeRun)) return Response.json({ id: nativeRun, agentId: nativeAgent, status: streams < 2 ? "RUNNING" : "FINISHED", createdAt: time, updatedAt: time });
+    if (path.endsWith("/cancel") && init?.method === "POST") { cancelled = true; return Response.json({ id: nativeRun }); }
+    if (path.endsWith(nativeRun)) return Response.json({ id: nativeRun, agentId: nativeAgent, status: cancelled ? "CANCELLED" : streams < 2 ? "RUNNING" : "FINISHED", createdAt: time, updatedAt: time });
     throw new Error("Unexpected controlled request");
   };
   const client = new CursorCloudClient({ apiKey: "private-auth-canary", fetch: createCursorCloudReplayFaultFetch({ fetch: peer, digest, record: value => proofs.push(value) }) });
