@@ -34,7 +34,7 @@ type ProjectionState = {
 };
 
 function boundedJsonString(value: SQL, limit: number) {
-  return sql`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
+  return sql<string | null>`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
 }
 
 // Persisted wait messages can contain diagnostics. Ordinary task views expose
