@@ -5,6 +5,7 @@ import type { HeartbeatRun, HeartbeatRunEvent, LiveEvent } from "@paperclipai/sh
 import { afterEach, expect, it, vi } from "vitest";
 import { __liveUpdatesTestUtils, type CompanyLiveEventHandler } from "../context/LiveUpdatesProvider";
 import { LiveTranscriptInterests } from "../lib/live-transcript-interests";
+import { ApiError } from "../api/client";
 import { LogViewer } from "../components/run-log/LogViewer";
 
 const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async (_runId?: string, _cursor?: number, _limit?: number, _options?: { signal?: AbortSignal }): Promise<import("@paperclipai/shared").HeartbeatRunEvent[]> => []), empty: [] }));
@@ -509,3 +510,24 @@ it("recovers the latest saved tail when acknowledgement aborts the initial histo
     await act(async () => root.unmount());
   }
 }, 60_000);
+
+
+it.each([429, 503])("keeps completed event-only history pending after an initial %s", async (status) => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  events.mockRejectedValueOnce(new ApiError("Temporarily unavailable", status, {}));
+  const run = { id: "run-pending", companyId: "company-1", agentId: "agent-1", status: "succeeded" } as HeartbeatRun;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<LogViewer run={run} adapterType="paperclip_runner" />));
+    expect(container.textContent).toContain("Loading run logs...");
+    expect(container.textContent).not.toContain("No log events.");
+    expect(container.textContent).not.toContain("Could not load events");
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(events).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("No log events.");
+    await act(async () => vi.advanceTimersByTimeAsync(90_000));
+    expect(events).toHaveBeenCalledTimes(2);
+  } finally { await act(async () => root.unmount()); }
+});

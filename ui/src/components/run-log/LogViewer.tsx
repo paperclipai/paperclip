@@ -231,6 +231,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
         if (cancelled) return;
         appendEvents(rows, !catchup || initializesHistory);
+        setLoading(false);
         const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
         eventsCatchupCursorRef.current = Math.max(eventsCatchupCursorRef.current, next);
         eventSequenceRef.current.confirm(next);
@@ -250,7 +251,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         if (!cancelled && !isTransientError(error)) setEventsError("Could not load events. Try again.");
       }
       if (cancelled) return;
-      reading = false; setLoadingMoreEvents(false); setLoading(false);
+      reading = false; setLoadingMoreEvents(false);
       if (pendingRefresh) void read(false, true);
       else if (failed || (isLive && !stream.healthy && !hasMoreEventsRef.current)) {
         timer = window.setTimeout(() => void read(requested, catchup || eventSequenceRef.current.needsCatchup), 2000);
@@ -445,12 +446,12 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     setTranscriptMode("nice");
   }, [run.id]);
 
-  if (loading && logLoading) {
+  if (loading && logLoading && !eventsError && !logError) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
 
   if (events.length === 0 && logLines.length === 0 && !logError && !eventsError) {
-    return <p className="text-xs text-muted-foreground">{logLoading ? "Loading run logs..." : "No log events."}</p>;
+    return <p className="text-xs text-muted-foreground">{loading || logLoading ? "Loading run logs..." : "No log events."}</p>;
   }
 
   const levelColors: Record<string, string> = {

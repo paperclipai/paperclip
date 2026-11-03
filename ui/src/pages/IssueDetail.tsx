@@ -5030,9 +5030,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       // Conversation messages use the ordered, idempotent comments endpoint.
       // Save the conversation's run preferences before admitting the next message.
       if (runSettings && issue?.conversationAgentId) {
+        // Persisted task data contains display fields only. Read the complete
+        // overrides before replacing them so unrelated options survive a send.
+        const freshIssue = await issuesApi.getCore(writableIssueId, { cache: "no-store" });
+        assertCurrentAccount();
         const updated = await issuesApi.update(writableIssueId, {
           assigneeAdapterOverrides: mergeComposerRunSettings(
-            issue.assigneeAdapterOverrides,
+            freshIssue.assigneeAdapterOverrides,
             (conversation?.agent ?? agentMap.get(issue.conversationAgentId))?.adapterType,
             runSettings,
           ),
@@ -5424,8 +5428,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
 
-  const addCommentAndReassign = useMutation({
-    mutationFn: ({
+  const addCommentAndReassign = useAccountBoundMutation({
+    mutationFn: async ({
       body,
       reopen,
       interrupt,
@@ -5441,8 +5445,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       attachmentIds?: string[];
       clientRequestId?: string;
       runSettings?: ComposerRunSettings;
-    }) =>
-      issuesApi.update(issueId!, {
+    }, { assertCurrentAccount }) => {
+      const freshIssue = runSettings && !reassignment
+        ? await issuesApi.getCore(issueId!, { cache: "no-store" })
+        : issue;
+      assertCurrentAccount();
+      return issuesApi.update(issueId!, {
         comment: body,
         commentClientRequestId: clientRequestId,
         ...(attachmentIds?.length ? { attachmentIds } : {}),
@@ -5453,8 +5461,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         ...(runSettings || reassignment ? {
           assigneeAdapterOverrides: runSettings
             ? mergeComposerRunSettings(
-                issue?.assigneeAdapterOverrides,
-                agentMap.get(reassignment?.assigneeAgentId ?? issue?.assigneeAgentId ?? "")?.adapterType,
+                freshIssue?.assigneeAdapterOverrides,
+                agentMap.get(reassignment?.assigneeAgentId ?? freshIssue?.assigneeAgentId ?? "")?.adapterType,
                 runSettings,
                 Boolean(reassignment),
               )
@@ -5462,7 +5470,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         } : {}),
         ...(reopen ? { status: "todo" } : {}),
         ...(interrupt ? { interrupt } : {}),
-      }),
+      });
+    },
     onMutate: async ({ body, reopen, reassignment, interrupt }) => {
       // Cache cancellation can wait on an active request for several seconds.
       // Start it now, but paint the optimistic echo before awaiting it so a
