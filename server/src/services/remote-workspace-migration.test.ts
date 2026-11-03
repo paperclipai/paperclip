@@ -202,7 +202,13 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "replacement", runIds: [f.runId] })).toEqual([]);
     expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).toEqual([]);
-    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (before!.leaseOwner) {
+      expect(after).toMatchObject({ ...before, leaseOwner: null, leaseExpiresAt: null, updatedAt: expect.any(Date),
+        recoveryHistory: [{ event: "legacy_workspace_migration_owner_released", workspaceId: f.workspaceId,
+          operationId: expect.any(String), previousOwner: { phase, leaseOwner: before!.leaseOwner,
+            leaseExpiresAt: before!.leaseExpiresAt!.toISOString() } }] });
+    } else expect(after).toEqual(before);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toMatchObject({
       status: "failed", runnerProfileJson: { ...(mode === "no-descriptor" ? {} : { nativeWorkspaceSync: f.reference }), sessionCheckpoint: checkpoint,
         legacyWorkspaceRecoveryMigration: { workspaceId: f.workspaceId } },
@@ -250,6 +256,22 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       return result;
     };
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("remote_workspace_migration_source_changed");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("does not release a coordinator whose expired owner changed during upload", async () => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: "journaled-owner",
+      leaseExpiresAt: new Date(Date.now() - 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => {
+      const result = await put(input);
+      await db.update(nativeRunFinalizations).set({ leaseOwner: "different-owner" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      return result;
+    };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true }))
+      .rejects.toThrow("remote_workspace_migration_source_changed");
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "observed", leaseOwner: "different-owner", recoveryHistory: [] });
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
   it("preserves a child task's recovery reference to its ancestor's workspace", async () => {
@@ -666,6 +688,20 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, phase: "workspace_command", status: "running" });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_operation_unresolved");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["parallel", "orphan", "stale-binding"])("keeps offline enrollment blocked on unresolved workspace semantics (%s)", async mode => {
+    const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (mode === "parallel") {
+      await db.update(executionWorkspaces).set({ mode: "shared_workspace" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      await db.update(issues).set({ executionWorkspaceSettings: { sharedWorkspaceConcurrency: "allow" } }).where(eq(issues.id, f.issueId));
+    } else if (mode === "orphan") await db.update(executionWorkspaces).set({ sourceIssueId: null }).where(eq(executionWorkspaces.id, f.workspaceId));
+    else await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    const reason = mode === "parallel" ? "parallel_shared_writers_unsupported" : mode === "orphan" ? "task_binding_required" : "task_writer_bound";
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).rejects.toThrow(reason);
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
   it.each(["running", "starting", "unknown", "failed"])("blocks a %s local service after its control lease expires", async status => {
     const f = await seed(), serviceId = randomUUID();

@@ -67,15 +67,29 @@ unchanged descriptors and task bindings, verified local snapshot bytes, and a
 single transaction publishing the migration receipt and remote authority.
 Failed runs with result-less `observed` or `retryable_failure` coordinators can
 also be preserved after their leases expire and the offline deployment fence is
-in force. Their coordinator, checkpoint, and unresolved copyback remain intact.
-Publication journals the original coordinator binding and installs a run-scoped
+in force. Their coordinator phase, checkpoint, and unresolved copyback remain
+intact. Publication journals the original coordinator binding, releases only
+that exact expired lease with a recovery-history receipt, and installs a run-scoped
 admission fence: a replacement cannot automatically replay that old turn against
 the removed local authority. Explicit file recovery and a new task continuation
 use the retained sources and remote workspace. This is not successful recovery,
 provider termination evidence, or permission to delete the original allocation.
+After independently verified sandbox preservation, the task accepts the exact
+migrated snapshot receipt for continuation without requiring a fresh workspace.
 Accepted results with unfinished copyback remain blockers. Once the original
 sync receipt is finalized, assessment and status effects can continue from their
 existing database coordinator independently of the file storage migration.
+
+Offline maintenance stops writers; it does not silently change workspace
+semantics or retire task ownership. `parallel_shared_writers_unsupported` needs
+an operator-approved transition to serialized remote workspace writes.
+`task_writer_bound` needs the task lifecycle owner to settle its exact checkout
+and execution binding, even if the run row is terminal. `task_binding_required`
+needs provenance recovery or a separately approved durable archival path for an
+orphaned workspace; the importer never invents a task owner. These records stay
+on the original volume and block detach. The batch reports its first failed
+workspace through the phase/error receipt; it does not claim to aggregate every
+possible blocker in advance or skip blocked rows.
 
 Controller leases, in-flight recovery, active writers, and uncertain workspace
 operations remain blockers. Tests must prove migration leaves failure state

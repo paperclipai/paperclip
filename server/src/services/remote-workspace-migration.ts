@@ -338,12 +338,27 @@ export async function migrateRemoteWorkspace(input: {
         const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: authority }; delete metadata.remoteWorkspaceMigration;
         if (reserved.legacyRecoverySources.length) {
           metadata.legacyWorkspaceRecoveryMigration = { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION, operationId: operation.id };
-          for (const source of reserved.legacyRecoverySources) await tx.update(heartbeatRuns).set({
+          for (const source of reserved.legacyRecoverySources) {
+            // The offline deployment fence has stopped the old controller. The
+            // locked validation above must still match its journaled expired
+            // lease exactly. Release only that coordinator lease so explicit
+            // file recovery can proceed; its phase/checkpoint and the provider's
+            // independent stop obligation remain unchanged.
+            if (source.unresolvedFinalization?.leaseOwner) await tx.update(nativeRunFinalizations).set({
+              leaseOwner: null, leaseExpiresAt: null,
+              recoveryHistory: sql`${nativeRunFinalizations.recoveryHistory} || ${JSON.stringify([{
+                event: "legacy_workspace_migration_owner_released", operationId: operation.id,
+                workspaceId: workspace.id, previousOwner: source.unresolvedFinalization,
+              }])}::jsonb`, updatedAt: new Date(),
+            }).where(and(eq(nativeRunFinalizations.companyId, workspace.companyId),
+              eq(nativeRunFinalizations.runId, source.runId), eq(nativeRunFinalizations.issueId, source.issueId)));
+            await tx.update(heartbeatRuns).set({
             runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
               legacyWorkspaceRecoveryMigration: { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION,
                 operationId: operation.id, workspaceId: workspace.id },
             })}::jsonb`, updatedAt: new Date(),
-          }).where(and(eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, source.runId)));
+            }).where(and(eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, source.runId)));
+          }
           const prior = Array.isArray(metadata.remoteWorkspaceRecoverySourceRunIds) ? metadata.remoteWorkspaceRecoverySourceRunIds : [];
           metadata.remoteWorkspaceRecoverySourceRunIds = [...new Set([...prior, ...reserved.legacyRecoverySources.map(source => source.runId)])];
         }

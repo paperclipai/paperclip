@@ -195,7 +195,7 @@ describe("automatic retained workspace recovery", () => {
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
-  it.each(["retained", "removed", "child"])("preserves an old sandbox after storage migration without writing its old host (%s)", async mode => {
+  it.each(["retained", "removed", "child", "expired-owner"])("preserves an old sandbox after storage migration without writing its old host (%s)", async mode => {
     vi.stubEnv("DATABASE_URL", connectionString);
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "63".repeat(32));
     const f = await seed();
@@ -219,6 +219,9 @@ describe("automatic retained workspace recovery", () => {
     await db.insert(executionWorkspaces).values({ id: f.issueId, companyId: f.companyId, sourceIssueId,
       name: "Existing files", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.host });
     await db.update(issues).set({ executionWorkspaceId: f.issueId }).where(eq(issues.id, f.issueId));
+    if (mode === "expired-owner") await db.update(nativeRunFinalizations).set({ phase: "observed",
+      leaseOwner: "stopped-old-controller", leaseExpiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
     vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     try {
       await migrateRemoteWorkspace({ db, storage: getStorageService(), companyId: f.companyId,
@@ -229,6 +232,8 @@ describe("automatic retained workspace recovery", () => {
       expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
       expect(await readFile(path.join(f.host, "saved.txt")).catch(() => null)).toBeNull();
       expect(await run(f.runId)).toMatchObject({ status: "failed", runnerProfileJson: { nativeWorkspaceSync: { state: "prepared" } } });
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ workspaceRepairRequired: false });
       const restored = path.join(root, randomUUID()); await mkdir(restored);
       const copies = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
         sourceRunIds: [f.runId], cwd: restored });
@@ -236,12 +241,17 @@ describe("automatic retained workspace recovery", () => {
       expect(await readFile(path.join(copies[0]!.path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
-      if (mode === "child") {
+      if (mode === "child" || mode === "expired-owner") {
         // The parent must not receive the child's task-scoped recovery copy.
-        expect(await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: sourceIssueId,
+        if (mode === "child") expect(await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: sourceIssueId,
           sourceRunIds: [f.runId], cwd: restored })).toHaveLength(0);
         vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "false");
         const nextRunId = randomUUID(), nextLeaseId = randomUUID(), sourceRun = await run(f.runId);
+        const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+          authorType: "user", authorUserId: "operator", body: "/new" }).returning();
+        expect(await admitExplicitNativeContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+          agentId: sourceRun.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
+          commentId: comment.id, successorRunId: nextRunId })).toMatchObject({ previousRunId: f.runId, commentId: comment.id });
         await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: sourceRun.agentId,
           nativeIssueId: f.issueId, runtimeMode: "native", status: "running" });
         const storage = { ...getStorageService(), provider: "s3" as const };
@@ -259,7 +269,25 @@ describe("automatic retained workspace recovery", () => {
         expect(await readFile(path.join(prepared.remoteRoot, ".paperclip-recovered", copies[0]!.operationId, "files", "saved.txt"), "utf8"))
           .toBe("finished work\n");
       }
-    } finally { vi.unstubAllEnvs(); }
+      if (mode === "retained") {
+        const [receipt] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, copies[0]!.operationId));
+        for (const metadata of [{ ...receipt.metadata, leaseId: randomUUID() }, { ...receipt.metadata, providerLeaseId: randomUUID() },
+          { ...receipt.metadata, recoveryActionId: randomUUID() }, { ...receipt.metadata, archive: { broken: true } }]) {
+          await db.update(workspaceOperations).set({ metadata }).where(eq(workspaceOperations.id, receipt.id));
+          expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        }
+        await db.update(workspaceOperations).set({ metadata: receipt.metadata, status: "running" }).where(eq(workspaceOperations.id, receipt.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, receipt.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      }
+    } finally {
+      // This journey admits a successor; retire that fixture writer before the
+      // next case exercises the instance-wide offline migration fence.
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(and(
+        eq(heartbeatRuns.companyId, f.companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+      vi.unstubAllEnvs();
+    }
   }, 30_000);
 
   function boardRecoveryApp() {
