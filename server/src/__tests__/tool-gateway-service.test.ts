@@ -2764,6 +2764,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const invocations = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
     expect(invocations.map(row => row.status).sort()).toEqual(["awaiting_approval", "denied"]);
     expect(await db.select().from(toolAccessAuditEvents).where(and(eq(toolAccessAuditEvents.companyId, company.id), eq(toolAccessAuditEvents.action, "tool_gateway.call_completed")))).toHaveLength(0);
+    console.info(`Verified fresh tool review after decline: ${source}`);
   });
 
   it("expires a stale identical request and creates a fresh approval", async () => {
