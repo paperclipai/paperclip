@@ -22,7 +22,7 @@ try {
   const { prepareTestDriveEnvironment, bootstrapTestDrive } = await import(pathToFileURL(join(repository, "cli/src/commands/test-drive.ts")).href);
   const options = { dataDir, companyName: "Native ingestion live acceptance", agentName: "Live ingestion agent",
     harness: "opencode", model, apiKeyEnv: credentialName, browser: false };
-  await prepareTestDriveEnvironment(options, repository);
+  const { linkedWorktree } = await prepareTestDriveEnvironment(options, repository);
   process.env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";
   process.env.NODE_ENV = "production";
   process.env.SERVE_UI = "true";
@@ -36,7 +36,8 @@ try {
   const origin = `http://${server.host}:${server.listenPort}`;
   const { PaperclipApiClient } = await import(pathToFileURL(join(repository, "cli/src/client/http.ts")).href);
   const api = new PaperclipApiClient({ apiBase: origin });
-  const fixture = await bootstrapTestDrive({ api, options, linkedWorktree: true, instanceId: "default", env: process.env });
+  const fixture = await bootstrapTestDrive({ api, options, linkedWorktree,
+    instanceId: process.env.PAPERCLIP_INSTANCE_ID ?? "default", env: process.env });
   if (fixture.reused || !fixture.agent) throw new Error("Fresh live-provider fixture was not created");
   await api.patch("/api/instance/settings/experimental", { enableNativeRunner: true });
   const agent = await api.patch(`/api/agents/${fixture.agent.id}`, {

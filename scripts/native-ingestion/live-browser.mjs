@@ -76,6 +76,7 @@ try {
     const active = runs.find(run => run.status === "running");
     if (!active) return null;
     const text = normalizeVisible(await visibleAgentText());
+    const visibleAt = Date.now();
     const rows = await eventsFor(active.id);
     const delta = rows.map(row => row.payload?.prpEvent).find(event => event?.eventType === "item.delta"
       && event.payload.kind === "agentMessage" && normalizeVisible(event.payload.text).length >= 12
@@ -83,15 +84,16 @@ try {
     if (!delta) return null;
     // Re-read status after observing the matching UI text. A completed run
     // discovered on the next poll cannot establish streaming visibility.
-    if ((await api(`/api/heartbeat-runs/${active.id}`)).status !== "running") return null;
+    const observedRun = await api(`/api/heartbeat-runs/${active.id}`);
+    if (observedRun.status !== "running") return null;
     return { runId: active.id, sourceEventId: delta.sourceEventId, sourceSeq: delta.sourceSeq,
-      emittedAt: delta.emittedAt, visibleText: text.slice(-1000) };
+      emittedAt: delta.emittedAt, visibleText: text.slice(-1000), visibleAt,
+      run: runSummary(observedRun), statusObservedAt: Date.now() };
   }, Boolean);
   journey.visibleDelta = streaming;
-  journey.firstVisibleAt = Date.now();
-  const during = await taskRuns(created.issueId);
-  journey.streamingRunStatuses = during.map(runSummary);
-  journey.visibleBeforeTerminal = during.some(run => ["queued", "running"].includes(run.status));
+  journey.firstVisibleAt = streaming.visibleAt;
+  journey.streamingRunStatuses = [streaming.run];
+  journey.visibleBeforeTerminal = streaming.run.status === "running";
   expect(journey.visibleBeforeTerminal).toBe(true);
   await page.screenshot({ path: join(config.evidenceDir, "live-streaming.png"), fullPage: true });
   const finished = await poll("completed native run", () => taskRuns(created.issueId), runs =>
