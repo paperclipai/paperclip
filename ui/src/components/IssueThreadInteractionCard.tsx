@@ -103,6 +103,11 @@ interface IssueThreadInteractionCardProps {
   /** Reuse the resolver without the task timeline's audit/header chrome. */
   footerSlot?: ReactNode;
   presentationVariant?: "default" | "coordinator-decision";
+  /**
+   * The Needs You card's audience line already says who may answer, so the
+   * compact decision keeps its own clause for screen readers only (PAP-767).
+   */
+  audienceStated?: boolean;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
@@ -3692,6 +3697,7 @@ function VerdictProgressBadge({
 export function IssueThreadInteractionCard({
   interaction,
   presentationVariant = "default",
+  audienceStated = false,
   footerSlot,
   agentMap,
   currentUserId,
@@ -3884,7 +3890,7 @@ export function IssueThreadInteractionCard({
         {compactDecision ? <>
           {!bodyNamesDecision && interaction.title ? <h2 className="text-lg font-medium">{interaction.title}</h2> : null}
           {interaction.summary && !summaryIsRepeated && !connectionAuthorization && interaction.kind !== "connection_intent" ? <p className="text-sm text-muted-foreground">{interaction.summary}</p> : null}
-          {interaction.status === "pending" ? <div className={addressedElsewhere ? undefined : "sr-only"}><InteractionAudienceLine audience={audience} variant="compact" /></div> : null}
+          {interaction.status === "pending" ? <div className={addressedElsewhere && !audienceStated ? undefined : "sr-only"}><InteractionAudienceLine audience={audience} variant="compact" /></div> : null}
         </> : <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1 basis-64">
             <div className="flex flex-wrap items-center gap-2">

@@ -28,6 +28,8 @@ interface AttentionInteractionResolverProps {
   userLabelMap?: ReadonlyMap<string, string> | null;
   footerSlot?: ReactNode;
   presentation?: "default" | "coordinator-decision";
+  /** The card's audience line already names who may answer (PAP-767). */
+  audienceStated?: boolean;
   /** Successful updates include partial item reviews; inspect status before settling the whole card. */
   onResolved?: (interaction?: IssueThreadInteraction) => void;
 }
@@ -62,6 +64,7 @@ export function AttentionInteractionResolver({
   currentUserId,
   userLabelMap,
   presentation,
+  audienceStated,
   footerSlot,
   onResolved,
 }: AttentionInteractionResolverProps) {
@@ -158,6 +161,7 @@ export function AttentionInteractionResolver({
     <IssueThreadInteractionCard
       interaction={interaction}
       presentationVariant={presentation}
+      audienceStated={audienceStated}
       footerSlot={footerSlot}
       primaryActionOnRight={presentation === "coordinator-decision"}
       agentMap={agentMap}

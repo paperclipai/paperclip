@@ -313,6 +313,18 @@ describe("IssueThreadInteractionCard", () => {
     ]);
   });
 
+  it("shows a Coordinator card's responder clause when it is addressed elsewhere", () => {
+    const interaction = { ...pendingRequestConfirmationInteraction, addresseeAgentId: "agent-nap" };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction });
+    expect(host.querySelector('[data-testid="interaction-audience"]')?.parentElement?.className ?? "").not.toContain("sr-only");
+  });
+
+  it("keeps that clause for screen readers when the card's audience line states it (PAP-767)", () => {
+    const interaction = { ...pendingRequestConfirmationInteraction, addresseeAgentId: "agent-nap" };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction, audienceStated: true });
+    expect(host.querySelector('[data-testid="interaction-audience"]')?.parentElement?.className).toContain("sr-only");
+  });
+
   it("keeps Coordinator confirmation details collapsed while preserving context, exact target, and approval", async () => {
     const onAcceptInteraction = vi.fn(async () => undefined);
     const interaction = { ...pendingRequestConfirmationInteraction, title: "Repeated approval context", summary: "Repeated approval context", payload: { ...pendingRequestConfirmationInteraction.payload, prompt: "Repeated approval context", detailsMarkdown: "Revision proof: sha256-test-proof" } };
