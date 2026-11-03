@@ -109,6 +109,8 @@ describe("acpx identity split and launch environment", () => {
       LC_ALL: "C.UTF-8",
       HTTPS_PROXY: "https://proxy.example",
       OPENAI_API_KEY: "openai-host-secret",
+      CODEX_PATH: "/opt/homebrew/bin/codex",
+      CODEX_HOME: "/host/codex",
       ANTHROPIC_API_KEY: "anthropic-host-secret",
       ANTHROPIC_AUTH_TOKEN: "anthropic-auth-host-secret",
       CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth-host-secret",
@@ -137,6 +139,8 @@ describe("acpx identity split and launch environment", () => {
       LC_ALL: "C.UTF-8",
       HTTPS_PROXY: "https://proxy.example",
       OPENAI_API_KEY: "openai-host-secret",
+      CODEX_PATH: "/opt/homebrew/bin/codex",
+      CODEX_HOME: "/host/codex",
     });
     expect(projectAcpxInheritedHostEnvironment(inherited, "claude", true)).toEqual({
       PATH: "/usr/bin",

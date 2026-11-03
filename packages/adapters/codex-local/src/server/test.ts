@@ -277,7 +277,14 @@ export async function testEnvironment(
 
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "codex");
+  const envConfig = parseObject(config.env);
+  const configuredCodexPath =
+    typeof envConfig.CODEX_PATH === "string" && envConfig.CODEX_PATH.trim().length > 0
+      ? envConfig.CODEX_PATH.trim()
+      : typeof process.env.CODEX_PATH === "string" && process.env.CODEX_PATH.trim().length > 0
+        ? process.env.CODEX_PATH.trim()
+        : null;
+  const command = asString(config.command, configuredCodexPath ?? "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
@@ -316,7 +323,6 @@ export async function testEnvironment(
     });
   }
 
-  const envConfig = parseObject(config.env);
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;

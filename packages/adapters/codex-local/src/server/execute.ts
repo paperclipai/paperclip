@@ -602,7 +602,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
       : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const command = asString(config.command, "codex");
+  const envConfig = parseObject(config.env);
+  const configuredCodexPath =
+    typeof envConfig.CODEX_PATH === "string" && envConfig.CODEX_PATH.trim().length > 0
+      ? envConfig.CODEX_PATH.trim()
+      : typeof process.env.CODEX_PATH === "string" && process.env.CODEX_PATH.trim().length > 0
+        ? process.env.CODEX_PATH.trim()
+        : null;
+  const command = asString(config.command, configuredCodexPath ?? "codex");
   const model = asString(config.model, "");
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -642,7 +649,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? targetWorkspaceRealization.authoritativeRoot
     : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
-  const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   let configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
