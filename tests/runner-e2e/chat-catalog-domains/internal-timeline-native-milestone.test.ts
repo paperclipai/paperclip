@@ -290,3 +290,25 @@ it.each([
 ])("distinguishes bounded native failure assertions from denials and checks: $ending", ({ ending, expected }) => {
   const o = fixture(); o.reply += " " + ending; expect(gradeWorkTimeline(o).passed).toBe(expected);
 });
+
+
+it("rejects the reviewed denied adjacent repair object", () => {
+  const o = fixture();
+  o.reply = "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. Riley fixed nothing. The check passed.";
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
+
+it.each([
+  { repair: "Riley fixed absolutely nothing.", expected: false },
+  { repair: "Riley fixed none of the labels.", expected: false },
+  { repair: "Riley fixed neither label.", expected: false },
+  { repair: "Riley fixed no label.", expected: false },
+  { repair: "Riley fixed zero issues.", expected: false },
+  { repair: "Nothing was fixed by Riley.", expected: false },
+  { repair: "Riley fixed only the missing label.", expected: true },
+  { repair: "Riley fixed the label with zero extra changes.", expected: true },
+])("distinguishes denied object heads from substantive repairs: $repair", ({ repair, expected }) => {
+  const o = fixture(); o.reply = "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. " + repair + " The check passed.";
+  expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
