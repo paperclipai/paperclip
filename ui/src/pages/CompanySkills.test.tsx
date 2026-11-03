@@ -19,6 +19,8 @@ import {
 } from "./CompanySkills";
 import { ApiError } from "../api/client";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
+import { CompanySkills as ProductionCompanySkills } from "./CompanySkills.production";
+import { queryKeys } from "../lib/queryKeys";
 
 const readVersion = vi.hoisted(() => vi.fn());
 const mockCompanySkillsApi = vi.hoisted(() => ({
@@ -1247,14 +1249,14 @@ describe("CompanySkills page read resilience", () => {
     }
   }
 
-  async function renderPage() {
+  async function renderPage(Page = CompanySkills) {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     await act(async () => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <CompanySkills />
+          <Page />
         </QueryClientProvider>,
       );
     });
@@ -1274,6 +1276,44 @@ describe("CompanySkills page read resilience", () => {
   afterEach(() => {
     queryClient.clear();
     vi.unstubAllGlobals();
+  });
+
+  describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s discovery errors", (_name, Page) => {
+    it.each([["skills", 403], ["skills", 429], ["catalog", 403], ["catalog", 429]] as const)(
+      "shows a %s %s failure while the other read pauses and keeps its own Retry usable",
+      async (failed, status) => {
+        const failedRead = failed === "skills" ? mockCompanySkillsApi.list : mockCompanySkillsApi.catalogList;
+        const otherRead = failed === "skills" ? mockCompanySkillsApi.catalogList : mockCompanySkillsApi.list;
+        const failedResult = failed === "skills" ? [makeInstalledSkill()] : [];
+        const otherResult = failed === "skills" ? [] : [makeInstalledSkill()];
+        failedRead.mockRejectedValueOnce(new ApiError("Read rejected", status, null)).mockResolvedValue(failedResult);
+        let resume!: () => void;
+        otherRead.mockImplementationOnce(() => new Promise(resolve => { resume = () => resolve(otherResult); }));
+        const node = await renderPage(Page);
+        const otherKey = failed === "skills" ? queryKeys.companySkills.catalog() : queryKeys.companySkills.list("company-1");
+        const otherQuery = queryClient.getQueryCache().find({ queryKey: otherKey, exact: true })!;
+        await act(() => { otherQuery.setState({ fetchStatus: "paused" }); });
+        expect(node.querySelector('[data-query-view="error"]')).not.toBeNull();
+        await act(() => { otherQuery.setState({ fetchStatus: "fetching" }); });
+        const error = node.querySelector('[data-query-view="error"]')!;
+        expect(error).not.toBeNull();
+        const retry = error.querySelector("button");
+        if (status === 429) {
+          expect(retry).not.toBeNull();
+          expect(retry!.disabled).toBe(false);
+          await click(retry!); await settle();
+          expect(failedRead).toHaveBeenCalledTimes(2);
+          expect(otherRead).toHaveBeenCalledOnce();
+          expect(node.querySelector('[data-query-view="error"]')).toBeNull();
+          await act(async () => { resume(); }); await settle();
+          expect(node.textContent).toContain("Demo Skill");
+        } else {
+          expect(retry).toBeNull();
+          await act(async () => { resume(); }); await settle();
+          expect(node.querySelector('[data-query-view="error"]')).not.toBeNull();
+        }
+      },
+    );
   });
 
   it("keeps installed skills visible when a refetch fails during an outage", async () => {

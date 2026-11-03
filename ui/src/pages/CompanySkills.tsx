@@ -1321,12 +1321,12 @@ export function DiscoveryGrid({
               />
             </div>
           ) : null}
-          {loading ? (
-            <PageSkeleton variant="list" />
-          ) : error ? (
+          {error ? (
             <div className="py-6">
               <QueryErrorState error={error} action="load skills" onRetry={onRetry} retrying={retrying} />
             </div>
+          ) : loading ? (
+            <PageSkeleton variant="list" />
           ) : sourceFilteredCards.length === 0 ? (
             <div className="py-12">
               <EmptyState
@@ -4525,6 +4525,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     staleTime: 60_000,
   });
   const catalogListView = useQueryView(catalogListQuery);
+  const discoveryFailure = [skillsView, catalogListView].find((view) => view.kind === "error");
 
   const catalogDetailQuery = useQuery({
     queryKey: queryKeys.companySkills.catalogDetail(selectedCatalogRef ?? ""),
@@ -5433,9 +5434,9 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           cards={visibleDiscoveryCards}
           onOpenCard={openDiscoveryCard}
           loading={skillsQuery.isLoading || catalogListQuery.isLoading || skillsView.kind === "reconnecting" || catalogListView.kind === "reconnecting"}
-          error={skillsView.kind === "error" ? skillsQuery.error : catalogListView.kind === "error" ? catalogListQuery.error : null}
-          onRetry={skillsView.kind === "error" ? skillsView.retry : catalogListView.retry}
-          retrying={skillsView.isFetching || catalogListView.isFetching}
+          error={discoveryFailure?.error}
+          onRetry={discoveryFailure?.retry}
+          retrying={discoveryFailure?.isFetching}
           totalCount={discoveryTabCards.length}
           onCreate={() => void openNewSkill()}
           onImport={() => setImportDialogOpen(true)}
