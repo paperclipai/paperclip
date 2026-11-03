@@ -68,7 +68,13 @@ export function gradeAppTest(value: unknown) {
     && o.humanQueries.length === 1 && o.humanQueries[0] === s.originalQuery && time(native.startedAt) >= time(s.setupFinishedAt);
   c.add("one-original-native-request", !!queryBound, "One unchanged human query and its actual successful CEO native turn must own the selected source conversation.");
   const decisions = Array.isArray(s.decisions) ? s.decisions.map(record) : [], decision = decisions[0], v = record(decision?.invocation);
-  const resultText = JSON.stringify({ content: [{ text: s.marker, type: "text" }] }), expectedResultHash = hash(resultText);
+  // The gateway persists its normalized MCP envelope, not the raw provider
+  // result. Keep this independently expected shape aligned with
+  // normalizeMcpToolResult + summarizeToolValue's stable key ordering.
+  const resultText = JSON.stringify({ content: s.marker, data: {
+    content: [{ text: s.marker, type: "text" }], isError: false,
+    spawnedLocalProcess: false, structuredContent: null, transport: "mcp_http",
+  } }), expectedResultHash = hash(resultText);
   const call = (Array.isArray(s.providerCalls) ? s.providerCalls : []).map(record)[0], calls = s.providerCalls as unknown[] | undefined;
   const expectedProviderHash = hash(JSON.stringify({ content: [{ type: "text", text: s.marker }] }));
   const events = (Array.isArray(decision?.events) ? decision.events : []).map(record).filter(e => e.eventType === "call_completed");
@@ -117,7 +123,7 @@ export const appTestExternalCases = [definition("app-permissions.test-as-agent",
       connectionPath: `/${ctx.input.fixtures.company.issuePrefix}/apps/${connection.connectionId}`, resultPath: `/${ctx.input.fixtures.company.issuePrefix}/apps/${connection.connectionId}/permissions` };
   } catch (error) { providers.delete(ctx); await provider.close(); throw error; }
 }, gradeAppTest, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.app-test.v2",
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.app-test.v3",
   sourceFiles: ["chat-catalog-domains/external-app-test.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "../../server/src/routes/tool-access.ts", "../../server/src/services/tool-gateway.ts", "../../server/src/services/tool-access/activity/service.ts", "../../server/src/services/tool-content-guards.ts", "../../server/src/services/tool-approval-execution.ts", "chat-scenarios/app-permissions.yaml"],
   async act(ctx) { await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); },
   observe: observeAppTest,

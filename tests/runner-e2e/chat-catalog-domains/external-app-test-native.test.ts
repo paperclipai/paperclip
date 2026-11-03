@@ -5,7 +5,12 @@ import { gradeAppTest } from "./external-app-test.js";
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 export function authorizedTestObservation() {
   const marker = "Synthetic sample page unit-492", requestId = "paperclip-tool-synthetic-unit";
-  const result = JSON.stringify({ content: [{ text: marker, type: "text" }] });
+  // Independently reproduce the gateway's stable normalized MCP result, not the
+  // raw provider response below. This synthetic fixture follows the public owner.
+  const result = JSON.stringify({ content: marker, data: {
+    content: [{ text: marker, type: "text" }], isError: false,
+    spawnedLocalProcess: false, structuredContent: null, transport: "mcp_http",
+  } });
   const invocation = { id: "invocation", companyId: "company", actorType: "agent", actorId: "ceo", agentId: "morgan", issueId: "source", runId: "native", connectionId: "connection", catalogEntryId: "read", toolName: "launch_read", status: "succeeded", policyDecision: "allow", errorCode: null, resultHash: hash(result), resultSizeBytes: Buffer.byteLength(result), startedAt: "2026-11-03T00:00:02Z", completedAt: "2026-11-03T00:00:03Z" };
   const scope = { agentId: "morgan", allowed: ["read"], profiles: ["profile"], entries: ["entry"], bindings: ["binding"], connections: ["connection"] };
   const reply = "I checked Morgan's read access to Synthetic Launch Notes. The sample-page test succeeded; it is a test result, not a guarantee about the next runtime.";
@@ -78,5 +83,29 @@ it.each(["denied", "no provider read", "wrong target", "wrong caller", "wrong co
   if (fault === "global qualification") { o.reply = "Morgan's sample read succeeded and all production agents are qualified."; o.phaseReplies[0]!.body = o.reply; }
   if (fault === "future qualification") { o.reply = "Morgan's sample read succeeded; this test guarantees Morgan's next runtime is qualified."; o.phaseReplies[0]!.body = o.reply; }
   if (fault === "false actor report") { o.reply = "I checked CEO read access and the sample-page test succeeded."; o.phaseReplies[0]!.body = o.reply; }
+  expect(gradeAppTest(o).passed).toBe(false);
+});
+
+it.each(["raw provider only", "wrong visible content", "wrong nested marker", "missing data", "error result", "local process", "wrong transport", "extra structured data", "wrong size"])("rejects %s even when durable invocation/audit hashes agree", fault => {
+  const o = authorizedTestObservation();
+  const normalized: Record<string, unknown> = { content: o.state.marker, data: {
+    content: [{ text: o.state.marker, type: "text" }], isError: false,
+    spawnedLocalProcess: false, structuredContent: null, transport: "mcp_http",
+  } };
+  let result: unknown = normalized;
+  if (fault === "raw provider only") result = { content: [{ text: o.state.marker, type: "text" }] };
+  if (fault === "wrong visible content") normalized.content = "Different sample page";
+  const data = normalized.data as Record<string, unknown>;
+  if (fault === "wrong nested marker") data.content = [{ text: "Different sample page", type: "text" }];
+  if (fault === "missing data") delete normalized.data;
+  if (fault === "error result") data.isError = true;
+  if (fault === "local process") data.spawnedLocalProcess = true;
+  if (fault === "wrong transport") data.transport = "local_stdio";
+  if (fault === "extra structured data") data.structuredContent = { unexpected: true };
+  const serialized = JSON.stringify(result);
+  const v = o.state.decisions[0]!.invocation;
+  v.resultHash = hash(serialized); v.resultSizeBytes = Buffer.byteLength(serialized) + (fault === "wrong size" ? 1 : 0);
+  o.state.decisions[0]!.events[0]!.resultHash = v.resultHash;
+  expect(o.state.providerCalls).toHaveLength(1);
   expect(gradeAppTest(o).passed).toBe(false);
 });
