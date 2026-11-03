@@ -1,3 +1,5 @@
+import { registerRunObserverScheduler } from "../run-observer-delivery.js";
+import { createWorkScheduler } from "../work-scheduler.js";
 import * as nativeStopRecovery from "../native-runtime/native-cancellation-request.js";
 import { chmod, realpath } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -52,14 +54,18 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: Db;
   let home: string;
+  const observerScheduler = createWorkScheduler();
+  let unregisterObserver: (() => void) | undefined;
   beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), "paperclip-runtime-execution-"));
     vi.stubEnv("PAPERCLIP_HOME", home);
     database = await startRecoveryPostgres("paperclip-runtime-execution");
     db = createDb(database.connectionString);
+    unregisterObserver = registerRunObserverScheduler(db, { scheduleActiveDeadline: observerScheduler.schedule,
+      cancelActiveDeadline: observerScheduler.cancel });
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
+  afterAll(async () => { unregisterObserver?.(); observerScheduler.stop(); await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
   beforeEach(async () => {
     await db.execute(sql`truncate table companies restart identity cascade`);
     vi.clearAllMocks();

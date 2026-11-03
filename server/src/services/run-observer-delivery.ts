@@ -1,12 +1,23 @@
 import { lstat, realpath } from "node:fs/promises";
 import { createConnection } from "node:net";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 
 export type ObserverDeliveryConfig = { socketPath: string; companyId: string; agentId: string };
+export type ObserverDeadlineScheduler = {
+  scheduleActiveDeadline(key: string, at: number, callback: () => void): void;
+  cancelActiveDeadline(key: string): void;
+};
+const schedulers = new WeakMap<object, ObserverDeadlineScheduler>();
+export function registerRunObserverScheduler(owner: object, scheduler: ObserverDeadlineScheduler) {
+  schedulers.set(owner, scheduler);
+  return () => { if (schedulers.get(owner) === scheduler) schedulers.delete(owner); };
+}
+
 
 /** Configuration belongs to the trusted Paperclip server, never adapter input. */
 export function observerDeliveryConfig(env: NodeJS.ProcessEnv): ObserverDeliveryConfig | null {
@@ -49,8 +60,11 @@ async function sendToOwnedSocket(socketPath: string, payload: string, signal: Ab
 
 /** Delivers and renews one run token without exporting the signing key. */
 export async function startRunObserverDelivery(db: Db, run: { id: string; companyId: string; agentId: string },
-  config: ObserverDeliveryConfig | null, options: { refreshMs?: number } = {}) {
+  config: ObserverDeliveryConfig | null, options: { refreshMs?: number; scheduler?: ObserverDeadlineScheduler } = {}) {
   if (!config || config.companyId !== run.companyId || config.agentId !== run.agentId) return null;
+  const scheduler = options.scheduler ?? schedulers.get(db);
+  if (!scheduler) throw new Error("Run observer scheduler is unavailable");
+  const deadlineKey = `run-observer:${run.id}:${randomUUID()}`;
   let closed = false;
   const controller = new AbortController();
   class RunInactive extends Error {}
@@ -67,13 +81,18 @@ export async function startRunObserverDelivery(db: Db, run: { id: string; compan
   const configuredTtl = Number(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS);
   const refreshMs = options.refreshMs ?? (Number.isFinite(configuredTtl) && configuredTtl > 0
     ? Math.min(40_000, Math.max(250, Math.floor(configuredTtl * 1000 / 3))) : 40_000);
-  const interval = setInterval(() => {
+  const schedule = () => scheduler.scheduleActiveDeadline(deadlineKey, Date.now() + refreshMs, () => {
     if (closed || inFlight) return;
     inFlight = deliver().catch(error => {
-      if (error instanceof RunInactive) { closed = true; clearInterval(interval); controller.abort(); }
+      if (error instanceof RunInactive) { closed = true; controller.abort(); }
       // On transient errors the broker must stop when its token expires.
-    }).finally(() => { inFlight = null; });
-  }, refreshMs);
-  interval.unref();
-  return { close() { closed = true; clearInterval(interval); controller.abort(); } };
+    }).finally(() => {
+      inFlight = null;
+      if (!closed) {
+        try { schedule(); } catch { closed = true; controller.abort(); }
+      }
+    });
+  });
+  try { schedule(); } catch (error) { closed = true; controller.abort(); throw error; }
+  return { close() { closed = true; scheduler.cancelActiveDeadline(deadlineKey); controller.abort(); } };
 }

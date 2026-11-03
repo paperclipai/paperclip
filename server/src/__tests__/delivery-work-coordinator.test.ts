@@ -29,6 +29,23 @@ function setup() {
 function task() { return { retryMs: 5000, run: vi.fn(async () => {}), hasPending: vi.fn(async () => false) }; }
 
 describe("delivery work coordinator", () => {
+  it("tracks and cancels active-run deadlines in the shared scheduler", async () => {
+    const s = setup(), callback = vi.fn(), due = Date.now() + 100;
+    s.coordinator.scheduleActiveDeadline("observer:run", due, callback);
+    expect(s.coordinator.nextWakeAt()).toBe(due);
+    s.coordinator.cancelActiveDeadline("observer:run");
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+    s.coordinator.scheduleActiveDeadline("observer:run", due, callback);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(callback).toHaveBeenCalledOnce();
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+    s.coordinator.scheduleActiveDeadline("observer:run", Date.now() + 100, callback);
+    await s.coordinator.stop(new Set([DELIVERY_QUEUES.feedback]));
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(callback).toHaveBeenCalledOnce();
+  });
+
   it("leaves empty queues with no deadlines, timers, or periodic queries", async () => {
     const s = setup();
     const tasks = Object.values(DELIVERY_QUEUES).map(queue => {

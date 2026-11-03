@@ -1,3 +1,4 @@
+import { registerRunObserverScheduler } from "./services/run-observer-delivery.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
@@ -1215,6 +1216,7 @@ export async function createApp(
     onError: (err, queue) => logger.error({ err, queue }, "Delivery reconciliation failed"),
   });
   app.locals.deliveryWork = deliveryWork;
+  const unregisterRunObserverScheduler = registerRunObserverScheduler(db, deliveryWork);
   await scheduler.start(deliveryWork);
   const agentLifecycleDelivery = deliveryWork.register(DELIVERY_QUEUES.agentLifecycle, {
     retryMs: 1_000,
@@ -1360,6 +1362,7 @@ export async function createApp(
       jobCoordinator.stop();
       resourceLifecycleDelivery.dispose();
       importSpoolCleanup.unsubscribe();
+      unregisterRunObserverScheduler();
       await deliveryWork.stop();
       devWatcher?.close();
       viteHtmlRenderer?.dispose();

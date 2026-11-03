@@ -4,7 +4,8 @@ import { chmod, mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { startRunObserverDelivery } from "../services/run-observer-delivery.js";
+import { registerRunObserverScheduler, startRunObserverDelivery } from "../services/run-observer-delivery.js";
+import { createWorkScheduler } from "../services/work-scheduler.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -16,13 +17,22 @@ import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 
 describe("run observer capability", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
+  const scheduler = createWorkScheduler();
+  const deadlines = { scheduleActiveDeadline: scheduler.schedule, cancelActiveDeadline: scheduler.cancel };
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID());
     vi.stubEnv("PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE", "shadow");
     vi.stubEnv("PAPERCLIP_AUTH_RATE_LIMIT_ENABLED", "false");
     server = await startRunnerApiTestServer({ humanSessions: true, databaseUrl: process.env.PAPERCLIP_OBSERVER_TEST_DATABASE_URL });
   }, 90_000);
-  afterAll(async () => { await server?.close(); vi.unstubAllEnvs(); });
+  afterAll(async () => { scheduler.stop(); await server?.close(); vi.unstubAllEnvs(); });
+  it("fails closed when the shared scheduler is unavailable", async () => {
+    const db = {} as typeof server.db;
+    const run = { id: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    await expect(startRunObserverDelivery(db, run, { socketPath: "/tmp/unused", companyId: run.companyId,
+      agentId: run.agentId })).rejects.toThrow("scheduler is unavailable");
+  });
+
   it("automatically delivers and renews only a scoped token over a private local socket", async () => {
     const f = await server.fixture({ connectionScenario: "fresh" });
     const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-sink-"));
@@ -82,6 +92,7 @@ describe("run observer capability", () => {
       reached(); return stalled;
     } }) }) } as unknown as typeof server.db;
     const run = { id: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    registerRunObserverScheduler(fakeDb, deadlines);
     const delivery = await startRunObserverDelivery(fakeDb, run,
       { socketPath, companyId: run.companyId, agentId: run.agentId }, { refreshMs: 100 });
     try {
@@ -110,6 +121,7 @@ describe("run observer capability", () => {
     const fakeDb = { select: () => ({ from: () => ({ where: async () =>
       [{ status: ++queries === 1 ? "running" : "cancelled", resultJson: null }] }) }) } as unknown as typeof server.db;
     const run = { id: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    registerRunObserverScheduler(fakeDb, deadlines);
     const delivery = await startRunObserverDelivery(fakeDb, run,
       { socketPath, companyId: run.companyId, agentId: run.agentId }, { refreshMs: 100 });
     try {
