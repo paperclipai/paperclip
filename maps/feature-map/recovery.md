@@ -36,6 +36,10 @@ Agent access: [companion](../agent-access-map/recovery.md).
   Close still requires confirmed provider exit, durable event drain, and exact
   runner suspension; the cleanup purpose alone cannot certify termination.
   Hosted provider settlement remains separate acceptance.
+  An authorized fresh native retry publishes its own session for the next
+  ordinary comment or monitor. The [heartbeat regression](../../server/src/__tests__/native-session-resumption.test.ts)
+  covers fresh admission, saved session selection, and one subsequent resume.
+  Unfinished goals and unverified prior outcomes retain their recovery gates.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.

@@ -2438,6 +2438,14 @@ configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
 
+A fresh native session admitted for the current task may replace a terminal
+predecessor's goal source epoch when the saved goal is absent or complete.
+It must hold the task's execution lock and assignee. Its accepted terminal
+checkpoint can then publish the new session for later comments or monitors.
+An unfinished or unreadable goal retains its prior epoch. Delayed predecessor
+events, stale source sequences, conversation resets and unverified outcomes
+retain their existing guards. Source projection does not start provider work.
+
 Changing configuration can retire a completed warm runner during instruction
 preparation, before the next native coordinator is claimed. Its maintenance
 checkpoints may use the next run's live preparation lease from the same
