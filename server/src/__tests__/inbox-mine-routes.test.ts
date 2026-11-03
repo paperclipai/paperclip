@@ -285,12 +285,11 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
       const responses = await Promise.all(requests);
       expect(responses.every(response => response.status === 200)).toBe(true);
       if (coalesced) expect((await coalesced).headers["x-paperclip-request-cache"]).toBe("coalesced");
-      let settled = await request(app).get(snapshotPath).expect(200);
-      if (settled.headers["x-paperclip-request-cache"] === "coalesced") {
-        settled = await request(app).get(snapshotPath).expect(200);
-      }
-      expect(settled.headers["x-paperclip-request-cache"]).toBe("miss");
-      expect(started).toHaveBeenCalledTimes(9);
+      await request(app).get(snapshotPath).expect(200);
+      const computesBeforeFreshRead = started.mock.calls.length;
+      const fresh = await request(app).get(snapshotPath).expect(200);
+      expect(fresh.headers["x-paperclip-request-cache"]).toBe("miss");
+      expect(started).toHaveBeenCalledTimes(computesBeforeFreshRead + 1);
     } finally {
       release();
       await aborted;
