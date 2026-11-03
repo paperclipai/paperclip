@@ -8,6 +8,7 @@ vi.mock("./external-provider.js", () => ({ startNotesProvider: async () => port.
 vi.mock("./identity-support.js", () => ({ openStandingChat: async () => ({ id: "source" }), probeAgentPermission: async () => 403 }));
 vi.mock("../chat-query-attachments.js", () => ({ uploadFactualQueryAttachment: async () => ({ issueId: "source" }), chatQueryWithAttachments: (query: string) => query, verifyChatQueryAttachments: async () => true }));
 vi.mock("./external-support.js", async original => ({ ...await original<typeof import("./external-support.js")>(), observeExternal: async () => ({ phaseReplies: port.replies }) }));
+vi.mock("./external-app-review-probe.js", () => ({ probeReviewApproval: vi.fn(async () => ({status: 403, code: "interaction_governed_action_denied", boundaryUnchanged: true, keyRevoked: true})) }));
 import { appReviewExternalCases } from "./external-app-review.js";
 afterEach(() => vi.restoreAllMocks());
 function fixture(wrongDispatch = false) {
