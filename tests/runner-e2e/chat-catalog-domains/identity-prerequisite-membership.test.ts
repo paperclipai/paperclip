@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { grantsForHumanRole } from "../../../server/src/services/company-member-roles.js";
 import { enrollPrerequisitePerson, prerequisiteMembershipScenarioIds } from "./identity-auth.js";
@@ -39,7 +40,20 @@ it.each(["operator", "viewer"] as const)("establishes only the real public %s pr
   expect(receipt).toMatchObject({ userId: "person", companyId: "company", role, beforeStatus: 403, companyReadStatus: 200, instanceAdminReadStatus: 403 });
   expect(f.evidence).toHaveBeenCalledOnce(); expect([...f.reads, ...f.writes.map(row => row.route)]).not.toEqual(expect.arrayContaining([expect.stringContaining("invites")]));
 });
-it.each(["access.invite-teammate", "access.manage-membership", "activity.agent-feedback", "unknown"])("does not substitute public membership for unapproved/invitation journey %s", async scenarioId => {
+it.each([
+  ["activity.agent-feedback", "internal-agent-feedback.ts", "casey"],
+  ["activity.work-timeline", "internal-work-timeline.ts", "owner"],
+  ["agents.choose-primary", "runtime-primary.ts", "person"],
+])("uses scoped public membership for the incidental %s fixture", async (scenarioId, sourceFile, personName) => {
+  const f = fixture(); Object.assign(f.ctx.scenario, { id: scenarioId }); f.ctx.input.execution.id = `chat-features.runner-opencode.local.${scenarioId}`;
+  const receipt = await enrollPrerequisitePerson(f.ctx, f.person);
+  expect(receipt).toMatchObject({ role: "operator", enrollment: "public-company-access", instanceAdminReadStatus: 403 });
+  expect(f.writes).toHaveLength(2); expect(f.evidence).toHaveBeenCalledOnce();
+  const source = await readFile(new URL(sourceFile, import.meta.url), "utf8");
+  expect(source).toContain(`await enrollPrerequisitePerson(ctx, ${personName}, "operator")`);
+  expect(source).not.toContain("enrollAuthenticatedPerson");
+});
+it.each(["access.invite-teammate", "access.manage-membership", "unknown"])("does not substitute public membership for unapproved/invitation journey %s", async scenarioId => {
   const f = fixture(); Object.assign(f.ctx.scenario, { id: scenarioId }); f.ctx.input.execution.id = `chat-features.runner-opencode.local.${scenarioId}`;
   await expect(enrollPrerequisitePerson(f.ctx, f.person)).rejects.toThrow("not admitted"); expect(f.api.get).not.toHaveBeenCalled(); expect(f.writes).toHaveLength(0);
 });
@@ -75,6 +89,6 @@ it("a slow public access write cannot reset the original clock or start role/gra
   await expect(enrollPrerequisitePerson(f.ctx, f.person)).rejects.toThrow("budget"); expect(f.writes).toHaveLength(1); expect(f.api.patchSensitive).not.toHaveBeenCalled(); expect(f.evidence).not.toHaveBeenCalled();
 });
 it("the closed allowlist contains no access/invitation scenarios", () => {
-  expect(prerequisiteMembershipScenarioIds).toHaveLength(20);
+  expect(prerequisiteMembershipScenarioIds).toHaveLength(23);
   expect(prerequisiteMembershipScenarioIds.some(id => id.startsWith("access."))).toBe(false);
 });

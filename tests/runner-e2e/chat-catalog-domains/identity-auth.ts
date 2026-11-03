@@ -104,6 +104,7 @@ export async function enrollAuthenticatedPerson(api: RunnerApi, companyId: strin
 }
 
 export const prerequisiteMembershipScenarioIds = Object.freeze([
+  "activity.agent-feedback", "activity.work-timeline", "agents.choose-primary",
   "assistant-connections.consent-read-only", "connection-setup.wrong-person-resolves",
   "documents-artifacts.private-download", "documents-artifacts.restore-document",
   "inbox-search.archive-done", "inbox-search.notification-audience", "inbox-search.restore-archive", "inbox-search.show-decisions",

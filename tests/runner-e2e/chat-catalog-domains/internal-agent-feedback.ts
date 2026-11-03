@@ -1,7 +1,7 @@
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
-import { createAuthenticatedPerson, enrollAuthenticatedPerson } from "./identity-auth.js";
+import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
 import { mainPerson } from "./internal-privacy.js";
 import { checks, entity, observation, observeInternal, project, task, type Entity, type InternalObservation } from "./internal-support.js";
@@ -45,7 +45,7 @@ function agentFeedback(): ChatCatalogCase {
     if (!browser || !ctx.input.privateSecrets) throw new Error("Feedback privacy needs a distinct real human and attempt-private redaction");
     casey = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets: ctx.input.privateSecrets, name: "Casey" });
     try {
-      await enrollAuthenticatedPerson(ctx.input.api, ctx.input.fixtures.company.id, casey, ctx.input.privateSecrets, "operator");
+      await enrollPrerequisitePerson(ctx, casey, "operator");
       const worker = await fixtureWorker(ctx); const privateWorker = await fixtureWorker(ctx);
       await ctx.input.api.patch(`/api/agents/${privateWorker.id}`, { name: "Riley" });
       const root = `/api/companies/${ctx.input.fixtures.company.id}`;

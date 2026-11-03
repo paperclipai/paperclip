@@ -3,7 +3,7 @@ import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
 import { agentStatus, cleanupPrivacyProbes } from "./internal-privacy.js";
-import { createAuthenticatedPerson, enrollAuthenticatedPerson } from "./identity-auth.js";
+import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { startTimelineVerifier, type VerificationReceipt } from "./internal-timeline-verifier.js";
 import { localDay } from "./internal-routine-audit.js";
 import { checks, entity, hasLink, observation, observeInternal, project, task, type Entity, type InternalObservation } from "./internal-support.js";
@@ -43,7 +43,7 @@ function timeline(): ChatCatalogCase {
   let verifier: Awaited<ReturnType<typeof startTimelineVerifier>> | undefined; let owner: Awaited<ReturnType<typeof createAuthenticatedPerson>> | undefined;
   const base = makeDefinition("activity.work-timeline", async ctx => {
     const browser = ctx.input.page.context().browser(); if (!browser || !ctx.input.privateSecrets) throw new Error("Timeline privacy context needs authenticated people");
-    owner = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets: ctx.input.privateSecrets, name: "Casey" }); await enrollAuthenticatedPerson(ctx.input.api, ctx.input.fixtures.company.id, owner, ctx.input.privateSecrets, "operator");
+    owner = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets: ctx.input.privateSecrets, name: "Casey" }); await enrollPrerequisitePerson(ctx, owner, "operator");
     const response = await owner.request(`/api/companies/${ctx.input.fixtures.company.id}/issues`, "POST", { title: `Hidden acquisition launch ${ctx.input.nonce}`, description: "Protected acquisition research", status: "backlog", visibility: "private" }); if (!response.ok) throw new Error("Private timeline distractor was not created"); const hiddenTask = await response.json() as Entity;
     await agentStatus(ctx, ctx.input.fixtures.agent.id, `/api/issues/${hiddenTask.id}`);
     const p = await project(ctx, "Launch", { workspace: { name: "Launch timeline workspace", sourceType: "local_path", cwd: ctx.input.workspacePath, isPrimary: true } });

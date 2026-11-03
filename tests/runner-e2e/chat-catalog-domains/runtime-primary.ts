@@ -1,6 +1,6 @@
 import { expect } from "@playwright/test";
 import { checks, type Entity } from "./internal-support.js";
-import { createAuthenticatedPerson, enrollAuthenticatedPerson } from "./identity-auth.js";
+import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { probeAgentPermission, waitForReply } from "./identity-support.js";
 import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime, openRuntimeAgentProfile, type RuntimeAgent } from "./runtime-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
@@ -42,7 +42,7 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
   if (primaryBefore.primaryAgentId !== ctx.input.fixtures.agent.id) throw new Error("Catalog requires an existing primary agent");
   const worker = await runtimeWorker(ctx);
   const person = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets, name: "Second primary reader" }); people.set(ctx, person);
-  await enrollAuthenticatedPerson(ctx.input.api, ctx.input.fixtures.company.id, person, secrets);
+  await enrollPrerequisitePerson(ctx, person, "operator");
   const otherCompany = await ctx.input.api.post<Entity>("/api/companies", { name: `Other primary company ${ctx.input.nonce}` });
   return { worker, primaryBefore, otherCompany, otherPersonBefore: await personPrimary(person, ctx.input.fixtures.company.id),
     otherCompanyBefore: await ctx.input.api.get<Primary>(endpoint(otherCompany.id)) };
