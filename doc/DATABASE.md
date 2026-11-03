@@ -642,6 +642,13 @@ See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Connection loss and retries
 
+HTTP access logs distinguish a completed response from a connection that closes
+before or during the response. An aborted request has no success status in the
+log message. The structured response status is null when headers were not sent;
+after headers, it retains the status sent before the abort. These logs describe
+HTTP delivery, not database settlement. A disconnected issue PATCH may continue
+running, so an aborted response does not prove that its writes rolled back.
+
 The database client does not replay arbitrary statements after a disconnect.
 PostgreSQL may have committed a statement before the connection loses its
 response. The postgres.js message `write CONNECTION_CLOSED` does not prove
@@ -1016,6 +1023,13 @@ objects can be reclaimed. Object existence alone is not a committed save.
 remote allocation/path, writer run, and dirty flag. Paths in this record belong
 to the remote allocation. Save publication checks the current writer/epoch and
 atomically commits the ledger row, authority pointer, and operation receipt.
+`execution_workspaces.metadata.remoteWorkspaceSnapshotRepositories` records the
+committed snapshot ID and the repository descriptors covered by that archive.
+Reservation retains this coverage when it adds requested repositories to the
+current source. Successful save publication advances coverage and the snapshot
+pointer together. Older saved workspaces capture their previous source inventory
+at the next reservation. Newly attached repositories use normal acquisition;
+they cannot claim coverage from an older archive. No schema migration is needed.
 `workspace_operations` journals preparation, save, restore, and local import;
 large file bodies stay outside the database. Ledger identities deliberately
 survive source-record deletion so object cleanup can finish.

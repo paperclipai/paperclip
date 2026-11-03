@@ -24,6 +24,7 @@ const sentryPackage = (() => {
     return require("@sentry/node") as {
       init(options: Record<string, unknown>): unknown;
       captureException(error: unknown, context?: unknown): string;
+      captureEvent(event: Record<string, unknown>): string;
       withScope(callback: (scope: unknown) => void): void;
       httpIntegration(options: { breadcrumbs: boolean }): { name: string };
       onUnhandledRejectionIntegration(options: { mode: string }): { name: string };
@@ -49,6 +50,47 @@ afterEach(async () => {
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
+  it("exports event-local routine ancestry for terminal and saved-message failures without caller credentials", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    enableRunFailureReporting();
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({ ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({ ...options,
+        transport: () => ({ send: async (envelope: [unknown, Array<[{ type: string }, Record<string, unknown>]>]) => {
+          for (const [header, payload] of envelope[1]) if (header.type === "event") events.push(payload);
+          return {};
+        }, flush: async () => true }),
+      }),
+    }));
+    const { setSentryRunLinkResolver } = await import("../sentry-links.js");
+    const companyId = "55555555-5555-4555-8555-555555555555", agentId = "66666666-6666-4666-8666-666666666666";
+    const taskId = "11111111-1111-4111-8111-111111111111", runId = "22222222-2222-4222-8222-222222222222";
+    const routineId = "77777777-7777-4777-8777-777777777777";
+    setSentryRunLinkResolver(async () => ({ companyId, agentId, taskId, taskIdentifier: "TEAM-1", companyPrefix: "TEAM",
+      creationProvenance: { status: "complete", routineIds: [routineId], shareable: true } }));
+    const { captureRunFailure, captureTaskInterruptionFailure, sentryReady } = await import("../sentry.js");
+    await sentryReady;
+    captureRunFailure({ companyId, agentId, taskId, runId, agentAdapter: "process", runStatus: "failed",
+      errorCode: "process_lost", errorMessage: "Provider process lost" });
+    captureTaskInterruptionFailure({ companyId, agentId, taskId, runId, agentAdapter: "process", runStatus: "succeeded", intentId: "sdk-provenance" });
+    Sentry.captureEvent({ message: "Unrelated request failure", request: { headers: {
+      "X-Paperclip-Source-Run-Token": "private-provenance-credential", "content-type": "application/json",
+    } } });
+    await Sentry.flush(2000);
+    const failures = events.filter(event => (event.tags as Record<string, string> | undefined)?.event_kind === "run_failure");
+    expect(failures).toHaveLength(2);
+    for (const failure of failures) expect(failure).toMatchObject({ tags: {
+      automation_origin_status: "complete", automation_routine_ids: routineId, task_shareable: "true",
+    }, contexts: { paperclip_creation: { routineIds: [routineId] } } });
+    const unrelated = events.find(event => event.message === "Unrelated request failure");
+    expect(unrelated).toBeDefined();
+    expect(unrelated?.tags ?? {}).not.toHaveProperty("automation_origin_status");
+    expect(JSON.stringify(events)).not.toContain("private-provenance-credential");
+    setSentryRunLinkResolver(null);
+  });
+
   it("captures an early OpenCode timeout without inventing a deadline or exporting provider output", async () => {
     const Sentry = sentryPackage!;
     const events: Array<Record<string, unknown>> = [];

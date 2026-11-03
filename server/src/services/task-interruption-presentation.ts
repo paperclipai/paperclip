@@ -60,6 +60,8 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   const providerFailure = run.status === "failed" || run.status === "scheduled_retry"
     ? readProviderFailure(run.resultJson?.providerFailure) : null;
   if (providerFailure) base.providerFailure = providerFailure;
+  if (["failed", "scheduled_retry"].includes(run.status) && run.errorCode === "workspace_validation_failed"
+      && typeof run.error === "string" && run.error.trim()) base.workspaceFailure = { message: run.error };
   const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval || run.errorCode === "native_provider_approval_required" ? "approval"
     : isAiAuthenticationBlocked(run) ? "reconnect"
       : run.errorCode === "native_provider_model_rejected" ? "choose_model"
@@ -124,7 +126,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode,
       agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
-        and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
+        and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.'
+        or ${heartbeatRuns.errorCode} = 'workspace_validation_failed' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
         'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
@@ -218,25 +221,37 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         agentAdapter: run.agentAdapter ?? "unknown" });
     }
   }
-  const disclosures = [...result.values()].flatMap(presentation => presentation?.providerFailure && presentation.observedRunId
-    ? [{ id: presentation.observedRunId, providerFailure: presentation.providerFailure, presentation }] : []);
+  const disclosures = [...result.values()].flatMap(presentation => (presentation?.providerFailure || presentation?.workspaceFailure) && presentation.observedRunId
+    ? [{ id: presentation.observedRunId, providerFailure: presentation.providerFailure,
+      workspaceFailure: presentation.workspaceFailure, presentation }] : []);
   if (disclosures.length) {
     try {
       const [safe, settings] = await Promise.all([
-        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.map(({ id, providerFailure }) => ({ id, providerFailure }))),
+        createRunSecretRedactionRegistry(db).redactForRuns(companyId,
+          disclosures.map(({ id, providerFailure, workspaceFailure }) => ({ id, providerFailure, workspaceFailure }))),
         instanceSettingsService(db).getGeneral(),
       ]);
+      const safeMessage = (value: unknown) => typeof value === "string"
+        ? [...redactCurrentUserText(value, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
       disclosures.forEach(({ presentation }, index) => {
-        const value = safe[index]?.providerFailure;
-        const message = typeof value?.message === "string"
-          ? [...redactCurrentUserText(value.message, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
-        const failure = readProviderFailure({ ...value, message });
-        if (failure) presentation.providerFailure = failure;
-        else delete presentation.providerFailure;
+        if (presentation.providerFailure) {
+          const value = safe[index]?.providerFailure;
+          const failure = readProviderFailure({ ...value, message: safeMessage(value?.message) });
+          if (failure) presentation.providerFailure = failure;
+          else delete presentation.providerFailure;
+        }
+        if (presentation.workspaceFailure) {
+          const message = safeMessage(safe[index]?.workspaceFailure?.message);
+          if (message.trim()) presentation.workspaceFailure = { message };
+          else delete presentation.workspaceFailure;
+        }
       });
     } catch {
-      for (const { presentation } of disclosures) delete presentation.providerFailure;
-      logger.warn({ companyId, runCount: disclosures.length }, "Could not redact provider failure display; explanations omitted");
+      for (const { presentation } of disclosures) {
+        delete presentation.providerFailure;
+        delete presentation.workspaceFailure;
+      }
+      logger.warn({ companyId, runCount: disclosures.length }, "Could not redact run failure display; explanations omitted");
     }
   }
   return result;
