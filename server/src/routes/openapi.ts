@@ -8769,7 +8769,8 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/skills/import",
   tags: ["skills"],
-  summary: "Import a skill",
+  summary: "Import an existing skill from a source",
+  description: "Import existing SKILL.md content from an allowed local skill directory or a supported remote source. Retain its source provenance instead of authoring new content with create_skill. Local paths must satisfy the company workspace and managed-root boundary checks. Remote imports keep their source access checks. Importing does not assign the skill to an agent. Company skill policy still applies.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(companySkillImportSchema),
