@@ -13,7 +13,7 @@ import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
-import { queryKeys } from "../lib/queryKeys";
+import { invalidateAttentionRecordViews } from "../lib/attention-record-views";
 import { describeAttentionResolverAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
 import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import {
@@ -505,12 +505,8 @@ function CompactDecisionActions({
       throw new Error("This decision must be completed from its detail view.");
     },
     onSuccess: (_result, action) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-      if (item.sourceKind === "approval") {
-        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
-      } else {
-        queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
-      }
+      // Task detail, chat and the approval page show the same record.
+      invalidateAttentionRecordViews(queryClient, companyId, item);
       pushToast({
         title: compactDecisionSuccessLabel(item.sourceKind, action),
         tone: "success",
@@ -776,10 +772,7 @@ function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: Rea
 function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
-  };
+  const invalidate = () => invalidateAttentionRecordViews(queryClient, companyId, item);
   const approve = useMutation({
     mutationFn: () => approvalsApi.approve(item.subject.id, note.trim() || undefined),
     onSuccess: invalidate,
@@ -824,10 +817,7 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
 
 function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
   const queryClient = useQueryClient();
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
-  };
+  const invalidate = () => invalidateAttentionRecordViews(queryClient, companyId, item);
   const approve = useMutation({
     mutationFn: () => accessApi.approveJoinRequest(companyId, item.subject.id),
     onSuccess: invalidate,

@@ -1384,6 +1384,9 @@ function invalidateActivityQueries(
   const decisionProjectionChanged = entityType === "decision" ||
     // Approvals are cards too: a decision by another person must leave every open list.
     entityType === "approval" ||
+    // So are budget stops. Signed-in sessions get no `details`, so the
+    // `handledForUserId` check below never sees a budget receipt (PAP-771).
+    entityType === "budget_incident" || entityType === "budget_policy" ||
     ["inbox.dismissed", "inbox.snoozed", "inbox.restored"].includes(action ?? "") ||
     // A claim moves a card between people's views (PAP-749), so open pages refetch.
     action?.startsWith("attention.") ||
@@ -1688,6 +1691,15 @@ function invalidateActivityQueries(
   if (entityType === "decision") {
     // Detail is keyed outside the `["decisions", companyId]` prefix above.
     if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.decisions.detail(entityId) });
+    return;
+  }
+
+  if (entityType === "budget_incident" || entityType === "budget_policy") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) });
+    // Raise limit and Keep paused also answer the hard stop's override
+    // approval (PAP-768). The live payload has no approval ID.
+    queryClient.invalidateQueries({ queryKey: ["approvals", companyId] });
+    queryClient.invalidateQueries({ queryKey: ["approvals", "detail"] });
     return;
   }
 

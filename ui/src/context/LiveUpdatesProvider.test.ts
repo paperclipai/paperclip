@@ -73,6 +73,17 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       client.clear();
     });
 
+    it.each(["budget.incident_resolved", "budget.hard_threshold_crossed", "budget.policy_upserted"])("refreshes the budget owner's Needs You after %s", action => {
+      const client = new QueryClient();
+      const feed = [...queryKeys.attention("company-1"), "scott", "mine", "coordinator", "pending"];
+      const keys = [feed, queryKeys.budgets.overview("company-1"), queryKeys.approvals.list("company-1", "pending"), queryKeys.approvals.detail("approval-9")];
+      seed(client, keys);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: action === "budget.policy_upserted" ? "budget_policy" : "budget_incident", entityId: "incident-1", action,
+      }, { userId: "scott", agentId: null });
+      for (const key of keys) expect(invalidated(client, key)).toBe(true);
+      client.clear();
+    });
   });
   it("drops cached decision content when its access is revoked", () => {
     const client = new QueryClient();

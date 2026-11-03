@@ -6,6 +6,7 @@ import { Link } from "@/lib/router";
 import { budgetsApi } from "../api/budgets";
 import { issuesApi } from "../api/issues";
 import { useOptionalToastActions } from "../context/ToastContext";
+import { invalidateAttentionRecordViews } from "../lib/attention-record-views";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -138,8 +139,8 @@ export function BudgetAlertActions({
         body: item.subject.title ?? undefined,
         tone: "success",
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) });
+      // The budget page and the folded override approval show the same stop.
+      invalidateAttentionRecordViews(queryClient, companyId, item);
       onResolved?.();
     },
     onError: (error) => {

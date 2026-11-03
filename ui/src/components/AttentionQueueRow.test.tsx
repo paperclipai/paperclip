@@ -55,6 +55,7 @@ function act<T>(cb: () => T): T {
 
 let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
+let queryClient: QueryClient | null = null;
 
 afterEach(() => {
   if (root) act(() => root?.unmount());
@@ -69,6 +70,7 @@ function render(element: ReactElement) {
   document.body.appendChild(container);
   root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = client;
   act(() =>
     root?.render(
       <ToastProvider>
@@ -583,12 +585,16 @@ describe("AttentionQueueRow", () => {
     const approve = Array.from(container?.querySelectorAll("button") ?? []).find(
       (button) => button.textContent === "Approve",
     );
+    const invalidate = vi.spyOn(queryClient!, "invalidateQueries");
     act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(approvalsApi.approve).toHaveBeenCalledWith("approval-1");
     expect(onToggleExpand).not.toHaveBeenCalled();
     expect(container?.textContent).toContain("Approval approved");
+    // An open approval page refreshes too (PAP-771).
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["approvals", "detail", "approval-1"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["approvals", "c1"] });
   });
 
   it("renders configured confirmation labels and accepts from the compact action area", async () => {
@@ -629,11 +635,17 @@ describe("AttentionQueueRow", () => {
     const approve = Array.from(decisionActions?.querySelectorAll("button") ?? []).find(
       (button) => button.textContent === "Approve plan",
     );
+    const invalidate = vi.spyOn(queryClient!, "invalidateQueries");
     act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(issuesApi.acceptInteraction).toHaveBeenCalledWith("issue-1", "interaction-1");
     expect(onToggleExpand).not.toHaveBeenCalled();
+    // One record, many views (PAP-771): task detail and chat refresh too.
+    for (const queryKey of [["attention", "c1"], ["issues", "interactions", "issue-1"], ["issues", "pending-questions"], ["issues", "decision-receipts"]]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["access", "join-requests", "c1", "pending_approval"] });
   });
 
   it("opens the matching confirmation form when requesting changes from a compact action", () => {
