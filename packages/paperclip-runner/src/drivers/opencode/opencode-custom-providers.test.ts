@@ -137,9 +137,12 @@ describe("parseOpenCodeCustomProviders", () => {
     expect(parseOpenCodeCustomProviders({ PAPERCLIP_OPENCODE_PROVIDERS: "[]" }).providers).toEqual({});
   });
 
-  it("skips provider entries that are not objects", () => {
+  it("skips provider entries that are not usable", () => {
     const parsed = parseOpenCodeCustomProviders({
-      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({ good: { name: "Good" }, bad: "nope" }),
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        good: { name: "Good", options: { baseURL: "https://good.test" } },
+        bad: "nope",
+      }),
     });
 
     expect(Object.keys(parsed.providers)).toEqual(["good"]);
@@ -170,15 +173,18 @@ describe("parseOpenCodeCustomProviders", () => {
     ]);
   });
 
-  it("applies a models-only override of a built-in provider", () => {
+  it("ignores an entry without an endpoint", () => {
     const parsed = parseOpenCodeCustomProviders({
       PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
         openai: { models: { "gpt-x": { name: "X" } } },
       }),
     });
 
-    expect(parsed.providers.openai).toEqual({ models: { "gpt-x": { name: "X" } } });
+    // Overriding a built-in provider would need a credential in the config, so
+    // only providers with their own endpoint are accepted.
+    expect(parsed.providers).toEqual({});
     expect(parsed.credentials).toEqual([]);
+    expect(parsed.warnings[0]).toContain("has no baseURL");
   });
 
   it("rejects an override that declares a key without an endpoint", () => {
@@ -194,6 +200,6 @@ describe("parseOpenCodeCustomProviders", () => {
     expect(parsed.providers).toEqual({});
     expect(parsed.credentials).toEqual([]);
     expect(parsed.warnings).toHaveLength(1);
-    expect(parsed.warnings[0]).toContain("without baseURL");
+    expect(parsed.warnings[0]).toContain("has no baseURL");
   });
 });
