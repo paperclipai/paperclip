@@ -147,7 +147,13 @@ for its own turn.
 Policy: Queue inspection follows task visibility; queued user-message mutation and run
 cancellation require a board actor/user. A saved pre-Stop message does not authorize
 automatic resumption. A later authorized user message may continue with retained
-input after current cleanup, ownership, and budget gates pass.
+input after current cleanup, ownership, and budget gates pass. Late native workspace
+finalization preserves a winning cancelled run and wake; accepted results do not
+grant renewed run write authority. Task status remains with the existing server
+arbiter over the previously accepted result. The
+[database projection fixture](../../server/src/__tests__/native-run-projection-work.test.ts)
+checks this ordering with the actual cancellation producer; it is not live
+provider or route-authorization proof.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L16166) at
 the reviewed commit above.

@@ -84,13 +84,13 @@ describe("committed native run projection lifecycle", () => {
     try { await vi.advanceTimersByTimeAsync(120_000); await delay(10); expect(queries).toEqual([]); }
     finally { db.$client.options.debug = previous; }
   }
-  async function seed() {
+  async function seed(matchesCompletionClaim = false) {
     const runId = randomUUID(), issueId = randomUUID(), contractId = randomUUID(), sourceInstanceId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Commit accepted work", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
-      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "result-worker-v1", risk: "standard",
-      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
-      contractJson: { revision: "result-worker-v1", objective: "Finish", criteria: [{ id: "objective", requirement: "Complete the task" }] },
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "result-worker-v1", risk: matchesCompletionClaim ? "low" : "standard",
+      completionAuthority: matchesCompletionClaim ? "agent_claim_policy" : "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: matchesCompletionClaim ? CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim.contractRevision : "result-worker-v1", objective: "Finish", criteria: [{ id: "objective", requirement: "Complete the task" }] },
       canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, runtimeMode: "native", status: "running",
       nativeIssueId: issueId, nativeSessionId: runId, runnerInstanceId: sourceInstanceId,
@@ -128,6 +128,88 @@ describe("committed native run projection lifecycle", () => {
     return wake;
   }
   const readWake = async (id: string) => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id)))[0];
+
+  it.each(["succeeded", "failed"] as const)("preserves actual operator Stop when accepted %s work finishes delayed workspace finalization", async terminalStatus => {
+    const binding = await seed(true);
+    await complete(binding, "control_plane", db, terminalStatus);
+    const wake = await claimedWake(binding);
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const finalizing = (async () => {
+      await workspaceOperationService(db).createRecorder({ companyId, issueId: binding.issueId, heartbeatRunId: binding.runId })
+        .recordOperation({ phase: "workspace_finalize", cwd: root, run: async () => {
+          entered(); await gate; return { status: "succeeded", exitCode: 0 };
+        } });
+      return finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    })();
+    let stopped: Awaited<ReturnType<typeof read>> | undefined;
+    let stoppedIssue: typeof issues.$inferSelect | undefined;
+    try {
+      await started;
+      await heartbeatService(db).cancelRun(binding.runId, "Stopped by operator", {
+        cancellationRequestId: randomUUID(), cancellationRequestedByUserId: "board-user",
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+      });
+      stopped = await read(binding.runId);
+      [stoppedIssue] = await db.select().from(issues).where(eq(issues.id, binding.issueId));
+      expect(["in_progress", "blocked"]).toContain(stoppedIssue.status);
+      expect(stopped.status).toBe("cancelled");
+      expect(stopped.resultJson?.nativeCancellation).toMatchObject({ scope: "run", dispatched: false, dispatchState: "acknowledged" });
+      expect(await readWake(wake.id)).toMatchObject({ status: "cancelled" });
+    } finally { release(); await finalizing; }
+    const after = await read(binding.runId);
+    expect(after).toMatchObject({ status: "cancelled", finishedAt: stopped!.finishedAt, errorCode: stopped!.errorCode });
+    expect(after.resultJson?.nativeCancellation).toEqual(stopped!.resultJson?.nativeCancellation);
+    expect((await state(binding.runId)).resultId).not.toBeNull();
+    // Run-only Stop does not revoke the server arbiter's already accepted
+    // result. Task completion stays separate from the cancelled execution.
+    expect((await db.select().from(issues).where(eq(issues.id, binding.issueId)))[0].status)
+      .toBe(terminalStatus === "succeeded" ? "done" : "blocked");
+
+    expect(after).toMatchObject({ costAccountingPending: stopped!.costAccountingPending,
+      costAccountedAt: stopped!.costAccountedAt, usageJson: stopped!.usageJson });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, binding.issueId)))
+      .toEqual([{ id: binding.runId }]);
+    await start(); await flush(); await quiet();
+    expect((await read(binding.runId)).status).toBe("cancelled");
+    expect(await readWake(wake.id)).toMatchObject({ status: "cancelled" });
+  });
+
+  it("preserves Stop that wins after the accepted task decision but before direct run projection", async () => {
+    const binding = await seed(true);
+    await complete(binding, "control_plane"); await barrier(binding);
+    const wake = await claimedWake(binding);
+    let stopped: Awaited<ReturnType<typeof read>> | undefined;
+    let stoppedIssue: typeof issues.$inferSelect | undefined;
+    const commit = statusCommitter.commitNativeStatusDecision;
+    vi.spyOn(statusCommitter, "commitNativeStatusDecision").mockImplementationOnce(async input => {
+      const decision = await commit(input);
+      await heartbeatService(db).cancelRun(binding.runId, "Stopped by operator", {
+        cancellationRequestId: randomUUID(), cancellationRequestedByUserId: "board-user",
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+      });
+      stopped = await read(binding.runId);
+      [stoppedIssue] = await db.select().from(issues).where(eq(issues.id, binding.issueId));
+      expect(stopped.status).toBe("cancelled");
+      return decision;
+    });
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const after = await read(binding.runId);
+    expect(after).toMatchObject({ status: "cancelled", finishedAt: stopped!.finishedAt,
+      error: stopped!.error, errorCode: stopped!.errorCode });
+    expect(after.resultJson?.nativeCancellation).toEqual(stopped!.resultJson?.nativeCancellation);
+    expect(await readWake(wake.id)).toMatchObject({ status: "cancelled", finishedAt: stopped!.finishedAt });
+    // The task decision committed first. Run-only Stop preserves that decision;
+    // it cannot reopen completed work or erase its accepted result.
+    expect(stoppedIssue!.status).toBe("done");
+    expect((await db.select().from(issues).where(eq(issues.id, binding.issueId)))[0]).toMatchObject({
+      status: stoppedIssue!.status, statusVersion: stoppedIssue!.statusVersion,
+      lastStatusDecisionId: stoppedIssue!.lastStatusDecisionId,
+    });
+    await projectCommittedRun({ db, run: after, coordinator: await state(binding.runId) });
+    expect(await read(binding.runId)).toEqual(after);
+  });
 
   it.each(["succeeded", "failed", "cancelled"] as const)("settles the exact wake atomically with a fresh %s projection", async status => {
     const binding = await accepted(status), wake = await claimedWake(binding);

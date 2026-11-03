@@ -1620,20 +1620,29 @@ export async function finalizeNativeRun(input: {
       };
       const projectedStatus = terminalState === "succeeded" ? "succeeded" as const
         : terminalState === "cancelled" ? "cancelled" as const : "failed" as const;
+      // Workspace persistence may finish after Stop has already cancelled the
+      // run. Preserve that terminal outcome while retaining the accepted result
+      // and finalization receipts. Evaluate against the locked current row,
+      // including a cancellation that won after this finalizer read the run.
+      const projectedRunStatus = sql`case when ${heartbeatRuns.status} = 'cancelled'
+        then ${heartbeatRuns.status} else ${projectedStatus} end`;
       const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
         || ${JSON.stringify(finalizationMetadata)}::jsonb
-        || ${clearExecutionFailure ? recoveredExecutionFailureMetadata() : sql`'{}'::jsonb`}`;
-      const projectedError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
-        : clearExecutionFailure ? sql`null` : heartbeatRuns.error;
-      const projectedErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
-        : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode;
+        || ${clearExecutionFailure ? sql`case when ${heartbeatRuns.status} = 'cancelled' then '{}'::jsonb
+          else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
+      const projectedError = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
+        else ${providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+          : clearExecutionFailure ? sql`null` : heartbeatRuns.error} end`;
+      const projectedErrorCode = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
+        else ${providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
+          : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode} end`;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
         sql`${heartbeatRuns.resultJson} is distinct from ${projectedResult}`,
         sql`${heartbeatRuns.error} is distinct from ${projectedError}`,
         sql`${heartbeatRuns.errorCode} is distinct from ${projectedErrorCode}`,
         ...(input.projectRunStatus ? [
-          sql`${heartbeatRuns.status} is distinct from ${projectedStatus}`,
+          sql`${heartbeatRuns.status} is distinct from ${projectedRunStatus}`,
           isNull(heartbeatRuns.finishedAt),
         ] : []),
       );
@@ -1644,15 +1653,14 @@ export async function finalizeNativeRun(input: {
             then ${randomUUID()}::uuid else ${heartbeatRuns.executionStatusDeliveryId} end`,
           ...(input.projectRunStatus
             ? {
-                status: projectedStatus,
-                finishedAt: sql`case when ${heartbeatRuns.status} is distinct from ${projectedStatus}
-                  then ${now.toISOString()}::timestamptz else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
+                status: projectedRunStatus,
+                finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
+                  when ${heartbeatRuns.status} is distinct from ${projectedStatus} then ${now.toISOString()}::timestamptz else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
               }
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure ? { error: null, errorCode: null } : {}),
-          ...(providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(clearExecutionFailure || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })
