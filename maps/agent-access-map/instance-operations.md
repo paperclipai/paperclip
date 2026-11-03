@@ -173,9 +173,17 @@ API: `present` — representative operation IDs:
   query parameters and tenant credentials cannot grant it. Its version-3 proof
   permits only saved API keys and exactly bound brokered GitHub bot configuration.
   Agent and board API requests authenticate under current tenant authority after
-  bounded host wake. Personal GitHub continuity remains blocked until the stacked
-  deadline proof is present. See [protocol scope](../../doc/idle-incoming-wake.md)
+  bounded host wake. Personal GitHub also requires the signed domain deadline
+  receipt and its actual stored-credential continuity proof. See [protocol scope](../../doc/idle-incoming-wake.md)
   and [local auth/PostgreSQL evidence](../../server/src/__tests__/idle-incoming-wake.test.ts).
+- `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=domain-deadlines-v1`
+  additionally requires the signed fixed deadline catalog. The version-3
+  `deadlineProof` receipt is mandatory even without a future alarm. It binds
+  actual timer, plugin, trace expiry and credential continuity state to the
+  owned hold. Unknown/due/recovery work and pending watchdog/merge polling
+  remain blocked. It grants no business execution authority. See
+  [domain protocol](../../doc/idle-domain-deadlines.md); local source and
+  fixture checks do not establish deployed sleep or external wake.
 - `GET /api/ready` and `HEAD /api/ready` — public deployment readiness only;
   200 after recovery, 503 while starting, recovering, or draining. No SQL,
   session resolution, company identity, or control authority.
