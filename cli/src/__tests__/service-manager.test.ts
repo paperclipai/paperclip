@@ -328,6 +328,31 @@ describe("launchd lifecycle", () => {
     await expect(fs.access(manager.definitionPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("reads system disabled status with noninteractive sudo when access is denied", async () => {
+    const home = await temporaryDirectory();
+    const name = "ing.paperclip.paperclipai.team-a";
+    const calls: string[][] = [];
+    let authorized = true;
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command === "launchctl" && args[0] === "print") {
+        return { stdout: `system/${name} = {\n pid = 321\n}`, stderr: "" };
+      }
+      if (command === "launchctl" && args[0] === "print-disabled") throw new Error("Operation not permitted");
+      if (command === "sudo" && args[2] === "print-disabled") {
+        if (!authorized) throw new Error("sudo: a password is required");
+        return { stdout: `"${name}" => true`, stderr: "" };
+      }
+      throw new Error("Unexpected command");
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, path.join(home, "LaunchDaemons"));
+    expect(await manager.status()).toMatchObject({ installed: true, active: true, enabled: false, pid: 321 });
+    expect(calls).toContainEqual(["sudo", "-n", "launchctl", "print-disabled", "system"]);
+    authorized = false;
+    await expect(manager.status()).rejects.toThrow("Run sudo launchctl print-disabled system");
+    expect(calls.some(([command, ...args]) => command === "launchctl" && args.includes("gui"))).toBe(false);
+  });
+
   it("fails sudo without prompting or falling back to the GUI domain", async () => {
     const home = await temporaryDirectory();
     const daemonDir = path.join(home, "LaunchDaemons");

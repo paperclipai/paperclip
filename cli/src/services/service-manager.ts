@@ -431,24 +431,33 @@ export class LaunchdServiceManager implements ServiceManager {
 
   async status(): Promise<ServiceStatus> {
     const domain = await this.activeDomain();
+    let result: CommandResult;
     try {
-      const result = await this.runner("launchctl", ["print", `${domain}/${this.serviceName}`]);
-      const pidMatch = result.stdout.match(/\bpid\s*=\s*(\d+)/);
-      const pid = pidMatch ? Number(pidMatch[1]) : null;
-      return { platform: this.platform, serviceName: this.serviceName, installed: true, active: Boolean(pid), enabled: await this.isEnabled(domain), pid, detail: pid ? "running" : "loaded" };
+      result = await this.runner("launchctl", ["print", `${domain}/${this.serviceName}`]);
     } catch {
       const definition = domain === "system" ? this.systemDefinitionPath : this.definitionPath;
       let installed = true;
       try { await fs.access(definition); } catch { installed = false; }
       return { platform: this.platform, serviceName: this.serviceName, installed, active: false, enabled: installed && await this.isEnabled(domain), pid: null };
     }
+    const pidMatch = result.stdout.match(/\bpid\s*=\s*(\d+)/);
+    const pid = pidMatch ? Number(pidMatch[1]) : null;
+    return { platform: this.platform, serviceName: this.serviceName, installed: true, active: Boolean(pid), enabled: await this.isEnabled(domain), pid, detail: pid ? "running" : "loaded" };
   }
 
   private async isEnabled(domain = this.domain): Promise<boolean> {
+    let output: string;
     try {
-      const result = await this.runner("launchctl", ["print-disabled", domain]);
-      return !new RegExp(`"${escapeRegExp(this.serviceName)}"\\s*=>\\s*true`).test(result.stdout);
-    } catch { return true; }
+      output = (await this.runner("launchctl", ["print-disabled", domain])).stdout;
+    } catch {
+      if (domain !== "system") return true;
+      try {
+        output = (await this.runner("sudo", ["-n", "launchctl", "print-disabled", "system"])).stdout;
+      } catch (error) {
+        throw new Error(`Cannot inspect disabled system launchd services. Run sudo launchctl print-disabled system in an administrator terminal. The CLI will not prompt for a password. ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+    }
+    return !new RegExp(`"${escapeRegExp(this.serviceName)}"\\s*=>\\s*true`).test(output);
   }
 
   async logs(follow: boolean, lines: number): Promise<void> { await this.runner("tail", ["-n", String(lines), ...(follow ? ["-F"] : []), this.stdoutPath, this.stderrPath], { inherit: true }); }
