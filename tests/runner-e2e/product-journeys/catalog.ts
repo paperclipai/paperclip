@@ -2,6 +2,9 @@ import { agentJourneyRuns } from "./success-contract.js";
 export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
+  { id: "completion-delivery", label: "Receive delegated completion in the originating chat", requires: ["company", "board-user", "task-write", "agent", "completion-worker"], capabilities: ["documents-artifacts/documents", "tasks/completion"], paid: true },
+  { id: "repository-continuation", label: "Continue repository work with the same saved workspace", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["projects/task-context", "documents-artifacts/attachments"], paid: true },
+  { id: "routine-scheduled-run", label: "Run a scheduled routine once and verify pause and saved history", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["routines/definition", "routines/triggers", "routines/history", "routines/management"], paid: true },
   { id: "inbox-triage", label: "Read, archive and resurface an owned inbox task", requires: ["company", "board-user", "task-write", "inbox-author"], capabilities: ["inbox-search/views", "inbox-search/triage"], paid: false },
   { id: "file-input-answer", label: "Upload a reference file and verify the agent uses its contents", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["documents-artifacts/attachments", "documents-artifacts/documents"], paid: true },
   { id: "task-create", label: "Create a task for yourself and reopen it", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/create"], paid: false },

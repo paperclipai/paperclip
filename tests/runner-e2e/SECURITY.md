@@ -8,6 +8,15 @@ exports only the existing closed checks and authenticated task screenshot.
 The `inbox-triage` journey creates and changes only its owned self-assigned task.
 It uses no model, no foreign user records, and no direct database writes.
 
+The deployment-targeted completion-delivery journey uses only an owned lead,
+worker, source conversation, project and delegated task. A target provider must
+record creation intent and reconcile native child creation against the lead's
+actual run and activity event. The target splits the total case budget and run
+cap between both agents and must stop their owned work before finalizing evidence.
+The request and saved brief are synthetic. Raw conversation, callback context,
+creation receipts and run evidence remain private; normal screenshot and closed
+check sanitizers govern publication.
+
 The explicit `remote-workspace-storage` cell snapshots only its synthetic
 projectless task folder in an owned disposable sandbox. Its prompt creates a
 small Python project, local Git history without a remote, and an untracked random
@@ -635,3 +644,4 @@ authority. Provider credentials still enter through encrypted fixture secrets.
 Local rolling smoke receipts explicitly exclude active-agent and hosted proof.
 
 The personal inbox journey requires a separately authenticated, registered QA human author. Its target provider exposes one controlled comment operation on the exact campaign-owned task. The public oracle independently reads the saved comment and verifies its distinct human author, exact content, company, task, and absence of an agent run. The private provider closes the isolated author context during evidence-first cleanup. No provider or native run is allowed for this browser-only journey; agent cross-task execution guards remain intact.
+The `routine-scheduled-run` journey uses one campaign-owned routine, project, and scheduled task. It enables a minute schedule only for the bounded observation. Cleanup must pause the routine, disable its triggers, and reconcile scheduler-created tasks before stopping agent work. Private recovery repeats these checks after a lost response. Retain task and routine history; never leave a recurring trigger enabled after an attempt.

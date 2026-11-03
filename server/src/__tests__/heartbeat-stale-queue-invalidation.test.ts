@@ -958,6 +958,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(ordering).toEqual(["validated", "parked"]);
     };
     await heartbeat.resumeQueuedRuns();
+    // Keep the ownership hook installed until its admitted execution settles.
+    // A short row poll can end before setup reaches the guarded handoff.
     await heartbeat.drainActiveRunExecutions();
     await parkPromise;
 

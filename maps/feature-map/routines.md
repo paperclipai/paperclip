@@ -86,3 +86,5 @@ Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/Routine
 ### Documentation scope: Routines, cases, and status cards
 
 All three capabilities have recipes. Trigger/provider/timezone combinations, custom case schemas and summarizer quality need deeper cases.
+
+The target-independent Product E2E journey `routine-scheduled-run` covers browser creation, an actual scheduled invocation, run-attributed saved output, history after reload, and no new invocation across the next minute boundary after pause. Source: `tests/runner-e2e/product-journeys/routine-schedule-flow.ts`. Registration is not evidence of a passing deployed run.
