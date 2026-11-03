@@ -30,7 +30,7 @@ describe("plugin manager idle receipts", () => {
       entrypointPath: fileURLToPath(new URL("./fixtures/plugin-worker-idle.cjs", import.meta.url)),
       execArgv: ["--import", createRequire(import.meta.url).resolve("tsx")],
       manifest: { ...manifest, version }, config: {}, instanceInfo: { instanceId: "fixture", hostVersion: "1.0.0" }, apiVersion: 1,
-      hostHandlers: { "events.subscribe": async () => ({}) },
+      hostHandlers: { "events.subscribe": async () => {} },
     });
     try {
       await manager.startWorker("test.idle", options("1.0.0"));

@@ -49639,7 +49639,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .mockRejectedValueOnce(new Error("remove retirement uncertain"))
       .mockRejectedValueOnce(new Error("shutdown retirement uncertain"))
       .mockResolvedValue(undefined);
-    const service = chatChannelService(db, { runtime: registry, fetch: f.providerFetch, publicBaseUrl: "https://paperclip.example" });
+    const service = chatChannelService(db, { runtime: registry, fetch: f.providerFetch, publicBaseUrl: "https://paperclip.example",
+      heartbeat: { wakeup: async () => undefined } });
     fixtureServices.add(service);
     expect(await registeredIdleProbeState()).toBe("none");
     await service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
