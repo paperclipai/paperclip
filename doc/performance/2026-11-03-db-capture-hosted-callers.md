@@ -9,7 +9,8 @@ assigning an application filename to an isolated mock function.
 The change preserves exact semantic owners. Generic HTTP and unowned builders
 retain one safe generated construction-site anchor. A local V8 stack boundary
 removes capture wrappers before reading the stack. Deeper shared-chunk frames
-are omitted. Specific semantic owners stay stack-free. Unscoped driver and
+are omitted. Specific semantic owners stay stack-free. The public stack parser rejects generated
+anchors by default; only the trusted builder wrapper explicitly enables them. Unscoped driver and
 relational paths deliberately remain unknown in map-free bundles: their first
 frame can belong to the ORM. Prepared builders retain construction provenance,
 not the later consumer location. Resolve each anchor against the exact serving
@@ -57,7 +58,10 @@ speedup. Ranges overlap and are noisy. The HTTP median wall delta is about 4.6
 microseconds per query in this fixture. Do not treat this as exact hosted overhead:
 there is no database/network latency, Sentry/OTel stack formatting or deployed
 traffic mix. Wrappers remain installed after expiry; they do not capture stacks.
-All original samples and the expanded proof are in
+Samples precede a review correction that made the standalone public parser reject
+generated anchors by default. The measured private builder path still opts in
+explicitly and has the same behavior. No timing is attributed to that default-only
+contract correction. All original samples and the expanded proof are in
 [the evidence file](fixtures/db-capture-hosted-callers-overhead.json). Only the
 machine-specific executable path is redacted in that public copy.
 

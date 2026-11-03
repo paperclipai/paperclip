@@ -34,7 +34,7 @@ export function responseCaptureWindow(value: string | undefined, now = Date.now(
   return { start, end };
 }
 
-export function publicDatabaseCallers(stack: string | undefined, bundled = true): string[] {
+export function publicDatabaseCallers(stack: string | undefined, bundled = false): string[] {
   const callers: string[] = [];
   for (const line of (stack ?? "").split("\n")) {
     const match = line.match(/[/\\]server[/\\](?:src|dist)[/\\]((?:services|routes|modules|middleware)[/\\][A-Za-z0-9_./\\-]+\.[cm]?[jt]s):(\d+):(\d+)/);
@@ -290,7 +290,7 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
       });
     }
   }
-  function callers(boundary: Function, bundled = true): string[] {
+  function callers(boundary: Function, bundled: boolean): string[] {
     if (!capture!.active()) return [];
     const owner = operationScope.getStore();
     if (owner && owner !== "http.request") return [];
@@ -347,7 +347,7 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
           if (method === "with") { root(result); return result; }
           const operation = method.startsWith("select") ? "select" : method;
           const metadata = { operation, table: operation === "select" || method === "execute" ? "other" : tableName(args[0]),
-            callers: callers(capturedRoot) };
+            callers: callers(capturedRoot, true) };
           if (operation === "select") factory(result, "from", metadata, true);
           else if (method === "insert") factory(result, "values", metadata);
           else if (method === "update") factory(result, "set", metadata);
