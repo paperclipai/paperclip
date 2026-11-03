@@ -21,7 +21,11 @@
 // server/tsconfig.json stays the single program that editors and `pnpm build`
 // use.
 //
-// Usage: node scripts/typecheck-layers.mjs
+// Projects outside the server read the source layers as declarations through a
+// `tsconfig.layers.json` that references tsconfig.declarations.json in the output
+// directory. --declarations-only builds those layers and skips the test layers.
+//
+// Usage: node scripts/typecheck-layers.mjs [--declarations-only]
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -34,9 +38,11 @@ const OUTPUT_DIRECTORY = path.join("node_modules", ".cache", "paperclip-typechec
 // One program over this tree peaks at 3.9 GiB on one thread. Three peak at 2.5 GiB.
 const TEST_TREE_SHARDS = 3;
 
-const isTestFile = (file) => /\.test\.tsx?$/.test(file) || file.split("/").includes("__tests__");
+export const isTestFile = (file) => /\.test\.tsx?$/.test(file) || file.split("/").includes("__tests__");
 // tsconfig.json excludes this tree, so the test-tree layers check it.
 const isTestTreeFile = (file) => file.startsWith("src/__tests__/");
+// Test layers emit nothing, so other projects cannot read them as declarations.
+const emitsDeclarations = (layer) => layer.name !== "tests" && !layer.testTree;
 
 export function listSourceFiles(serverRoot) {
   const files = [];
@@ -234,8 +240,20 @@ export function layerConfig(layer, { emptyLayers = new Set() } = {}) {
   };
 }
 
+/** Builds the config other projects reference to read the source layers as declarations. */
+export function declarationsConfig(layers) {
+  return {
+    compilerOptions: { composite: true },
+    files: [],
+    references: layers
+      .filter(emitsDeclarations)
+      .map((layer) => ({ path: `./tsconfig.${layer.name}.json` })),
+  };
+}
+
 export function typecheckLayers({
   serverRoot,
+  declarationsOnly = false,
   run = runTsc,
   log = console.log,
 }) {
@@ -258,8 +276,14 @@ export function typecheckLayers({
     );
   }
 
+  writeFileSync(
+    path.join(outputRoot, "tsconfig.declarations.json"),
+    `${JSON.stringify(declarationsConfig(layers), null, 2)}\n`,
+  );
+
   let exitCode = 0;
   for (const layer of layers) {
+    if (declarationsOnly && !emitsDeclarations(layer)) continue;
     log(`typecheck:layers: ${layer.name} (${layer.sourceFiles.length} files)`);
     const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${layer.name}.json`);
     const { status, signal } = run(["-p", config], { cwd: serverRoot });
@@ -275,5 +299,6 @@ export function typecheckLayers({
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = typecheckLayers({
     serverRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+    declarationsOnly: process.argv.includes("--declarations-only"),
   });
 }
