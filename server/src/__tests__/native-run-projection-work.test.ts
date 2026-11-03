@@ -186,7 +186,7 @@ describe("committed native run projection lifecycle", () => {
     const beforeRun = await read(binding.runId), beforeCoordinator = await state(binding.runId);
     const notify = wakeSettlementNotifications.notifyExternalConversationSettlement;
     vi.spyOn(wakeSettlementNotifications, "notifyExternalConversationSettlement").mockImplementation(async (tx, scope) => {
-      const [current] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+      const [current] = await (tx as Db).select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
       expect(current.status).toBe("claimed");
       await notify(tx, scope);
       throw new Error("exhaustion wake notification failure");
@@ -245,7 +245,7 @@ describe("committed native run projection lifecycle", () => {
     const notify = wakeSettlementNotifications.notifyExternalConversationSettlement;
     const notification = vi.spyOn(wakeSettlementNotifications, "notifyExternalConversationSettlement")
       .mockImplementation(async (tx, scope) => {
-        const [current] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+        const [current] = await (tx as Db).select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
         expect(current.status).toBe("claimed");
         await notify(tx, scope);
         throw new Error("wake intent registration failure");
