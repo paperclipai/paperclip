@@ -15,7 +15,7 @@ type Row = Record<string, any>;
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
-async function fixture(fault: "body" | "document-author" | "revision-run" | "creation-description" | "creation-project" | null = null) {
+async function fixture(fault: "body" | "document-author" | "revision-run" | "creation-description" | "creation-project" | null = null, disableFailure = false) {
   const campaignId = "journey-1-campaign", expectedBody = `scheduled-${campaignId}\nSchedule check complete.`;
   const agent = { id: "agent", name: "Owned QA agent", provider: "opencode", model: "configured-model", runtimeMode: "native" };
   const project = { id: "project", companyId: "company", name: `Journey QA routine project ${campaignId}` };
@@ -58,7 +58,12 @@ async function fixture(fault: "body" | "document-author" | "revision-run" | "cre
   const api = { origin: "https://qa.example.test", async post(route: string) {
     if (route === "/api/companies/company/projects") return project;
     expect(route).toBe("/api/routines/routine/triggers"); triggerCreated = true; return { trigger: { ...trigger } };
-  }, async patch(route: string, input: Row) { if (route === "/api/routine-triggers/trigger") trigger.enabled = input.enabled; },
+  }, async patch(route: string, input: Row) {
+    if (route === "/api/routine-triggers/trigger") {
+      if (disableFailure) throw new Error("Private transport error must not replace attribution");
+      trigger.enabled = input.enabled;
+    }
+  },
   async get(route: string) {
     reads.push(route);
     if (route === "/api/routines/routine") return routine();
@@ -106,6 +111,15 @@ it.each(["body", "document-author", "revision-run"] as const)("retains closed %s
   expect(JSON.stringify(receipt)).not.toContain("Schedule check complete");
   expect(f.evidence.checks.at(-1)).toEqual({ id: "routine-result-attributed", passed: false });
   expect(f.trigger.enabled).toBe(false);
+});
+
+it("keeps the real journey attribution failure when final trigger disabling also fails", async () => {
+  const f = await fixture("body", true);
+  await expect(f.run()).rejects.toMatchObject({ code: "routine_result_attributed" });
+  expect(f.evidence.checks.at(-1)).toEqual({ id: "routine-result-attributed", passed: false });
+  const receipt = JSON.parse(await readFile(path.join(f.directory, "scheduled-routine-cleanup-failure.json"), "utf8"));
+  expect(receipt).toMatchObject({ code: "routine_trigger_disable_failed", primaryFailurePreserved: true });
+  expect(JSON.stringify(receipt)).not.toContain("Private transport");
 });
 
 it("sends the unchanged exact two-line body as a delimited instruction and accepts valid attribution", async () => {

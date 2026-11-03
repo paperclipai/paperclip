@@ -7,6 +7,33 @@ import { createObservedReader } from "./observation-read.js";
 
 afterEach(() => vi.useRealTimers());
 describe("bounded observation reads", () => {
+  it("rejects a successful in-flight read that finishes after the original deadline", async () => {
+    vi.useFakeTimers();
+    const get = vi.fn(() => new Promise(resolve => setTimeout(() => resolve({ id: "late" }), 75)));
+    const reader = createObservedReader({ get } as any, Date.now() + 50);
+    const result = reader.get("/api/issues/owned").then(value => ({ value, error: undefined }), error => ({ error }));
+    await vi.advanceTimersByTimeAsync(75);
+    expect((await result).error).toMatchObject({ code: "observation_read_deadline" });
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+  it("ends an in-flight read at the original deadline even when the transport does not settle", async () => {
+    vi.useFakeTimers();
+    const get = vi.fn(() => new Promise(() => {}));
+    let failure: unknown;
+    const result = createObservedReader({ get } as any, Date.now() + 50).get("/api/issues/owned").catch(error => { failure = error; });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(failure).toMatchObject({ code: "observation_read_deadline" });
+    await result;
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+  it("passes the remaining deadline to the transport without extending its normal timeout", async () => {
+    const get = vi.fn().mockResolvedValue({ id: "owned" });
+    await createObservedReader({ get }, Date.now() + 50).get("/api/issues/owned");
+    expect(get.mock.calls[0]?.[1]?.timeoutMs).toBeGreaterThan(0);
+    expect(get.mock.calls[0]?.[1]?.timeoutMs).toBeLessThanOrEqual(50);
+    await createObservedReader({ get }, Date.now() + 100_000).get("/api/issues/owned");
+    expect(get.mock.calls[1]?.[1]).toEqual({ timeoutMs: 30_000 });
+  });
   it.each(["api_request_failed", "api_status_408", "api_status_429", "api_status_502", "api_status_503", "api_status_504"])("retains and retries %s without replaying work", async code => {
     vi.useFakeTimers();
     const get = vi.fn().mockRejectedValueOnce(new ConnectionFailure(code)).mockResolvedValue({ id: "owned" });
