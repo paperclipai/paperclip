@@ -2,6 +2,8 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MarkdownEditor } from "../MarkdownEditor";
+import { IssueAttachmentsSection } from "../IssueAttachmentsSection";
 import { ArtifactDropzone } from "../artifacts/ArtifactDropzone";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
@@ -12,17 +14,17 @@ let root: Root;
 const file = new File(["image"], "screenshot.png", { type: "image/png" });
 function render(content: ReactElement) { act(() => root.render(content)); }
 function drag(type: string, target: EventTarget = document.body, types = ["Files"], relatedTarget: EventTarget | null = null) {
-  const event = new Event(type, { bubbles: true, cancelable: true });
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true });
   Object.defineProperties(event, {
-    dataTransfer: { value: { types, files: types.includes("Files") ? [file] : [], dropEffect: "none" } },
+    dataTransfer: { value: { types, files: types.includes("Files") ? [file] : [], items: types.includes("Files") ? [{ kind: "file", type: file.type, getAsFile: () => file }] : [], dropEffect: "none" } },
     relatedTarget: { value: relatedTarget },
   });
   act(() => { target.dispatchEvent(event); });
   return event;
 }
 const overlay = () => document.querySelector('[data-testid="composer-file-drop-overlay"]');
-beforeEach(() => { host = document.createElement("div"); document.body.append(host); root = createRoot(host); });
-afterEach(() => { act(() => root.unmount()); host.remove(); });
+beforeEach(() => { vi.stubGlobal("DragEvent", MouseEvent); host = document.createElement("div"); document.body.append(host); root = createRoot(host); });
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
 describe("composer screen file drops", () => {
   it("accepts a drop outside the composer exactly once and clears the overlay", () => {
@@ -51,6 +53,71 @@ describe("composer screen file drops", () => {
       act(() => { window.dispatchEvent(new Event(cancel)); });
       expect(overlay()).toBeNull();
     }
+  });
+
+  it("clears a nested drag when the pointer leaves the window", () => {
+    render(<ComposerFileDropTarget enabled onFiles={vi.fn()} />);
+    drag("dragenter"); drag("dragenter", host);
+    drag("dragleave", document.documentElement);
+    expect(overlay()).toBeNull();
+  });
+
+  it("preserves description editor file uploads and clears both overlays", async () => {
+    const onFiles = vi.fn(); const onDropFile = vi.fn().mockResolvedValue(undefined);
+    render(<><ComposerFileDropTarget enabled onFiles={onFiles} />
+      <MarkdownEditor value="Description" onChange={vi.fn()} onDropFile={onDropFile} />
+    </>);
+    const editor = host.querySelector('[contenteditable="true"]')!;
+    expect(editor).not.toBeNull();
+    drag("dragenter"); expect(overlay()).not.toBeNull();
+    drag("dragenter", editor); drag("dragover", editor);
+    expect(overlay()).toBeNull();
+    expect(host.textContent).toContain("Drop file to upload");
+    const attachment = new File(["notes"], "notes.txt", { type: "text/plain" });
+    const event = new MouseEvent("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [attachment] } });
+    await act(async () => { editor.dispatchEvent(event); });
+    expect(onDropFile).toHaveBeenCalledExactlyOnceWith(attachment);
+    expect(onFiles).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("Drop file to upload");
+    expect(overlay()).toBeNull();
+    drag("drop"); expect(onFiles).toHaveBeenCalledExactlyOnceWith([file]);
+  });
+
+  it("keeps image drops in the description image plugin", async () => {
+    const onFiles = vi.fn();
+    const uploadImage = vi.fn().mockResolvedValue("/description-image.png");
+    render(<><ComposerFileDropTarget enabled onFiles={onFiles} />
+      <MarkdownEditor value="Description" onChange={vi.fn()} imageUploadHandler={uploadImage} />
+    </>);
+    const editor = host.querySelector('[contenteditable="true"]')!;
+    drag("dragenter", editor); expect(overlay()).toBeNull();
+    expect(host.textContent).toContain("Drop image to upload");
+    await act(async () => { drag("drop", editor); });
+    expect(uploadImage).toHaveBeenCalledExactlyOnceWith(file);
+    expect(onFiles).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("Drop image to upload");
+  });
+
+  it.each(["parent", "readOnly"])("leaves %s editor drops with the composer", (mode) => {
+    const onFiles = vi.fn(); const onDropFile = vi.fn();
+    render(<><ComposerFileDropTarget enabled onFiles={onFiles} />
+      <MarkdownEditor value="Description" onChange={vi.fn()} onDropFile={onDropFile}
+        readOnly={mode === "readOnly"} fileDropTarget={mode === "parent" ? "parent" : "editor"} />
+    </>);
+    drag("drop", host.querySelector(".paperclip-mdxeditor-scope")!);
+    expect(onFiles).toHaveBeenCalledExactlyOnceWith([file]);
+    expect(onDropFile).not.toHaveBeenCalled();
+  });
+
+  it("preserves the task attachments section drop handler", () => {
+    const onFiles = vi.fn(); const onDrop = vi.fn();
+    render(<><ComposerFileDropTarget enabled onFiles={onFiles} />
+      <IssueAttachmentsSection attachments={[]} onImageClick={vi.fn()} onDrop={onDrop} />
+    </>);
+    const label = Array.from(host.querySelectorAll("h3")).find(item => item.textContent === "Attachments")!;
+    drag("drop", label);
+    expect(onDrop).toHaveBeenCalledOnce(); expect(onFiles).not.toHaveBeenCalled();
   });
 
   it("ignores text and link drags", () => {

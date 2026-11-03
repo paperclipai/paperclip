@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Upload } from "lucide-react";
+import { FILE_DROP_TARGET_SELECTOR } from "../../lib/file-drop-target";
 
 interface DropTarget {
   element: HTMLSpanElement;
@@ -45,7 +46,7 @@ export function ComposerFileDropTarget({
     targets.forEach(item => item.reset());
 
     const owns = (event: DragEvent) => activeTarget() === target
-      && !(event.target instanceof Element && event.target.closest("[data-file-drop-target]"))
+      && !(event.target instanceof Element && event.target.closest(FILE_DROP_TARGET_SELECTOR))
       && Array.from(event.dataTransfer?.types ?? []).includes("Files");
     const enter = (event: DragEvent) => {
       if (!owns(event)) { reset(); return; }
