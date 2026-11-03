@@ -576,6 +576,15 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const externalHome = ctx.config.remoteCodexHomeMode === "empty";
+  if (ctx.config.remoteCodexHomeMode !== undefined && !externalHome) {
+    throw new Error("Invalid remoteCodexHomeMode");
+  }
+  // Engine selection may probe a remote ACP target using host environment.
+  // Reject before that probe: empty mode requires an explicit CLI engine.
+  if (externalHome && (typeof ctx.config.engine !== "string" || ctx.config.engine.trim().toLowerCase() !== "cli")) {
+    throw new Error("remoteCodexHomeMode=empty requires engine=cli; ACP is not supported");
+  }
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -590,12 +599,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
-  const externalHome = ctx.config.remoteCodexHomeMode === "empty";
-  if (ctx.config.remoteCodexHomeMode !== undefined && !externalHome) {
-    throw new Error("Invalid remoteCodexHomeMode");
-  }
   if (engineSelection.engine === "acp") {
-    if (externalHome) throw new Error("remoteCodexHomeMode=empty is not supported by ACP");
     return executeCodexAcp(ctx);
   }
 

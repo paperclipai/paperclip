@@ -483,6 +483,16 @@ describe("codex remote execution", () => {
     await expect(readdir(snap.localDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each([undefined, "acp", "unknown"])("rejects empty mode before probing a non-CLI engine: %s", async (engine) => {
+    const probe = vi.fn(async () => { throw new Error("unexpected remote probe"); });
+    await expect(execute({
+      config: { remoteCodexHomeMode: "empty", engine },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner: { execute: probe } },
+    } as unknown as Parameters<typeof execute>[0])).rejects.toThrow("requires engine=cli");
+    expect(probe).not.toHaveBeenCalled();
+    expect(runSshCommand).not.toHaveBeenCalled();
+  });
+
   it("rejects a configured provider credential for an empty remote home", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-reject-key-"));
     cleanupDirs.push(rootDir);
