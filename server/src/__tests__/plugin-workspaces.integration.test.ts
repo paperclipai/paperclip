@@ -129,6 +129,26 @@ const support = await getEmbeddedPostgresTestSupport();
       const workspace = await preparePluginWorkspace(db, workers, f.input);
       expect(workspace!.metadata?.workspaceProviderDestinationRef).toBe(destinationRef);
     });
+    it("cleans up a delivered plugin-owned shared session", async () => {
+      const f = await fixture();
+      const workspace = (await preparePluginWorkspace(db, f.workers, f.input))!;
+      await db.update(executionWorkspaces).set({ mode: "shared_workspace" })
+        .where(eq(executionWorkspaces.id, workspace.id));
+      await db.update(issues).set({ status: "done", completedAt: new Date() })
+        .where(eq(issues.id, f.issueId));
+      await db.update(heartbeatRuns).set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, f.runId));
+      const svc = executionWorkspaceService(db, { pluginWorkerManager: f.workers, workspaceReaperCooldownDays: 0 });
+
+      const result = await svc.sweepTerminalWorkspaces(100);
+
+      expect(result.cleanupFailed).toBe(0);
+      expect(f.calls.some(call => call.operation.kind === "inspect")).toBe(true);
+      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(true);
+      const [cleaned] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+      expect(cleaned.status).toBe("archived");
+      expect(cleaned.metadata?.workspaceProviderRemoved).toBe(true);
+    });
     it.each([true, undefined])("wakes parked cleanup when a provider upgrade enables ancestry (%s)", async (supportsMergeAncestry) => {
       const f = await fixture();
       await preparePluginWorkspace(db, f.workers, f.input);
