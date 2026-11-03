@@ -3901,8 +3901,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedUndelivered += 1;
           continue;
         }
+        // Remote shared sessions prove saved-state readiness above, without a Git
+        // checkout. Their snapshot, rather than merge ancestry, preserves the work.
+        const requiresMergeProof = !skipGitChecks && !(sharedSession && remoteWorkspace);
         if (
-          !skipGitChecks
+          requiresMergeProof
           && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
