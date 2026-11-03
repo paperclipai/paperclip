@@ -81,6 +81,8 @@ export interface DurableAutosave<T> {
   run: (draft: T, job?: DurableAutosaveJob<T>) => Promise<DurableAutosaveResult>;
   /** The draft changed; drop a stale "Saved" or error. */
   markDirty: () => void;
+  /** Release an unchanged draft without dismissing the last successful save. */
+  clearDirty: () => void;
   /** Forget pending work and go back to idle (the user cancelled or reverted). */
   reset: () => void;
   /** Write the current draft to storage so a reload or crash keeps it. */
@@ -390,6 +392,9 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     clearTimers();
     setView(current => ({ target: targetRef.current, status: jobs.current.has(targetRef.current) ? "waiting" : "idle", error: null }));
   }, [clearTimers]);
+  const clearDirty = useCallback(() => {
+    releaseDirty(targetRef.current, dirtyWrites.current.get(targetRef.current)?.version);
+  }, []);
   const reset = useCallback(() => {
     releaseDirty(targetRef.current, dirtyWrites.current.get(targetRef.current)?.version);
     const job = jobs.current.get(targetRef.current);
@@ -404,6 +409,6 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   const baseStatus = view.target === targetKey ? view.status : jobs.current.has(targetKey) ? "waiting" : "idle";
   const status = baseStatus === "waiting" && auto.stalled ? "stalled" : baseStatus;
   const error = view.target === targetKey ? view.error : null;
-  return { status, error, label: autosaveLabel(status, error), run, markDirty, reset,
+  return { status, error, label: autosaveLabel(status, error), run, markDirty, clearDirty, reset,
     persistDraft, readStoredDraft, clearStoredDraft, resendNow: auto.resendNow };
 }

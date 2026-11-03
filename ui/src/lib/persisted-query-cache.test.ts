@@ -1,9 +1,9 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/api/client";
+import { ApiError, api, detachInflightGets } from "@/api/client";
 import { bindAccount } from "./account-scope";
-import { hasUnverifiedSession } from "./cached-session";
+import { hasUnverifiedSession, markCachedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
 import { readComposerRunSettings } from "../components/task-chat/composer-run-settings";
 import { agentConnection, agentDefaultModel } from "./bulk-agent-settings";
@@ -35,7 +35,7 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
   client.setQueryData([...queryKeys.access.currentBoardAccess, userId], { userId, companyIds: [companyId], isInstanceAdmin: false });
   client.setQueryData([...queryKeys.issues.detail("task-one"), "core"], { id: "task-one", companyId, title: "Saved task" });
 }
-afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.clearAllMocks(); });
+afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
   it.each([null, "", "   "])("skips hydration and persistence without a build stamp (%s)", (buildId) => {
@@ -44,10 +44,144 @@ describe("persisted read cache", () => {
     const restored = setup(first.storage, undefined, undefined, buildId);
     expect(restored.client.getQueryData(queryKeys.auth.session)).toBeUndefined();
     expect(restored.client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
-    seed(restored.client, "bob"); restored.handle.flush();
+    seed(restored.client); restored.handle.flush();
     expect(first.storage.values).toEqual(saved);
-    restored.handle.clear();
+    clearPersistedQueryCache(restored.client);
     expect([...first.storage.values.keys()].some(key => key.startsWith(QUERY_CACHE_PREFIX))).toBe(false);
+  });
+
+  it.each([QUERY_CACHE_CLEARED, "paperclip:query-cache-revision:alice"])("revokes a stamped tab through exported sign-out cleanup in an unstamped build (%s)", async eventKey => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    first.storage.setItem("paperclip:private-draft", "draft retained");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const events = new EventTarget();
+    const other = startPersistedQueryCache(client, { storage: first.storage, buildId: "build-one", eventTarget: events as Window });
+    handles.push(() => { other.dispose(); client.clear(); });
+    await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => session(), staleTime: 0 });
+    const account = bindAccount(client);
+    const unstamped = setup(first.storage, undefined, undefined, null);
+    unstamped.client.setQueryData(queryKeys.auth.session, session());
+    clearPersistedQueryCache(unstamped.client);
+    expect(first.storage.getItem(eventKey)).not.toBeNull();
+    expect([...first.storage.values.keys()].filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toEqual([]);
+    events.dispatchEvent(Object.assign(new Event("storage"), { key: eventKey, newValue: first.storage.getItem(eventKey) }));
+    expect(client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+    expect(client.getQueryData(queryKeys.auth.session)).toBeNull();
+    expect(account.isCurrentScope()).toBe(false);
+    other.flush();
+    expect(first.storage.getItem(QUERY_CACHE_ACTIVE)).toBeNull();
+    expect(first.storage.getItem("paperclip:private-draft")).toBe("draft retained");
+  });
+
+  it("rejects a stamped tab's delayed flush after unstamped sign-out before storage events arrive", async () => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    const other = setup(first.storage);
+    await other.client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => session(), staleTime: 0 });
+    const unstamped = setup(first.storage, undefined, undefined, null);
+    unstamped.client.setQueryData(queryKeys.auth.session, session());
+    clearPersistedQueryCache(unstamped.client);
+    other.handle.flush();
+    expect(other.client.getQueryData(queryKeys.auth.session)).toBeNull();
+    expect([...first.storage.values.keys()].filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toEqual([]);
+  });
+
+  it("keeps recent task reads and company membership after actual five-minute memory garbage collection", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    const key = [...queryKeys.issues.detail("task-one"), "core"];
+    client.setQueryDefaults(key, { gcTime: 5 * 60_000 });
+    client.setQueryDefaults(queryKeys.companies.list("alice"), { gcTime: 5 * 60_000 });
+    const first = setup(undefined, undefined, client); seed(client); first.handle.flush();
+    const observer = new QueryObserver(client, { queryKey: key, enabled: false });
+    const unsubscribe = observer.subscribe(() => {});
+    unsubscribe();
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1);
+    expect(client.getQueryData(key)).toBeUndefined();
+    expect(client.getQueryData(queryKeys.companies.list("alice"))).toBeUndefined();
+    client.setQueryData(queryKeys.health, { status: "ok", restarted: true });
+    first.handle.flush();
+    const restored = setup(first.storage);
+    expect(restored.client.getQueryData(key)).toMatchObject({ title: "Saved task" });
+    expect(restored.client.getQueryData(queryKeys.companies.list("alice"))).toMatchObject({ companies: [{ id: "company-one" }] });
+  });
+
+  it("expires retained task data from its original read time despite later snapshot writes", () => {
+    vi.useFakeTimers();
+    let now = Date.now();
+    const first = setup(undefined, () => now); seed(first.client); first.handle.flush();
+    const key = [...queryKeys.issues.detail("task-one"), "core"];
+    first.client.removeQueries({ queryKey: key, exact: true });
+    now += 5 * 60_000;
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).toContain("Saved task");
+    now += QUERY_CACHE_MAX_AGE;
+    first.client.setQueryData(queryKeys.auth.session, session(), { updatedAt: now });
+    first.client.setQueryData(queryKeys.companies.list("alice"), { companies: [{ id: "company-one" }] }, { updatedAt: now });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Saved task");
+    expect(setup(first.storage, () => now).client.getQueryData(key)).toBeUndefined();
+  });
+
+  it("applies the twenty-task limit across retained disk reads and newer live reads", () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    const first = setup(undefined, () => now); seed(first.client);
+    first.client.removeQueries({ queryKey: queryKeys.issues.detail("task-one") });
+    for (let i = 0; i < 20; i += 1) first.client.setQueryData([...queryKeys.issues.detail(`task-${i}`), "core"],
+      { id: `task-${i}`, companyId: "company-one", title: `Retained task ${i}` }, { updatedAt: now - 20 + i });
+    first.handle.flush();
+    first.client.removeQueries({ queryKey: ["issues", "detail"] });
+    first.client.setQueryData([...queryKeys.issues.detail("new-task"), "core"], { id: "new-task", companyId: "company-one", title: "Newest task" }, { updatedAt: now });
+    first.handle.flush();
+    const restored = setup(first.storage, () => now);
+    const details = restored.client.getQueryCache().getAll().filter(query => query.queryKey[0] === "issues" && query.queryKey[1] === "detail");
+    expect(details).toHaveLength(20);
+    expect(restored.client.getQueryData([...queryKeys.issues.detail("task-0"), "core"])).toBeUndefined();
+    expect(restored.client.getQueryData([...queryKeys.issues.detail("new-task"), "core"])).toMatchObject({ title: "Newest task" });
+  });
+
+  it.each([403, 404])("scrubs saved aliases and inbox rows after a %s denial following memory GC, even before session verification", async status => {
+    const first = setup(); seed(first.client);
+    const task = { id: "task-one", identifier: "TST-1", companyId: "company-one", title: "Denied task body" };
+    const keys = [queryKeys.issues.detail(task.id), [...queryKeys.issues.detail(task.id), "core"],
+      queryKeys.issues.detail(task.identifier), [...queryKeys.issues.detail(task.identifier), "core"]];
+    for (const key of keys) first.client.setQueryData(key, task);
+    const inboxKey = [...queryKeys.issues.listMineByMe("company-one"), "index", "with-routine-executions", "live-descendant-summary", 100, "alice"];
+    first.client.setQueryData(inboxKey, [task, { id: "allowed-task", title: "Other task" }]);
+    first.handle.flush();
+    first.client.removeQueries({ queryKey: ["issues"] });
+    markCachedSession(first.client);
+    await first.client.fetchQuery({ queryKey: [...queryKeys.issues.detail("tst-1"), "core"], queryFn: async () => { throw new ApiError("Denied", status, null); } }).catch(() => {});
+    expect(hasUnverifiedSession(first.client)).toBe(true);
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Denied task body");
+    const restored = setup(first.storage);
+    for (const key of keys) expect(restored.client.getQueryData(key)).toBeUndefined();
+    expect(restored.client.getQueryData(inboxKey)).toEqual([{ id: "allowed-task", title: "Other task" }]);
+  });
+
+  it("removes retained company reads after fresh membership denial and does not resurrect them after memory GC", async () => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    first.client.removeQueries({ queryKey: ["issues", "detail"] });
+    const membership = queryKeys.companies.list("alice");
+    await first.client.fetchQuery({ queryKey: membership, queryFn: async () => { throw new ApiError("Forbidden", 403, null); } }).catch(() => {});
+    first.client.removeQueries({ queryKey: membership, exact: true });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Saved task");
+    expect(setup(first.storage).client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+  });
+
+  it("replaces a retained disk task with a newer live read without persisting private fields", () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    const first = setup(undefined, () => now); seed(first.client); first.handle.flush();
+    const key = [...queryKeys.issues.detail("task-one"), "core"];
+    first.client.removeQueries({ queryKey: key, exact: true });
+    first.client.setQueryData(key, { id: "task-one", companyId: "company-one", title: "Newer task", planDocument: { body: "excluded-new-document" } }, { updatedAt: now });
+    first.handle.flush();
+    const restored = setup(first.storage, () => now);
+    expect(restored.client.getQueryData(key)).toMatchObject({ title: "Newer task" });
+    expect(restored.client.getQueryData(key)).not.toHaveProperty("planDocument");
+    expect([...first.storage.values.values()].join(" ")).not.toContain("excluded-new-document");
   });
 
   it("retains visible task run preferences while excluding private override options", () => {
@@ -66,6 +200,38 @@ describe("persisted read cache", () => {
     expect(readComposerRunSettings(task.assigneeAdapterOverrides, "codex_local")).toEqual({ model: "display-model", effort: "high", fast: true });
     expect(task.assigneeAdapterOverrides.adapterConfig).not.toHaveProperty("command");
     expect(task.assigneeAdapterOverrides.adapterConfig).not.toHaveProperty("env");
+  });
+
+  it.each(["account-switch", "sign-out"])("does not share or persist another account's pending private-project request after %s", async boundary => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    let finishAlice!: (value: Response) => void;
+    const bobProjects = [{ id: "project-bob", companyId: "company-one", name: "Bob project" }];
+    const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finishAlice = resolve; }))
+      .mockResolvedValue(new Response(JSON.stringify(bobProjects), { headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const key = queryKeys.projects.list("company-one");
+      const path = "/companies/company-one/projects";
+      // Match sidebar reads that do not forward React Query's AbortSignal.
+      const oldRead = first.client.fetchQuery({ queryKey: key, queryFn: () => api.get(path) }).catch(() => undefined);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      if (boundary === "sign-out") { clearPersistedQueryCache(first.client); first.client.clear(); }
+      await first.client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => session("bob"), staleTime: 0 });
+      seed(first.client, "bob");
+      const currentRead = first.client.fetchQuery({ queryKey: key, queryFn: () => api.get(path) });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await expect(currentRead).resolves.toEqual(bobProjects);
+      finishAlice(new Response(JSON.stringify([{ id: "project-alice", companyId: "company-one", name: "Alice private project" }]), { headers: { "Content-Type": "application/json" } }));
+      await oldRead;
+      await Promise.resolve();
+      first.handle.flush();
+      expect(first.client.getQueryData(key)).toEqual(bobProjects);
+      expect([...first.storage.values.values()].join(" ")).not.toContain("Alice private project");
+      expect(setup(first.storage).client.getQueryData(key)).toEqual(bobProjects);
+    } finally {
+      finishAlice?.(new Response("[]", { headers: { "Content-Type": "application/json" } }));
+      detachInflightGets(); vi.unstubAllGlobals();
+    }
   });
 
   it("preserves another account published while this tab is flushing", () => {
@@ -341,6 +507,23 @@ describe("persisted read cache", () => {
     await first.client.fetchQuery({ queryKey: keys[3]!, queryFn: async () => ({ ...task, title: "Access restored" }) });
     first.handle.flush();
     expect([...first.storage.values.values()].join(" ")).toContain("Access restored");
+  });
+
+  it("ignores malformed saved queries while retaining valid recent reads on the next flush", () => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    const key = `${QUERY_CACHE_PREFIX}alice:company-one`;
+    const record = JSON.parse(first.storage.getItem(key)!);
+    record.state.queries.push(null, {}, { queryKey: ["unapproved"], state: {} });
+    first.storage.setItem(key, JSON.stringify(record));
+    first.client.removeQueries({ queryKey: ["issues", "detail"] });
+    expect(() => first.handle.flush()).not.toThrow();
+    expect(setup(first.storage).client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toMatchObject({ title: "Saved task" });
+  });
+
+  it("tolerates storage enumeration becoming unavailable before a flush", () => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    vi.spyOn(first.storage, "length", "get").mockImplementation(() => { throw new Error("Storage unavailable"); });
+    expect(() => first.handle.flush()).not.toThrow();
   });
 
   it("tolerates unavailable or corrupt storage", () => {

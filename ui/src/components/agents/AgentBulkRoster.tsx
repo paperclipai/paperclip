@@ -1,7 +1,10 @@
-import { lazy, Suspense, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { lazy, Suspense, useRef, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Filter, Pencil, X } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
+import { agentsApi } from "@/api/agents";
+import { describeError } from "@/api/errors";
+import { bindAccount } from "@/lib/account-scope";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { agentConnection, agentDefaultModel, bulkAgentDisabledReason, bulkAgentHarness, bulkConnectionName } from "@/lib/bulk-agent-settings";
@@ -17,6 +20,10 @@ const AgentBulkSettingsSheet = lazy(() => import("./AgentBulkSettingsSheet").the
 export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent }: {
   companyId: string; agents: Agent[]; visibleAgents: Agent[]; renderAgent: (agent: Agent) => ReactNode;
 }) {
+  const client = useQueryClient();
+  const openingRef = useRef(false);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [filter, setFilter] = useState("all");
   const [editing, setEditing] = useState<Agent[] | null>(null);
@@ -31,6 +38,28 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent 
   const some = selectable.some(a => selected.includes(a.id));
   const hidden = selectedAgents.filter(a => !visible.includes(a)).length;
   const toggleAll = () => setSelected(all ? selected.filter(id => !selectable.some(a => a.id === id)) : [...new Set([...selected, ...selectable.map(a => a.id)])]);
+
+  async function openEditor(harness: string) {
+    if (openingRef.current) return;
+    openingRef.current = true; setOpening(true); setOpenError("");
+    const account = bindAccount(client);
+    try {
+      await account.whenAccountReady();
+      if (!account.isCurrentAccount()) return;
+      const complete = await Promise.all(selectedAgents.filter(a => bulkAgentHarness(a) === harness)
+        .map(a => agentsApi.get(a.id, companyId, { cache: "no-store", fresh: true })));
+      if (!account.isCurrentAccount()) return;
+      // The display cache excludes private runtime fields. Only complete,
+      // freshly authorized agents can become the editor's optimistic base.
+      if (complete.some(a => a.companyId !== companyId || bulkAgentHarness(a) !== harness || bulkAgentDisabledReason(a))) {
+        setOpenError("The selected agents changed. Refresh the roster and select them again.");
+        return;
+      }
+      setEditing(complete);
+    } catch (error) {
+      if (account.isCurrentScope()) setOpenError(describeError(error).body);
+    } finally { openingRef.current = false; setOpening(false); }
+  }
 
   return <div className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -62,10 +91,12 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent 
       <span className="text-sm font-medium">{selectedAgents.length} selected</span>
       {hidden > 0 && <span className="text-xs text-muted-foreground">{hidden} hidden by filters</span>}
       {groups.length > 1 && <span className="text-xs text-muted-foreground">Choose a harness to edit</span>}
-      <div className="flex flex-1 flex-wrap items-center justify-end gap-2">{groups.map(h => <Button key={h} size="sm" variant="outline" onClick={() => setEditing(selectedAgents.filter(a => bulkAgentHarness(a) === h))}>
+      <div className="flex flex-1 flex-wrap items-center justify-end gap-2">{groups.map(h => <Button key={h} size="sm" variant="outline" disabled={opening} onClick={() => void openEditor(h)}>
         <Pencil className="size-3.5" aria-hidden />{groups.length === 1 ? "Edit connection & model" : `Edit ${selectedAgents.filter(a => bulkAgentHarness(a) === h).length} ${getAdapterLabel(h)}`}
       </Button>)}<Button size="icon-sm" variant="ghost" aria-label="Clear selection" onClick={() => setSelected([])}><X className="size-4" /></Button></div>
     </div>}
+    {opening && <p role="status" className="text-sm text-muted-foreground">Loading current agent settings…</p>}
+    {openError && <p role="alert" className="text-sm text-destructive">{openError}</p>}
     {notice && <p role="status" className="flex items-center gap-2 text-sm"><Check className="size-4" aria-hidden />{notice}</p>}
     {accounts.error && <p className="text-xs text-destructive">Connection names couldn’t be loaded. <Button variant="link" size="sm" onClick={() => void accounts.refetch()}>Retry</Button></p>}
     <div className="overflow-x-auto"><table aria-label="Agent roster" className="w-full text-left text-sm">
