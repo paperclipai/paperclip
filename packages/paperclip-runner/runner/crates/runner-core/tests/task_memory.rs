@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use paperclip_runner_core::codex_provider::{CodexProvider, CodexProviderConfig};
 use paperclip_runner_core::task_memory::{
-    instructions_with_memory_note, set_status_path, TaskMemoryMonitor,
+    instructions_with_memory_note, set_task_cgroup, TaskMemoryMonitor,
 };
 
 // A separate test binary: the flag's process-wide path starts unset here, and this
@@ -19,13 +19,10 @@ fn only_the_launch_flag_adds_the_note_and_the_monitor() {
 
     let directory = std::env::temp_dir().join(format!("runner-memory-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&directory).unwrap();
-    let path: PathBuf = directory.join("task-memory.json");
-    fs::write(
-        &path,
-        r#"{"schema":"paperclip.task-memory.v1","limitBytes":6442450944,"currentBytes":0,"peakBytes":0,"killedProcesses":0}"#,
-    )
-    .unwrap();
-    set_status_path(path);
+    let task_cgroup: PathBuf = directory.join("task-a");
+    fs::create_dir(&task_cgroup).unwrap();
+    fs::write(directory.join("memory.max"), "6442450944\n").unwrap();
+    set_task_cgroup(task_cgroup);
 
     let instructions = instructions_with_memory_note("Do the work.", 4096);
     assert!(instructions.starts_with("Do the work.\n\nAll task processes"));

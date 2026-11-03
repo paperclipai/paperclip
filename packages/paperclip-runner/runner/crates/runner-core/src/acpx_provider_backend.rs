@@ -3963,13 +3963,10 @@ mod tests {
             descriptor_value["instructions"]
         );
         // The note reaches the provider without changing the durable descriptor.
-        let memory_status = directory.join("task-memory.json");
-        fs::write(
-            &memory_status,
-            r#"{"schema":"paperclip.task-memory.v1","limitBytes":6442450944,"killedProcesses":0}"#,
-        )
-        .unwrap();
-        crate::task_memory::TEST_STATUS_PATH.with(|path| *path.borrow_mut() = Some(memory_status));
+        let task_cgroup = directory.join("tasks").join("task-a");
+        fs::create_dir_all(&task_cgroup).unwrap();
+        fs::write(directory.join("tasks").join("memory.max"), "6442450944\n").unwrap();
+        crate::task_memory::TEST_TASK_CGROUP.with(|path| *path.borrow_mut() = Some(task_cgroup));
         let session_config = refreshed
             .session_config(
                 attached.state.as_ref().unwrap().tool_set.clone(),
@@ -3977,7 +3974,7 @@ mod tests {
                 Some(&launch_profile),
             )
             .unwrap();
-        crate::task_memory::TEST_STATUS_PATH.with(|path| *path.borrow_mut() = None);
+        crate::task_memory::TEST_TASK_CGROUP.with(|path| *path.borrow_mut() = None);
         assert!(session_config
             .system_instructions
             .starts_with(descriptor_value["instructions"].as_str().unwrap()));
