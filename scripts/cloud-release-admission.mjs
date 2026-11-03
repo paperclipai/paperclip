@@ -76,7 +76,11 @@ export async function requestDeferredProducer({ file, sha, admissionJob, api, re
     if (page === 10) throw new Error("Incomplete release producer job list.");
   }
   if (run.status !== "completed") {
-    return jobs.some(job => job.name !== admissionJob && job.labels?.length > 0 && job.conclusion !== "skipped") ? "admitted" : "pending";
+    const current = jobs.filter(job => job.run_id === run.id && job.run_attempt === run.run_attempt && job.head_sha === sha);
+    // Admission itself succeeds for both outcomes. Only an actual build is
+    // evidence that its output admitted work; queued jobs may still be skipped.
+    return current.some(job => job.name !== admissionJob && job.labels?.length > 0 && ["in_progress", "completed"].includes(job.status) && job.conclusion !== "skipped")
+      ? "admitted" : "pending";
   }
   if (!deferredProducer(jobs, run, admissionJob)) return "finished";
   const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
@@ -87,9 +91,14 @@ export async function requestDeferredProducer({ file, sha, admissionJob, api, re
     // Docker and npm may select the same source at the same time. A rejected
     // duplicate write is harmless only when a fresh read proves a retry began.
     const latest = await api(`/repos/${repository}/actions/runs/${run.id}`);
-    if (latest.id !== run.id || !trusted(latest, sha, workflow) ||
-        !(latest.run_attempt > run.run_attempt || (latest.run_attempt === run.run_attempt &&
-          ["queued", "in_progress", "requested", "pending", "waiting"].includes(latest.status)))) throw error;
+    if (latest.id !== run.id || !trusted(latest, sha, workflow)) throw error;
+    if (!(latest.run_attempt > run.run_attempt || (latest.run_attempt === run.run_attempt &&
+      ["queued", "in_progress", "requested", "pending", "waiting"].includes(latest.status)))) {
+      // GitHub may reject a duplicate before its read API shows the retry.
+      // Leave it pending for the next poll; this is not proof of admission.
+      if ([409, 422].includes(error.status) && latest.run_attempt === run.run_attempt && latest.status === "completed" && latest.conclusion === "success") return "pending";
+      throw error;
+    }
   }
   requested.add(key);
   return "pending";
@@ -100,7 +109,7 @@ export function createReleaseRerunner(token, fetchImpl = fetch) {
     if (!/^\/repos\/paperclipai\/paperclip\/actions\/runs\/[1-9]\d*\/rerun$/.test(path)) throw new Error("Invalid release retry path.");
     const response = await fetchImpl(`https://api.github.com${path}`, { method: "POST", redirect: "error",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(30_000) });
-    if (!response.ok) throw new Error(`Could not admit deferred release work: HTTP ${response.status}.`);
+    if (!response.ok) throw Object.assign(new Error(`Could not admit deferred release work: HTTP ${response.status}.`), { status: response.status });
   };
 }
 

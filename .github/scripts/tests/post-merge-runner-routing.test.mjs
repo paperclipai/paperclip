@@ -10,6 +10,7 @@ const base = {
   ref: "refs/heads/master", event_name: "push", sha, run_attempt: 1,
 };
 const expectedJobs = {
+  "docker.yml": ["source_verification", "publication_verification"],
   "cloud-readiness.yml": ["admission", "source_verified"],
   "cloud-migrator-artifacts.yml": [],
   "release-verify.yml": ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"],

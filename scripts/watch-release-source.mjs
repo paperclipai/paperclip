@@ -37,7 +37,7 @@ async function cancelFailedVerification({ api, cancel, sha }, failure) {
 
 export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = console.log,
-  timeoutMs = 40 * 60_000, intervalMs = 15_000, requireProof = false, summary = async () => {} }) {
+  timeoutMs = 40 * 60_000, intervalMs = 30_000, requireProof = false, summary = async () => {} }) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "") || !Number.isSafeInteger(runId) || runId < 1 ||
       !Number.isSafeInteger(attempt) || attempt < 1) throw new Error("Invalid release identity.");
   const deadline = now() + timeoutMs;
@@ -80,7 +80,7 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
     await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
   }
   // This early failure observer is not the publication deadline. Healthy
-  // checks can outlive a Spot worker; the manifest's exact-source gate still
+  // checks can outlive a Spot worker; a separate exact-source gate still
   // waits for proof before publishing any image.
   if (requireProof) throw new Error("Exact-source verification did not become ready before the publication deadline.");
   await summary("Source monitoring window ended; final publication still requires exact-source verification.\n");
@@ -91,8 +91,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const token = process.env.GITHUB_TOKEN;
   if (!token || process.env.GITHUB_REPOSITORY !== repository || process.env.GITHUB_REF !== "refs/heads/master") throw new Error("Canonical master token required.");
   const requireProof = process.argv.includes("--require-proof");
-  await watchReleaseSource({ requireProof, ...(requireProof ? { timeoutMs: 60 * 60_000 } : {}), sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-    api: createActionsReader({ token }),
+  const checkProof = process.argv.includes("--check-proof");
+  const api = createActionsReader({ token });
+  const proof = checkProof ? await readSourceVerification(process.env.GITHUB_SHA, api, { failFast: true }) : await watchReleaseSource({ requireProof, sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+    api,
     rerun: createReleaseRerunner(token),
     cancel: async path => {
       const response = await fetch(`https://api.github.com${path}`, { method: "POST", redirect: "error",
@@ -101,4 +103,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     },
     summary: text => process.env.GITHUB_STEP_SUMMARY ? appendFile(process.env.GITHUB_STEP_SUMMARY, text) : Promise.resolve(),
   });
+  if (checkProof && !proof) throw new Error("Exact-source proof changed before publication.");
+  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `verified=${Boolean(proof)}\n`);
 }

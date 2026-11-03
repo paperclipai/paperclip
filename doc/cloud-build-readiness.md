@@ -139,7 +139,7 @@ exact-master migrator preparation to the
 `paperclip-post-merge` runner group. The separate Fleet label is
 `runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. The protected fleet uses
 separate 8-vCPU, 32-GiB Spot workers that launch only when jobs arrive. Its
-72-job ceiling and public PR capacity are managed independently. There are no
+job ceiling and public PR capacity are managed independently. There are no
 hot or stopped pools. Quota ceilings do not reserve hardware; measure cold
 launch and runner assignment times as well as job duration.
 
@@ -156,7 +156,7 @@ Before enabling the switch, deploy the separate Fleet and restrict its GitHub
 runner group to repository ID `1170821064` and these workflows at
 `refs/heads/master`: `cloud-readiness.yml`,
 `release-verify.yml`, `runner-chaos-evals.yml`, `release.yml`, and `docker.yml`.
-The Docker workflow uses this group only for its exact-source monitor. Do not authorize
+The Docker workflow uses this group for its exact-source monitor and proof wait. Do not authorize
 PR-controlled workflow versions. The direct migrator producer always uses
 GitHub-hosted runners and needs no AWS runner-group authorization. PR placement retains its independent pinned
 workflow and six-account author/actor allowlist.
@@ -191,8 +191,16 @@ master Docker run and failed exact-source verification siblings. It never
 automatically retries a failed source check. Its guarded retry permission can
 restart only an exact-source producer deferred before full admission. It checks run, attempt, SHA,
 repository, ref, and workflow identity before cancellation. Its bounded
-observation window does not cancel healthy pending checks. Final hosted
-publication still requires exact-source proof and has a separate wait budget.
+observation window does not cancel healthy pending checks. A successful observer
+records proof for publication immediately. If healthy checks remain pending after
+40 minutes, a separate required proof job waits for up to another 40 minutes on
+the verification fleet. Both jobs fit within the Spot worker lifetime. Neither
+wait occupies the four-slot publication pool. The hosted manifest job requires
+successful source proof and admitted migrator work before it starts; a queued
+migrator job alone is not evidence of admission. It retains its 20-minute budget
+for manifest verification and signing. It revalidates the latest source attempt
+once before publishing; changed or missing proof fails immediately without
+starting another wait on the publication runner.
 Image jobs retain
 their existing package permissions.
 

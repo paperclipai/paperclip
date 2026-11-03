@@ -61,14 +61,34 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
     "the registry-only manifest merge does not need a Docker Hub mirror");
 });
 
-test("the hosted manifest gate requires source proof before publishing any tag", () => {
+test("source proof gates publication without occupying a publication runner", () => {
   const workflow = readWorkflow("docker.yml");
+  const observer = workflow.split("  source_verification:\n")[1].split("  reuse_canary_image:")[0];
+  const gate = workflow.split("  publication_verification:\n")[1].split("  merge-and-push:")[0];
   const publisher = workflow.split("  merge-and-push:\n")[1].split("  promote_canary_channel:")[0];
-  const gate = publisher.indexOf("run: node scripts/watch-release-source.mjs --require-proof");
-  assert.ok(gate > 0);
-  assert.ok(gate < publisher.indexOf("- name: Create manifest list and push"));
-  assert.match(publisher, /needs: \[build-and-push, source_verification\]/);
-  assert.match(publisher, /actions: write # restart only exact-source producers deferred before admission/);
+  assert.match(observer, /verified: \$\{\{ steps.watch.outputs.verified \}\}/);
+  assert.match(gate, /run: node scripts\/watch-release-source.mjs --require-proof/);
+  assert.match(gate, /actions: write # restart only exact-source producers deferred before admission/);
+  assert.match(gate, /needs: \[build-and-push, source_verification\]/);
+  assert.match(publisher, /needs: \[build-and-push, source_verification, publication_verification\]/);
+  assert.doesNotMatch(publisher, /--require-proof|actions: write/);
+  assert.ok(publisher.indexOf("run: node scripts/watch-release-source.mjs --check-proof") < publisher.indexOf("- name: Create manifest list and push"));
+  assert.match(publisher, /actions: read/);
+  assert.match(publisher, /timeout-minutes: 20/);
+  const expression = publisher.match(/^    if: \$\{\{ (.+) \}\}$/m)[1].replaceAll("needs.build-and-push", "needs.build");
+  for (const [ref, observed, fallback, expected] of [
+    ["refs/heads/master", "true", "skipped", true],
+    ["refs/heads/master", "false", "skipped", false],
+    ["refs/heads/master", undefined, "skipped", false],
+    ["refs/heads/master", "false", "success", true],
+    ["refs/heads/master", "false", "failure", false],
+    ["refs/tags/v1", undefined, "skipped", true],
+  ]) {
+    assert.equal(runInNewContext(expression, { cancelled: () => false, github: { ref }, needs: {
+      build: { result: "success" }, source_verification: { result: ref === "refs/heads/master" ? "success" : "skipped", outputs: { verified: observed } },
+      publication_verification: { result: fallback },
+    } }), expected);
+  }
 });
 
 test("chaos verification isolates callers that verify the same source commit", () => {

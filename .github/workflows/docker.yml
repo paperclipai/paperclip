@@ -36,11 +36,13 @@ jobs:
   source_verification:
     name: Watch exact-source verification
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
-    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt >= 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 44
     permissions:
       contents: read
       actions: write
+    outputs:
+      verified: ${{ steps.watch.outputs.verified }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -49,6 +51,7 @@ jobs:
         with:
           node-version: 24
       - name: Stop images when source checks fail and report runner waits
+        id: watch
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/watch-release-source.mjs
@@ -327,18 +330,40 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Wait for proof on ephemeral verification capacity. Publication runners do
+  # only registry/signing work. Each Spot observer stays below its 45m lifetime.
+  publication_verification:
+    name: Require exact-source verification
+    if: ${{ !cancelled() && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && needs.build-and-push.result == 'success' && needs.source_verification.result == 'success' && needs.source_verification.outputs.verified != 'true' }}
+    needs: [build-and-push, source_verification]
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt >= 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    timeout-minutes: 44
+    permissions:
+      contents: read
+      actions: write # restart only exact-source producers deferred before admission
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Require source proof and migrator admission before publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/watch-release-source.mjs --require-proof
+
   # Names the per-architecture digests as one manifest list under the real
   # tags. Nothing is publicly tagged until this runs, so a half-published
   # multi-arch image is not a state anything can pull.
   merge-and-push:
-    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.source_verification.result == 'success' || needs.source_verification.result == 'skipped') }}
-    needs: [build-and-push, source_verification]
+    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.source_verification.result == 'success' || needs.source_verification.result == 'skipped') && (needs.publication_verification.result == 'success' || (needs.publication_verification.result == 'skipped' && (github.ref != 'refs/heads/master' || needs.source_verification.outputs.verified == 'true'))) }}
+    needs: [build-and-push, source_verification, publication_verification]
     runs-on: ${{ github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || 'ubuntu-latest' }}
-    # The final exact-source wait may outlive the bounded Spot monitor.
-    timeout-minutes: ${{ github.ref == 'refs/heads/master' && 75 || 20 }}
+    timeout-minutes: 20
     permissions:
       contents: read
-      actions: write # restart only exact-source producers deferred before admission
+      actions: read
       packages: write
       id-token: write
       attestations: write
@@ -398,18 +423,18 @@ jobs:
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
 
-      # The Spot observer may end before healthy checks finish. This hosted
-      # gate requires proof and admitted migrator work before publishing tags.
-      - name: Setup Node.js for the final source gate
-        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+      - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
-      - name: Require exact-source verification before publication
+
+      # Revalidate the latest attempt after runner assignment without waiting
+      # here. A concurrent source retry must invalidate the earlier proof.
+      - name: Revalidate exact-source proof before publication
         if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/watch-release-source.mjs --require-proof
+        run: node scripts/watch-release-source.mjs --check-proof
 
       - name: Create manifest list and push
         working-directory: /tmp/digests

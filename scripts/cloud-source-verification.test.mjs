@@ -520,6 +520,29 @@ describe("release candidate admission", () => {
     assert.equal(rejected.requested.size, 0);
   });
 
+  test("a queued migrator is pending until its build actually starts", async () => {
+    const f = fixture("cloud-migrator-artifacts.yml", { status: "in_progress", conclusion: null });
+    const producer = f.runs[f.file][0];
+    const build = { ...job(producer, "Build migrator", null), status: "queued", labels: ["cloud-release-32"] };
+    f.jobs[producer.id] = [job(producer, migratorAdmissionJob, "success"), build];
+    assert.equal(await requestDeferredProducer(f), "pending");
+    build.status = "in_progress";
+    assert.equal(await requestDeferredProducer(f), "admitted");
+    build.run_attempt = 2;
+    assert.equal(await requestDeferredProducer(f), "pending", "a stale build cannot admit work");
+    assert.deepEqual(f.writes, []);
+  });
+
+  test("a rejected duplicate with stale read visibility remains pending without claiming admission", async () => {
+    for (const status of [409, 422, 403]) {
+      const f = fixture();
+      f.rerun = async () => { throw Object.assign(new Error("retry rejected"), { status }); };
+      if (status === 403) await assert.rejects(requestDeferredProducer(f), /retry rejected/);
+      else assert.equal(await requestDeferredProducer(f), "pending");
+      assert.equal(f.requested.size, 0);
+    }
+  });
+
   test("source proof waits for admission, restarts it, and accepts only the new attempt", async () => {
     const f = fixture();
     await assert.rejects(readSourceVerification(sha, f.api), SourceVerificationDeferred);
