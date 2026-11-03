@@ -232,6 +232,71 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it("commits queued text in one batch and observes each event before the result boundary", async () => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let reachedBoundary!: () => void;
+    const boundaryReached = new Promise<void>(resolve => { reachedBoundary = resolve; });
+    const textEvents = [1, 2, 3].map(seq => ({
+      ...runnerEvent(seq, "item.delta", { kind: "agentMessage", text: `chunk-${seq}` }), priority: 1 as const,
+    }));
+    const source = [...textEvents, runnerEvent(4, "run.result.proposed", result), runnerEvent(5, "turn.completed")];
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        for (const event of source) {
+          if (event.eventType === "run.result.proposed") reachedBoundary();
+          yield event;
+        }
+      },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return { result, terminal, turnId: "turn-recovery" }; },
+      async snapshot() {
+        return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery",
+          cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "batch-fixture", version: "1", capabilities }; },
+      async openSession() { return session; },
+    };
+    const committed: PrpEvent[] = [];
+    const makeReceipt = (event: PrpEvent) => ({ cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq,
+      disposition: "committed" as const });
+    const appendEvents = vi.fn(async (events: readonly PrpEvent[]) => {
+      committed.push(...events);
+      return events.map(makeReceipt);
+    });
+    const port: ControlPlanePort = {
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent(event) {
+        const prp = event as PrpEvent;
+        if (prp === textEvents[0]) await firstReleased;
+        committed.push(prp);
+        return makeReceipt(prp);
+      },
+      appendEvents,
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const observed: PrpEvent[] = [];
+    const execution = executeNativeSession({ input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resolveGovernedWait({ event }) { observed.push(event); return null; } });
+    await boundaryReached;
+    expect(appendEvents).not.toHaveBeenCalled();
+    expect(observed).toEqual([]);
+    releaseFirst();
+    const completed = await execution;
+    expect(completed).toMatchObject({ result, terminal, nativeEventCount: committed.length });
+    expect(appendEvents).toHaveBeenCalledExactlyOnceWith(textEvents.slice(1), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(committed.filter(event => event.sourceKind === "runner")).toEqual(source);
+    expect(observed).toEqual(textEvents);
+  });
+
   it("completes Cursor Cloud semantic planning through its default-only harness without losing the pinned revision", async () => {
     await writeFile(join(WORKSPACE, "cloud-plan-instructions.md"), "Make the plan only. Do not implement it.\n");
     const prepared = preparedInput();
