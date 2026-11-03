@@ -11,7 +11,7 @@ const targets: DropTarget[] = [];
 
 function activeTarget() {
   const unavailable = '[inert], [hidden], [aria-hidden="true"]';
-  const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'))
+  const dialogs = Array.from(document.querySelectorAll('[aria-modal="true"], [role="alertdialog"], dialog[open], [data-slot="dialog-content"], [data-slot="sheet-content"]'))
     .filter(dialog => !dialog.closest(unavailable));
   const dialog = dialogs.at(-1);
   return targets.findLast(target => target.element.isConnected
@@ -44,31 +44,34 @@ export function ComposerFileDropTarget({
     targets.push(target);
     targets.forEach(item => item.reset());
 
-    const accepts = (event: DragEvent) => activeTarget() === target
-      && current.current.enabled && Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const owns = (event: DragEvent) => activeTarget() === target
+      && !(event.target instanceof Element && event.target.closest("[data-file-drop-target]"))
+      && Array.from(event.dataTransfer?.types ?? []).includes("Files");
     const enter = (event: DragEvent) => {
-      if (!accepts(event)) return;
+      if (!owns(event)) { reset(); return; }
       event.preventDefault();
+      if (!current.current.enabled) return;
       depth += 1;
       setDragging(true);
     };
     const over = (event: DragEvent) => {
-      if (!accepts(event)) return;
+      if (!owns(event)) { reset(); return; }
       event.preventDefault();
-      event.dataTransfer!.dropEffect = "copy";
-      setDragging(true);
+      event.dataTransfer!.dropEffect = current.current.enabled ? "copy" : "none";
+      setDragging(current.current.enabled);
     };
     const leave = (event: DragEvent) => {
-      if (!accepts(event)) return;
+      if (!owns(event)) return;
       depth = Math.max(0, depth - 1);
       if (depth === 0 || (!event.relatedTarget && event.target === document.documentElement)) reset();
     };
     const drop = (event: DragEvent) => {
-      const accepted = accepts(event);
+      const owned = owns(event);
       reset();
-      if (!accepted) return;
+      if (!owned) return;
       event.preventDefault();
       event.stopPropagation();
+      if (!current.current.enabled) return;
       const files = Array.from(event.dataTransfer?.files ?? []);
       if (files.length) current.current.onFiles(files);
     };

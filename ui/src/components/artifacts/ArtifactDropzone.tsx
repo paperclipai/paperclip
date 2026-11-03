@@ -18,6 +18,8 @@ export function ArtifactDropzone({ children, onUpload, enabled = true, target }:
     const element = target ?? rootRef.current;
     setDragging(false);
     if (!enabled || !element) return;
+    const previousTarget = element.getAttribute("data-file-drop-target");
+    element.setAttribute("data-file-drop-target", "");
     let depth = 0;
     const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
     const enter = (event: DragEvent) => {
@@ -53,6 +55,8 @@ export function ArtifactDropzone({ children, onUpload, enabled = true, target }:
     element.addEventListener("dragleave", leave);
     element.addEventListener("drop", drop);
     return () => {
+      if (previousTarget === null) element.removeAttribute("data-file-drop-target");
+      else element.setAttribute("data-file-drop-target", previousTarget);
       element.removeEventListener("dragenter", enter);
       element.removeEventListener("dragover", over);
       element.removeEventListener("dragleave", leave);

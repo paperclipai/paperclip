@@ -2,6 +2,9 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ArtifactDropzone } from "../artifacts/ArtifactDropzone";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 
 let host: HTMLDivElement;
@@ -63,7 +66,7 @@ describe("composer screen file drops", () => {
     const taskFiles = vi.fn(); const newFiles = vi.fn();
     const content = (open: boolean, enabled = true) => <>
       <ComposerFileDropTarget enabled onFiles={taskFiles} />
-      {open ? <div role="dialog"><ComposerFileDropTarget newTask enabled={enabled} onFiles={newFiles} /></div> : null}
+      {open ? <Dialog open><DialogContent aria-describedby={undefined}><DialogTitle>New task</DialogTitle><ComposerFileDropTarget newTask enabled={enabled} onFiles={newFiles} /></DialogContent></Dialog> : null}
     </>;
     render(content(true));
     drag("dragenter");
@@ -82,8 +85,54 @@ describe("composer screen file drops", () => {
 
   it("does not send files to the underlying task while another dialog is open", () => {
     const onFiles = vi.fn();
-    render(<><ComposerFileDropTarget enabled onFiles={onFiles} /><div role="dialog">Settings</div></>);
+    render(<><ComposerFileDropTarget enabled onFiles={onFiles} /><Dialog open><DialogContent aria-describedby={undefined}><DialogTitle>Settings</DialogTitle></DialogContent></Dialog></>);
     drag("dragenter"); drag("drop");
+    expect(overlay()).toBeNull(); expect(onFiles).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("preserves artifact uploads with an external target: %s", (external) => {
+    const onFiles = vi.fn(); const onUpload = vi.fn();
+    const frame = document.createElement("div");
+    const header = document.createElement("button");
+    frame.append(header); document.body.append(frame);
+    try {
+      render(<><ComposerFileDropTarget enabled onFiles={onFiles} />
+        <ArtifactDropzone onUpload={onUpload} target={external ? frame : undefined}><button data-artifact-file>File</button></ArtifactDropzone></>);
+      const destination = external ? header : host.querySelector("[data-artifact-file]")!;
+      drag("dragenter"); expect(overlay()).not.toBeNull();
+      drag("dragenter", destination); drag("dragover", destination);
+      expect(overlay()).toBeNull();
+      expect(document.querySelector("[data-artifact-drop-overlay]")).not.toBeNull();
+      expect(drag("drop", destination).defaultPrevented).toBe(true);
+      expect(onUpload).toHaveBeenCalledExactlyOnceWith([file]);
+      expect(onFiles).not.toHaveBeenCalled();
+      drag("dragenter"); expect(overlay()).not.toBeNull(); drag("drop");
+      expect(onFiles).toHaveBeenCalledExactlyOnceWith([file]);
+      render(<div />);
+      expect(frame.hasAttribute("data-file-drop-target")).toBe(false);
+    } finally { frame.remove(); }
+  });
+
+  it("keeps composer drops available while a portaled picker is open", () => {
+    const onFiles = vi.fn();
+    render(<><ComposerFileDropTarget enabled onFiles={onFiles} />
+      <Popover open><PopoverTrigger>Model</PopoverTrigger><PopoverContent>Choose model</PopoverContent></Popover></>);
+    const picker = document.querySelector('[data-slot="popover-content"]')!;
+    expect(picker.getAttribute("role")).toBe("dialog");
+    expect(host.contains(picker)).toBe(false);
+    drag("dragenter"); expect(overlay()).not.toBeNull();
+    expect(drag("drop", picker).defaultPrevented).toBe(true);
+    expect(onFiles).toHaveBeenCalledExactlyOnceWith([file]);
+  });
+
+  it("prevents browser navigation while the new task is read-only", () => {
+    const onFiles = vi.fn();
+    render(<Dialog open><DialogContent aria-describedby={undefined}><DialogTitle>New task</DialogTitle>
+      <ComposerFileDropTarget newTask enabled={false} onFiles={onFiles} />
+    </DialogContent></Dialog>);
+    expect(drag("dragenter").defaultPrevented).toBe(true);
+    expect(drag("dragover").defaultPrevented).toBe(true);
+    expect(drag("drop").defaultPrevented).toBe(true);
     expect(overlay()).toBeNull(); expect(onFiles).not.toHaveBeenCalled();
   });
 
