@@ -39,6 +39,24 @@ async function createLease() {
 }
 
 describe("fake sandbox lease cleanup", () => {
+  it.each(["destroy", "release"] as const)("%s removes an empty unreadable directory", async (operation) => {
+    const { harness, root, params } = await createLease();
+    const unreadable = path.join(root, "workspace/unreadable");
+    await mkdir(unreadable);
+    await chmod(unreadable, 0o000);
+    try {
+      const result = operation === "destroy"
+        ? await harness.destroyLease(params)
+        : await harness.releaseLease(params);
+      expect(result).toBeUndefined();
+      await expect(access(root)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await harness.inspectLease(params)).toMatchObject({ state: "destroyed" });
+    } finally {
+      await chmod(unreadable, 0o700).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["destroy", "release"] as const)("%s removes sealed native runtime context", async (operation) => {
     const { harness, root, params } = await createLease();
     const instructions = path.join(root, "workspace/.paperclip-runtime/paperclip-runner/sessions/session/filesystem/context/instructions");
