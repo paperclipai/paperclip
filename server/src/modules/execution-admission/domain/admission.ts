@@ -30,7 +30,7 @@ export function prepareAdmissionRecord(input: AdmissionRecordInput): AdmissionRe
   const contextRevision = input.contextRevision.trim();
   if (!contextRevision || contextRevision.length > MAX_CONTEXT_REVISION_LENGTH) return { kind: "invalid_context_revision" };
   const primaryProjectId = input.primaryProjectId?.toLowerCase() ?? null;
-  const candidates = [...input.referencedProjectIds, ...(primaryProjectId ? [primaryProjectId] : [])].map(id => id.toLowerCase());
+  const candidates = [...input.referencedProjectIds, ...(primaryProjectId === null ? [] : [primaryProjectId])].map(id => id.toLowerCase());
   if (candidates.some(id => !UUID.test(id))) return { kind: "invalid_project_id" };
   const projectIds = [...new Set(candidates)].sort();
   if (projectIds.length > MAX_ADMISSION_PROJECTS) {

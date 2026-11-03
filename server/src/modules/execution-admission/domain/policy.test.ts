@@ -68,6 +68,8 @@ describe("admission record", () => {
   it("rejects invalid references, oversized sets and missing context identity instead of narrowing", () => {
     expect(prepareAdmissionRecord({ primaryProjectId: null, referencedProjectIds: [a, "Design"], contextRevision: "r" }))
       .toEqual({ kind: "invalid_project_id" });
+    expect(prepareAdmissionRecord({ primaryProjectId: "", referencedProjectIds: [a], contextRevision: "r" }))
+      .toEqual({ kind: "invalid_project_id" });
     const many = Array.from({ length: MAX_ADMISSION_PROJECTS + 1 }, (_, index) =>
       `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`);
     expect(prepareAdmissionRecord({ primaryProjectId: null, referencedProjectIds: many, contextRevision: "r" }))
