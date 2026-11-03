@@ -1,5 +1,5 @@
 import { withAgentAppearance } from "@paperclipai/shared";
-import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -119,8 +119,30 @@ function dateIso(value: Date | null | undefined) {
   return value ? value.toISOString() : null;
 }
 
-function readString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+/** One ownership contract for history detection and recorded event projection. */
+function timelineOwnershipProjection() {
+  const record = (value: SQL) => sql`case when jsonb_typeof(${value}) = 'object' then ${value} else '{}'::jsonb end`;
+  const details = record(sql`${activityLog.details}`);
+  const previous = record(sql`${details} -> '_previous'`);
+  const changes = record(sql`${details} -> 'changes'`);
+  const canonical = sql`${activityLog.action} = 'issue.updated' and jsonb_typeof(${details} -> 'changes') = 'object'`;
+  const changed = ["assigneeAgentId", "assigneeUserId"].map(key => {
+    const change = record(sql`${changes} -> ${key}`);
+    return sql`case when ${canonical} then
+      (${change} ? 'from' and ${change} ? 'to' and (${change} -> 'from') is distinct from (${change} -> 'to'))
+      else (${details} ? ${key} and (not (${previous} ? ${key}) or (${details} -> ${key}) is distinct from (${previous} -> ${key}))) end`;
+  });
+  const stringValue = (value: SQL) => sql<string | null>`case when jsonb_typeof(${value}) = 'string'
+    then nullif(btrim(${value} #>> '{}'), '') else null end`;
+  const target = (key: string, legacyKey: string) => sql<string | null>`case when ${canonical}
+    then ${stringValue(sql`${changes} -> ${key} -> 'to'`)}
+    else coalesce(${stringValue(sql`${details} -> ${key}`)}, ${stringValue(sql`${details} -> ${legacyKey}`)}) end`;
+  return {
+    recorded: sql<boolean>`coalesce(position('assign' in ${activityLog.action}) > 0 or
+      (${activityLog.action} = 'issue.updated' and (${sql.join(changed, sql` or `)})), false)`,
+    agentId: target("assigneeAgentId", "toAgentId"),
+    userId: target("assigneeUserId", "toUserId"),
+  };
 }
 
 function readNumber(value: unknown) {
@@ -486,6 +508,19 @@ export function workTimelineService(db: Db) {
       };
     }
 
+    const ownership = timelineOwnershipProjection();
+    // Read only presence, for the page and its already-readable parents. This
+    // returns at most 2 * MAX_LIMIT IDs, regardless of history length or window.
+    const ownershipIssueIds = maybeUuidList(pagedIssues.flatMap(issue => [
+      issue.id, ...(issue.parentId && issueById.has(issue.parentId) ? [issue.parentId] : []),
+    ]));
+    const ownershipRows = await db.selectDistinct({ issueId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, input.companyId), eq(activityLog.entityType, "issue"),
+        inArray(activityLog.entityId, ownershipIssueIds), ownership.recorded))
+      .limit(ownershipIssueIds.length);
+    const ownershipHistory = new Set(ownershipRows.map(row => row.issueId));
+
     const actorIds = new Set<string>();
     const events: WorkTimelineEvent[] = [];
     const edges: WorkTimelineEdge[] = [];
@@ -501,7 +536,7 @@ export function workTimelineService(db: Db) {
       });
 
       const assigneeActorId = actorForIssueAssignee(issue);
-      if (assigneeActorId) {
+      if (assigneeActorId && !ownershipHistory.has(issue.id)) {
         actorIds.add(assigneeActorId);
         edges.push({
           fromActorId: creatorActorId,
@@ -514,7 +549,8 @@ export function workTimelineService(db: Db) {
 
       const parent = issue.parentId ? issueById.get(issue.parentId) : null;
       const parentActorId = parent ? actorForIssueAssignee(parent) ?? actorForIssueCreator(parent) : null;
-      if (parentActorId && assigneeActorId && parentActorId !== assigneeActorId) {
+      if (parentActorId && assigneeActorId && parentActorId !== assigneeActorId
+        && !ownershipHistory.has(issue.id) && parent && !ownershipHistory.has(parent.id)) {
         actorIds.add(parentActorId);
         edges.push({
           fromActorId: parentActorId,
@@ -645,7 +681,9 @@ export function workTimelineService(db: Db) {
           actorType: activityLog.actorType,
           actorId: activityLog.actorId,
           action: activityLog.action,
-          details: activityLog.details,
+          assignmentRecorded: ownership.recorded,
+          assignmentAgentId: ownership.agentId,
+          assignmentUserId: ownership.userId,
           createdAt: activityLog.createdAt,
         })
         .from(activityLog)
@@ -728,42 +766,10 @@ export function workTimelineService(db: Db) {
       });
     }
 
-    // Canonical task edits use issue.updated, not an assignment-specific action.
-    // The presence of a field is distinct from a null (unassignment) value.
-    const assignments = logRows.flatMap((row) => {
-      const details = row.details && typeof row.details === "object" && !Array.isArray(row.details)
-        ? row.details as Record<string, unknown> : {};
-      const previous = details._previous && typeof details._previous === "object" && !Array.isArray(details._previous)
-        ? details._previous as Record<string, unknown> : {};
-      const changes = row.action === "issue.updated" && details.changes && typeof details.changes === "object" && !Array.isArray(details.changes)
-        ? details.changes as Record<string, unknown> : null;
-      const changeFor = (key: string) => {
-        const value = changes?.[key];
-        return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-      };
-      // PATCH payload fields include repeated values; its saved change receipt
-      // alone identifies actual changes. Older records retain their prior shape.
-      const changed = ["assigneeAgentId", "assigneeUserId"].some((key) => {
-        if (changes) {
-          const change = changeFor(key);
-          return Object.hasOwn(change, "from") && Object.hasOwn(change, "to") && change.from !== change.to;
-        }
-        return Object.hasOwn(details, key) && (!Object.hasOwn(previous, key) || details[key] !== previous[key]);
-      });
-      if (!row.action.includes("assign") && !(row.action === "issue.updated" && changed)) return [];
-      const targetAgentId = changes ? readString(changeFor("assigneeAgentId").to)
-        : readString(details.assigneeAgentId) ?? readString(details.toAgentId);
-      const targetUserId = changes ? readString(changeFor("assigneeUserId").to)
-        : readString(details.assigneeUserId) ?? readString(details.toUserId);
-      return [{ row, toActorId: targetAgentId ? actorId("agent", targetAgentId)
-        : targetUserId ? actorId("user", targetUserId) : null }];
-    });
-    const recordedAssignmentIssues = new Set(assignments.map(({ row }) => row.issueId));
-    // A current owner does not prove that they owned the task when it was created.
-    for (let index = edges.length - 1; index >= 0; index--) {
-      if (edges[index]!.kind === "assignment" && recordedAssignmentIssues.has(edges[index]!.issueId)) edges.splice(index, 1);
-    }
-    for (const { row, toActorId } of assignments) {
+    for (const row of logRows) {
+      if (!row.assignmentRecorded) continue;
+      const toActorId = row.assignmentAgentId ? actorId("agent", row.assignmentAgentId)
+        : row.assignmentUserId ? actorId("user", row.assignmentUserId) : null;
       if (!toActorId) continue;
       const logActorType = row.actorType === "agent" || row.actorType === "user" || row.actorType === "plugin"
         ? row.actorType : "system";
