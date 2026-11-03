@@ -86,3 +86,17 @@ test('cache restores are exact and only a frozen canonical master push can publi
   const workflow = readFileSync(new URL('../../workflows/release-verify.yml', import.meta.url), 'utf8');
   assert.match(workflow, /save-cache: .*inputs\.ref == github\.sha/);
 });
+
+
+test('paired test timings remain available when lifecycle hooks disable materialized caching', () => {
+  const workflow = readFileSync(new URL('../../workflows/ci-work-benchmark.yml', import.meta.url), 'utf8');
+  const step = name => workflow.split(`      - name: ${name}\n`)[1].split('      - name:')[0];
+  for (const name of ['Save PR-scoped qualification dependencies', 'Save PR-scoped qualification builds',
+    'Remove materialized outputs before restore', 'Qualify a real warm restore',
+    'Verify exact cache hits and record setup comparison']) {
+    assert.match(step(name), /if: steps.qualification.outputs.cacheable == 'true'/);
+  }
+  assert.match(step('Explain disabled materialized reuse'), /cacheable != 'true'/);
+  assert.doesNotMatch(step('Prepare unchanged baseline'), /if:/);
+  assert.doesNotMatch(step('Compare complete commands and executed case inventories'), /if:/);
+});
