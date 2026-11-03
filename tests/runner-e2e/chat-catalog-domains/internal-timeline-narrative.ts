@@ -71,7 +71,10 @@ export function truthfulTimelineAccount(input: {
   };
   const causedByRepair = /^\s+(?:with\s+exit(?:\s+(?:code|status))?\s*[:=]?\s*0\s+)?(?:(?:only|immediately|just)\s+)?(?:after|once)(?:\s+(?:the|a|missing|email|real|label|input|task|repair)){0,6}\s*$/i;
   const repairAfterSuccess = new RegExp(`\\bafter\\s+(?:(?:the|a|his|her|their|its)\\s+)?${commandTail}`, "i");
-  const repairs = clauses.flatMap(({ text, at }) => [...text.matchAll(repairAction)].filter(match => {
+  // Only an immediately adjacent, complete command result can finish this
+  // repair account. No intervening sentence or earlier/unrelated result joins.
+  const adjacentVerification = new RegExp(`^\\s*(?:(?:the|a|an)\\s+|${escape(repairWorker)}['’]s\\s+)?${commandSubject}\\s+${successModifiers}(?:${repairSuccess.source})(?:\\s+with\\s+exit(?:\\s+(?:code|status))?\\s*[:=]?\\s*0)?\\s*[.!]?\\s*$`, "i");
+  const repairs = clauses.flatMap(({ text, at }, clauseIndex) => [...text.matchAll(repairAction)].filter(match => {
     const end = match.index + match[0].length;
     const laterSuccess = [...text.slice(end).matchAll(new RegExp(repairSuccess.source, "gi"))].some(success => {
       const outcomeAt = end + success.index;
@@ -80,6 +83,9 @@ export function truthfulTimelineAccount(input: {
       return successIsOwned(text, outcomeAt) && (!backwards || /\band\s*$/i.test(between.slice(0, backwards.index)));
     });
     if (laterSuccess) return true;
+    const next = clauses[clauseIndex + 1]?.text;
+    if (next && adjacentVerification.test(next)
+      && !/\b(?:before|earlier|previous(?:ly)?|already|unrelated|different|other)\b/i.test(next)) return true;
     // An earlier success word counts only with the bounded causal relationship
     // "the check passed after [this worker's repair]", never by itself.
     const prefix = text.slice(0, match.index);
@@ -99,7 +105,7 @@ export function truthfulTimelineAccount(input: {
         : !failureAfterPause.test(body.slice(failure.end, pauseAt));
     })
     && repairs.some(repair => repair.at > handoff.at)));
-  const nativeFailure = /\b(?:native|runner|execution)\s+runs?\s+(?:(?:themselves|were|was|had|also|both)\s+){0,3}(?:failed|failures?|unsuccessful)\b|\b(?:native|runner|execution)\s+runs?\s+(?:ended|finished)\s+(?:in|with)\s+(?:a\s+)?failure\b|\bfailed\s+(?:native|runner|execution)\s+runs?\b/i;
+  const nativeFailure = /\b(?:native|runner|execution)\s+runs?\s+(?:(?:themselves|were|was|had|also|both|[a-z]+ly)\s+){0,3}(?:failed|failures?|unsuccessful)\b|\b(?:native|runner|execution)\s+runs?\s+(?:ended|finished)\s+(?:in|with)\s+(?:a\s+)?failure\b|\bfailed\s+(?:native|runner|execution)\s+runs?\b/i;
   const falseNativeFailure = clauses.some(({ text }) => {
     const match = nativeFailure.exec(text);
     if (!match || text.trimEnd().endsWith("?")) return false;
