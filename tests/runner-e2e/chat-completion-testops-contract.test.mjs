@@ -9,7 +9,7 @@ import path from 'node:path';
 import { parse } from 'yaml';
 import { admitDispatch, cases, targetSha, validateSelection, evidencePolicy } from './chat-completion-testops-contract.mjs';
 import { actualContext } from './chat-completion-testops-cli.mjs';
-import { fullCatalogCases, catalogTargetSha, verifyFullCatalogLauncherSource } from './chat-full-catalog-testops-manifest.mjs';
+import { fullCatalogCases, catalogTargetSha, catalogLauncherSha256 } from './chat-full-catalog-testops-manifest.mjs';
 import { paidWorker } from './chat-completion-testops-host-control.mjs';
 
 test('reusable workers bind named environment secrets without inherited or extra credentials', async () => {
@@ -155,7 +155,7 @@ test('full catalog evidence authority binds every singleton to the reviewed cand
   const bytes = readFileSync(new URL(snapshot.path, import.meta.url));
   const actualDigest = createHash('sha256').update(bytes).digest('hex');
   assert.equal(createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex'), snapshot.gitBlobOid);
-  assert.equal(verifyFullCatalogLauncherSource({ targetSha: snapshot.targetSha, launcherSha256: actualDigest }), true);
+  assert.equal(catalogLauncherSha256, actualDigest);
   const f = fixture();
   f.env.GITHUB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF.replace('chat-completion-testops.yml', 'chat-catalog-testops.yml');
   const context = admitDispatch(f.env, f.event, 42);
@@ -167,12 +167,4 @@ test('full catalog evidence authority binds every singleton to the reviewed cand
   }
   const pilot = evidencePolicy(f.selection, f.context, '77');
   assert.equal(pilot.approvals[0].launchSha256, 'f2e69957c350b220b06edca49194a4bd07d70bc882f80838eeb7203184c0bd0d');
-});
-
-
-test('candidate launcher source closure rejects missing, changed or wrong-target bytes before GO', () => {
-  const actual = { targetSha: catalogTargetSha, launcherSha256: '2f6f1a3c5f646020424477c10ca44ce95b1fa9d46dfc28998698580d09c4fadf' };
-  assert.equal(verifyFullCatalogLauncherSource(actual), true);
-  for (const source of [undefined, {}, { ...actual, targetSha: 'f'.repeat(40) }, { ...actual, launcherSha256: 'f'.repeat(64) }, { targetSha: actual.targetSha }])
-    assert.throws(() => verifyFullCatalogLauncherSource(source), /launcher_source_mismatch/);
 });

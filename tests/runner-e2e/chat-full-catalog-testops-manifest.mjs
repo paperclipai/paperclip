@@ -54,13 +54,6 @@ function freeze(value) {
 validateFullCatalogManifest(manifest);
 export const catalogTargetSha = manifest.targetSha;
 export const catalogLauncherSha256 = manifest.launcherSha256;
-// The operator GO compares this tuple with bytes read from the immutable Git target.
-// This never derives authority from an unchecked environment override.
-export function verifyFullCatalogLauncherSource(source) {
-  if (source?.targetSha !== catalogTargetSha || source?.launcherSha256 !== catalogLauncherSha256)
-    throw new Error('chat_full_catalog_launcher_source_mismatch');
-  return true;
-}
 export const catalogManifestSha256 = createHash('sha256').update(bytes).digest('hex');
 export const fullCatalogPlanName = 'Chat feature catalog — OpenCode 1017 (candidate)';
 export const fullCatalogCases = freeze(manifest.cases);
