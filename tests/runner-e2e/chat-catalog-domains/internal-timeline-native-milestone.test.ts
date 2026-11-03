@@ -211,3 +211,22 @@ it.each([
 ])("rejects reversed or unrelated pause chronology: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
 });
+
+
+it.each([
+  "Today UTC: Morgan paused the task after the verification command failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan was blocked because the accessibility check failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan paused the task after the email label check failed. You reassigned the task to Riley. Riley fixed the label and the accessibility check passed.",
+  "Today UTC: Morgan was blocked because the accessible heading test failed. You reassigned the task to Riley. Riley fixed the label and the email label check passed.",
+  "Today UTC: Morgan paused the task after verify_launch_html failed. You reassigned the task to Riley. Riley fixed the label and verify_launch_html passed.",
+])("accepts bounded command descriptions linking a pause to failure: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  "Today UTC: Morgan paused the task before the verification command failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan was blocked before the accessibility check failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan paused the task after the unrelated meeting failed while a verification command was available. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan paused the task after the email label check was scheduled and an unrelated meeting failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+])("rejects reversed pause order with bounded command descriptions: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
+});
