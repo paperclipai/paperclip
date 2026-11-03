@@ -495,6 +495,13 @@ fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
     Ok(())
 }
 
+fn apply_task_memory_cgroup(args: &[String]) -> Result<(), LocalRunnerError> {
+    if let Some(path) = optional_value(args, "--task-memory-cgroup")? {
+        paperclip_runner_core::task_memory::set_task_cgroup(PathBuf::from(path));
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     #[cfg(unix)]
     if matches!(
@@ -515,6 +522,7 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
         return Ok(());
     }
     apply_oom_score_adj(args)?;
+    apply_task_memory_cgroup(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
         || args.iter().any(|argument| argument == "--listen-port")

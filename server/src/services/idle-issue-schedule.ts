@@ -5,6 +5,7 @@ import { AGENT_STATUSES, issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONIT
 import type { ScheduledWake } from "./idle-scheduled-work.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./recovery/onboarding-first-task-wait.js";
 import { completedAgentUnblockRequest, responseDrivenIssueWait } from "./idle-work-proof.js";
+import { passiveIdleConversation } from "./conversation-idle-proof.js";
 
 const processGeneration = randomUUID();
 const limit = 10_000;
@@ -31,6 +32,7 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     untouched_onboarding: boolean; response_driven_wait: boolean;
     unblock_request_finished: boolean;
     response_wait_generation: unknown;
+    passive_conversation: boolean;
   }>(sql`SELECT i.id, i.company_id, i.status, i.updated_at, i.assignee_agent_id, i.assignee_user_id,
       i.checkout_run_id, i.execution_run_id, i.execution_policy, i.execution_state, i.unblock_descriptor,
       i.conversation_agent_id, i.monitor_next_check_at, i.monitor_wake_requested_at, i.monitor_attempt_count,
@@ -39,6 +41,7 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
       (i.assignee_agent_id IS NULL OR a.id IS NOT NULL) AS scoped,
       (${sql.raw(responseDrivenIssueWait('i'))}) AS response_driven_wait,
       (${sql.raw(completedAgentUnblockRequest('i'))}) AS unblock_request_finished,
+      (${sql.raw(passiveIdleConversation('i'))}) AS passive_conversation,
       (SELECT jsonb_agg(jsonb_build_array(w.id, w.updated_at, w.kind, w.status, w.source_run_id,
           w.effective_resolver_policy, w.continuation_policy, w.addressee_agent_id, w.addressee_user_id) ORDER BY w.id)
         FROM issue_thread_interactions w WHERE w.issue_id = i.id AND w.status = 'pending') AS response_wait_generation,
@@ -62,7 +65,7 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     if (!statuses.has(row.status) || row.company_status !== "active" || row.scoped !== true
       || (row.assignee_agent_id && !agentStatuses.has(row.agent_status ?? ""))
       || row.unsafe_dependencies !== false || row.checkout_run_id || row.execution_run_id
-      || row.conversation_agent_id || row.monitor_wake_requested_at
+      || (row.conversation_agent_id && row.passive_conversation !== true) || row.monitor_wake_requested_at
       || (row.execution_state !== null && state?.status !== "idle")
       || (row.execution_policy !== null && !policy)) return { blocked: true };
     if (row.status === "blocked" && row.dependency_ready) return { blocked: true };
@@ -82,7 +85,7 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     }
     if (policy?.monitor != null) return { blocked: true };
     const unblock = record(row.unblock_descriptor);
-    const passive = row.status === "backlog"
+    const passive = row.passive_conversation === true || row.status === "backlog"
       || (row.status === "todo" && !row.assignee_agent_id)
       || (row.status === "todo" && row.assignee_agent_id && row.agent_status === "idle" && row.untouched_onboarding === true)
       || (row.status === "blocked" && (row.unblock_descriptor === null || unblock?.owner === "board"

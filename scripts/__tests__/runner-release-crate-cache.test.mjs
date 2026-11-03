@@ -361,8 +361,8 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
   assert.deepEqual(lanes, [
     ["static checks", false],
     ["rust", true],
-    ["vitest 1/2", false],
-    ["vitest 2/2", true],
+    ["vitest package", false],
+    ["vitest native server", true],
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {
     assert.match(step(body, stepName), /if: \$\{\{ matrix\.release_crate == true \}\}/, stepName);
@@ -414,7 +414,7 @@ test("only the master Rust lane writes the crate, after a lookup, with the reade
 
   // The dependency cache's own writer gate is the same expression.
   assert.match(body, new RegExp(`save-if: \\$\\{\\{ ${WRITER_GATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\}\\}`));
-  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 1);
+  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 2, "release and debug workspace caches have separate guarded writers");
 });
 
 test("the scope names the platform, the compiler and the checkout root, and survives a missing rustc", () => {

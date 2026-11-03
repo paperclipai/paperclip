@@ -66,9 +66,12 @@ describeEmbeddedPostgres("attention service", () => {
   }, 30_000);
 
   afterEach(async () => {
-
-
-    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    await db.transaction(async (tx) => {
+      // CASCADE emits a notice for every related table; keep cleanup quiet while
+      // retaining warnings/errors and the same complete database reset.
+      await tx.execute(sql`SET LOCAL client_min_messages = warning`);
+      await tx.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    });
   });
 
   afterAll(async () => {
@@ -1208,6 +1211,9 @@ describeEmbeddedPostgres("attention service", () => {
       contextSnapshot: { wakeReason: "timer" }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
 
+    // Bulk-loaded fixtures need planner statistics before exercising production queries.
+    await db.execute(sql`ANALYZE heartbeat_runs, heartbeat_run_events`);
+
     const events: Array<Record<string, unknown>> = [], now = Date.now();
     const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
@@ -1250,6 +1256,9 @@ describeEmbeddedPostgres("attention service", () => {
       id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
       contextSnapshot: { issueId }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
+
+    // Do not race autovacuum to collect statistics for the 16,400 new rows.
+    await db.execute(sql`ANALYZE heartbeat_runs, heartbeat_run_events`);
 
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,

@@ -10314,6 +10314,11 @@ describe("native warm session supervision", () => {
 
   it("blocks idle sleep for a released local warm session until its close checkpoint finishes", async () => {
     await closeIdleWarmNativeSessionsForRestart();
+    const { reconcilePersistedRuntimeServicesOnStartup, readWorkspaceRuntimeIdleWork } = await import("../workspace-runtime.js");
+    // The real server reconstructs the workspace owner before startup can
+    // become quiet. This fixture has no runtime rows or desired services.
+    await reconcilePersistedRuntimeServicesOnStartup(leaseDb());
+    expect(readWorkspaceRuntimeIdleWork()).toBe("none");
     markIdleIngressTracked(); markIdleStartupComplete({ scheduledBackups: false });
     let finishClose!: () => void;
     const checkpoint = new Promise<void>(resolve => { finishClose = resolve; });
