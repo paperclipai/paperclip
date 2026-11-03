@@ -2,15 +2,21 @@ type ReviewKind = "rejected" | "failed" | "executed";
 const completedVerb = "(?:added|saved|written|wrote|updated|applied|approved|completed|succeeded|done)";
 const completion = new RegExp(`\\b${completedVerb}\\b`, "gi");
 const adverb = "(?:already|now|just|successfully|actually|indeed|definitely|yet)";
-const reviewSuffix = /^\s+(?:locally\s+)?for\s+(?:(?:your|our|the)\s+)?review(?:\s*$|\s*,\s*(?:please\s+)?(?:approve|review|confirm)\b)/i;
+const localReviewLocation = "(?:locally|in this (?:chat|reply|response))";
+const localReviewModifier = `(?:${localReviewLocation}|\\(${localReviewLocation}\\))`;
+const reviewPurpose = `(?:${localReviewModifier}\\s+)?for\\s+(?:(?:your|our|the)\\s+)?review(?:\\s*$|\\s*,\\s*(?:please\\s+)?(?:approve|review|confirm)\\b)`;
+const reviewSuffix = new RegExp(`^\\s+${reviewPurpose}`, "i");
+const proposalObjectSuffix = new RegExp(`^\\s+(?:(?:a|the|your|our)\\s+)?(?:proposal|draft)s?\\s+${reviewPurpose}`, "i");
 
 function localProposalAuthorship(before: string, verb: string, after: string, prior: string) {
   const locations = [...prior.matchAll(/(?:^|,|\()\s*(?:in|inside|into|on|to)\s+([^,()]+)(?=,|\)|$)/gi)];
   if (locations.some(location => !/^(?:this (?:chat|reply|response)|(?:a |the )?local (?:draft|proposal|context))$/i.test(location[1]!.trim()))) return false;
   if (!/^(?:saved|written|wrote)$/i.test(verb)) return false;
-  const proposalSubject = /\b(?:proposal|draft)(?:\s+(?:that|which))?\s+(?:(?:i|we)\s+)?(?:(?:was|were|have|has|had|been|already|just)\s+)*$/i.test(before);
-  return (proposalSubject && reviewSuffix.test(after))
-    || /^\s+(?:a |the |your |our )?(?:proposal|draft)\s+(?:locally\s+)?for\s+(?:(?:your|our|the)\s+)?review(?:\s*$|\s*,\s*(?:please\s+)?(?:approve|review|confirm)\b)/i.test(after);
+  const localPrefix = locations.length > 0 || /\blocally\s*$/i.test(before) || /(?:^|,|\()\s*locally(?=,|\))/i.test(prior);
+  const localSuffix = new RegExp(`^\\s+(?:(?:(?:a|the|your|our)\\s+)?(?:proposal|draft)s?\\s+)?${localReviewModifier}\\s+for\\b`, "i").test(after);
+  if (/^saved$/i.test(verb) && !localPrefix && !localSuffix) return false;
+  const proposalSubject = /\b(?:proposal|draft)s?(?:\s+(?:that|which))?\s+(?:(?:i|we)\s+)?(?:(?:was|were|is|are|have|has|had|been|already|just|locally)\s+)*$/i.test(before);
+  return (proposalSubject && reviewSuffix.test(after)) || proposalObjectSuffix.test(after);
 }
 
 function claimsExternalCompletion(reply: string) {
@@ -24,9 +30,9 @@ function claimsExternalCompletion(reply: string) {
       while ((previous = coordinated.exec(scopePrior))) scopePrior = scopePrior.slice(0, previous.index);
       const boundary = [...scopePrior.matchAll(/,|\b(?:but|and|because|although|however)\b/gi)].at(-1);
       const before = boundary ? scopePrior.slice(boundary.index! + boundary[0].length) : scopePrior;
-      const negated = new RegExp(`\\b(?:not|never|nothing|cannot|can't|couldn't|wasn't|weren't|isn't|aren't|haven't|hasn't|hadn't|didn't)(?:\\s+(?:have|has|had|was|were|is|are|be|been|being|${adverb}))*\\s*$`, "i").test(before)
+      const negated = !/\bexcept\b/i.test(after) && (new RegExp(`\\b(?:not|never|nothing|cannot|can't|couldn't|wasn't|weren't|isn't|aren't|haven't|hasn't|hadn't|didn't)(?:\\s+(?:have|has|had|was|were|is|are|be|been|being|${adverb}))*\\s*$`, "i").test(before)
         || /\bno\s+(?:[a-z]+\s+){0,3}(?:was|were|is|are|has|have)(?:\s+been)?\s*$/i.test(before)
-        || (/^\s+(?:no|zero)\s+(?:changes?|updates?|edits?|actions?|writes?)\b|^\s+nothing\b/i.test(after) && !/\bexcept\b/i.test(after));
+        || /^\s+(?:no|zero)\s+(?:changes?|updates?|edits?|actions?|writes?)\b|^\s+nothing\b/i.test(after));
       if (negated || localProposalAuthorship(before, match[0], after, prior)) continue;
       const future = new RegExp(`\\b(?:will|would|could|might|may|should|can|must)(?:\\s+(?:have|be|been|being|${adverb}))*\\s*$`, "i").test(before);
       const comma = sentence.indexOf(",");
