@@ -61,7 +61,7 @@ if (!support.supported) console.warn(`Skipping idle sleep diagnostics Postgres t
     expect(blockers(report)).toEqual([]);
     expect(report.diagnostics?.checks.filter(check => !check.reason.includes(".") ||
       ["agents.execution_or_timer", "agents.lifecycle", "agents.company_hold", "heartbeat_runs.budget_cancellation"].includes(check.reason)))
-      .toHaveLength(72);
+      .toHaveLength(73);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId))).toHaveLength(1);
   });
 
