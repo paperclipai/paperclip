@@ -62,6 +62,7 @@ export const Success: Story = { name: "02 · Connect · Success", args: { scenar
   await expect(await canvas.findByRole("link", { name: /^Open Slack$/ })).toHaveAttribute("href", "https://app.slack.com/client/TSTORY/DSTORY");
 } };
 export const ApprovalPending: Story = { name: "Recovery · Slack approval pending", args: { scenario: "declined" } };
+export const AlreadyConnected: Story = { ...Success, name: "02 · Connect · Already connected", args: { scenario: "complete" } };
 export const ApprovalDeclined: Story = { name: "Recovery · Slack approval declined", args: { scenario: "approval_denied" } };
 export const WorkspaceReconnect: Story = {
   name: "Recovery · Reconnect workspace before app creation",
