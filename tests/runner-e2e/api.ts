@@ -14,6 +14,33 @@ export class RunnerApiHttpError extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "RunnerApiHttpError"; }
 }
 
+export type SkillSourceUpdateCode = "skill_source_ref_unavailable" | "skill_source_github_rate_limited" | "skill_source_github_read_failed" | "unclassified";
+export class SkillSourceUpdateReadError extends RunnerApiHttpError {
+  constructor(status: number, readonly reason: SkillSourceUpdateCode, readonly providerStatus: number | null) {
+    super(status, `Skill source update prerequisite failed (HTTP ${status}; reason=${reason}; providerStatus=${providerStatus ?? "unknown"}); body withheld`);
+    this.name = "SkillSourceUpdateReadError";
+  }
+}
+async function closedSkillUpdateFailure(response: Response): Promise<{ reason: SkillSourceUpdateCode; providerStatus: number | null }> {
+  const unknown = { reason: "unclassified" as const, providerStatus: null };
+  const reader = response.body?.getReader(); if (!reader) return unknown;
+  const chunks: Uint8Array[] = []; let bytes = 0, done = false;
+  try {
+    for (;;) {
+      const next = await reader.read(); if (next.done) { done = true; break; }
+      bytes += next.value.byteLength; if (bytes > 16_384) return unknown;
+      chunks.push(next.value);
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { code?: unknown; details?: { code?: unknown; status?: unknown } };
+    if (!body || typeof body !== "object" || Array.isArray(body)) return unknown;
+    const codes: readonly string[] = ["skill_source_ref_unavailable", "skill_source_github_rate_limited", "skill_source_github_read_failed"];
+    if (typeof body.code !== "string" || !codes.includes(body.code) || body.details?.code !== undefined && body.details.code !== body.code) return unknown;
+    const status = body.details?.status;
+    return { reason: body.code as SkillSourceUpdateCode, providerStatus: typeof status === "number" && [401, 403, 404, 422, 429, 500, 502, 503, 504].includes(status) ? status : null };
+  } catch { return unknown; }
+  finally { if (!done) await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
 /** Admission-only diagnostics. Never retain the rejected value or its cause. */
 export class RemoteAdmissionReadError extends Error {
   constructor(
@@ -45,6 +72,17 @@ export class RunnerApi {
     const response = await this.request.get(path, { ...this.sessionOptions(), ...options });
     if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
     return response.json() as Promise<T>;
+  }
+
+  async getSkillSourceUpdateStatus<T>(companyId: string, skillId: string, options?: { timeout: number }): Promise<T> {
+    const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+    if (!this.browserCookie || !uuid.test(companyId) || !uuid.test(skillId)) throw new Error("Skill source update prerequisite requires the exact owned human-session endpoint");
+    const response = await this.authenticatedResponse("GET", `/api/companies/${companyId}/skills/${skillId}/update-status`, undefined, options);
+    if (!response.ok) {
+      const closed = await closedSkillUpdateFailure(response);
+      throw new SkillSourceUpdateReadError(response.status, closed.reason, closed.providerStatus);
+    }
+    try { return await response.json() as T; } catch { throw new Error("Skill source update prerequisite returned invalid JSON; body withheld"); }
   }
 
   async bytes(path: string): Promise<Buffer> {

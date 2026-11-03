@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { SkillSourceUpdateReadError } from "../api.js";
 import { readFileSync } from "node:fs";
-import { accessibilityUpdatePins as pins, gradeIntegratorSkillUpdate } from "./integrator-skill-update.js";
+import { accessibilityUpdatePins as pins, gradeIntegratorSkillUpdate, requireSkillUpdatePrerequisite, integratorSkillUpdateCases } from "./integrator-skill-update.js";
 // Unmodified MIT-licensed source bytes, with LICENSE.md in the same fixture
 // directory. Product setup still fetches the actual GitHub commit snapshots.
 import { createHash } from "node:crypto";
+import { saveSkillConversationContext } from "./integrator-skill-context.js";
+vi.mock("./integrator-skill-context.js", () => ({ saveSkillConversationContext: vi.fn(async () => ({})) }));
+vi.mock("./integrator-skill-source.js", () => ({ editableLocalNotes: async () => ({ id: "local", currentVersionId: "local-version" }) }));
+vi.mock("./integrator-skill-versions.js", () => ({ readSkillVersionHistory: async () => [] }));
+
 const bytes = { old: readFileSync(new URL("../fixtures/accessibility-source/0.4.SKILL.md", import.meta.url), "utf8"), next: readFileSync(new URL("../fixtures/accessibility-source/0.5.SKILL.md", import.meta.url), "utf8") };
 function valid(old: string, next: string) {
   const upstream = { id: "up", companyId: "company", name: "accessibility", editable: false, sourceRef: pins.oldCommit, currentVersionId: "old", markdown: old };
@@ -34,4 +40,45 @@ describe("genuine immutable public skill update qualification", () => {
     const overwritten = valid(bytes.old, bytes.next); overwritten.localFork.markdown = bytes.next; expect(gradeIntegratorSkillUpdate(overwritten).passed).toBe(false);
     const lying = valid(bytes.old, bytes.next); lying.reply = `${lying.state.reviewCheckpoint.reply}\nI haven't updated the accessibility skill, only fetched its source.`; expect(gradeIntegratorSkillUpdate(lying).passed).toBe(false);
   });
+});
+
+it("requires the actual pinned update prerequisite before admitting the human request", async () => {
+  const real = { supported: true, hasUpdate: true, currentRef: pins.oldCommit, latestRef: pins.newCommit, trackingRef: pins.newCommit };
+  const evidence = vi.fn(async (_name: string, _value: unknown) => {});
+  const read = vi.fn(async (): Promise<{ supported: boolean; hasUpdate: boolean; currentRef: string; latestRef: string; trackingRef: string }> => real);
+  const ctx = { observationDeadlineAt: Date.now() + 30_000, input: { api: { getSkillSourceUpdateStatus: read }, fixtures: { company: { id: "company" } }, evidence } } as unknown as Parameters<typeof requireSkillUpdatePrerequisite>[0];
+  await requireSkillUpdatePrerequisite(ctx, "selected"); expect(read).toHaveBeenCalledWith("company", "selected", { timeout: expect.any(Number) });
+  expect(evidence).toHaveBeenCalledWith("chat-skill-update-prerequisite.json", expect.objectContaining({ currentPinnedRevisionMatched: true, latestPinnedRevisionMatched: true }));
+  for (const bad of [{ ...real, supported: false }, { ...real, hasUpdate: false }, { ...real, currentRef: pins.newCommit }, { ...real, latestRef: pins.oldCommit }, { ...real, trackingRef: "wrong" }]) {
+    read.mockResolvedValueOnce(bad); await expect(requireSkillUpdatePrerequisite(ctx, "selected")).rejects.toThrow("unavailable");
+  }
+  read.mockRejectedValueOnce(new Error("closed HTTP error")); await expect(requireSkillUpdatePrerequisite(ctx, "selected")).rejects.toThrow("closed HTTP error");
+  expect(evidence).toHaveBeenCalledOnce();
+});
+
+function setupFixture(unavailable: boolean) {
+  const source = { id: "source", revision: 1, entries: [{ path: pins.path, skillId: "up" }], lastScanCommit: pins.oldCommit, trackingRef: pins.newCommit, automaticUpdates: false };
+  const prerequisite = vi.fn(async () => { if (unavailable) throw new SkillSourceUpdateReadError(422, "skill_source_ref_unavailable", 422);
+    return { supported: true, hasUpdate: true, currentRef: pins.oldCommit, latestRef: pins.newCommit, trackingRef: pins.newCommit }; });
+  const ctx = { observationDeadlineAt: Date.now() + 30_000, input: { fixtures: { company: { id: "company" } }, evidence: vi.fn(async (_name: string, _value: unknown) => {}), api: {
+    post: async () => ({ source, imported: [{ id: "up" }] }), patch: async () => source,
+    get: async () => ({ id: "up", sourceType: "github", sourceRef: pins.oldCommit, markdown: bytes.old, editable: false }), getSkillSourceUpdateStatus: prerequisite,
+  } } } as unknown as Parameters<typeof requireSkillUpdatePrerequisite>[0];
+  return { ctx, prerequisite };
+}
+it("actual review-update setup blocks an unavailable dependency before preparing the canonical human request", async () => {
+  vi.mocked(saveSkillConversationContext).mockClear();
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(url.includes(pins.oldCommit) ? bytes.old : bytes.next)));
+  try {
+    const f = setupFixture(true); await expect(integratorSkillUpdateCases[0]!.setup(f.ctx)).rejects.toMatchObject({ name: "SkillSourceUpdateReadError", reason: "skill_source_ref_unavailable" });
+    expect(f.prerequisite).toHaveBeenCalledOnce(); expect(saveSkillConversationContext).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+it("actual review-update setup keeps the real prerequisite and then prepares the unchanged source-aware request", async () => {
+  vi.mocked(saveSkillConversationContext).mockClear();
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(url.includes(pins.oldCommit) ? bytes.old : bytes.next)));
+  try {
+    const f = setupFixture(false); const result = await integratorSkillUpdateCases[0]!.setup(f.ctx);
+    expect(f.prerequisite).toHaveBeenCalledOnce(); expect(saveSkillConversationContext).toHaveBeenCalledOnce(); expect(result.source).toMatchObject({ trackingRef: pins.newCommit, lastScanCommit: pins.oldCommit });
+  } finally { vi.unstubAllGlobals(); }
 });
