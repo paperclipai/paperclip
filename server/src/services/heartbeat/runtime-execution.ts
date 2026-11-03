@@ -1,3 +1,4 @@
+import { observerDeliveryConfig, startRunObserverDelivery } from "../run-observer-delivery.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
@@ -516,7 +517,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const runGoalControlRequestId = readNonEmptyString(
     context.goalControlRequestId,
   );
+  let observerDelivery: Awaited<ReturnType<typeof startRunObserverDelivery>> = null;
   try {
+    observerDelivery = await startRunObserverDelivery(db, { id: run.id, companyId: run.companyId, agentId: run.agentId },
+      observerDeliveryConfig(process.env));
     if (nativeRuntimeResolution.kind === "native") {
       if (!nativeExecution || !nativeRunnerInstanceId)
         throw new Error("native_runtime_selection_not_persisted");
@@ -1219,6 +1223,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     }
     throw adapterErr;
   } finally {
+    await observerDelivery?.close();
     try {
       if (!preserveRunGatewayTokens) await revokeHeartbeatRunGatewayTokens({
         db,

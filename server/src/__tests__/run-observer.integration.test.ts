@@ -1,3 +1,10 @@
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { chmod, mkdtemp, realpath, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { startRunObserverDelivery } from "../services/run-observer-delivery.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -16,6 +23,89 @@ describe("run observer capability", () => {
     server = await startRunnerApiTestServer({ humanSessions: true, databaseUrl: process.env.PAPERCLIP_OBSERVER_TEST_DATABASE_URL });
   }, 90_000);
   afterAll(async () => { await server?.close(); vi.unstubAllEnvs(); });
+  it("automatically delivers and renews only a scoped token over a private local socket", async () => {
+    const f = await server.fixture({ connectionScenario: "fresh" });
+    const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-sink-"));
+    await chmod(directory, 0o700);
+    const socketPath = path.join(directory, "sink.sock");
+    const received: Array<{ runId: string; token: string }> = [];
+    const sink = createServer(socket => {
+      let data = "";
+      socket.on("data", chunk => {
+        data += chunk.toString();
+        if (data.includes("\n")) { received.push(JSON.parse(data)); socket.end("ok\n"); }
+      });
+    });
+    await new Promise<void>((resolve, reject) => sink.once("error", reject).listen(socketPath, resolve));
+    await chmod(socketPath, 0o600);
+    const run = { id: f.runId, companyId: f.companyId, agentId: f.agentId };
+    const config = { socketPath, companyId: f.companyId, agentId: f.agentId };
+    let delivery: Awaited<ReturnType<typeof startRunObserverDelivery>> = null;
+    try {
+      expect(await startRunObserverDelivery(server.db, run, { ...config, agentId: randomUUID() })).toBeNull();
+      await chmod(directory, 0o755);
+      await expect(startRunObserverDelivery(server.db, run, config)).rejects.toThrow("private socket");
+      await chmod(directory, 0o700);
+      delivery = await startRunObserverDelivery(server.db, run, config, { refreshMs: 100 });
+      expect(received[0]?.runId).toBe(f.runId);
+      const headers = { authorization: `Bearer ${received[0]!.token}` };
+      expect((await fetch(`${server.apiUrl}/api/heartbeat-runs/${f.runId}/observer-status`, { headers })).status).toBe(200);
+      expect((await fetch(`${server.apiUrl}/api/agents/me`, { headers })).status).toBe(403);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(received.length).toBeGreaterThan(1);
+      await server.db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.runId));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const count = received.length;
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(received).toHaveLength(count);
+      expect((await fetch(`${server.apiUrl}/api/heartbeat-runs/${f.runId}/observer-status`, { headers })).status).toBe(403);
+      await expect(startRunObserverDelivery(server.db, run, config)).rejects.toThrow("not active");
+    } finally {
+      await delivery?.close();
+      await new Promise<void>(resolve => sink.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("stops a separate fictional process after observer renewal is lost", async () => {
+    const f = await server.fixture({ connectionScenario: "fresh" });
+    const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-process-"));
+    await chmod(directory, 0o700);
+    const socketPath = path.join(directory, "sink.sock");
+    const script = fileURLToPath(new URL("./fixtures/observer-sink-process.mjs", import.meta.url));
+    const sink = spawn(process.execPath, [script, socketPath, server.apiUrl], { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    sink.stdout.on("data", data => { output += data.toString(); });
+    const waitFor = async (message: string) => {
+      const until = Date.now() + 7000;
+      while (!output.includes(message) && Date.now() < until) {
+        if (sink.exitCode !== null) throw new Error("Fictional sink exited early");
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      if (!output.includes(message)) throw new Error(`Fictional sink did not report ${message}`);
+    };
+    let delivery: Awaited<ReturnType<typeof startRunObserverDelivery>> = null;
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_TTL_SECONDS", "1");
+    try {
+      await waitFor("READY");
+      delivery = await startRunObserverDelivery(server.db, { id: f.runId, companyId: f.companyId, agentId: f.agentId },
+        { socketPath, companyId: f.companyId, agentId: f.agentId }, { refreshMs: 150 });
+      await waitFor("WORKER_STARTED");
+      await new Promise(resolve => setTimeout(resolve, 1300));
+      expect(output).not.toContain("WORKER_STOPPED");
+      await delivery!.close();
+      await waitFor("WORKER_STOPPED");
+      expect((await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
+    } finally {
+      await delivery?.close();
+      if (sink.exitCode === null && sink.signalCode === null) {
+        await new Promise<void>(resolve => { sink.once("exit", () => resolve()); sink.kill("SIGTERM"); });
+      }
+      await rm(directory, { recursive: true, force: true });
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_TTL_SECONDS", "172800");
+    }
+  }, 15_000);
+
   it("allows only its own active status and is revoked on stop", async () => {
     const f = await server.fixture({ connectionScenario: "fresh" });
     const other = await server.fixture({ connectionScenario: "fresh" });
