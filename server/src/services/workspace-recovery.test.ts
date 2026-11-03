@@ -1712,7 +1712,7 @@ describe("automatic retained workspace recovery", () => {
         source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
         requestedByActorType: "user", requestedByActorId: "board", requestedAt: new Date(wake.requestedAt.getTime() + 1),
         payload: { issueId: f.issueId, commentId } });
-      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ intentId: receipt.requestId,
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ intentId: messageWakeId,
         retryWait: { reason: "remote_cleanup" } });
       await db.update(agentWakeupRequests).set({ status: "coalesced" }).where(eq(agentWakeupRequests.id, receipt.requestId!));
       const newInput = await taskInterruptionPresentation(db, task);

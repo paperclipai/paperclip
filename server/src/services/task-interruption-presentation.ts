@@ -113,7 +113,8 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       activeObservation > now - 45_000) return { ...base, state: "working" };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
-    return { ...base, intentId: retryWait.id, state: "failed",
+    // Keep the latest input receipt so message submission can settle independently.
+    return { ...base, state: "failed",
       canRetry: !["cleanup_quarantined", "cancelled_by_operator"].includes(reason), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
