@@ -195,9 +195,16 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
             // GitHub retains a completed check's conclusion when PATCHed back to
             // queued/in_progress. A fresh attempt needs a new check run with the
             // same stable name; otherwise a prior success still looks passing.
+            // A completed run under an earlier name is renamed first, so no
+            // stale success remains visible under that name.
             const updateCheck =
               check &&
               !(check.status === "completed" && status !== "completed");
+            if (check && !updateCheck && check.name !== checkName)
+              await request(`/check-runs/${check.id}`, {
+                method: "PATCH",
+                body: { name: checkName },
+              });
             const posted = await request<{ id: number; html_url: string }>(
               updateCheck ? `/check-runs/${check.id}` : "/check-runs",
               {
