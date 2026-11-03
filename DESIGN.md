@@ -162,6 +162,10 @@ Confirmations whose source work is still syncing show “Preparing approval…�
 disable acceptance until the server reports readiness. Refresh that state automatically;
 rejection and revision remain available. Live tool reviews keep their own approval flow.
 
+Confirmation and checkbox confirmation prompts use the shared Markdown renderer.
+Links, lists, emphasis, code and paragraph breaks remain readable in the task
+composer, classic cards and expanded receipts.
+
 Pending questions, confirmations, and other task-thread inputs appear in a separate
 card directly above the ordinary composer. The composer stays available for new
 messages while the card is open. Questions use their compact history entry as the
