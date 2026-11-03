@@ -42,7 +42,7 @@ describeEmbeddedPostgres("responsible owner transfers", () => {
   it("denies agents even when they act for the owner", async () => {
     const f = await fixture();
     const [agent] = await ctx.db.insert(agents).values({ companyId: f.companyId, name: "Worker", role: "engineer", adapterType: "process" }).returning();
-    const actor = { type: "agent", agentId: agent!.id, companyId: f.companyId, source: "agent_key", onBehalfOfUserId: f.userId };
+    const actor = { type: "agent", agentId: agent!.id, companyId: f.companyId, source: "agent_key", onBehalfOfUserId: f.userId, onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "member", status: "active" }] };
     const app = routeApp(ctx.db, actor as never, issueRoutes);
     await request(app).post(url(f.issue.id)).send({ responsibleUserId: f.targetId, expectedResponsibleUserId: f.userId }).expect(403);
   });
@@ -54,6 +54,17 @@ describeEmbeddedPostgres("responsible owner transfers", () => {
     expect(results.map((response) => response.status).sort()).toEqual([200, 409]);
     const audit = await ctx.db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
     expect(audit).toHaveLength(1);
+  });
+
+  it("lets the new owner transfer a private task again", async () => {
+    const f = await fixture();
+    await ctx.db.update(issues).set({ visibility: "private", privacyRootIssueId: f.issue.id }).where(eq(issues.id, f.issue.id));
+    await request(f.app).post(url(f.issue.id)).send({ responsibleUserId: f.targetId, expectedResponsibleUserId: f.userId }).expect(200);
+    const nextApp = routeApp(ctx.db, { ...f.actor, userId: f.targetId,
+      memberships: [{ companyId: f.companyId, membershipRole: "member", status: "active" }],
+    }, issueRoutes);
+    expect((await request(nextApp).get(url(f.issue.id)).expect(200)).body.canTransfer).toBe(true);
+    await request(nextApp).post(url(f.issue.id)).send({ responsibleUserId: f.userId, expectedResponsibleUserId: f.targetId }).expect(200);
   });
 
   it("supports creator fallback and rejects stale ownership", async () => {
