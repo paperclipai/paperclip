@@ -47,7 +47,7 @@ it.each([false, true])("runs access checks while shell settings are pending (mem
   let resolveSettings!: (value: unknown) => void;
   health.mockResolvedValue({ status: "ok", deploymentMode: "authenticated", bootstrapStatus: "ready" });
   session.mockResolvedValue({ user: { id: "user" } });
-  access.mockResolvedValue({ companyIds: ["company"] });
+  access.mockResolvedValue({ userId: "user", companyIds: ["company"] });
   settings.mockReturnValue(new Promise(resolve => { resolveSettings = resolve; }));
   function RoutesUnderTest() {
     const { loaded, enabled } = useStreamlinedUiEnabled();
