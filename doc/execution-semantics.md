@@ -1649,6 +1649,23 @@ resumed sandbox, a warm session, a plugin task, a restart claim, or any
 missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
 rejection.
 
+Resume source selection skips a failed follow-up that never started provider
+work. Such a run holds only the provider checkpoint that it inherited. Without
+the skip, a retry selects it, and controller recovery fails with
+`native_controller_recovery_unsupported:metadata_format` because the run has no
+controller checkpoint. The skip requires all of these:
+
+- The run failed with a bootstrap receipt that says provider work did not start.
+- Its coordinator is `terminal_failure`, with no result, lease owner, or
+  controller process.
+- It has no process identity, provider event, controller checkpoint, run
+  result, or controller recovery pointer.
+- Its checkpoint is bound to this run and session and has no cursor.
+- Its checkpoint names the same provider session as the next selected source.
+
+Otherwise, the run stays a progress barrier. Runtime selection and controller
+recovery use the same selector, so both then use the last committed owner.
+
 A repository-free fresh plugin task directory remains the task's directory on
 ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
 owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
