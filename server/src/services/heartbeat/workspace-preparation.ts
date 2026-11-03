@@ -1000,6 +1000,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   try {
     if (remoteAuthority) {
       if (!remoteSourceState.value || !issueId) throw new Error("remote_workspace_source_missing");
+      if (!selectedEnvironmentId) throw new Error("remote_workspace_environment_missing");
       await assertRemotePreparationOwned();
       const reserved = await reserveRemoteWorkspace({
         db, companyId: agent.companyId, issueId, runId: run.id, agentId: agent.id,
