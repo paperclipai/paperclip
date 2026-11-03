@@ -48,7 +48,11 @@ test("debug cache keys invalidate source, included inputs, deletions and compile
   const env = { CARGO_HOME: path.join(root, "cargo-home") };
   const first = debugKey(root, env);
   assert.equal(debugKey(root, env), first);
+  for (const name of ["RUST_LOG", "RUST_BACKTRACE", "RUSTUP_HOME"]) {
+    assert.equal(debugKey(root, { ...env, [name]: "different-runner-value" }), first, name);
+  }
   assert.notEqual(debugKey(root, { ...env, RUSTFLAGS: "-C target-cpu=native" }), first);
+  assert.notEqual(debugKey(root, { ...env, RUSTC_WORKSPACE_WRAPPER: "/compiler-wrapper" }), first);
   writeFileSync(source, "pub fn run() { panic!(); }\n");
   assert.notEqual(debugKey(root, env), first);
   rmSync(source);

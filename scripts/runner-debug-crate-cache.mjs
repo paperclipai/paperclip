@@ -56,7 +56,9 @@ export function debugKey(root, env = process.env) {
     hash.update(file).update("\0").update(existsSync(path.resolve(root, file))
       ? readFileSync(path.resolve(root, file)) : "missing").update("\0");
   }
-  const buildEnv = Object.entries(env).filter(([name]) => /^(RUST|CARGO_(BUILD|PROFILE|TARGET|ENCODED)|CC$|CXX$|CFLAGS$|CXXFLAGS$|LDFLAGS$)/.test(name)).sort();
+  const buildEnv = Object.entries(env).filter(([name]) =>
+    /^(?:RUSTFLAGS|RUSTDOCFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTC_BOOTSTRAP|RUSTUP_TOOLCHAIN|RUST_TARGET_PATH|CC|CXX|CFLAGS|CXXFLAGS|LDFLAGS)$/.test(name)
+    || /^CARGO_(BUILD|PROFILE|TARGET|ENCODED)/.test(name)).sort();
   hash.update(JSON.stringify(buildEnv));
   return `runner-debug-crate-v1-${computeScope({ workspace: root,
     rustcVersion: readRustcVersion(env, path.join(root, RUNNER_PACKAGE)) })}-${hash.digest("hex")}`;
