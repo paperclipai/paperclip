@@ -5929,9 +5929,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     if (conversationAgent) {
       setBreadcrumbs([{
         label: conversationAgent.name,
-        leading: <AgentAvatar agent={conversationAgent} size={24} />,
+        control: coordinatorWorkspaceEnabled ? <CoordinatorAgentSwitcher agent={conversationAgent} /> : undefined,
+        controlKey: coordinatorWorkspaceEnabled ? `switch:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}` : undefined,
+        leading: coordinatorWorkspaceEnabled ? undefined : <AgentAvatar agent={conversationAgent} size={24} />,
         leadingKey: `agent:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}`,
-        trailing: coordinatorWorkspaceEnabled ? <CoordinatorAgentSwitcher agent={conversationAgent} /> : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
+        trailing: coordinatorWorkspaceEnabled ? undefined : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
         trailingKey: `${coordinatorWorkspaceEnabled ? "switch" : "configure"}:${conversationAgent.id}`,
       }]);
       return;

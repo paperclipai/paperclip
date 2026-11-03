@@ -31,6 +31,8 @@ The existing ordering and per-human/company isolation remain in effect.
 
 Open `/chats`, choose an agent, or use `/chats/:agentRef` and its conversation sidebar.
 
+With Coordinator enabled, click the agent avatar, name, or caret in the chat header to open the agent picker. They form one button with the same keyboard focus and action.
+
 With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
 
 Standing chats open with the latest 20 contiguous messages. Scroll upward to fetch earlier messages, answer receipts, and created tasks. The loading indicator stays in the thread; history failures offer an inline Retry while preserving the draft and reading position. Opening a chat does not fetch its lifetime comment, activity, or run history. Already observed messages survive live refresh and Back within the query-cache session.

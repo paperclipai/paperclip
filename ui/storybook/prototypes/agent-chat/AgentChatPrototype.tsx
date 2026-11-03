@@ -215,6 +215,7 @@ export interface AgentChatPrototypeProps {
   taskComparison?: boolean;
   entryScenario?: EntryScenario;
   sidebarScenario?: SidebarScenario;
+  coordinator?: boolean;
 }
 
 /** Production pages with an in-memory API. No alternate chat controller. */
@@ -224,6 +225,7 @@ export function AgentChatPrototype({
   taskComparison = false,
   entryScenario,
   sidebarScenario,
+  coordinator = false,
 }: AgentChatPrototypeProps) {
   const [ready, setReady] = useState(false);
   const navigate = useNavigate();
@@ -450,6 +452,8 @@ export function AgentChatPrototype({
           companyIds: [issue.companyId],
           memberships: [],
         });
+      if (path === "/api/workspace-preferences/me")
+        return Response.json({ userId: "user-board", coordinatorWorkspaceEnabled: coordinator, updatedAt: null });
       if (path === "/api/instance/settings/experimental")
         return Response.json({
           enableAgentChat: scenario !== "disabled",
@@ -595,7 +599,7 @@ export function AgentChatPrototype({
       }
       queryClient.clear();
     };
-  }, [scenario, taskComparison, entryScenario, sidebarScenario, contextInitiallyOpen, queryClient]);
+  }, [scenario, taskComparison, entryScenario, sidebarScenario, coordinator, contextInitiallyOpen, queryClient]);
   useLayoutEffect(() => {
     if (ready && !initialRouteSet.current) {
       initialRouteSet.current = true;
