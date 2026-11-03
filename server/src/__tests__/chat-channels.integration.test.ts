@@ -1,3 +1,5 @@
+import { chatHistoryActionBlocks } from "./helpers/chat-history-proof.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { resolveCommittedNativeRecoveryNotices, pendingNativeRecoveryNotices } from "../services/native-runtime/native-recovery-notices.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { projectCommittedRun } from "../services/native-runtime/native-run-projection.js";
@@ -9,6 +11,7 @@ import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
+import { reconcilePersistedRuntimeServicesOnStartup, readWorkspaceRuntimeIdleWork } from "../services/workspace-runtime.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
@@ -31,6 +34,10 @@ import * as githubTaskPreparation from "../services/chat-channels/github/task-pr
 import { budgetPolicies } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { readIdleLocalWork } from "../services/idle-local-work.js";
+import { incomingWakeWorkQuery } from "../services/idle-incoming-wake.js";
+import { createChatRuntime } from "../services/chat-runtime.js";
+import { createChatSdkRuntime } from "../services/chat-sdk-runtime.js";
 import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.js";
 import { requestTaskRetry, reconcileTaskChatRetryReceipts } from "../services/task-retry.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
@@ -287,7 +294,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const historyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
+const externalTestDatabaseUrl = historyTestDatabaseUrl ?? process.env.PAPERCLIP_TEST_DATABASE_URL;
 const embeddedPostgresSupport = externalTestDatabaseUrl
   ? { supported: true }
   : await getEmbeddedPostgresTestSupport();
@@ -806,6 +814,8 @@ class FakeChatSdkRuntime {
     return this.endpoints.get(endpointId) ?? null;
   }
 
+  hasUnsettledLifecycle() { return false; }
+
   async replaceEndpoint(options: CreateChatSdkEndpointRuntimeOptions) {
     this.replaceCount += 1;
     this.configurations.set(options.endpointId, options);
@@ -1125,7 +1135,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // Do not expire or time out its connections on those virtual clock jumps.
     db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, {
       idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0,
+      ...(externalTestDatabaseUrl ? { maxConnections: 4 } : {}),
     });
+    // The composed local-probe inventory includes the workspace owner. Match
+    // server startup on this fresh fixture; never adopt or start a leftover.
+    const [runtimeState] = await db.execute<{ configured: boolean }>(sql`SELECT
+      EXISTS (SELECT 1 FROM workspace_runtime_services)
+      OR EXISTS (SELECT 1 FROM project_workspaces)
+      OR EXISTS (SELECT 1 FROM execution_workspaces) AS configured`);
+    expect(runtimeState.configured).toBe(false);
+    expect(await reconcilePersistedRuntimeServicesOnStartup(db)).toEqual({
+      reconciled: 0, adopted: 0, stopped: 0, backfilled: 0, restarted: 0,
+      restartFailed: 0, exposureReservationDrift: [],
+    });
+    expect(readWorkspaceRuntimeIdleWork()).toBe("none");
   }, 90_000);
 
   afterAll(async () => {
@@ -3009,6 +3032,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
       expect(review.assessment?.findings[0].category).toBe(categories[0]);
       expect((await f.action()).status).toBe("processed");
+      expect(await chatHistoryActionBlocks(db, (await f.action()).id)).toBe(false);
       expect(f.responseComments.size).toBe(1);
     });
     it("publishes one score heading when a newly configured bot submits a formatted summary", async () => {
@@ -3072,6 +3096,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [response] = await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, delivery.id),
         eq(chatActions.kind, "github_response_comment")));
       expect(response).toMatchObject({ status: "cancelled", result: { final: true, code: "passive_response_wait" } });
+      expect(await chatHistoryActionBlocks(db, response.id)).toBe(false);
       const writes = f.responseWrites.length;
       const updatedAt = response.updatedAt;
       await responses.processPending();
@@ -3317,6 +3342,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const body = [...f.responseComments.values()][0].body;
       expect(body).not.toMatch(/Review queued|Working on this/);
       expect(body).toContain("paperclip-response-state:final");
+      const responses = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      expect(responses.length).toBeGreaterThan(0);
+      for (const receipt of responses) expect(await chatHistoryActionBlocks(db, receipt.id)).toBe(false);
     });
     it("retires a legacy coalesced GitHub placeholder before replacing its receipt", async () => {
       const f = await publicationRetryFixture();
@@ -3428,6 +3456,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect([...f.responseComments.values()].some(comment => comment.body.includes("Newer progress"))).toBe(true);
       const [settled] = await db.select().from(chatActions).where(eq(chatActions.id, first.id));
       expect(settled.result?.final).toBe(false);
+      expect(await chatHistoryActionBlocks(db, settled.id)).toBe(true);
     });
     it.each([false, true])("recovers an approved queued GitHub review without another approval (revoked: %s)", async revoked => {
       const f = await publicationRetryFixture();
@@ -3463,6 +3492,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await db.update(chatActions).set({ result: { ...action.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, action.id));
       await f.service.processPending();
       expect((await f.action()).status).toBe(revoked ? "cancelled" : "processed");
+      expect(await chatHistoryActionBlocks(db, (await f.action()).id)).toBe(false);
       if (revoked) await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: f.assessment })).rejects.toThrow();
       else expect(await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: f.assessment }))
         .toMatchObject({ status: "replayed", result: { data: { status: "processed", score: 3 } } });
@@ -4174,10 +4204,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .toEqual({ next: null, active: 0 });
         expect(f.responseWrites).toHaveLength(baseline);
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
-        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        const readStacks: string[] = [], select = db.select;
+        const reads = vi.spyOn(db, "select").mockImplementation((...args) => {
+          if (readStacks.length < 5) readStacks.push(new Error("Unexpected idle database read").stack ?? "Stack unavailable");
+          return Reflect.apply(select, db, args);
+        }), writes = vi.spyOn(db, "transaction");
         try {
           await vi.advanceTimersByTimeAsync(120_000);
-          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          expect(reads, readStacks.join("\n\n")).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
           expect(f.responseWrites).toHaveLength(baseline);
         } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
         const settlePresentation = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
@@ -4833,6 +4867,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.responseWrites.filter(write => write.method === "POST")).toHaveLength(2);
       const [deleted] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment"), sql`${chatActions.result}->>'id' = ${String(firstId)}`));
       expect(deleted).toMatchObject({ status: "cancelled", result: { final: true, code: "response_deleted" } });
+      expect(await chatHistoryActionBlocks(db, deleted.id)).toBe(false);
       await githubResponseCommentService(db, f.providerFetch).processPending();
       expect(f.responseComments.size).toBe(1);
       await expect(githubRunReplyState(db, { ...f.session, endpointId: f.endpoint.id })).resolves.toBe("confirmed");
@@ -9849,6 +9884,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(0);
         expect((await f.service.get(f.endpoint.id)).status).not.toBe("revoked");
         expect((await f.service.get(f.endpoint.id)).setup.slackRegistration).toMatchObject({ status: "configured", appId: f.appId });
+        const [reconnectReceipt] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "slack_managed_reconnect")));
+        expect(reconnectReceipt).toMatchObject({ status: "processed", result: null });
+        expect(await chatHistoryActionBlocks(db, reconnectReceipt.id)).toBe(false);
         await f.service.slackRegistration.managed.provision(f.endpoint.id, actor, reconnectInput);
         await f.provision();
         expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.managedInstall"))).toHaveLength(1);
@@ -17125,12 +17163,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           context.endpoint.id,
         );
         expect(context.posts).toEqual([]);
-        if (change === "edited comment")
+        if (change === "edited comment") {
           expect(await context.receipt()).toMatchObject({
             status: "cancelled",
             result: { attempts: 0, code: "source_changed_or_unavailable" },
           });
-        else expect(await context.receipt()).toBeUndefined();
+          expect(await chatHistoryActionBlocks(db, (await context.receipt())!.id)).toBe(false);
+        } else expect(await context.receipt()).toBeUndefined();
         expect(context.wakeup).not.toHaveBeenCalled();
       } finally {
         await retirePublicationFixture(context.service, context.endpoint.id);
@@ -17811,6 +17850,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         result: { code: "github_webhook_ingress_runtime_superseded" },
       });
       expect((await context.ingress())!.payload).not.toHaveProperty("body");
+      expect(await chatHistoryActionBlocks(db, (await context.ingress())!.id)).toBe(false);
       expect(sdkDispatch).not.toHaveBeenCalled();
       expect(
         await db
@@ -17862,6 +17902,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         result: { code: "github_webhook_recovery_source_changed" },
       });
       expect(cancelled!.payload).not.toHaveProperty("body");
+      expect(await chatHistoryActionBlocks(db, cancelled!.id)).toBe(false);
       expect(cancelled!.result?.retryable).not.toBe(true);
       expect(context.requests).toEqual([]);
       expect(
@@ -29939,13 +29980,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
     );
     await initializationEntered;
+    expect(runtime.hasUnsettledLifecycle()).toBe(false); // Fake registry tail is already settled.
+    expect(await registeredIdleProbeState()).toBe("present");
     await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+    let shutdownSettled = false;
+    const shutdown = service.shutdown().then(() => { shutdownSettled = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(shutdownSettled).toBe(false);
+    expect(await registeredIdleProbeState()).toBe("present");
     releaseInitialization();
 
     await expect(initializingWebhook).rejects.toMatchObject({
       status: 409,
       details: { code: "chat_endpoint_runtime_superseded" },
     });
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
+    expect(await registeredIdleProbeState()).toBe("none");
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
     await expect(service.get(endpoint.id)).resolves.toMatchObject({
       status: "paused",
@@ -43636,6 +43687,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(original?.state).toBe("published");
       expect(original?.payload.card?.actions).toEqual(expect.arrayContaining([expect.objectContaining({ type: "callback" })]));
       if (kind === "connection_intent") expect(original?.payload.card?.actions).toContainEqual({ type: "link", label: "Review connection", url: expect.any(String) });
+      const controls = (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id),
+        eq(sql<string>`${chatActions.payload}->>'interactionId'`, interaction.id))))
+        .filter(row => ["confirmation_response", "question_form_open", "question_form_submit", "question_answer"].includes(row.kind));
+      expect(controls.length).toBeGreaterThan(0);
+      for (const control of controls) expect(await chatHistoryActionBlocks(db, control.id)).toBe(true);
       if (kind === "connection_intent") await interactions.resolveConnectionIntent(issue, interaction.id, { version: 1, outcome: "declined" }, { userId: "owner-user" });
       else if (kind === "request_item_verdicts") await interactions.submitItemVerdicts(issue, interaction.id, { verdicts: [{ id: "docs", verdict: "approve" }] }, { userId: "owner-user" });
       else await interactions.rejectInteraction(issue, interaction.id, {}, { userId: "owner-user" });
@@ -43645,6 +43701,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(terminal?.state).toBe("published");
       expect(terminal?.providerMessageId).toBe(original.providerMessageId);
       expect(terminal?.payload.card?.actions).toBeUndefined();
+      for (const control of controls) expect(await chatHistoryActionBlocks(db, control.id)).toBe(false);
+      const control = controls[0]!;
+      await db.update(chatActions).set({ payload: { ...control.payload, interactionId: randomUUID() } }).where(eq(chatActions.id, control.id));
+      expect(await chatHistoryActionBlocks(db, control.id)).toBe(true);
+      await db.update(chatActions).set({ payload: control.payload }).where(eq(chatActions.id, control.id));
     } finally {
       await service.shutdown();
       if (previousPublicUrl === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
@@ -49487,7 +49548,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .then((rows) => rows.length);
       expect(deliveryCount).toBeGreaterThan(0);
 
+      const endpointBlocksSleep = async () => (await db.execute(sql`
+        SELECT EXISTS (${incomingWakeWorkQuery("chat_endpoints")} AND endpoint.id = ${endpoint.id}::uuid) AS blocked`))[0].blocked;
+      if (provider === "github") expect(await endpointBlocksSleep()).toBe(true);
       await service.configure(endpoint.id, { action: "remove" }, "owner-user");
+      if (provider === "github") expect(await endpointBlocksSleep()).toBe(false);
+      else expect(await endpointBlocksSleep()).toBe(true); // No persistent/provider coverage expansion.
 
       await expect(service.get(endpoint.id)).resolves.toMatchObject({
         status: "archived",
@@ -49528,6 +49594,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ).resolves.toHaveLength(deliveryCount);
     },
   );
+
+  async function registeredIdleProbeState() {
+    let state: string | undefined;
+    await readIdleLocalWork({ diagnostic: (reason, value) => { if (reason === "local.registered_probes") state = value; } });
+    return state;
+  }
+
+  it.each([
+    { name: "SDK", create: createChatSdkRuntime },
+    { name: "shared", create: createChatRuntime },
+  ])("retains the service idle probe after failed $name retirement and shutdown until owner retry", async ({ create }) => {
+    const fixture = await seedCompany();
+    const f = await configuredGitHubEndpoint(fixture);
+    const registry = create();
+    const first = await registry.replaceEndpoint(f.runtime.configurations.get(f.endpoint.id)!);
+    const shutdown = vi.spyOn(first, "shutdown")
+      .mockRejectedValueOnce(new Error("remove retirement uncertain"))
+      .mockRejectedValueOnce(new Error("shutdown retirement uncertain"))
+      .mockResolvedValue(undefined);
+    const service = chatChannelService(db, { runtime: registry, fetch: f.providerFetch, publicBaseUrl: "https://paperclip.example" });
+    fixtureServices.add(service);
+    expect(await registeredIdleProbeState()).toBe("none");
+    await service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
+    expect(registry.get(f.endpoint.id)).toBeNull();
+    expect(registry.list()).toEqual([]);
+    expect(registry.hasUnsettledLifecycle()).toBe(true);
+    const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+    try {
+      expect(await registeredIdleProbeState()).toBe("present");
+      expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+    } finally { select.mockRestore(); transaction.mockRestore(); }
+    await expect(service.shutdown()).rejects.toThrow("shutdown retirement uncertain");
+    expect(await registeredIdleProbeState()).toBe("present");
+    await service.shutdown();
+    expect(shutdown).toHaveBeenCalledTimes(3);
+    expect(registry.hasUnsettledLifecycle()).toBe(false);
+    expect(await registeredIdleProbeState()).toBe("none");
+  });
 
   it("retries credential cleanup after archival made a remove partially complete", async () => {
     const fixture = await seedCompany();
@@ -60559,7 +60663,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const commentsBefore = await db
           .select({ id: issueComments.id })
           .from(issueComments)
-          .where(eq(issueComments.issueId, conversation.issueId));
+          .where(eq(issueComments.issueId, conversation.issueId))
+          .orderBy(asc(issueComments.id));
         const wakesBefore = wakeup.mock.calls.length;
         const reactionsBefore = providerRuntime.reactions.length;
         const postsBefore = providerRuntime.posts.length;
@@ -60589,7 +60694,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             await db
               .select({ id: issueComments.id })
               .from(issueComments)
-              .where(eq(issueComments.issueId, conversation.issueId)),
+              .where(eq(issueComments.issueId, conversation.issueId))
+              .orderBy(asc(issueComments.id)),
           ).toEqual(commentsBefore);
           expect(wakeup).toHaveBeenCalledTimes(wakesBefore);
           expect(cancelRun).not.toHaveBeenCalled();
@@ -64413,6 +64519,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     } finally { await f.service.shutdown(); }
   });
 
+  it("retries saved GitHub input after an endpoint admission lock collision", async () => {
+    const f = await successfulGitHubQueuedInputFixture();
+    const heartbeat = heartbeatService(db);
+    const failures: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => failures.push(error) });
+    let unlock!: () => void, locked!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const competingAdmission = db.transaction(async tx => {
+      await tx.select({ id: chatEndpoints.id }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, f.endpoint.id)).for("no key update");
+      locked();
+      await released;
+    });
+    try {
+      await acquired;
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+      const priorFailures = failures.length;
+      const retry = await requestTaskRetry(f.input);
+      await expect.poll(() => failures.length, { timeout: 5_000 }).toBeGreaterThan(priorFailures);
+      expect((await readAgentWakeupRequestsById(f.pending!.id))[0].runId).toBeNull();
+      unlock(); await competingAdmission;
+      await expect.poll(async () => (await readAgentWakeupRequestsById(f.pending!.id))[0].runId,
+        { timeout: 40_000 }).toBeTruthy();
+      await expect.poll(async () => (await readAgentWakeupRequestsById(retry.requestId!))[0].status,
+        { timeout: 40_000 }).toBe("coalesced");
+      const [saved] = await readAgentWakeupRequestsById(f.pending!.id);
+      expect((await readHeartbeatRunsByCompanyId(f.fixture.companyId))
+        .filter(run => run.wakeupRequestId === f.pending!.id)).toHaveLength(1);
+      expect((await readAgentWakeupRequestsById(retry.requestId!))[0].runId).toBe(saved.runId);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toMatchObject({ status: "succeeded" });
+    } finally {
+      unlock(); await competingAdmission;
+      await coordinator.stop();
+      await f.service.shutdown();
+    }
+  }, 90_000);
+
   it.each(["reconnected", "newer_input", "reconnected_newer_input", "snapshot_newer_input"] as const)(
     "admits current GitHub task Retry without replaying obsolete input: %s", async kind => {
       const f = await currentGitHubTaskRetryFixture(kind.includes("newer_input"));
@@ -66531,6 +66676,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it.each([
     "bootstrap",
+    "session_open",
     "checkpoint",
     "distinct_account",
     "null_account",
@@ -66644,7 +66790,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               kind === "retryable" ? "retryable_failure" : "terminal_failure",
             nativeSessionId,
             runnerInstanceId,
-            errorCode: "provider_initialize_timeout",
+            errorCode: kind === "session_open" ? "provider_session_open_rejected" : "provider_initialize_timeout",
             processPid: kind === "live_pid" ? process.pid : null,
             runnerProfileJson:
               kind === "missing_input"
@@ -66686,7 +66832,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                   ? "native_event_replay_conflict"
                   : kind === "cleanup"
                     ? "native_session_cleanup_quarantined"
-                    : "provider_initialize_timeout",
+                    : kind === "session_open"
+                      ? "provider_session_open_rejected"
+                      : "provider_initialize_timeout",
               recoveryMode:
                 kind === "ambiguous"
                   ? "ambiguous_state"
@@ -66793,7 +66941,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
         // A null account without existing provider-session evidence remains
         // conservatively ineligible for the exhausted-run recovery lane.
-        if (["bootstrap", "checkpoint", "distinct_account", "notice_cleanup", "notice_replacement"].includes(kind)) {
+        if (["bootstrap", "session_open", "checkpoint", "distinct_account", "notice_cleanup", "notice_replacement"].includes(kind)) {
           const staged = await attempt;
           await expect(
             context.service.processFailedChatRunRetry(staged.actionId),
@@ -81351,6 +81499,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(context.consentCards).toHaveLength(1);
         expect(context.fileCards).toEqual([]);
         expect(context.uploadRequest).not.toHaveBeenCalled();
+        expect(await chatHistoryActionBlocks(db, intent!.id)).toBe(true);
         const before = await context.service.getPublicationBatchStatus(
           context.endpoint.id,
           context.conversation.id,
@@ -81379,6 +81528,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           body: context.bytes,
         });
         expect(context.fileCards).toHaveLength(1);
+        expect(await chatHistoryActionBlocks(db, intent!.id)).toBe(false);
         const status = await context.service.getPublicationBatchStatus(
           context.endpoint.id,
           context.conversation.id,

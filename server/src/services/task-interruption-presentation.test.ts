@@ -7,6 +7,28 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+it("explains a persisted Retry wait without exposing the saved payload", () => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  const wait = { id: "retry", requestedAt: new Date(), sourceRunId: failed.id,
+    executionWaitReason: "workspace_repair_required" };
+  const presentation = projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false });
+  expect(presentation).toMatchObject({ state: "failed", canRetry: true,
+    retryWait: { reason: "workspace_repair_required", message: "Retry is waiting for Paperclip to recover the saved files. Your message is saved." } });
+  expect(projectTaskInterruption(issue, { run: failed, agent, wait: { ...wait, sourceRunId: "another-run" }, paused: false, approval: false }))
+    .not.toHaveProperty("retryWait");
+  expect(projectTaskInterruption(issue, { run: failed, agent, wait: { ...wait, executionWaitReason: "secret-payload" }, paused: false, approval: false }))
+    .toMatchObject({ retryWait: { reason: "execution_recovery", message: "Retry is waiting for execution checks. Your message is saved." } });
+  expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: true, approval: false }))
+    .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
+});
+
+it.each(["cleanup_quarantined", "cancelled_by_operator"])("does not offer Retry for terminal Retry waits: %s", reason => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+    wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: reason } }))
+    .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason } });
+});
+
 it("preserves the actual workspace preparation error without changing retry authority", () => {
   const failedRun = { ...run, errorCode: "workspace_validation_failed",
     error: "The selected project has no repository source for a remote workspace.", resultJson: null };

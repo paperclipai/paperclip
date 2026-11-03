@@ -100,8 +100,18 @@ adapters extract these fields; arbitrary exception objects, request bodies,
 headers, environment variables, and stacks are excluded. Unknown categories retain
 their explanation. The cause stays in company-scoped run records and the run log;
 it is not added to first-party Telemetry, Observability attributes, or Sentry
-failure reports. The reportable run error keeps its existing generic text. Startup
-receipts retain it across controller restart before any provider turn exists.
+failure reports. The reportable run error keeps its existing generic text, except
+that an ACPX startup rejection keeps Runner's closed rejection text and its
+classification. Startup receipts retain the cause across controller restart before
+any provider turn exists.
+
+Every ACPX session ensure rejection carries a startup cause. When the provider
+returned no ACP error, the cause keeps the rejection's own redacted message with
+category `unknown`. A provider can type the failure with ACP's
+authentication-required code, or with a known error type or `errorKind` in the ACP
+error data. The cause then uses that category, and the rejection classification is
+`provider_<category>`, such as `provider_quota_exhausted`, instead of
+`session_ensure_failed`.
 
 Completed OpenCode builtin `bash` parts preserve the numeric process exit from
 `state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool

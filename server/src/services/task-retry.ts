@@ -13,7 +13,7 @@ import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js"
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
 import { authorizationService } from "./authorization.js";
-import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
@@ -256,6 +256,7 @@ export async function requestTaskRetry(input: {
     }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {
+      await preserveTaskRemoteWorkspaceWriter(db, issue.companyId, issue.id);
       // Historical deadline failures can predate their preservation record.
       // Register the exact prepared source; this proves neither a stopped
       // executor nor permission to replay its work.
@@ -330,8 +331,11 @@ export async function requestTaskRetry(input: {
     if (!busy) {
       for (const action of records) {
         const previous = readSystemRecovery(action.evidence);
-        if (!previous || previous.state === "complete") continue;
-        if (previous.state === "running") {
+        if (!previous) continue;
+        // A completed preservation still owns its snapshot evidence. Bind the
+        // new intent so sibling holds can select that same continuation, without
+        // repeating recovery or renewing its attempt budget.
+        if (previous.state === "complete" || previous.state === "running") {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
           continue;

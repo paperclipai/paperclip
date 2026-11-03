@@ -1,3 +1,4 @@
+import { taskDocumentKeySchema } from "../protocol-actions/task-document-key-schema.js";
 import { getWorkspaceAction } from "../protocol-actions/get-workspace.js";
 import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
 import { createCaseAction, readCaseAction, updateCaseAction } from "../protocol-actions/case-data.js";
@@ -156,7 +157,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     operationId: "read_document",
     title: "Read task document",
     description: "Read the current revision of one active-task document.",
-    inputSchema: object({ key: text("Stable issue-document key.", 120) }, [
+    inputSchema: object({ key: taskDocumentKeySchema }, [
       "key",
     ]),
   }),
@@ -166,7 +167,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     description: "Read bounded revision history for one active-task document.",
     inputSchema: object(
       {
-        key: text("Stable issue-document key.", 120),
+        key: taskDocumentKeySchema,
         limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
       },
       ["key"],
@@ -220,7 +221,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     inputSchema: object(
       {
         ...idempotency,
-        key: text("Stable issue-document key.", 120),
+        key: taskDocumentKeySchema,
         title: text("Document title.", 300),
         body: text("Markdown document body.", 200_000),
         baseRevisionId: nullableText(
