@@ -1,6 +1,8 @@
 import { asc, and, eq, isNull, notExists } from "drizzle-orm";
 import { projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import type { TaskWorkspaceIntent } from "@paperclipai/shared";
+import { HttpError } from "../../errors.js";
+import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { assertSelectedWorkspaceTrust } from "../task-repository-acquisition.js";
 import { managedProjectCheckoutName, projectRepositoryIdentity } from "../managed-project-checkout-name.js";
@@ -69,9 +71,16 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
       { reason: "remote_workspace_readonly_sources_unsupported" });
     const extra = [...(base.repositories ?? [])];
     for (const projectId of new Set(extra.flatMap(repository => repository.projectId ? [repository.projectId] : []))) {
-      await assertTaskWorkspaceSourceProjectAccess(db, actor, input.companyId, projectId);
-      await assertSelectedWorkspaceTrust(db, { companyId: input.companyId, actor, issueId: input.issueId,
-        sourceProjectId: projectId });
+      try {
+        await assertTaskWorkspaceSourceProjectAccess(db, actor, input.companyId, projectId);
+        await assertSelectedWorkspaceTrust(db, { companyId: input.companyId, actor, issueId: input.issueId,
+          sourceProjectId: projectId });
+      } catch (error) {
+        if (error instanceof ProjectAccessDeniedError || !(error instanceof HttpError) || error.status !== 403) throw error;
+        throw new WorkspaceValidationFailure(
+          "A saved project folder is no longer accessible or its trust policy no longer permits this task.",
+          { reason: "remote_workspace_source_access_denied", projectId });
+      }
     }
     // A verified saved archive owns these files after import. Its original Git
     // source remains an identity and need not be reachable from the new sandbox.

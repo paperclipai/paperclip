@@ -1777,6 +1777,8 @@ allocation is not silently replaced with an older saved copy.
 
 Workspace validation failures show their redacted explanation in the task's
 failure notice. They retain the normal Retry permission and admission gates.
+Retained-folder access and trust denials use this explanation; low-trust project
+boundary denials retain their dedicated project-access action.
 
 A child or follow-up task can use a remote workspace inherited through its
 persisted task binding, including an isolated workspace or operator branch.

@@ -2664,6 +2664,8 @@ when that switch is off.
 
 Task failure notices show the redacted workspace validation explanation when
 preparation fails. Existing retry permissions and execution gates still apply.
+This includes retained-folder access and trust denials. Low-trust project boundary
+denials retain their separate project-access action.
 
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new

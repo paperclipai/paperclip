@@ -10,6 +10,11 @@ import type { GitRemoteAuthProvider } from "./git-credentials.js";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
 
+const checkoutConfiguredRefScript = String.raw`if(input.ref){const remoteRef=input.ref.replace(/^refs\/heads\//,'');
+ const selected=await git(['rev-parse','--verify','--end-of-options',input.ref+'^{commit}'])
+   .catch(()=>git(['rev-parse','--verify','--end-of-options','refs/remotes/origin/'+remoteRef+'^{commit}']));
+ await git(['checkout','--detach',selected.stdout.trim()]);}`;
+
 export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | null): RemoteWorkspaceTarget {
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask
     || !target.runner.syncIn || !target.runner.syncOut) throw new Error("remote_workspace_transport_unsupported");
@@ -62,10 +67,7 @@ const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
    const local=await git(['show-ref','--verify','--quiet','refs/heads/'+input.branchName]).then(()=>true,()=>false);
    await git(local?['checkout',input.branchName]:['checkout','-b',input.branchName,remoteRef]);
   }else{
-   if(input.ref){const remoteRef=input.ref.replace(/^refs\/heads\//,'');
-    const selected=await git(['rev-parse','--verify','--end-of-options',input.ref+'^{commit}'])
-      .catch(()=>git(['rev-parse','--verify','--end-of-options','refs/remotes/origin/'+remoteRef+'^{commit}']));
-    await git(['checkout','--detach',selected.stdout.trim()]);}
+   ${checkoutConfiguredRefScript}
    if(input.branchName)await git(['checkout','-B',input.branchName]);
   }
   await fs.mkdir(path.join(staged,'.git','info'),{recursive:true,mode:0o700});
@@ -129,10 +131,7 @@ export async function prepareRemoteRepository(input: {
    const staged=await fs.mkdtemp(root+'.preparing-');try{
     await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
     const git=async args=>exec('git',['-c','core.hooksPath=/dev/null','-C',staged,...args],opts);
-    if(input.ref){const remoteRef=input.ref.replace(/^refs\/heads\//,'');
-     const selected=await git(['rev-parse','--verify','--end-of-options',input.ref+'^{commit}'])
-       .catch(()=>git(['rev-parse','--verify','--end-of-options','refs/remotes/origin/'+remoteRef+'^{commit}']));
-     await git(['checkout','--detach',selected.stdout.trim()]);}
+    ${checkoutConfiguredRefScript}
     await fs.rename(staged,root);
    }finally{await fs.rm(staged,{recursive:true,force:true});}}
   const git=async args=>(await exec('git',['-c','core.hooksPath=/dev/null','-C',root,...args],opts)).stdout.trim();

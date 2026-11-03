@@ -270,7 +270,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       .toEqual([workspace]);
   });
 
-  it.each(["saved", "read-only", "foreign-project"])("preserves %s repository authority on a later turn", async scenario => {
+  it.each(["saved", "read-only", "foreign-project", "restricted-trust", "low-trust-boundary"])("preserves %s repository authority on a later turn", async scenario => {
     const f = await fixture(true);
     const [repository] = await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.projectId, f.projectId));
     const savedRepository = { id: repository.id, projectWorkspaceId: repository.id, projectId: f.projectId,
@@ -292,6 +292,18 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       await db.update(projectWorkspaces).set({ repoRef: "new-default" }).where(eq(projectWorkspaces.id, repository.id));
       await db.delete(issueComments).where(eq(issueComments.issueId, f.issueId));
     }
+    if (scenario === "restricted-trust") {
+      await db.update(projects).set({ executionWorkspacePolicy: { trustPreset: "low_trust_review", authorizationPolicy: {
+        trustPreset: "low_trust_review", trustBoundary: { mode: "low_trust_review", companyId: f.companyId,
+          rootIssueId: f.issueId, projectIds: [f.projectId] },
+      } } }).where(eq(projects.id, f.projectId));
+    } else if (scenario === "low-trust-boundary") {
+      const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustPreset: "low_trust_review",
+        trustBoundary: { mode: "low_trust_review", companyId: f.companyId, rootIssueId: f.issueId, projectIds: [] } } };
+      await db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
+      await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, f.issueId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: policy } }).where(eq(heartbeatRuns.id, f.runId));
+    }
     const resolve = () => resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
       projectId: null, projectWorkspaceId: null, existingWorkspace: toExecutionWorkspace(workspace) });
     if (scenario === "saved") {
@@ -302,7 +314,13 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       await expect(resolve()).rejects.toMatchObject({
         resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
       });
-    } else await expect(resolve()).rejects.toMatchObject({ status: 403 });
+    } else if (scenario === "low-trust-boundary") {
+      await expect(resolve()).rejects.toMatchObject({ status: 403, message: "Project is outside this low-trust boundary." });
+    } else await expect(resolve()).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      message: "A saved project folder is no longer accessible or its trust policy no longer permits this task.",
+      resultJson: { reason: "remote_workspace_source_access_denied", projectId: f.projectId },
+    });
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)))[0]).toEqual(workspace);
   });
 });
