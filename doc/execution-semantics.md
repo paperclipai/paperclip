@@ -2075,6 +2075,22 @@ the duration of remote cleanup. Existing Stop receipts and process cleanup still
 destructive lifecycle or binding changes. Operator plugin restarts and external
 machine changes can still interrupt startup.
 
+A contextual replacement task can retain creation recovery when its selected
+worker supports inspection and its driver declares `creationOperationVersion: 1`.
+Core saves that opt-in and the prior opaque binding in the existing creation
+journal before acquisition, and sends acquisition to that selected worker.
+An ambiguous failure makes existing recovery work due. The inspection result's
+optional `creationLease` recovers identity and binding for the requested
+`creationOperation`; it is not termination evidence. Contextual task recovery
+requires this field; a generic sandbox cleanup envelope is not a substitute.
+The existing exact-task Stop, status and completion receipts still gate ownership release. Older journal
+entries without the recorded opt-in do not infer a resource identity from the
+creation operation ID. Once recovered identity is durably queued for cleanup,
+Core can discharge that acquisition's missing-response placeholder. Accepted
+host handlers and received result observations still drain before verified
+retirement; a late reply re-enters observation tracking without restoring the
+worker's expired invocation authority.
+
 Cancellation records a preparation fence while holding the run row lock. Native
 runtime selection checks that fence, the running status, and the current startup
 controller lease in the same transaction that creates the native coordinator.

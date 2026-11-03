@@ -259,6 +259,10 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
             runnerTaskSessionRetained:state.sessionStateAvailable === true})}::jsonb`,
         }).where(and(eq(environmentLeases.id, metadata.runnerTaskPreviousLeaseId), eq(environmentLeases.companyId, input.companyId)));
         const replacementDriverKey = metadata.driverKey;
+        const creationWorker = context && driver.creationOperationVersion === 1
+          ? workers.getWorker(plugin.id) : undefined;
+        const recoverableCreation = creationWorker?.supportedMethods.includes("environmentInspectLease") === true &&
+          metadata.providerMetadata && typeof metadata.providerMetadata === "object" && !Array.isArray(metadata.providerMetadata);
         let abandoned = false;
         const fresh = await createOwnedSandbox(db, {
           companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId,
@@ -266,7 +270,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           pluginId: plugin.id, driverKey: metadata.driverKey, config: {}, requestKey: taskId,
           metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: plugin.pluginKey, driverKey: metadata.driverKey,
             runnerTaskLease: true, agentId: run!.agentId,
-            ...(context ? { runnerTaskCreationContextId: context.id } : {}) },
+            ...(context ? { runnerTaskCreationContextId: context.id } : {}),
+            ...(recoverableCreation ? { creationOperationVersion: 1, providerMetadata: metadata.providerMetadata } : {}) },
         }, async identity => {
           const params = { driverKey: replacementDriverKey, companyId: input.companyId, environmentId: environment!.id,
             issueId: lease.issueId, config: driverConfig, runId: identity.runId, creationOperationId: identity.id,
@@ -279,8 +284,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           try {
             return await context.wait(() => {
               dispatched = true;
-              return workers.call(plugin.id, "environmentAcquireLease", params, 30_000, undefined, settled, context.id,
-              async result => {
+              const observe = async (result: HostToWorkerMethods["environmentAcquireLease"][1]) => {
                 if (!result.providerLeaseId || result.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
                 const resource = { id: identity.id, companyId: input.companyId, environmentId: environment!.id,
                   providerLeaseId: result.providerLeaseId, providerMetadata: result.metadata };
@@ -289,7 +293,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
                 if (abandoned || !context.active || context.signal.aborted || Date.now() >= context.deadlineAtMs) {
                   await queueSandboxCreationCleanup(db, resource);
                 }
-              });
+              };
+              return recoverableCreation ? creationWorker!.call("environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe)
+                : workers.call(plugin.id, "environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe);
             });
           } catch (error) {
             if (!dispatched) settled();
