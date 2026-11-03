@@ -297,6 +297,242 @@ describe("executeNativeSession recovery", () => {
     expect(observed).toEqual(textEvents);
   });
 
+  it("dispatches Stop through the published session while simulated persistence holds a full text collector", async () => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let collectorFull!: () => void;
+    const fullCollector = new Promise<void>(resolve => { collectorFull = resolve; });
+    const textEvents = Array.from({ length: 130 }, (_, index) => {
+      const event = { ...runnerEvent(index + 1, "item.delta", { kind: "agentMessage", text: "" }), priority: 1 as const };
+      // Exactly 1 KiB per serialized envelope fills both collector bounds.
+      event.payload.text = "x".repeat(1024 - Buffer.byteLength(JSON.stringify(event)));
+      return event;
+    });
+    const source = [...textEvents, runnerEvent(131, "run.result.proposed", result), runnerEvent(132, "turn.completed")];
+    const stopError = new Error("simulated append authority revoked by Stop");
+    let revoked = false;
+    let sourceReads = 0;
+    const cancel = vi.fn<NonNullable<NativeSession["cancel"]>>(() => {
+      // Model the synchronous authority transition, independently of the
+      // deliberately held database receipt. Real PostgreSQL revocation is
+      // exercised separately by the control-plane port's held-row-lock tests.
+      revoked = true;
+      return { cleanup: Promise.resolve() };
+    });
+    const sessionResult = vi.fn(async () => ({ result, terminal, turnId: "turn-recovery" }));
+    const close = vi.fn(async () => undefined);
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        for (const event of source) {
+          sourceReads += 1;
+          if (sourceReads === 65) collectorFull();
+          yield event;
+        }
+      },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      cancel,
+      result: sessionResult,
+      async snapshot() {
+        return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery",
+          cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
+      },
+      close,
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "blocked-stop-fixture", version: "1", capabilities }; },
+      async openSession() { return session; },
+    };
+    const committed: PrpEvent[] = [];
+    const makeReceipt = (event: PrpEvent) => ({ cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq,
+      disposition: "committed" as const });
+    const appendEvents = vi.fn<NonNullable<ControlPlanePort["appendEvents"]>>(async events => {
+      if (revoked) throw stopError;
+      committed.push(...events);
+      return events.map(makeReceipt);
+    });
+    const completeRun = vi.fn(async () => undefined);
+    const port: ControlPlanePort = {
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent(event, options) {
+        const prp = event as PrpEvent;
+        if (prp === textEvents[0]) await firstReleased;
+        options?.signal.throwIfAborted();
+        if (revoked) throw stopError;
+        committed.push(prp);
+        return makeReceipt(prp);
+      },
+      appendEvents,
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      completeRun,
+    };
+    const observed = vi.fn(() => null);
+    const published: { current: NativeSession | null } = { current: null };
+    const execution = executeNativeSession({ input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      onSession(current) { published.current = current; }, resolveGovernedWait: observed });
+    void execution.catch(() => undefined);
+    try {
+      await fullCollector;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(sourceReads).toBe(65); // One in flight and 64 buffered events.
+      expect(textEvents.slice(1, 65).reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)), 0))
+        .toBe(64 * 1024);
+      expect(published.current).toBe(session);
+      expect(committed).toEqual([]);
+      expect(observed).not.toHaveBeenCalled();
+
+      // The real runtime publication supplies the control handle. Neither a
+      // full collector nor its pending append participates in Stop dispatch.
+      const cancellation = published.current!.cancel!({ reason: "User pressed Stop", signal: new AbortController().signal });
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reason: "User pressed Stop" }));
+      await cancellation.cleanup;
+      expect(sourceReads).toBe(65);
+      expect(appendEvents).not.toHaveBeenCalled();
+      expect(observed).not.toHaveBeenCalled();
+      expect(sessionResult).not.toHaveBeenCalled();
+      expect(completeRun).not.toHaveBeenCalled();
+
+      releaseFirst();
+      await expect(execution).rejects.toThrow(stopError);
+      expect(committed).toEqual([]);
+      expect(sourceReads).toBe(65);
+      expect(appendEvents).not.toHaveBeenCalled();
+      expect(observed).not.toHaveBeenCalled();
+      expect(sessionResult).not.toHaveBeenCalled();
+      expect(completeRun).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      releaseFirst();
+      await execution.catch(() => undefined);
+    }
+  });
+
+  it("keeps an explicit authorization behind queued text and its own simulated durable receipt", async () => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let releaseBatch!: () => void;
+    const batchReleased = new Promise<void>(resolve => { releaseBatch = resolve; });
+    let batchStarted!: () => void;
+    const batchStarting = new Promise<void>(resolve => { batchStarted = resolve; });
+    let releasePermission!: () => void;
+    const permissionReleased = new Promise<void>(resolve => { releasePermission = resolve; });
+    let permissionStarted!: () => void;
+    const permissionStarting = new Promise<void>(resolve => { permissionStarted = resolve; });
+    let reachedBoundary!: () => void;
+    const boundaryReached = new Promise<void>(resolve => { reachedBoundary = resolve; });
+    const textEvents = [1, 2, 3].map(seq => ({
+      ...runnerEvent(seq, "item.delta", { kind: "agentMessage", text: `chunk-${seq}` }), priority: 1 as const,
+    }));
+    const permission = runnerEvent(4, "runtime_request.created", { request: {
+      schema: "paperclip.runtime_request.v2", requestKind: "permission_approval", requestId: "permission-1",
+      type: "permission", status: "pending", prompt: "Allow the proposed edit?",
+      choices: [{ key: "accept", label: "Allow once" }, { key: "cancel", label: "Cancel" }],
+      details: { toolCallId: "edit-1", kind: "edit" },
+      origin: { adapter: "acpx-runtime-sidecar", provider: "acpx", method: "session/request_permission" },
+      turnId: "turn-recovery", itemId: null,
+    } });
+    const source = [...textEvents, permission, runnerEvent(5, "run.result.proposed", result), runnerEvent(6, "turn.completed")];
+    let sourceReads = 0;
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        for (const event of source) {
+          sourceReads += 1;
+          if (event === permission) reachedBoundary();
+          yield event;
+        }
+      },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return { result, terminal, turnId: "turn-recovery" }; },
+      async snapshot() {
+        return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery",
+          cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "blocked-authorization-fixture", version: "1", capabilities }; },
+      async openSession() { return session; },
+    };
+    const committed: PrpEvent[] = [];
+    const makeReceipt = (event: PrpEvent) => ({ cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq,
+      disposition: "committed" as const });
+    const appendEvent = vi.fn<ControlPlanePort["appendEvent"]>(async event => {
+      const prp = event as PrpEvent;
+      if (prp === textEvents[0]) await firstReleased;
+      if (prp === permission) { permissionStarted(); await permissionReleased; }
+      committed.push(prp);
+      return makeReceipt(prp);
+    });
+    const appendEvents = vi.fn<NonNullable<ControlPlanePort["appendEvents"]>>(async events => {
+      batchStarted();
+      await batchReleased;
+      committed.push(...events);
+      return events.map(makeReceipt);
+    });
+    const port: ControlPlanePort = {
+      async openRun() {}, async checkpointSession() {}, appendEvent, appendEvents,
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const observed: PrpEvent[] = [];
+    const authorization = vi.fn((event: PrpEvent) => {
+      expect(committed.filter(entry => entry.sourceKind === "runner")).toEqual([...textEvents, permission]);
+      expect(event).toBe(permission);
+    });
+    const execution = executeNativeSession({ input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resolveGovernedWait({ event }) {
+        observed.push(event);
+        if (event === permission) authorization(event);
+        return null;
+      } });
+    void execution.catch(() => undefined);
+    try {
+      await boundaryReached;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(sourceReads).toBe(4);
+      expect(committed).toEqual([]);
+      expect(observed).toEqual([]);
+      expect(appendEvents).not.toHaveBeenCalled();
+      expect(authorization).not.toHaveBeenCalled();
+
+      releaseFirst();
+      await batchStarting;
+      expect(committed).toEqual([textEvents[0]]);
+      expect(observed).toEqual([textEvents[0]]);
+      expect(appendEvents).toHaveBeenCalledExactlyOnceWith(textEvents.slice(1), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      expect(appendEvent.mock.calls.map(([event]) => event)).toEqual([textEvents[0]]);
+      expect(sourceReads).toBe(4);
+      expect(authorization).not.toHaveBeenCalled();
+
+      releaseBatch();
+      await permissionStarting;
+      expect(committed).toEqual(textEvents);
+      expect(observed).toEqual(textEvents);
+      expect(appendEvent).toHaveBeenLastCalledWith(permission, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      expect(sourceReads).toBe(4);
+      expect(authorization).not.toHaveBeenCalled();
+
+      releasePermission();
+      await expect(execution).resolves.toMatchObject({ result, terminal });
+      expect(authorization).toHaveBeenCalledExactlyOnceWith(permission);
+      expect(observed).toEqual([...textEvents, permission]);
+      expect(committed.filter(event => event.sourceKind === "runner")).toEqual(source);
+      expect(appendEvents.mock.calls.flatMap(([events]) => events)).toEqual(textEvents.slice(1));
+    } finally {
+      releaseFirst(); releaseBatch(); releasePermission();
+      await execution.catch(() => undefined);
+    }
+  });
+
   it("completes Cursor Cloud semantic planning through its default-only harness without losing the pinned revision", async () => {
     await writeFile(join(WORKSPACE, "cloud-plan-instructions.md"), "Make the plan only. Do not implement it.\n");
     const prepared = preparedInput();
