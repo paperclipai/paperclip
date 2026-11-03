@@ -1,5 +1,7 @@
 # Paid runner full-stack E2E
 
+The deployment-targeted [saved agent instructions journey](product-journeys/AGENT-SETTINGS.md) verifies browser save/reload, one instruction-dependent native task, independently attributed output, and restoration of the owned agent’s original instructions. Discovery and local grader controls remain separate from QA staging qualification.
+
 The [chat scenario catalog](chat-scenarios/README.md) plans conversational
 coverage across the product using human requests, assumed context and expected
 outcomes. It shares feature-map capability IDs and belongs to this Product E2E
