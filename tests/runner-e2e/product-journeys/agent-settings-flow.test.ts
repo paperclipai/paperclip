@@ -21,8 +21,9 @@ import { runAgentSettings } from "./agent-settings-flow.js";
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
-async function fixture(nativeFailure = false, unscopedActivity = false, delayedRestore = false) {
-  let f = settingsEvidenceFixture(), content = f.original, rendered = content, draft = content, dirty = false, dispatched = false;
+async function fixture(nativeFailure = false, unscopedActivity = false, delayedRestore = false, original?: string) {
+  let f = settingsEvidenceFixture(undefined, original), content = f.original, rendered = content, draft = content, dirty = false, dispatched = false;
+  const originalContent = f.original;
   let pendingContent: string | undefined;
   const saves: string[] = [], owns: any[] = [], apiWrites: string[] = [], activityReads: string[] = [];
   const unrelatedActivity = Array.from({ length: 600 }, (_, index) => ({ id: `unrelated-${index}`,
@@ -30,15 +31,15 @@ async function fixture(nativeFailure = false, unscopedActivity = false, delayedR
   const current = () => content === f.original
     ? dispatched ? f.evidence.restored! : f.evidence.original!
     : dispatched ? f.evidence.afterWork! : f.evidence.saved!;
-  const editor = { visible: true, value: () => draft, async fill(value: string) { draft = value; dirty = true; } };
-  const raw = { visible: true, async textContent() { return rendered; } };
+  const editor = { visible: true, value: () => draft, async inputValue() { return draft; }, async fill(value: string) { draft = value; dirty = true; } };
+  const raw = { get visible() { return Boolean(rendered.trim()); }, async textContent() { return rendered; } };
   const edit = { visible: true, async click() { draft = content; } };
   const save = { enabled: () => dirty, async click() {
     saves.push(draft); dirty = false;
     if (delayedRestore && saves.length === 2) pendingContent = draft;
     else content = draft;
     const nonce = /reference equal to ([a-f0-9]+),/.exec(draft)?.[1];
-    if (nonce) f = settingsEvidenceFixture(nonce);
+    if (nonce) f = settingsEvidenceFixture(nonce, originalContent);
   } };
   const document = { visible: true, async textContent() { return f.evidence.task!.document.body; } };
   const page = { async goto() {
@@ -48,6 +49,7 @@ async function fixture(nativeFailure = false, unscopedActivity = false, delayedR
     getByTestId(id: string) { expect(id).toBe("instructions-raw-source"); return raw; },
     getByRole(role: string, options: { name: string }) {
       if (role === "button" && options.name === "Edit AGENTS.md") return edit;
+      if (role === "button" && options.name === "Stop editing AGENTS.md") return { async click() {} };
       if (role === "button" && options.name === "Save changes") return save;
       if (role === "textbox" && options.name === "Instruction file editor") return editor;
       throw new Error("unexpected_locator");
@@ -97,6 +99,12 @@ async function fixture(nativeFailure = false, unscopedActivity = false, delayedR
 }
 
 describe("agent settings production-surface orchestration", () => {
+  it.each(["", " \n\t\n"])("reads and restores the exact empty-file editor value %j", async original => {
+    const f = await fixture(false, false, false, original);
+    await runAgentSettings(f.context, f.session, "campaign-1", f.evidence, f.options);
+    expect(f.saves).toHaveLength(2); expect(f.saves[1]).toBe(original); expect(f.currentContent()).toBe(original);
+    expect(f.evidence.checks.every(row => row.passed)).toBe(true);
+  });
   it("saves and restores only through browser controls, then leaves the result ready for screenshot", async () => {
     const f = await fixture();
     await runAgentSettings(f.context, f.session, "campaign-1", f.evidence, f.options);

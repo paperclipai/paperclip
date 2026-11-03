@@ -40,14 +40,24 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
     const file = await read.get<Row>(`${agentRoute}/instructions-bundle/file?path=${encodeURIComponent(bundle.entryFile)}`);
     return { agent: current, bundle, file, runs, activity };
   };
-  const openInstructions = async (entry: string, expectedContent: string) => {
+  const openInstructions = async (entry: string, expectedContent: string, reload = false) => {
     await context.page.goto(`${context.api.origin}/${context.company.issuePrefix}/agents/${agent.id}/instructions`, { waitUntil: "domcontentloaded" });
+    if (reload) await context.page.reload();
     const edit = context.page.getByRole("button", { name: `Edit ${entry}`, exact: true });
     await expect(edit).toBeVisible();
+    if (!expectedContent.trim()) {
+      await edit.click();
+      const editor = context.page.getByRole("textbox", { name: "Instruction file editor", exact: true });
+      await expect(editor).toHaveValue(expectedContent);
+      const renderedContent = await editor.inputValue();
+      await context.page.getByRole("button", { name: `Stop editing ${entry}`, exact: true }).click();
+      return { edit, renderedContent };
+    }
     const raw = context.page.getByTestId("instructions-raw-source");
     await expect(raw).toBeVisible();
-    if (await raw.textContent() !== expectedContent) throw new JourneyError("failed", "agent_settings_rendered_source_mismatch");
-    return { edit, raw };
+    const renderedContent = await raw.textContent();
+    if (renderedContent !== expectedContent) throw new JourneyError("failed", "agent_settings_rendered_source_mismatch");
+    return { edit, renderedContent };
   };
   const saveThroughUi = async (beforePoint: SettingsSnapshot, content: string) => {
     const entry = beforePoint.bundle.entryFile, before = beforePoint.file.content;
@@ -85,10 +95,8 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
     const edited = settingsInstructionContent(original.file.content, scope.reference);
     observations.saved = await saveThroughUi(original, edited);
     check("agent-settings-browser-save");
-    const reopenedSource = await openInstructions(entry, edited);
-    await context.page.reload();
-    await expect(reopenedSource.raw).toBeVisible();
-    observations.reloaded = { ...await snapshot(), renderedContent: await reopenedSource.raw.textContent() ?? undefined };
+    const reopenedSource = await openInstructions(entry, edited, true);
+    observations.reloaded = { ...await snapshot(), renderedContent: reopenedSource.renderedContent };
     check("agent-settings-reload-persisted");
 
     const title = `Journey QA agent settings ${campaignId}`;
@@ -125,8 +133,8 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
     check("agent-settings-result-reopened");
 
     await saveThroughUi(observations.afterWork, original.file.content);
-    await openInstructions(entry, original.file.content);
-    observations.restored = { ...await snapshot(), renderedContent: await context.page.getByTestId("instructions-raw-source").textContent() ?? undefined };
+    const restoredSource = await openInstructions(entry, original.file.content);
+    observations.restored = { ...await snapshot(), renderedContent: restoredSource.renderedContent };
     check("agent-settings-original-restored");
     // The shared screenshot policy permits only the task result, not settings.
     await context.page.goto(`${context.api.origin}/${context.company.issuePrefix}/issues/${state.issue.identifier ?? task.issueId}`, { waitUntil: "domcontentloaded" });

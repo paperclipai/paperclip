@@ -14,6 +14,8 @@ does not edit the shared source agent, provider, model, accounts, or feature fla
 
 1. Read the original managed instruction entry, exact bytes, content hash, and
    content revision token. Require an empty work-run history.
+   Empty or whitespace-only files use the ordinary editor value because the
+   read-only page shows an empty-state message. Preserve those exact bytes too.
 2. Open Instructions, select **Edit** for the entry, change the **Instruction
    file editor**, and use **Save changes**. The new procedure contains a fresh
    synthetic reference that does not occur in the task request.
