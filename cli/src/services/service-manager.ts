@@ -279,12 +279,14 @@ export class LaunchdServiceManager implements ServiceManager {
   readonly serviceName: string;
   readonly definitionPath: string;
   private readonly domain = `gui/${process.getuid?.() ?? 0}`;
+  private readonly systemDefinitionPath: string;
   private readonly stdoutPath: string;
   private readonly stderrPath: string;
 
-  constructor(readonly instanceId: string, private readonly runner: CommandRunner = defaultCommandRunner, private readonly homeDir = resolvePaperclipHomeDir(), private readonly shimPath = resolveServiceShimPath(), userHomeDir = os.homedir()) {
+  constructor(readonly instanceId: string, private readonly runner: CommandRunner = defaultCommandRunner, private readonly homeDir = resolvePaperclipHomeDir(), private readonly shimPath = resolveServiceShimPath(), userHomeDir = os.homedir(), systemDaemonDir = "/Library/LaunchDaemons") {
     this.serviceName = launchdServiceName(instanceId);
     this.definitionPath = path.join(userHomeDir, "Library", "LaunchAgents", `${this.serviceName}.plist`);
+    this.systemDefinitionPath = path.join(systemDaemonDir, `${this.serviceName}.plist`);
     const logDir = path.join(homeDir, "instances", instanceId, "logs");
     this.stdoutPath = path.join(logDir, "service.log");
     this.stderrPath = path.join(logDir, "service.err.log");
@@ -292,15 +294,37 @@ export class LaunchdServiceManager implements ServiceManager {
 
   renderDefinition(): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath }); }
 
+  private async systemJobLoaded(): Promise<boolean> {
+    try {
+      const output = (await this.runner("launchctl", ["print", `system/${this.serviceName}`])).stdout;
+      return output.startsWith(`system/${this.serviceName} = {`);
+    } catch { return false; }
+  }
+
+  private async systemJobConfigured(): Promise<boolean> {
+    try { await fs.access(this.systemDefinitionPath); return true; }
+    catch { return false; }
+  }
+
+  private async activeDomain(): Promise<string> {
+    return await this.systemJobLoaded() ? "system" : this.domain;
+  }
+
+  private async launchctlAction(domain: string, ...args: string[]): Promise<void> {
+    if (domain === "system") await this.runner("sudo", ["-n", "launchctl", ...args]);
+    else await this.runner("launchctl", args);
+  }
+
   async installedExecutablePath(): Promise<string | null> {
     try {
-      return extractExecutableFromLaunchdPlist(await fs.readFile(this.definitionPath, "utf8"));
+      return extractExecutableFromLaunchdPlist(await fs.readFile(await this.systemJobLoaded() ? this.systemDefinitionPath : this.definitionPath, "utf8"));
     } catch {
       return null;
     }
   }
 
   async install(options: ServiceInstallOptions): Promise<{ changed: boolean }> {
+    if (await this.systemJobConfigured()) throw new Error(`System LaunchDaemon ${this.serviceName} is configured; manage its root-owned plist explicitly instead of installing a competing GUI agent.`);
     await fs.mkdir(path.dirname(this.stdoutPath), { recursive: true });
     const changed = await writeIfChanged(this.definitionPath, this.renderDefinition());
     if (changed) await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
@@ -313,30 +337,47 @@ export class LaunchdServiceManager implements ServiceManager {
   }
 
   async uninstall(): Promise<void> {
+    if (await this.systemJobConfigured()) throw new Error(`System LaunchDaemon ${this.serviceName} is configured; uninstall must not delete or replace its root-owned plist.`);
     await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await this.runner("launchctl", ["disable", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await fs.rm(this.definitionPath, { force: true });
   }
-  async start(): Promise<void> { await this.install({ startNow: true, startOnLogin: await this.isEnabled() }); }
-  async stop(): Promise<void> { await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]); }
-  async restart(): Promise<void> { await writeIfChanged(this.definitionPath, this.renderDefinition()); await this.runner("launchctl", ["kickstart", "-k", `${this.domain}/${this.serviceName}`]); }
+  async start(): Promise<void> {
+    if (!(await this.systemJobConfigured())) {
+      await this.install({ startNow: true, startOnLogin: await this.isEnabled() });
+      return;
+    }
+    const domain = await this.activeDomain();
+    await this.launchctlAction(domain, "kickstart", `${domain}/${this.serviceName}`);
+  }
+  async stop(): Promise<void> {
+    const domain = await this.activeDomain();
+    await this.launchctlAction(domain, "bootout", `${domain}/${this.serviceName}`);
+  }
+  async restart(): Promise<void> {
+    const domain = await this.activeDomain();
+    if (!(await this.systemJobConfigured())) await writeIfChanged(this.definitionPath, this.renderDefinition());
+    await this.launchctlAction(domain, "kickstart", "-k", `${domain}/${this.serviceName}`);
+  }
 
   async status(): Promise<ServiceStatus> {
+    const domain = await this.activeDomain();
     try {
-      const result = await this.runner("launchctl", ["print", `${this.domain}/${this.serviceName}`]);
+      const result = await this.runner("launchctl", ["print", `${domain}/${this.serviceName}`]);
       const pidMatch = result.stdout.match(/\bpid\s*=\s*(\d+)/);
       const pid = pidMatch ? Number(pidMatch[1]) : null;
-      return { platform: this.platform, serviceName: this.serviceName, installed: true, active: Boolean(pid), enabled: await this.isEnabled(), pid, detail: pid ? "running" : "loaded" };
+      return { platform: this.platform, serviceName: this.serviceName, installed: true, active: Boolean(pid), enabled: await this.isEnabled(domain), pid, detail: pid ? "running" : "loaded" };
     } catch {
+      const definition = domain === "system" ? this.systemDefinitionPath : this.definitionPath;
       let installed = true;
-      try { await fs.access(this.definitionPath); } catch { installed = false; }
-      return { platform: this.platform, serviceName: this.serviceName, installed, active: false, enabled: installed && await this.isEnabled(), pid: null };
+      try { await fs.access(definition); } catch { installed = false; }
+      return { platform: this.platform, serviceName: this.serviceName, installed, active: false, enabled: installed && await this.isEnabled(domain), pid: null };
     }
   }
 
-  private async isEnabled(): Promise<boolean> {
+  private async isEnabled(domain = this.domain): Promise<boolean> {
     try {
-      const result = await this.runner("launchctl", ["print-disabled", this.domain]);
+      const result = await this.runner("launchctl", ["print-disabled", domain]);
       return !new RegExp(`"${escapeRegExp(this.serviceName)}"\\s*=>\\s*true`).test(result.stdout);
     } catch { return true; }
   }
