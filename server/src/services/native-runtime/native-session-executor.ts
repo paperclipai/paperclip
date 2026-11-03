@@ -1,3 +1,4 @@
+import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
@@ -10220,6 +10221,7 @@ async function executePaperclipNativeSessionWithinScope(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
+      const providerFailure = providerFailureFromError(error);
       const message = redactIdentityText(
         error instanceof Error ? error.message : String(error),
       ).slice(0, 2_000);
@@ -10259,6 +10261,7 @@ async function executePaperclipNativeSessionWithinScope(
             failureCode,
             failureDetail: identityRedactor.redact({
               message,
+              ...(providerFailure ? { providerFailure } : {}),
               ...(remoteRunnerRecovery ? { remoteRunnerRecovery } : {}),
               originalFailureCode:
                 error instanceof NativeProviderTerminalFailure
@@ -10390,7 +10393,9 @@ async function executePaperclipNativeSessionWithinScope(
             nativePhase: phase,
             nativePhaseUpdatedAt: now,
             error: message,
-            resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery') || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb`,
+            resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery')
+              || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb
+              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}`,
             errorCode: ownershipUnverified
               ? NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE
               : sourceFailureCode,
@@ -10671,6 +10676,7 @@ async function executePaperclipNativeSessionWithinScope(
     if (collectInstructions && !collectedByOwner) await timeController("instruction_collection", () => instructionCopy!.collectStopped());
   }
   const providerFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
+  const providerExplanation = providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
   // Keep the generic failure behavior, but record why the turn failed.
   const unclassifiedTurnFailure = providerFailureObservation.unclassifiedTurnFailure(native.turnId, native.terminal);
   const adapterResult: AdapterExecutionResult = {
@@ -10688,6 +10694,7 @@ async function executePaperclipNativeSessionWithinScope(
       ...((input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") ? { providerAccounting: { usage: null, cost: null, externallyBilled: true }, externalStopConfirmed: false } : {}),
       ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(unclassifiedTurnFailure ? { nativeTurnFailure: unclassifiedTurnFailure } : {}),
+      ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },

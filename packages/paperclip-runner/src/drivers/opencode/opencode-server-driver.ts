@@ -24,6 +24,7 @@ import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+import { openCodeProviderFailure } from "./provider-failure.js";
 import { createOpenCodeCompanyObservability } from "./company-observability.js";
 import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
@@ -1951,7 +1952,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       this.#settlePendingRuntimeRequestsForTurn(turnId);
       this.#emit(
         "turn.failed",
-        { status: "failed", error: bounded(properties.error ?? properties) },
+        { status: "failed", error: { ...bounded(providerError),
+          providerFailure: openCodeProviderFailure(providerError, this.#model.split("/")[0]!,
+            Object.fromEntries(this.#runtime.sensitiveValues.map((value, index) => [`TOKEN_${index}`, value]))) ?? undefined } },
         { turnId },
       );
       this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));

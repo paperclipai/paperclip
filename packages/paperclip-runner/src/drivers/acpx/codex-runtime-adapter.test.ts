@@ -34,6 +34,21 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
+  it("retains the provider cause before assigning the generic session failure code", async () => {
+    const runtime = fakeRuntime();
+    const rejection = Object.assign(new Error("Internal error"), { code: -32603,
+      data: { details: "API error: 429 This request would exceed your account's rate limit." } });
+    vi.mocked(runtime.ensureSession).mockRejectedValue(rejection);
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({
+      code: "ACPX_SESSION_ENSURE_FAILED",
+      providerFailure: { provider: "anthropic", category: "rate_limit", httpStatus: 429,
+        message: rejection.data.details, phase: "startup" },
+    });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+  });
   it.each([false, true])("acknowledges configured Claude effort before admission (restoring=%s)", async restoring => {
     const runtime = fakeRuntime();
     const child = fakeChild();

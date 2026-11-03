@@ -344,6 +344,14 @@ a separate acceptance requirement.
 
 Automated: [live run routes](../../server/src/__tests__/agent-live-run-routes.test.ts) and [run event sequencing](../../server/src/__tests__/heartbeat-run-event-sequencing.test.ts) cover run data contracts.
 
+For `runs-adapters/runs`, verify a provider rejection during startup and during a
+turn. The task interruption and run detail must show the same sanitized provider
+explanation after reload. Unknown provider categories keep their message. A newer
+attempt or a completed task hides the stale task notice, while historical run
+details retain it. Check that existing retry and access gates remain effective.
+The transport restart regression and PostgreSQL finalization integration cover
+the persisted cause; component tests cover plain-text rendering and read-only use.
+
 Manual: Start a disposable task, open its running transcript, and follow it to a terminal outcome. Reload and compare task/run IDs, status, output, and cost. Verify a failed run remains distinguishable from a completed run with useful output.
 
 For Legacy OpenCode on a disposable Linux sandbox, run a Bash tool that reads
