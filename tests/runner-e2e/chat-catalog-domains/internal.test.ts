@@ -382,7 +382,7 @@ describe("internal chat scenario independent oracles", () => {
       expect(gradeInternal(wrong).passed).toBe(false);
       expect(gradeInternal(undefined).passed).toBe(false);
       const noLinks = structuredClone(good); noLinks.links = [];
-      expect(gradeInternal(noLinks).passed).toBe(["goals.align-existing-work", "projects.archive-project", "projects.add-repository", "projects.replace-repository", "tasks.completion-with-gate", "documents-artifacts.private-download", "inbox-search.archive-done", "inbox-search.restore-archive", "inbox-search.archive-without-grant", "documents-artifacts.restore-document"].includes(definition.scenarioId));
+      expect(gradeInternal(noLinks).passed).toBe(["goals.create-goal-tree", "goals.align-existing-work", "projects.archive-project", "projects.add-repository", "projects.replace-repository", "tasks.completion-with-gate", "documents-artifacts.private-download", "inbox-search.archive-done", "inbox-search.restore-archive", "inbox-search.archive-without-grant", "documents-artifacts.restore-document"].includes(definition.scenarioId));
     });
   }
   it("never treats an unimplemented scenario as passing", () => expect(gradeInternal(base("inbox-search.archive-partial-failure")).passed).toBe(false));
