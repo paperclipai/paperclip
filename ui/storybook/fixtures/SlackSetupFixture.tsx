@@ -7,7 +7,7 @@ import { type ChatEndpoint } from "@/api/chatEndpoints";
 import { storybookAgents, storybookAuthSession } from "./paperclipData";
 import { defaultSlackAppConfiguration } from "@paperclipai/shared";
 
-export type SlackSetupScenario = "choose" | "create" | "manual" | "install" | "declined" | "approval_denied" | "uncertain" | "manifest_pending" | "recovery" | "verify" | "avatar_failed" | "welcome_failed" | "success";
+export type SlackSetupScenario = "choose" | "create" | "manual" | "install" | "declined" | "approval_denied" | "manager_reauthorize" | "uncertain" | "manifest_pending" | "recovery" | "verify" | "avatar_failed" | "welcome_failed" | "success";
 
 /** Production wizard over a local provider fixture. No requests go to Slack. */
 export function SlackSetupFixture({ scenario = "create", managed = false, managedAvailable = true, workspaceCount = 1, optionsDelayMs = 0, optionsError = false }: { scenario?: SlackSetupScenario; managed?: boolean; managedAvailable?: boolean; workspaceCount?: number; optionsDelayMs?: number; optionsError?: boolean }) {
@@ -28,6 +28,7 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
     };
     const grantId = "11111111-1111-4111-8111-111111111111";
     let authorized = workspaceCount > 0 || new URLSearchParams(window.location.search).get("slackFixtureAuthorized") === "1";
+    if (scenario === "manager_reauthorize" && !authorized) endpoint.setup!.slackManagerError = "slack_manager_reauthorize";
     const created = () => {
       endpoint.setup!.slackRegistration = { status: "install", ...(managed ? { managerGrantId: grantId } : {}), appId: "ASTORY", managementUrl: "https://api.slack.com/apps/ASTORY" };
       endpoint.setup!.slackAvatar = scenario === "avatar_failed" ? { status: "failed", errorCode: "slack_avatar_upload_failed" } : { status: "uploaded", uploadedAt: new Date().toISOString() };

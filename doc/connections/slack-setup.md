@@ -78,6 +78,9 @@ Provider-side app removal remains explicit through the saved Slack management UR
   permissions therefore pass through installation again before activation.
 - Expired or revoked manager grants require reconnection. Losing managed
   availability pauses setup; it never changes the saved ownership method.
+  The Connect step shows **Reconnect Slack workspace** when authorization is
+  required, including saved drafts whose app has not been created. This button
+  opens Slack authorization and returns to the same saved agent setup.
 - Slack rate limits are grouped by manager/workspace/method. Provider `Retry-After`
   is persisted across matching grants in the company, survives restarts, and blocks
   early retries. Other tenant instances must observe Slack's limits independently;

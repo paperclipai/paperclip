@@ -63,6 +63,22 @@ export const Success: Story = { name: "02 · Connect · Success", args: { scenar
 } };
 export const ApprovalPending: Story = { name: "Recovery · Slack approval pending", args: { scenario: "declined" } };
 export const ApprovalDeclined: Story = { name: "Recovery · Slack approval declined", args: { scenario: "approval_denied" } };
+export const WorkspaceReconnect: Story = {
+  name: "Recovery · Reconnect workspace before app creation",
+  args: { scenario: "manager_reauthorize", workspaceCount: 0 },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    if (new URLSearchParams(window.location.search).get("slackFixtureAuthorized") === "1") {
+      await expect(await canvas.findByRole("heading", { name: "Send a message to your agent" })).toBeVisible();
+      return;
+    }
+    await expect(await canvas.findByRole("alert")).toHaveTextContent("Reconnect your Slack workspace to continue setting up this agent.");
+    await expect(canvas.getByRole("button", { name: "Reconnect Slack workspace" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save & exit" })).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+  },
+};
+export const MobileWorkspaceReconnect: Story = { ...WorkspaceReconnect, name: "Mobile · Reconnect workspace", globals: { viewport: { value: "mobile1", isRotated: false } } };
 export const EventConfigurationPending: Story = { name: "Recovery · App configuration pending", args: { scenario: "manifest_pending" } };
 export const UncertainCreation: Story = { name: "Recovery · Uncertain creation", args: { scenario: "uncertain" } };
 export const SavedCredentials: Story = { name: "Recovery · Saved credentials", args: { scenario: "recovery" } };
