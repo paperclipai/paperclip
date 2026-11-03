@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -338,9 +338,18 @@ describe("codex remote execution", () => {
 
   it("keeps host credentials, configuration, skills and inherited secrets out of an empty remote home", async () => {
     vi.stubEnv("PAPERCLIP_FIXTURE_HOST_SECRET", "fictional-only-host-secret");
-    vi.stubEnv("PATH", "/fictional/custom/host/bin");
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-allowlist-"));
     cleanupDirs.push(rootDir);
+    const hostBin = path.join(rootDir, "host-bin");
+    await mkdir(hostBin);
+    await writeFile(path.join(hostBin, "ssh"), "#!/bin/sh\nexit 0\n");
+    await chmod(path.join(hostBin, "ssh"), 0o755);
+    vi.stubEnv("PATH", hostBin);
+    const actualUtils = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
+      "@paperclipai/adapter-utils/server-utils",
+    );
+    (ensureCommandResolvable as unknown as { mockImplementationOnce: (fn: typeof actualUtils.ensureCommandResolvable) => void })
+      .mockImplementationOnce(actualUtils.ensureCommandResolvable);
     const workspaceDir = path.join(rootDir, "workspace");
     const codexHomeDir = path.join(rootDir, "codex-home");
     await mkdir(workspaceDir, { recursive: true });
@@ -457,7 +466,7 @@ describe("codex remote execution", () => {
     expect(ensureCommandResolvable).toHaveBeenCalled();
     for (const call of ensureCommandResolvable.mock.calls as unknown as Array<[unknown, unknown, Record<string, string>]>) {
       expect(call[2].PAPERCLIP_FIXTURE_HOST_SECRET).toBeUndefined();
-      expect(call[2].PATH).toBeUndefined();
+      expect(call[2].PATH).toBe(hostBin);
     }
     expect(resolveCommandForLogs).toHaveBeenCalled();
     for (const call of resolveCommandForLogs.mock.calls as unknown as Array<[unknown, unknown, Record<string, string>]>) {

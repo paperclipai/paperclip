@@ -1113,7 +1113,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
     });
-    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+    // SSH is launched on the controller; its lookup must use the controller's
+    // PATH without forwarding that PATH to the remote worker.
+    const commandLookupEnv = externalHome && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+      ? { ...runtimeEnv, PATH: ensurePathInEnv(process.env).PATH }
+      : runtimeEnv;
+    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, commandLookupEnv);
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
     if (observabilityProfile) {
       let qualified = false;
