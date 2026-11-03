@@ -5,7 +5,7 @@ import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contra
 import { pollUntil } from "../api.js";
 import { checks, observation, project, task, sameTask, hasLink, type Entity, type InternalObservation } from "./internal-support.js";
 import { prepareCardChecklist, updateCardChecklistSource, observeCardChecklistSuccess, observeCardWork, failCardChecklist, genuineCardWorkFailure, genuineCardChecklistSuccess, cardAccountingReady, cleanupCardChecklist, type CardRecipe, type CardWorkEvidence } from "./status-card-work-failure.js";
-import { readAgentResource, cleanupIdentityProbes } from "./identity-support.js";
+import { readAgentResource, cleanupIdentityProbes, remainingIdentityObservationBudget } from "./identity-support.js";
 import { fixtureWorker } from "./internal-definition.js";
 import { groundedStatement, integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence }
@@ -120,9 +120,21 @@ async function verifyCard(ctx: ChatCatalogContext, _state: Record<string, unknow
   const o = cardsObservation(value); const card = o && (o.state.card ? o.cards.find(row => row.id === (o.state.card as StatusCard).id) : o.cards[0]); if (!card) throw new Error("Missing saved card");
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/status/${card.id}`, card.title ?? card.interestPrompt, cardLink(o!, card.id));
 }
+// These three prerequisite waits consumed a generic180s allowance before the
+// query, although the unchanged whole-case clock is installed before setup.
+const originalPrerequisiteClock = new Set(["status-cards.explain-card", "status-cards.other-authors-card", "status-cards.refresh-card"]);
+function prerequisiteDeadline(ctx: ChatCatalogContext, legacyDeadline: number): number {
+  if (!originalPrerequisiteClock.has(ctx.scenario.id)) return legacyDeadline;
+  remainingIdentityObservationBudget(ctx);
+  return ctx.observationDeadlineAt!;
+}
+function prerequisiteIsTimely(ctx: ChatCatalogContext): boolean {
+  return !originalPrerequisiteClock.has(ctx.scenario.id) || Number.isFinite(ctx.observationDeadlineAt) && Date.now() < ctx.observationDeadlineAt!;
+}
 /** Author identity comes from a real revocable agent key. The compile and first
  * summary are produced by an actual admitted summarizer run, never fixture PUTs. */
 async function seedCard(ctx: ChatCatalogContext, authorId: string, summarizerId: string, projectId: string, projectName = "Launch", interestPrompt?: string) {
+  const deadlineAt = originalPrerequisiteClock.has(ctx.scenario.id) ? prerequisiteDeadline(ctx, 0) : undefined;
   if (!ctx.input.privateSecrets) throw new Error("Card fixture author key needs private redaction");
   const key = await ctx.input.api.postSensitive<{ id: string; token: string }>(`/api/agents/${authorId}/keys`, { name: `card-prerequisite-${ctx.input.nonce}` });
   ctx.input.privateSecrets.push(key.token);
@@ -131,8 +143,8 @@ async function seedCard(ctx: ChatCatalogContext, authorId: string, summarizerId:
       headers: { Authorization: `Bearer ${key.token}`, "content-type": "application/json" }, body: JSON.stringify({ title: `${projectName} blockers`, interestPrompt: interestPrompt ?? `Summarize the biggest blockers for ${projectName} project ${projectId}, citing actual source tasks.`, agentId: summarizerId, refreshPolicy: { mode: "manual" } }) });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`Card fixture public creation failed HTTP ${response.status}`); }
     const created = await response.json() as StatusCard;
-    return await pollUntil({ label: "actual prerequisite card generation", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
-      load: () => ctx.input.api.get<StatusCard>(`/api/status-cards/${created.id}`), accept: card => card.state === "active" && !!card.summaryBody && !!card.lastGeneratedAt && !card.generatingIssueId,
+    return await pollUntil({ label: "actual prerequisite card generation", deadlineAt: deadlineAt ?? Date.now() + 180_000, intervalMs: 1000,
+      load: () => ctx.input.api.get<StatusCard>(`/api/status-cards/${created.id}`), accept: card => prerequisiteIsTimely(ctx) && card.state === "active" && !!card.summaryBody && !!card.lastGeneratedAt && !card.generatingIssueId,
       reject: card => card.state === "error" ? "Prerequisite card generation failed; no synthetic summary substituted" : undefined });
   } finally { await ctx.input.api.delete(`/api/agents/${authorId}/keys/${key.id}`, { allowNotFound: true }); }
 }
@@ -165,13 +177,13 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
         await ctx.input.api.post(`${root(ctx)}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
       const cardRecipe = id === "status-cards.refresh-card" ? await prepareCardChecklist(ctx, worker.id, p.id, t) : undefined;
       const card = await seedCard(ctx, seed === "ceo" ? ctx.input.fixtures.agent.id : worker.id, worker.id, p.id, "Launch", cardRecipe?.interestPrompt);
-      const initialComplete = await pollUntil({ label: "prerequisite summarizer native completion", deadlineAt: Date.now() + 45_000,
+      const initialComplete = await pollUntil({ label: "prerequisite summarizer native completion", deadlineAt: Math.min(Date.now() + 45_000, prerequisiteDeadline(ctx, Date.now() + 45_000)),
         load: async () => {
           const runs = await ctx.allRuns();
           const update = cardRecipe ? (await ctx.input.api.get<StatusCardUpdate[]>(`/api/status-cards/${card.id}/updates`)).find(row => row.kind !== "compile" && row.status === "ok") : undefined;
           const checklist = cardRecipe && update ? await observeCardChecklistSuccess(ctx, cardRecipe, update) : undefined;
           return { runs, update, checklist };
-        }, accept: value => value.runs.length === 1 && value.runs.every(row => row.status === "succeeded") && (!cardRecipe || !!value.update && genuineCardChecklistSuccess(card.id, cardRecipe, value.update, value.checklist)) });
+        }, accept: value => prerequisiteIsTimely(ctx) && value.runs.length === 1 && value.runs.every(row => row.status === "succeeded") && (!cardRecipe || !!value.update && genuineCardChecklistSuccess(card.id, cardRecipe, value.update, value.checklist)) });
       const initialChecklist = initialComplete.checklist;
       if (initialChecklist) await ctx.input.evidence("chat-card-initial-required-checklist.json", initialChecklist);
       let otherCard: StatusCard | undefined; const sourceTasks = [t];
