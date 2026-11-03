@@ -2415,8 +2415,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
   });
 
-  async function sentryFailureFixture(setupPending = false) {
-    const fixture = await seedFixture();
+  async function sentryFailureFixture(setupPending = false, runtimeEnv?: Record<string, string | undefined>) {
+    const fixture = await seedFixture({ runtimeEnv });
     await fixture.svc.update(fixture.routine.id, { concurrencyPolicy: "always_enqueue" }, {});
     const created = await fixture.svc.createTrigger(fixture.routine.id, { kind: "webhook", signingMode: "bearer", setupPending }, {});
     const [sourceTask] = await db.insert(issues).values({
@@ -2452,6 +2452,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const a = await f.svc.firePublicTrigger(f.trigger.publicId!, first);
     const second = f.delivery();
     second.payload.data.event.event_id = "b".repeat(32);
+    second.payload.data.event.tags[1]![1] = ` ${f.sourceTask.id.toUpperCase()} `;
+    second.payload.data.event.tags[2]![1] = ` ${f.sourceRun.id.toUpperCase()} `;
     const b = await f.svc.firePublicTrigger(f.trigger.publicId!, second);
     expect(a.id).toBe(b.id);
     expect(await f.svc.listRuns(f.routine.id)).toHaveLength(1);
@@ -2501,12 +2503,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       nativeIssueId: f.sourceTask.id, status: "failed" }).returning();
     await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery(f.sourceTask.id, anotherRun!.id));
     expect(await f.svc.listRuns(f.routine.id)).toHaveLength(2);
+    await f.svc.deleteTrigger(f.trigger.id, {});
+    await f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(),
+      authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` });
+    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(2);
   });
 
-  it("ignores tasks from a different Sentry repair routine", async () => {
+  it.each(["routine_execution", "plugin:fixture:operation"])("ignores tasks from a different Sentry repair routine with %s origin", async (originKind) => {
     const f = await sentryFailureFixture();
     const original = await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery());
     const [repair] = await db.select().from(issues).where(eq(issues.id, original.linkedIssueId!));
+    await db.update(issues).set({ originKind, originId: originKind === "routine_execution" ? f.routine.id : "plugin-instance" })
+      .where(eq(issues.id, repair!.id));
     const [failure] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
       nativeIssueId: repair!.id, status: "failed" }).returning();
     const other = await f.svc.create(f.companyId, { title: "Other repair routine", projectId: f.projectId,
@@ -2515,6 +2523,36 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(f.svc.firePublicTrigger(trigger.trigger.publicId!, { ...f.delivery(repair!.id, failure!.id),
       authorizationHeader: `Bearer ${trigger.secretMaterial!.webhookSecret}` })).resolves.toMatchObject({ status: "ignored" });
     expect(await f.svc.listRuns(other.id)).toEqual([]);
+  });
+
+  it("accepts independent plugin-operation tasks whose origin is a routine run", async () => {
+    const f = await sentryFailureFixture();
+    const other = await f.svc.create(f.companyId, { title: "Plugin routine", projectId: f.projectId, assigneeAgentId: f.agentId }, {});
+    const [origin] = await db.insert(routineRuns).values({ companyId: f.companyId, routineId: other.id,
+      source: "manual", status: "issue_created", linkedIssueId: f.sourceTask.id }).returning();
+    await db.update(issues).set({ originKind: "plugin:fixture:operation", originId: "plugin-instance",
+      originRunId: origin!.id }).where(eq(issues.id, f.sourceTask.id));
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).resolves.toMatchObject({ status: "issue_created" });
+  });
+
+  it("deduplicates suppressed Sentry receipts across triggers", async () => {
+    const f = await sentryFailureFixture(false, { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-sentry-test" });
+    const second = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "bearer" }, {});
+    const a = await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery());
+    const b = await f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(),
+      authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` });
+    expect(a).toMatchObject({ status: "skipped", failureReason: "worktree_execution_cutoff" });
+    expect(b.id).toBe(a.id);
+    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(1);
+    expect(f.wakeups).toEqual([]);
+  });
+
+  it.each(["none", "app_webhook"] as const)("requires explicit bearer mode on Sentry intake instead of %s", async (signingMode) => {
+    const f = await sentryFailureFixture();
+    await f.svc.updateTrigger(f.trigger.id, { signingMode }, {});
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).rejects.toMatchObject({ status: 401 });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+    expect(f.wakeups).toEqual([]);
   });
 
   it.each([false, true])("never promotes a Sentry setup receipt into work after activation (generic ingress: %s)", async (genericIngress) => {

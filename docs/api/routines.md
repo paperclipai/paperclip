@@ -300,9 +300,11 @@ variables are discarded. The routine receives `task_identifier`, `task_id`, and
 
 Retries and multiple Sentry events for one failed run share one routine receipt,
 including deliveries through different triggers on the same routine. A distinct
-failed run can create another task. Use `always_enqueue` if each distinct source
-run should create a task while earlier repairs remain active. Setup-pending
-triggers accept authenticated connection checks without creating work.
+failed run can create another task. Source-run variables form part of the
+execution fingerprint, so different failed runs do not coalesce into an active
+repair. Retry deduplication applies regardless of the concurrency policy.
+Setup-pending triggers accept authenticated connection checks without creating
+work.
 
 ## List Runs
 

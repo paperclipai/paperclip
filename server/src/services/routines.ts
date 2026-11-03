@@ -517,6 +517,20 @@ function createRoutineEnvFingerprint(env: unknown) {
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
+// UUIDv5 gives routine-wide receipts a stable primary key without scanning run
+// history or depending on a trigger that can be deleted. This is an identity,
+// never a secret or an authentication proof (RFC 9562, section 5.5).
+function routineScopedRunId(routineId: string, source: string, idempotencyKey: string) {
+  const bytes = crypto.createHash("sha1")
+    .update(Buffer.from(routineId.replaceAll("-", ""), "hex"))
+    .update(JSON.stringify(["paperclip.routine-run.v1", source, idempotencyKey]))
+    .digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function readManagedRoutineIssueTemplate(defaultsJson: Record<string, unknown> | null | undefined) {
   const value = defaultsJson?.issueTemplate;
   if (!isPlainRecord(value)) return null;
@@ -1410,8 +1424,11 @@ export function routineService(
     details?: Record<string, unknown> | null;
     idempotencyKey?: string | null;
     rejectIdempotencyReplay?: boolean;
+    routineIdempotency?: boolean;
   }) {
     const triggeredAt = new Date();
+    const idempotentRunId = input.routineIdempotency && input.idempotencyKey
+      ? routineScopedRunId(input.routine.id, input.source, input.idempotencyKey) : null;
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
@@ -1436,7 +1453,7 @@ export function routineService(
               eq(routineRuns.routineId, input.routine.id),
               eq(routineRuns.source, input.source),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
-              eq(routineRuns.triggerId, input.trigger.id),
+              idempotentRunId ? eq(routineRuns.id, idempotentRunId) : eq(routineRuns.triggerId, input.trigger.id),
             ),
           )
           .orderBy(desc(routineRuns.createdAt))
@@ -1453,6 +1470,7 @@ export function routineService(
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
+          id: idempotentRunId ?? undefined,
           companyId: input.routine.companyId,
           routineId: input.routine.id,
           triggerId: input.trigger.id,
@@ -1751,6 +1769,8 @@ export function routineService(
       title,
       description,
     });
+    const idempotentRunId = input.routineIdempotency && input.idempotencyKey
+      ? routineScopedRunId(input.routine.id, input.source, input.idempotencyKey) : null;
     let reusedExistingRun = false;
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -1776,7 +1796,7 @@ export function routineService(
               eq(routineRuns.routineId, input.routine.id),
               eq(routineRuns.source, input.source),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
-              input.routineIdempotency ? undefined : input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
+              idempotentRunId ? eq(routineRuns.id, idempotentRunId) : input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
             ),
           )
           .orderBy(desc(routineRuns.createdAt))
@@ -1821,6 +1841,7 @@ export function routineService(
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
+          id: idempotentRunId ?? undefined,
           companyId: input.routine.companyId,
           routineId: input.routine.id,
           triggerId: input.trigger?.id ?? null,
@@ -3019,6 +3040,7 @@ export function routineService(
           source: "webhook",
           reason: "worktree_execution_cutoff",
           idempotencyKey: deliveryKey,
+          routineIdempotency: input.sentryRunFailure,
           rejectIdempotencyReplay: hmacReplayKey !== null,
         });
       }

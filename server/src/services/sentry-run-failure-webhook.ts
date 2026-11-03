@@ -44,20 +44,26 @@ async function isIndependentSource(db: Db, companyId: string, routineId: string,
     if (tasks.length !== batch.length) return false;
     if (tasks.some(task => task.originKind === "routine_execution" && task.originId === routineId)) return false;
     if (tasks.some(task => task.originRunId && !isUuidLike(task.originRunId))) return false;
-    const routineOriginIds = tasks.filter(task => task.originKind === "routine_execution" && task.originRunId && isUuidLike(task.originRunId))
+    const routineOriginIds = tasks.filter(task => task.originRunId)
       .map(task => task.originRunId!);
+    const routineCreationIds = new Set<string>();
     if (routineOriginIds.length) {
-      const origins = await db.select({ source: sql<string | null>`${routineRuns.triggerPayload}->>'source'` }).from(routineRuns)
+      const origins = await db.select({ id: routineRuns.id, routineId: routineRuns.routineId, linkedIssueId: routineRuns.linkedIssueId,
+        source: sql<string | null>`${routineRuns.triggerPayload}->>'source'` }).from(routineRuns)
         .where(and(eq(routineRuns.companyId, companyId), inArray(routineRuns.id, routineOriginIds)));
-      if (origins.length !== new Set(routineOriginIds).size) return false;
-      if (origins.some(origin => origin.source === "sentry_run_failure")) return false;
+      for (const origin of origins) {
+        if (!tasks.some(task => task.originRunId === origin.id && task.id === origin.linkedIssueId)) continue;
+        if (origin.routineId === routineId || origin.source === "sentry_run_failure") return false;
+        routineCreationIds.add(origin.id);
+      }
     }
+    if (tasks.some(task => task.originKind === "routine_execution" && !routineCreationIds.has(task.originRunId ?? ""))) return false;
     const legacyTasks = tasks.filter(task => !task.originRunId && task.createdByAgentId);
     const creationEvents = legacyTasks.length ? await db.select({ taskId: activityLog.entityId, runId: activityLog.runId })
       .from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"),
         inArray(activityLog.entityId, legacyTasks.map(task => task.id)),
         inArray(activityLog.action, ["issue.created", "issue.child_created"]))) : [];
-    const creatorIds = [...new Set([...tasks.filter(task => task.originKind !== "routine_execution").map(task => task.originRunId),
+    const creatorIds = [...new Set([...tasks.filter(task => !routineCreationIds.has(task.originRunId ?? "")).map(task => task.originRunId),
       ...creationEvents.map(event => event.runId)].filter((id): id is string => typeof id === "string" && isUuidLike(id)))];
     const creators = creatorIds.length ? await db.select({ id: heartbeatRuns.id, nativeIssueId: heartbeatRuns.nativeIssueId,
       issueId: heartbeatRuns.issueId, contextSnapshot: taskContext,
@@ -91,7 +97,7 @@ export async function prepareSentryRunFailureWebhook(db: Db, routine: {
 }, payload: Record<string, unknown> | null | undefined): Promise<Delivery> {
   const event = record(record(payload?.data)?.event);
   const tags = eventTags(event?.tags);
-  const runId = tags?.get("run_id")?.toLowerCase(), taskId = tags?.get("task_id")?.toLowerCase();
+  const runId = tags?.get("run_id")?.trim().toLowerCase(), taskId = tags?.get("task_id")?.trim().toLowerCase();
   if (payload?.action !== "triggered" || tags?.get("event_kind") !== "run_failure"
     || !runId || !isUuidLike(runId) || !taskId || !isUuidLike(taskId)
     || (tags.has("company_id") && tags.get("company_id") !== routine.companyId)) {
