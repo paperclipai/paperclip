@@ -21,7 +21,7 @@ import { providerTraceStore } from "../services/provider-trace-store.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql, inArray } from "drizzle-orm";
-import { agents, companies, heartbeatRuns, plugins, pluginJobs, pluginJobRuns, pluginState, providerTraceRecords, issues, issueWatchdogs, issueThreadInteractions, toolApplications, toolConnections, connectionGrants, companySecrets, companySecretVersions,
+import { agents, companies, heartbeatRuns, plugins, pluginJobs, pluginJobRuns, pluginState, providerTraceRecords, issues, issueWatchdogs, issueThreadInteractions, toolApplications, toolConnections, connectionGrants, companySecrets, companySecretVersions, routines, routineTriggers,
   applyPendingMigrations, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -49,6 +49,75 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   }, 60_000);
   afterAll(async () => { vi.useRealTimers(); vi.unstubAllEnvs(); await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
     if (directory) await fs.rm(directory, { recursive: true, force: true }); });
+
+  it.each(["routines", "issues"] as const)("marks overflowed %s incomplete under the negotiated deadline catalog", async family => {
+    const now = Date.now(), companyId = randomUUID(), agentId = randomUUID(), ownerId = randomUUID();
+    const capability = { deadlineCatalog: "domain_deadlines_v1" } as VerifiedIdleCapabilities;
+    const read = () => readIdleSleepSafety(db, () => ({ ownerId, draining: true,
+      startedAt: new Date(now - 1000), expiresAt: new Date(now + 300_000), activeRuns: 0, pendingWakes: 0 }),
+      () => now, ownerId, async () => "none", undefined, undefined, true, true,
+      { deadlineCapability: capability, collectDiagnostics: true });
+    const reason = `${family}.schedule`;
+    const ids = Array.from({ length: 10_001 }, () => randomUUID());
+    const insert = async (batch: string[]) => {
+      if (family === "routines") {
+        await db.insert(routines).values(batch.map(id => ({ id, companyId, title: "Future routine",
+          status: "active", assigneeAgentId: agentId })));
+        await db.insert(routineTriggers).values(batch.map(id => ({ id, routineId: id, companyId,
+          kind: "schedule", cronExpression: "*/15 * * * *", timezone: "UTC", nextRunAt: new Date(now + 600_000),
+          enabled: true, archived: false, setupPending: false })));
+      } else {
+        await db.insert(issues).values(batch.map(id => ({ id, companyId, title: "Passive backlog", status: "backlog" })));
+      }
+    };
+    await db.insert(companies).values({ id: companyId, name: "Deadline overflow", issuePrefix: `O${companyId.slice(0, 6)}` });
+    try {
+      await db.insert(agents).values({ id: agentId, companyId, name: "On-demand worker", role: "engineer",
+        status: "idle", adapterType: "process" });
+      for (let offset = 0; offset < 10_000; offset += 500) await insert(ids.slice(offset, Math.min(offset + 500, 10_000)));
+      const atLimit = await read();
+      expect(atLimit).toMatchObject({ version: 3, backgroundWork: "none", diagnostics: { complete: true },
+        deadlineProof: { catalog: "domain_deadlines_v1" } });
+      expect(atLimit.diagnostics?.checks).toContainEqual({ reason, state: "none" });
+      if (family === "routines") expect(atLimit.scheduledWake?.nextWakeAt).toBe(new Date(now + 600_000).toISOString());
+      else expect(atLimit.scheduledWake).toBeUndefined();
+
+      await insert([ids[10_000]!]);
+      const [rowCount] = await db.select({ count: sql<number>`count(*)::integer` })
+        .from(family === "routines" ? routines : issues).where(eq(family === "routines" ? routines.companyId : issues.companyId, companyId));
+      expect(rowCount?.count).toBe(10_001);
+      if (family === "routines") {
+        const [triggers] = await db.select({ count: sql<number>`count(*)::integer` }).from(routineTriggers)
+          .where(eq(routineTriggers.companyId, companyId));
+        expect(triggers?.count).toBe(10_001);
+      }
+      const overflowed = await read();
+      expect(overflowed.backgroundWork).not.toBe("none");
+      expect(overflowed.diagnostics?.complete).toBe(false);
+      expect(overflowed.diagnostics?.checks).toContainEqual({ reason, state: "unknown" });
+      expect(overflowed.deadlineProof).toBeUndefined();
+      expect(overflowed.scheduledWake).toBeUndefined();
+
+      if (family === "routines") {
+        await db.delete(routines).where(eq(routines.id, ids[10_000]!));
+        await db.update(routineTriggers).set({ nextRunAt: new Date(now - 1) }).where(eq(routineTriggers.id, ids[0]!));
+      } else {
+        await db.delete(issues).where(eq(issues.id, ids[10_000]!));
+        await db.update(issues).set({ status: "in_progress", assigneeAgentId: agentId }).where(eq(issues.id, ids[0]!));
+      }
+      const blocked = await read();
+      expect(blocked.backgroundWork).not.toBe("none");
+      expect(blocked.diagnostics?.complete).toBe(true);
+      expect(blocked.diagnostics?.checks).toContainEqual({ reason, state: "present" });
+      expect(blocked.deadlineProof).toBeUndefined();
+      expect(blocked.scheduledWake).toBeUndefined();
+    } finally {
+      await db.delete(routines).where(eq(routines.companyId, companyId));
+      await db.delete(issues).where(eq(issues.companyId, companyId));
+      await db.delete(agents).where(eq(agents.companyId, companyId));
+      await db.delete(companies).where(eq(companies.id, companyId));
+    }
+  }, 30_000);
 
   it("projects durable timers across client reconnection and executes the original plugin and trace owners", async () => {
     const now = Date.now(), companyId = randomUUID(), agentId = randomUUID(), pluginId = randomUUID(), runId = randomUUID();
