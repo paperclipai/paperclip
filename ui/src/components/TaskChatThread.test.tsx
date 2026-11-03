@@ -23,6 +23,8 @@ import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadIntera
 import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
+import type { HeartbeatRun } from "@paperclipai/shared";
+import { waitForStoppedRuns } from "@/lib/wait-for-stopped-runs";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -5221,6 +5223,36 @@ describe("TaskChatThread live transcript", () => {
 });
 
 describe("TaskChatThread composer execution controls", () => {
+  it("reconciles a timed-out Stop from exact company-bound historical proof after its live action disappears", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = { id: "stopped-run", status: "running", runtimeMode: "native" as const, invocationSource: "issue", triggerDetail: null,
+        startedAt: "2026-11-03T15:00:00Z", finishedAt: null, createdAt: "2026-11-03T15:00:00Z", agentId: "agent-1", agentName: "Alex", adapterType: "paperclip_runner" };
+      const requested: Partial<HeartbeatRun> & { runtimeMode: "native" } = {
+        id: run.id, companyId: "company", status: "cancelled", runtimeMode: "native",
+        resultJson: { executionCancellation: { state: "requested" } },
+      };
+      const onStop = () => waitForStoppedRuns([run.id], { timeoutMs: 1000, getRun: async () => requested as HeartbeatRun });
+      const base = { comments: [], onAdd: async () => {}, issueStatus: "in_progress", companyId: "company" };
+      render(<TaskChatThread {...base} activeRun={run} onCancelRun={onStop} />);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')!.click(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+      const historical = { runId: run.id, agentId: run.agentId, adapterType: run.adapterType, createdAt: run.createdAt,
+        startedAt: run.startedAt, finishedAt: run.startedAt, status: "cancelled", runtimeMode: "native" as const,
+        resultJson: { executionCancellation: { state: "acknowledged" }, nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", runId: run.id, companyId: "company", dispatchState: "acknowledged" } } };
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, runtimeMode: undefined }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, resultJson: { executionCancellation: { state: "acknowledged" } } }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, resultJson: { ...historical.resultJson,
+        nativeCancellation: { ...historical.resultJson.nativeCancellation, companyId: "foreign" } } }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[historical]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
   it.each(["process", "paperclip_runner"])("passes the task's stop action through for %s execution", async (adapterType) => {
     const onStop = vi.fn(async () => {});
     const run = {

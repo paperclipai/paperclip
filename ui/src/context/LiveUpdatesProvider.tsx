@@ -375,11 +375,11 @@ function resolveIssueToastContext(
       issueRefs.some((ref) => issue.id === ref || issue.identifier === ref),
     );
   const cachedIssue = detailIssue ?? listIssue ?? null;
-  const ref =
+  const identifier =
     readString(details?.identifier) ??
     readString(details?.issueIdentifier) ??
-    cachedIssue?.identifier ??
-    `Task ${shortId(issueId)}`;
+    cachedIssue?.identifier;
+  const ref = identifier ?? "Task";
   const title =
     readString(details?.title) ??
     readString(details?.issueTitle) ??
@@ -389,7 +389,7 @@ function resolveIssueToastContext(
     ref,
     title,
     label: title ? `${ref} - ${truncate(title, 72)}` : ref,
-    href: `/issues/${cachedIssue?.identifier ?? issueId}`,
+    href: `/issues/${identifier ?? issueId}`,
   };
 }
 
@@ -1064,7 +1064,10 @@ function buildActivityToast(
     queryClient,
     companyId,
     entityId,
-    details,
+    {
+      ...details,
+      identifier: readString(payload.issueIdentifier) ?? readString(details?.identifier),
+    },
   );
   const actor = readString(readString(payload.actorName)?.trim()) ?? resolveActorLabel(queryClient, companyId, actorType, actorId);
   const cachedAgent = actorType === "agent" && actorId

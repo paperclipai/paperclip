@@ -1,5 +1,5 @@
 {
-  "id": "2b072fcd-d22c-401b-bf40-eccff6ec0443",
+  "id": "a1fcb4c6-40e7-47a6-b3f2-c43cd9bf332b",
   "prevId": "8d9f4abf-57c7-443a-aa8b-3e3fd4f09dae",
   "version": "7",
   "dialect": "postgresql",
@@ -5891,12 +5891,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "origin_run_id": {
-          "name": "origin_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -5948,21 +5942,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "approvals_origin_run_idx": {
-          "name": "approvals_origin_run_idx",
-          "columns": [
-            {
-              "expression": "origin_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -5990,19 +5969,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "approvals_origin_run_id_heartbeat_runs_id_fk": {
-          "name": "approvals_origin_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "origin_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -28857,6 +28823,327 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.execution_admission_project_charges": {
+      "name": "execution_admission_project_charges",
+      "schema": "",
+      "columns": {
+        "admission_id": {
+          "name": "admission_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "execution_admission_project_charges_project_idx": {
+          "name": "execution_admission_project_charges_project_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "execution_admission_project_charges_company_admission_fk": {
+          "name": "execution_admission_project_charges_company_admission_fk",
+          "tableFrom": "execution_admission_project_charges",
+          "tableTo": "execution_admissions",
+          "columnsFrom": [
+            "company_id",
+            "admission_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "execution_admission_project_charges_company_project_fk": {
+          "name": "execution_admission_project_charges_company_project_fk",
+          "tableFrom": "execution_admission_project_charges",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "company_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "execution_admission_project_charges_admission_id_project_id_pk": {
+          "name": "execution_admission_project_charges_admission_id_project_id_pk",
+          "columns": [
+            "admission_id",
+            "project_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.execution_admissions": {
+      "name": "execution_admissions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt": {
+          "name": "attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "primary_project_id": {
+          "name": "primary_project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_revision": {
+          "name": "context_revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "settlement_id": {
+          "name": "settlement_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "execution_admissions_company_id_uq": {
+          "name": "execution_admissions_company_id_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "execution_admissions_run_attempt_uq": {
+          "name": "execution_admissions_run_attempt_uq",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "execution_admissions_live_run_uq": {
+          "name": "execution_admissions_live_run_uq",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"execution_admissions\".\"settled_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "execution_admissions_company_id_companies_id_fk": {
+          "name": "execution_admissions_company_id_companies_id_fk",
+          "tableFrom": "execution_admissions",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "execution_admissions_run_id_heartbeat_runs_id_fk": {
+          "name": "execution_admissions_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "execution_admissions",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "execution_admissions_attempt_check": {
+          "name": "execution_admissions_attempt_check",
+          "value": "\"execution_admissions\".\"attempt\" > 0"
+        },
+        "execution_admissions_settlement_check": {
+          "name": "execution_admissions_settlement_check",
+          "value": "(\"execution_admissions\".\"settlement_id\" is null) = (\"execution_admissions\".\"settled_at\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.project_task_execution_policies": {
+      "name": "project_task_execution_policies",
+      "schema": "",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "max_concurrent_tasks": {
+          "name": "max_concurrent_tasks",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "project_task_execution_policies_company_project_fk": {
+          "name": "project_task_execution_policies_company_project_fk",
+          "tableFrom": "project_task_execution_policies",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "company_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "project_task_execution_policies_maximum_check": {
+          "name": "project_task_execution_policies_maximum_check",
+          "value": "\"project_task_execution_policies\".\"max_concurrent_tasks\" is null or \"project_task_execution_policies\".\"max_concurrent_tasks\" > 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.execution_workspace_repositories": {
