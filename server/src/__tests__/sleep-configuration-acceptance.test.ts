@@ -10,7 +10,9 @@ import { createDb } from '@paperclipai/db';
 import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
 import { finalizeLocalSleepReceipt, sleepConfigurationDigest } from '../../../scripts/sleep-qualification/evidence.mjs';
 import { idleBackupArchiveNames, observeIdleBackupCheckpoint } from './helpers/maintenance/backup-observation.js';
-import { assertEarlySleepDiagnostics } from './helpers/maintenance/early-sleep-diagnostics.js';
+import { stabilizeEarlyDiagnostics } from './helpers/maintenance/early-diagnostic-stabilization.js';
+import { createMaintenanceS3Boundary } from './helpers/maintenance/s3-boundary.js';
+import { managedSleepConfiguration, managedSleepServerOptions, provisionManagedSleepCompany } from './helpers/maintenance/managed-profile.js';
 import { prepareMaintenanceRuntime } from './helpers/maintenance/runtime-build.js';
 import { produceCompletedToolReview } from './helpers/maintenance/configuration-producers.js';
 import { observeMaintenanceBrowser } from './helpers/maintenance/browser-observation.js';
@@ -25,6 +27,7 @@ const cloudCheckout = process.env.PAPERCLIP_SLEEP_CLOUD_CHECKOUT;
 if (process.env.PAPERCLIP_SLEEP_CONFIGURED_ACCEPTANCE === '1' && !cloudCheckout) throw new Error('Configured acceptance requires a reviewed PAPERCLIP_SLEEP_CLOUD_CHECKOUT with its built qualification broker adapter');
 const enabled = process.env.PAPERCLIP_SLEEP_CONFIGURED_ACCEPTANCE === '1' && Boolean(databaseUrl);
 const quietMs = 90_000, apiCooldownMs = 600_000;
+if (enabled && process.env.PAPERCLIP_MAINTENANCE_KEEP_ARTIFACTS !== '1') throw new Error('Configured qualification requires retained raw evidence');
 
 describe.skipIf(!enabled)('configured assembled sleep qualification (explicit owned external PostgreSQL only)', () => {
   beforeAll(async () => { await prepareMaintenanceRuntime(); }, 210_000);
@@ -40,21 +43,22 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
     if (execFileSync('git', ['-C', cloudCheckout!, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== cloudSha) throw new Error('Qualification Cloud checkout does not match the exact requested SHA');
     const { startQualificationBroker } = await import(pathToFileURL(path.join(cloudCheckout!, 'scripts/sleep-qualification-broker.mjs')).href);
     const broker = await startQualificationBroker();
+    const s3 = createMaintenanceS3Boundary();
     try {
+    await withMaintenanceProvider(s3.server, async s3Origin => {
     await withMaintenanceProvider(collector, async origin => {
       const pair = generateKeyPairSync('ed25519');
       const jwk = { ...pair.publicKey.export({ format: 'jwk' }), kid: 'sleep-qualification', alg: 'EdDSA', use: 'sig' };
-      const configuration = { automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetryOrigin: `${origin}/telemetry`, otelOrigin: origin, serveUi: process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' };
+      const configuration = managedSleepConfiguration(origin, process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1');
       // Independent intended logical contract; collector ports are observed separately.
       const expected = { target: 'owned-local-assembled', appSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), cloudSha: cloudSha!,
         configDigest: createHash('sha256').update(JSON.stringify({ automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true,
-          telemetry: true, otel: { enabled: true, protocol: 'http/json' }, serveUi: process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' })).digest('hex'),
+          telemetry: true, otel: { enabled: true, protocol: 'http/json' }, serveUi: process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1',
+          managedInstance: true, deploymentMode: 'authenticated', storageProvider: 's3' })).digest('hex'),
         collectorOrigins: { telemetry: `${origin}/telemetry`, otel: origin } };
       expect(sleepConfigurationDigest(configuration)).toBe(expected.configDigest);
       const startedAt = new Date().toISOString();
-      const server = await startMaintenanceServer(databaseUrl!, { configuration, controlJwks: JSON.stringify({ keys: [jwk] }), githubOrigin: broker.origin,
-        connector: { origin: broker.origin, instanceId: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID,
-          signPrivateKey: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY, sealPrivateKey: broker.variables.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY } });
+      const server = await startMaintenanceServer(databaseUrl!, managedSleepServerOptions(configuration, JSON.stringify({ keys: [jwk] }), s3Origin, broker));
       phase('actual-server-ready');
       let fixture = createDb(databaseUrl!, { maxConnections: 1 });
       const control = (action: string, idleCapabilities?: unknown) => {
@@ -64,8 +68,10 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const payload = encode({ v: 1, iss: CLOUD_RUNTIME_IDENTITY_ISSUER, aud: CLOUD_CONTROL_AUDIENCE, sub: 'maintenance-stack', action, requestId: randomUUID(), iat: now, exp: now + 60, ...(idleCapabilities ? { idleCapabilities } : {}) });
         return { [CLOUD_CONTROL_HEADER]: `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`, 'ascii'), pair.privateKey).toString('base64url')}` };
       };
+      let failure: { error: unknown } | undefined;
       try {
-        const company = await server.api<{ id: string }>('POST', '/companies', { name: 'Configured sleep acceptance' });
+        await writeFile(path.join(server.directory, 'sleep-managed-startup.json'), JSON.stringify(await server.snapshot(), null, 2));
+        const company = await provisionManagedSleepCompany(server, fixture);
         expect(await server.api('GET', '/announcements/current')).toMatchObject({ id: 'new-projects' });
         const announcement = (await server.snapshot()).announcement;
         expect(announcement?.intercepted).toBe(true);
@@ -100,24 +106,33 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         await server.api('POST', `/routines/${routine.id}/triggers`, { kind: 'schedule', cronExpression: (() => { const next = new Date(Date.now() + 24 * 60 * 60_000); return `0 ${next.getUTCHours()} ${next.getUTCDate()} ${next.getUTCMonth() + 1} *`; })(), timezone: 'UTC' });
         await server.api('GET', '/agents/me', undefined, { Authorization: `Bearer ${key.token}` });
         const lastAuthenticatedApiAt = performance.now();
-        const browser = process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' ? await observeMaintenanceBrowser(`http://127.0.0.1:${server.port}`, 'Organize your work.') : undefined;
-        // Read-only diagnostics deliberately do not run the checkpoint. This
-        // early inventory cannot claim eligibility while normal API activity remains.
+        await writeFile(path.join(server.directory, 'sleep-setup-receipt.json'), JSON.stringify({ ...expected, configuration, company,
+          agentId: agent.id, keyId: key.id, announcement, chatHistory, toolHistory, githubContinuity, brokerBinding,
+          brokerBoundary: broker.boundary, s3: s3.snapshot(), snapshot: await server.snapshot(),
+          boundary: 'Actual managed startup/tenant provisioning/producers; Cloud front door, GitHub HTTP and S3 service are owned simulated transports' }, null, 2));
+        expect(s3.snapshot().errors).toEqual([]);
+        let browser;
+        try {
+          browser = process.env.PAPERCLIP_SLEEP_BROWSER_ACCEPTANCE === '1' ? await observeMaintenanceBrowser(`http://127.0.0.1:${server.port}`, 'Organize your work.', server.tenantHeaders) : undefined;
+          await writeFile(path.join(server.directory, 'sleep-browser-receipt.json'), JSON.stringify({ browser, observedAt: new Date().toISOString() }, null, 2));
+        } catch (error) {
+          await writeFile(path.join(server.directory, 'sleep-browser-error.json'), JSON.stringify({ observedAt: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) }, null, 2));
+          throw error;
+        }
+        // Setup-only owner settling never substitutes for the later full quiet window.
+        await server.settled();
         const earlyDrain = await server.api<{ ownerId: string }>('POST', '/instance/task-drain', { purpose: 'idle', ttlMs: 240_000 }, control('task-drain:start'));
         try {
           const earlyCapabilities = { incomingWake: await broker.capability(earlyDrain.ownerId), deadlineCatalog: 'domain_deadlines_v1' };
           const earlyRead = () => server.api<any>('GET', `/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&scheduledWake=domain-deadlines-v1&ownerId=${earlyDrain.ownerId}`, undefined, control('task-drain:read', earlyCapabilities));
-          const initial = await earlyRead();
-          await writeFile(path.join(server.directory, 'sleep-early-initial-safety.json'), JSON.stringify(initial, null, 2));
-          const final = await earlyRead();
-          const apiCooldownElapsedMs = performance.now() - lastAuthenticatedApiAt;
-          await writeFile(path.join(server.directory, 'sleep-early-diagnostics.json'), JSON.stringify({ initial, final, apiCooldownElapsedMs,
-            expectedReasons: { 'local.registered_probes': 'present (aggregate includes actual API cooldown; other probes remain indistinguishable)', 'local.inspection': 'present', 'backup.checkpoint': 'not_checked (diagnostic mode)' },
-            boundary: 'Read-only fail-fast inventory before full normal cooldown; never eligibility proof' }, null, 2));
-          assertEarlySleepDiagnostics(initial, apiCooldownElapsedMs); assertEarlySleepDiagnostics(final, apiCooldownElapsedMs);
+          const early = await stabilizeEarlyDiagnostics(server, { ownerId: earlyDrain.ownerId, apiSucceededAt: lastAuthenticatedApiAt, read: earlyRead,
+            persist: observations => writeFile(path.join(server.directory, 'sleep-early-diagnostic-attempts.json'), JSON.stringify(observations, null, 2)) });
+          await writeFile(path.join(server.directory, 'sleep-early-diagnostics.json'), JSON.stringify(early, null, 2));
         } finally { await server.api('DELETE', `/instance/task-drain?ownerId=${earlyDrain.ownerId}`, undefined, control('task-drain:stop')); }
-        await fixture.$client.end({ timeout: 1 });
+        // Anchor the full cooldown to a genuine successful opaque-key request.
+        await server.api('GET', '/agents/me', undefined, { Authorization: `Bearer ${key.token}` });
         const lastApiActivity = performance.now();
+        await fixture.$client.end({ timeout: 1 });
         await server.trace();
         phase('first-real-ten-minute-api-cooldown');
         // The real authenticated-use cooldown is part of ordinary behavior.
@@ -175,7 +190,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const proof = final.idleSleepSafety;
         const backupCheckpoint = await observeIdleBackupCheckpoint(server.directory, backupNamesBefore, checkpointStartedAt, company.id);
         const observations = { version: 1, ...expected, startedAt,
-          configuration, browser, announcement: after.announcement, chatHistory, toolHistory, githubContinuity, brokerBinding, brokerBoundary: broker.boundary, backupCheckpoint,
+          configuration, browser, s3: s3.snapshot(), announcement: after.announcement, chatHistory, toolHistory, githubContinuity, brokerBinding, brokerBoundary: broker.boundary, backupCheckpoint,
           features: { automaticBackups: backupCheckpoint.archives.length > 0 && backupCheckpoint.wakeMarkerObserved, announcements: true, telemetry: true, otel: true, exportedSpans: exported.length },
           quiet,
           eligibility: { observedAt: new Date().toISOString(), backgroundWork: proof.backgroundWork, ownedHold: final.ownerId === drain.ownerId, apiCooldownElapsedMs: performance.now() - lastApiActivity,
@@ -193,6 +208,7 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         expect(retained).toEqual({ keys: 1, issues: 1, routines: 1, github_enabled: true });
         await server.api('DELETE', `/instance/task-drain?ownerId=${drain.ownerId}`, undefined, control('task-drain:stop'));
         const nextIssue = await server.api<{ id: string }>('POST', `/companies/${company.id}/issues`, { title: 'First ordinary producer after quiet', status: 'todo', assigneeAgentId: agent.id }, { Authorization: `Bearer ${key.token}` });
+        const reactivationApiAt = performance.now();
         await expect.poll(async () => {
           const [run] = await fixture.$client`select status from heartbeat_runs where issue_id=${nextIssue.id} order by created_at desc limit 1`;
           return run?.status;
@@ -201,7 +217,6 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
         const [executions] = await fixture.$client`select count(*)::int as count from heartbeat_runs where issue_id=${nextIssue.id}`;
         expect(executions.count).toBe(1);
         await fixture.$client.end({ timeout: 1 });
-        const reactivationApiAt = performance.now();
         phase('reactivation-real-ten-minute-api-cooldown');
         await delay(apiCooldownMs + 100);
         await server.settled();
@@ -254,8 +269,22 @@ describe.skipIf(!enabled)('configured assembled sleep qualification (explicit ow
           eligibility: resumedProof.idleSleepSafety,
           boundary: 'Actual local application reactivation, real cooldown and fresh eligibility; no provider suspension or deployed inbound-wake claim',
         }, null, 2));
+        const s3Evidence = s3.snapshot();
+        await writeFile(path.join(server.directory, 'sleep-s3-boundary.json'), JSON.stringify(s3Evidence, null, 2));
+        expect(s3Evidence.errors).toEqual([]);
         phase('configured-qualification-receipts-complete');
-      } finally { await server.stop(); await fixture.$client.end(); }
+      } catch (error) { failure = { error }; throw error; }
+      finally {
+        const errors: unknown[] = [];
+        try { await writeFile(path.join(server.directory, 'sleep-s3-before-cleanup.json'), JSON.stringify(s3.snapshot(), null, 2)); } catch (error) { errors.push(error); }
+        try { await server.stop(); } catch (error) { errors.push(error); }
+        try { await fixture.$client.end(); } catch (error) { errors.push(error); }
+        // Shutdown can flush storage; capture and validate only after child exit.
+        try { await writeFile(path.join(server.directory, 'sleep-s3-after-cleanup.json'), JSON.stringify(s3.snapshot(), null, 2)); } catch (error) { errors.push(error); }
+        if (s3.snapshot().errors.length) errors.push(new Error(`S3 fixture boundary failed: ${JSON.stringify(s3.snapshot().errors)}`));
+        if (errors.length) throw new AggregateError([...(failure ? [failure.error] : []), ...errors], 'Configured work or owned cleanup failed');
+      }
+    });
     });
     } finally { await broker.stop(); }
   }, 1_800_000);

@@ -2,8 +2,22 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { withNativeMaintenanceBrowser } from './native-browser.js';
 
 /** Actual Chromium visibility; never substitutes a fake document or frozen lifecycle. */
-export async function observeMaintenanceBrowser(origin: string, announcementDescription?: string) {
+export async function observeMaintenanceBrowser(origin: string, announcementDescription?: string, tenantHeaders?: Record<string, string>) {
   return withNativeMaintenanceBrowser(async (browser, context) => {
+    const unmatchedOrigins: string[] = [];
+    if (tenantHeaders) {
+      // Both HTTP and native WS need the simulated Cloud front door identity.
+      // Gate every possible foreign transport BEFORE networking; no fixture
+      // header can reach another origin. about:blank does not use networking.
+      await context.route('**/*', async route => {
+        if (new URL(route.request().url()).origin !== origin) { unmatchedOrigins.push(route.request().url()); await route.abort('blockedbyclient'); return; }
+        await route.continue();
+      });
+      await context.routeWebSocket(url => url.origin.replace(/^ws/, 'http') !== origin, route => {
+        unmatchedOrigins.push(route.url()); route.close({ code: 1008, reason: 'Outside owned app origin' });
+      });
+      await context.setExtraHTTPHeaders(tenantHeaders);
+    }
     const page = await context.newPage();
     const requests: Array<{ at: number; path: string }> = [];
     page.on('request', request => { const url = new URL(request.url()); if (url.origin === origin) requests.push({ at: performance.now(), path: url.pathname }); });
@@ -57,11 +71,12 @@ export async function observeMaintenanceBrowser(origin: string, announcementDesc
     if ([initialVisibility, initialHidden, finalHidden].some(state => state.ownVisibilityOverride || state.ownHiddenOverride || state.ownFocusOverride)) throw new Error('Browser visibility or focus properties were overridden');
     const hidden = requests.slice(hiddenRequests);
     if (hidden.some(request => request.path.startsWith('/api/'))) throw new Error(`Background tab produced tenant traffic: ${JSON.stringify(hidden)}`);
+    if (unmatchedOrigins.length) throw new Error(`Browser attempted non-owned transport: ${JSON.stringify(unmatchedOrigins)}`);
     await page.bringToFront(); const restoredVisibility = await visibility();
     if (restoredVisibility.state !== 'visible') throw new Error('Native app tab did not become visible after activation');
     if (!visibilityEvents.some(event => event.state === 'visible' && event.rendererAt >= finalHidden.rendererAt)) throw new Error('Native visible restoration event was not observed');
     return { activeRequests: requests.slice(beforeActive, hiddenRequests).length, hiddenRealElapsedMs,
-      hiddenRequests: hidden, visibility: 'Native Chromium default context with no Playwright focus override', initialVisibility, initialHidden, finalHidden,
-      intervalVisibilityEvents, visibilityEvents, restoredVisibility, appWindow, foregroundWindow, announcementRendered: Boolean(announcementDescription), closed: true };
+      hiddenRequests: hidden, unmatchedOrigins, visibility: 'Native Chromium default context with no Playwright focus override', initialVisibility, initialHidden, finalHidden,
+      intervalVisibilityEvents, visibilityEvents, restoredVisibility, appWindow, foregroundWindow, announcementRendered: Boolean(announcementDescription), authBoundary: tenantHeaders ? 'Owned Cloud front-door headers; actual tenant resolver/membership' : 'Legacy local board', closed: true };
   });
 }

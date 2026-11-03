@@ -19,6 +19,9 @@ export function logicalSleepConfiguration(configuration: unknown): {
   telemetry: boolean;
   otel: { enabled: boolean; protocol: 'http/json' };
   serveUi: boolean;
+  managedInstance: boolean;
+  deploymentMode: 'authenticated' | 'local_trusted';
+  storageProvider: 's3' | 'local_disk';
 };
 export function sleepConfigurationDigest(configuration: unknown): string;
 export function evaluateSleepQualification(receipt: unknown, expected: SleepQualificationIdentity): SleepQualificationReport;

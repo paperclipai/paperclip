@@ -19,13 +19,17 @@ const validBackupCheckpoint = (backup, inRun, quietFinishedAt) => backup?.owner 
 export function logicalSleepConfiguration(configuration) {
   if (!configuration || typeof configuration.announcements !== 'boolean' || typeof configuration.serveUi !== 'boolean'
     || typeof configuration.telemetryOrigin !== 'string' || typeof configuration.otelOrigin !== 'string'
+    || (configuration.managedInstance !== undefined && typeof configuration.managedInstance !== 'boolean')
+    || (configuration.deploymentMode !== undefined && !['authenticated', 'local_trusted'].includes(configuration.deploymentMode))
+    || (configuration.storageProvider !== undefined && !['s3', 'local_disk'].includes(configuration.storageProvider))
     || typeof configuration.automaticBackups?.idleCheckpoint !== 'boolean'
     || !finite(configuration.automaticBackups?.intervalMinutes) || configuration.automaticBackups.intervalMinutes < 1) {
     throw new Error('sleep_qualification_configuration_invalid');
   }
   return { automaticBackups: { intervalMinutes: configuration.automaticBackups.intervalMinutes,
     idleCheckpoint: configuration.automaticBackups.idleCheckpoint }, announcements: configuration.announcements,
-    telemetry: Boolean(configuration.telemetryOrigin), otel: { enabled: Boolean(configuration.otelOrigin), protocol: 'http/json' }, serveUi: configuration.serveUi };
+    telemetry: Boolean(configuration.telemetryOrigin), otel: { enabled: Boolean(configuration.otelOrigin), protocol: 'http/json' }, serveUi: configuration.serveUi, managedInstance: configuration.managedInstance ?? false,
+    deploymentMode: configuration.deploymentMode ?? 'local_trusted', storageProvider: configuration.storageProvider ?? 'local_disk' };
 }
 export const sleepConfigurationDigest = configuration => createHash('sha256').update(JSON.stringify(logicalSleepConfiguration(configuration))).digest('hex');
 

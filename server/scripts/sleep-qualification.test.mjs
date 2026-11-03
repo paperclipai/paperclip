@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { evaluateSleepQualification, sleepConfigurationDigest, finalizeLocalSleepReceipt } from '../../scripts/sleep-qualification/evidence.mjs';
 const configuration = { automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetryOrigin: 'http://127.0.0.1:4318/telemetry', otelOrigin: 'http://127.0.0.1:4318', serveUi: true };
 // Independent preflight contract, not copied from the receipt/digest implementation.
-const configDigest = createHash('sha256').update(JSON.stringify({ automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetry: true, otel: { enabled: true, protocol: 'http/json' }, serveUi: true })).digest('hex');
+const configDigest = createHash('sha256').update(JSON.stringify({ automaticBackups: { intervalMinutes: 60, idleCheckpoint: true }, announcements: true, telemetry: true, otel: { enabled: true, protocol: 'http/json' }, serveUi: true, managedInstance: false, deploymentMode: 'local_trusted', storageProvider: 'local_disk' })).digest('hex');
 const expected = { appSha: 'a'.repeat(40), cloudSha: 'b'.repeat(40), target: 'owned-fixture', configDigest };
 function fixture() {
   return { version: 1, ...expected, configuration: structuredClone(configuration), collectorOrigins: { telemetry: configuration.telemetryOrigin, otel: configuration.otelOrigin },
@@ -125,6 +125,7 @@ test('logical digest is stable across origins and detects changed enabled config
   assert.throws(() => evaluateSleepQualification(f, { ...expected, collectorOrigins: fixture().collectorOrigins }), /collector_origins/);
   for (const change of [x => x.configuration.announcements = false, x => x.configuration.serveUi = false,
     x => x.configuration.automaticBackups.intervalMinutes = 5, x => x.configuration.automaticBackups.idleCheckpoint = false,
+    x => x.configuration.managedInstance = true, x => x.configuration.deploymentMode = 'authenticated', x => x.configuration.storageProvider = 's3',
     x => x.configuration.otelOrigin = '', x => x.configuration.telemetryOrigin = '']) {
     const changed = fixture(); change(changed); assert.throws(() => evaluateSleepQualification(changed, expected), /configuration_digest/);
   }

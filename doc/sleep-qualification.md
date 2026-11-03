@@ -157,3 +157,48 @@ The receipt includes native window IDs, initial/final visibility and passive
 visibility events for the entire 90-second interval. An intervening activation
 fails the observation. Cleanup disconnects, terminates only the owned process and
 removes its temporary profile. It never attaches to a user's existing browser.
+
+
+## Managed fixture preflight
+
+Configured qualification uses the supported managed authenticated profile. The
+actual app runs on loopback, with a lifetime-stable fixture vault key and the
+normal managed configuration. A fixture Cloud front door supplies trusted tenant
+headers to invoke the real primary-company/user/membership provisioning path;
+ordinary company creation remains forbidden. Bearer-key and signed-control
+requests omit tenant headers. Native browser headers can reach only the owned
+app origin; foreign HTTP/WebSocket transports are blocked and fail qualification.
+
+Managed application storage requires S3. A bounded loopback protocol fixture
+supplies the remote object service for actual SDK requests; unsupported operations,
+framing and conditional requests fail closed. This establishes neither provider
+IAM nor durable S3 storage. The instance home and database archives remain real
+local filesystem paths. Normal managed migration, historical cleanup and routine
+owners remain enabled. The logical digest binds managed activation, auth mode and
+storage provider; actual ephemeral transport origins are recorded separately.
+
+Before another long campaign, run the opt-in `sleep-managed-preflight.test.ts` on
+its own root-leased fresh external database using
+`PAPERCLIP_SLEEP_MANAGED_PREFLIGHT=1` and an explicit dedicated
+`PAPERCLIP_SLEEP_MANAGED_PREFLIGHT_TEST_DATABASE_URL`. Retain artifacts with
+`PAPERCLIP_MAINTENANCE_KEEP_ARTIFACTS=1`. It uses the same profile and negotiated
+broker receiver, provisions real authority, admits and completes one process run,
+and proves real key activity through signed diagnostics. It performs no browser,
+ten-minute wait or quiet-window claim. No embedded allocation or automatic drop.
+Loopback execution requires the host tool's explicit network/runtime permission.
+
+Setup and successful browser receipts are written immediately before later
+assertions. Early diagnostics first use the existing owner-settled contract; they
+reject durable blockers immediately and retry only observed local in-flight /
+generation inspection incompleteness, up to three rounds. Every attempt is saved.
+Both accepted reports must be strict, complete, structurally matching and under
+the exact live hold, with each internal `inspection.generation=none` and no active
+work before/after. Real HTTP authentication itself changes the global work
+counter, so equality across deliberate observer requests is not asserted.
+
+A fresh successful opaque-key request anchors the later full real cooldown.
+Neither setup stabilization nor the fast preflight substitutes for both real
+600100ms cooldowns, both untouched 90000ms windows and useful reactivation. S3
+observations are saved before and after owned app cleanup, including failures;
+cleanup preserves the original error. Full provider sleep remains a separate
+unqualified layer until an exact deployed target is authorized and observed.

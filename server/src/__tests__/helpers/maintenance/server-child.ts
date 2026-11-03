@@ -47,6 +47,14 @@ try {
   const { idleWorkSnapshot, startTaskDrain, stopTaskDrain } = await import("../../../services/task-admission.js");
   const { getStartupRecoveryState } = await import("../../../startup-recovery-state.js");
   const server = await startServer();
+  const managedObservation = process.env.PAPERCLIP_MAINTENANCE_MANAGED_TENANT === '1' ? await (async () => {
+    const { loadConfig } = await import('../../../config.js');
+    const { isCloudManagedInstance } = await import('../../../services/cloud-instance.js');
+    const { idleApiActivity } = await import('../../../services/idle-api-activity.js');
+    const config = loadConfig();
+    return () => ({ isCloudManaged: isCloudManagedInstance(), deploymentMode: config.deploymentMode,
+      storageProvider: config.storageProvider, apiActivityActive: idleApiActivity.active() });
+  })() : undefined;
   try { announcement?.assertIntercepted(); } catch (error) { await server.shutdown(); throw error; }
   const app = server.server.listeners("request")[0] as unknown as { locals: { paperclipDb: Db } };
   process.send?.({ kind: "ready", port: server.listenPort });
@@ -62,7 +70,7 @@ try {
         if (message.command === "drain") startTaskDrain({ purpose: "idle" });
         if (message.command === "resume") stopTaskDrain();
         if (fakeClock) mock.timers.tick(0);
-        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now(), announcement: announcement?.snapshot() });
+        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now(), announcement: announcement?.snapshot(), managed: managedObservation?.() });
       } else if (message.command === "prepareGitHub" || message.command === "settleGitHub") {
         const { prepareGitHubConfiguration, settleGitHubConfiguration } = await import("./github-configuration-producer.js");
         const input = message.github;

@@ -43,6 +43,7 @@ export async function withMaintenanceProvider<T>(provider: HttpServer, run: (ori
 }
 
 type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number;
+  managed?: { isCloudManaged: boolean; deploymentMode: string; storageProvider: string; apiActivityActive: boolean };
   announcement?: { intercepted: boolean; requests: string[]; unmatched: string[]; boundary: string } };
 
 export interface MaintenanceConfiguration {
@@ -51,6 +52,9 @@ export interface MaintenanceConfiguration {
   telemetryOrigin?: string;
   otelOrigin?: string;
   serveUi?: boolean;
+  managedInstance?: boolean;
+  deploymentMode?: "local_trusted" | "authenticated";
+  storageProvider?: "local_disk" | "s3";
 }
 export interface MaintenanceServerOptions {
   artifactRoot?: string; enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string;
@@ -58,9 +62,19 @@ export interface MaintenanceServerOptions {
   cloud?: { jwks: string; s3Origin: string; standby: boolean };
   configuration?: MaintenanceConfiguration;
   controlJwks?: string;
+  tenantActor?: { userId: string; email: string; name: string };
 }
 export async function startMaintenanceServer(databaseUrl: string, options: MaintenanceServerOptions = {}) {
   const configuration = options.configuration;
+  if (options.tenantActor && (!options.cloud || !configuration?.managedInstance || configuration.deploymentMode !== 'authenticated' || configuration.storageProvider !== 's3')) {
+    throw new Error('Managed tenant fixture requires the supported authenticated S3 profile');
+  }
+  const tenantHeaders: Record<string, string> = options.tenantActor ? {
+    'x-paperclip-cloud-tenant-token': 'maintenance-tenant-token', 'x-paperclip-cloud-stack-id': 'maintenance-stack',
+    'x-paperclip-cloud-stack-role': 'owner', 'x-paperclip-cloud-user-id': options.tenantActor.userId,
+    'x-paperclip-cloud-user-email': options.tenantActor.email, 'x-paperclip-cloud-user-name': options.tenantActor.name,
+    'x-paperclip-cloud-paperclip-company-name': 'Configured sleep acceptance',
+  } : {};
   for (const origin of [configuration?.telemetryOrigin, configuration?.otelOrigin]) {
     if (!origin) continue;
     const endpoint = new URL(origin);
@@ -101,10 +115,11 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       $meta: { version: 1, updatedAt: new Date().toISOString(), source: "onboard" },
       database: { mode: "postgres", connectionString: proxy.url, backup: { enabled: Boolean(configuration?.automaticBackups), intervalMinutes: configuration?.automaticBackups?.intervalMinutes ?? 60, dir: path.join(directory, "backups") } },
       logging: { mode: "file", logDir: path.join(directory, "logs") },
-      server: { deploymentMode: "local_trusted", exposure: "private", bind: "loopback", host: "127.0.0.1", port: address.port, serveUi: configuration?.serveUi ?? false },
+      server: { deploymentMode: options.tenantActor ? "authenticated" : "local_trusted", exposure: "private", bind: "loopback", host: "127.0.0.1", port: address.port, serveUi: configuration?.serveUi ?? false },
       storage: options.cloud ? { provider: "s3", s3: { bucket: "maintenance-test", region: "us-east-1", endpoint: options.cloud.s3Origin, forcePathStyle: true } }
         : { provider: "local_disk", localDisk: { baseDir: path.join(directory, "storage") } },
       secrets: { provider: "local_encrypted", strictMode: false, localEncrypted: { keyFilePath: path.join(directory, "master.key") } },
+      ...(options.tenantActor ? { auth: { baseUrlMode: "explicit", publicBaseUrl: `http://127.0.0.1:${address.port}`, disableSignUp: true } } : {}),
       telemetry: { enabled: Boolean(configuration?.telemetryOrigin) }, updates: { checkEnabled: false },
     }), { mode: 0o600 });
     await new Promise<void>(resolve => reservation.close(() => resolve()));
@@ -140,7 +155,8 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
           PAPERCLIP_SECRETS_MASTER_KEY: randomBytes(32).toString("hex"),
           PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "maintenance-tenant-token", PAPERCLIP_CLOUD_STACK_ID: "maintenance-stack",
           PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: options.cloud.jwks, PAPERCLIP_CLOUD_WARM_STANDBY: options.cloud.standby ? "1" : "0",
-          PAPERCLIP_PUBLIC_URL: "https://pool-maintenance.staging.paperclip.app", PAPERCLIP_PRIMARY_HOST: "pool-maintenance.staging.paperclip.app",
+          PAPERCLIP_PUBLIC_URL: options.tenantActor ? `http://127.0.0.1:${address.port}` : "https://pool-maintenance.staging.paperclip.app", PAPERCLIP_PRIMARY_HOST: options.tenantActor ? "127.0.0.1" : "pool-maintenance.staging.paperclip.app",
+          ...(options.tenantActor ? { PAPERCLIP_MAINTENANCE_MANAGED_TENANT: "1" } : {}),
           AWS_ACCESS_KEY_ID: "maintenance-fixture", AWS_SECRET_ACCESS_KEY: "maintenance-fixture", AWS_EC2_METADATA_DISABLED: "true",
         } : {}),
         PAPERCLIP_MIGRATION_PROMPT: "never", PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_MANAGED_RUNTIME_HTTPS: "off",
@@ -197,7 +213,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
         if (options.clock) await request("realtime");
         try {
           const response = await fetch(`http://127.0.0.1:${port}/api${route}`, { method, signal: AbortSignal.timeout(30_000),
-            headers: { "Content-Type": "application/json", ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+            headers: { "Content-Type": "application/json", ...(Object.keys(headers ?? {}).some(key => ["authorization", "x-paperclip-cloud-control"].includes(key.toLowerCase())) ? {} : tenantHeaders), ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
           const value = await response.json();
           if (!response.ok) throw new Error(`Maintenance API ${method} ${route}: ${response.status} ${JSON.stringify(value)}`);
           return value as T;
@@ -221,6 +237,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       async settleGitHub(input: { connectionId: string; grantId: string }) {
         return request("settleGitHub", { github: input });
       },
+      tenantHeaders,
       produceChatHistory: () => request("produceChatHistory"),
       trace: () => request("trace"),
       snapshot: () => request<Snapshot>("snapshot"),
