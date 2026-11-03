@@ -512,6 +512,8 @@ and cleanup semantics must not select this journey.
 
 The case uses no private fixture writes. Its limits require zero model calls and
 zero task runs. `private-stories/task-edit-lifecycle/task-lifecycle-observations.json`
-retains the five allowlisted task observations. Valid, wrong and missing evidence
+retains the five allowlisted task observations. The adjacent
+`observation-read-failures.json` retains bounded read-transport failures.
+Valid, wrong and missing evidence
 controls calibrate the independent oracle. Registration and local checks do not
 claim a Cloud staging pass or admission to a daily plan.

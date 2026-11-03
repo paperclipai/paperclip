@@ -155,5 +155,5 @@ export async function taskEditLifecycle(context: JourneyContext, session: Target
   } catch (error) {
     if (error instanceof JourneyError) throw error;
     throw new JourneyError("failed", `task_lifecycle_${stage}_failed`);
-  }
+  } finally { await read.preserve(options.directory); }
 }
