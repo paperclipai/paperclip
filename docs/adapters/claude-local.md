@@ -36,10 +36,38 @@ subscription quota exhaustion merely because ACP labels them `limit`.
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `managedHooks` | object | No | Operator-managed `hooks` and `env` block for the ACP engine; see [Managed hooks](#managed-hooks) |
 
 On the CLI engine, version and `--effort` capability probes have a bounded
 20-second budget when `timeoutSec` is zero or unset. A positive run timeout below
 20 seconds also limits these probes, with a minimum probe budget of one second.
+
+## Managed hooks
+
+The ACP engine writes and merges `<cwd>/.claude/settings.local.json` on every
+Claude run. `managedHooks` adds an operator-supplied block to that file, so every
+workspace the agent runs in gets the same hooks without a manual step:
+
+```json
+{
+  "managedHooks": {
+    "hooks": {
+      "SessionStart": [{ "hooks": [{ "type": "command", "command": "my-hook start" }] }]
+    },
+    "env": { "MY_LOG_FILE": "/var/log/my-hook.log" }
+  }
+}
+```
+
+Paperclip appends each managed hook group to the workspace's own groups for that
+event, and it skips a group that is already present. A managed `env` value
+overrides a workspace value with the same key. The `permissions` block is not
+changed. A value that is not an object of hook groups and string values adds
+nothing. Only a board user or the API can set `adapterConfig`, because agent
+credentials cannot change another agent's adapter config.
+
+An edit to `managedHooks` starts a new Claude session. The SDK reads the settings
+file when the process starts, so a warm session keeps the old block.
 
 ## Default model
 
