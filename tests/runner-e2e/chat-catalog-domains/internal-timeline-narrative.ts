@@ -58,7 +58,7 @@ export function truthfulTimelineAccount(input: {
     const before = text.slice(0, at);
     return (!explicitOwner.test(before) || repairOwner.test(before)) && !firstWorkerCommand.test(before);
   };
-  const causedByRepair = /^\s+(?:with\s+exit(?:\s+(?:code|status))?\s*[:=]?\s*0\s+)?(?:(?:only|immediately|just)\s+)?after(?:\s+(?:the|a|missing|email|real|label|input|task|repair)){0,6}\s*$/i;
+  const causedByRepair = /^\s+(?:with\s+exit(?:\s+(?:code|status))?\s*[:=]?\s*0\s+)?(?:(?:only|immediately|just)\s+)?(?:after|once)(?:\s+(?:the|a|missing|email|real|label|input|task|repair)){0,6}\s*$/i;
   const repairAfterSuccess = new RegExp(`\\bafter\\s+(?:(?:the|a|his|her|their|its)\\s+)?${commandTail}`, "i");
   const repairs = clauses.flatMap(({ text, at }) => [...text.matchAll(repairAction)].filter(match => {
     const end = match.index + match[0].length;
