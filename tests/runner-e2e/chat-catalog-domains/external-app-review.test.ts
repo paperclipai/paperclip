@@ -1,4 +1,6 @@
-import { expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { expect, it, vi } from "vitest";
+vi.mock("../chat-flow.js", () => ({ sendChatMessage: vi.fn() }));
 import {
   gradeAppReview,
   reviewOutcomeReply,
@@ -7,6 +9,9 @@ import {
   reviewQueriesMatch,
 } from "./external-app-review.js";
 function valid() {
+  const proposedText = "The public launch is November 8,2030.";
+  const argumentsSummaryJson = JSON.stringify({ text: proposedText });
+  const argumentsHash = createHash("sha256").update(argumentsSummaryJson).digest("hex");
   const phases = (["rejected", "failed", "executed"] as const).map(
     (kind, index) => ({
       kind,
@@ -20,6 +25,11 @@ function valid() {
       writtenAfter:
         index === 2 ? "The public launch is November 8,2030." : null,
       reviewVisible: true,
+      proposalVisible: true,
+      reviewedText: proposedText,
+      reviewedArgumentsHash: argumentsHash,
+      providerWriteText: index === 0 ? null : proposedText,
+      providerAuthorized: index === 0 ? null : true,
       displayedScope:
         "This agent may use this action with different arguments on this connection within this project.",
       toolName: "notes_launch_update",
@@ -59,6 +69,8 @@ function valid() {
           risk: "write",
           toolDisplayName: "Update launch page",
           rememberActionScope: phase.displayedScope,
+          argumentsSummaryJson,
+          argumentsHash,
         },
       },
     })),
@@ -115,11 +127,13 @@ function valid() {
               issueId: "source",
               connectionId: "connection",
               catalogEntryId: "write",
+              argumentsHash,
               status: ["denied", "failed", "succeeded"][index],
               errorCode: index === 1 ? "tool_error" : null,
             },
             actionRequest: {
               id: phase.actionRequestId,
+              canonicalArgumentsHash: argumentsHash,
               status: ["rejected", "failed", "executed"][index],
             },
           },
@@ -270,4 +284,26 @@ it("accepts natural distinct outcomes but rejects contradictory success and wron
   ).toBe(false);
   expect(launchUpdateFact("Public launch: 2030-11-08")).toBe(true);
   expect(launchUpdateFact("Launch moved to November 9,2030")).toBe(false);
+});
+
+it.each(["no visible full proposal", "wrong displayed body", "wrong canonical hash", "wrong invocation hash", "wrong provider body", "unauthorized provider", "extra argument", "wrong proposed date"])("rejects %s despite plausible successful phase text", fault => {
+  const o = valid(), phase = o.state.phases[2]!, action = o.interactions[2]!.payload.toolAction;
+  const decision = o.state.decisions[2]!.decisions[0]!;
+  if (fault === "no visible full proposal") phase.proposalVisible = false;
+  if (fault === "wrong displayed body") phase.reviewedText = "A different body";
+  if (fault === "wrong canonical hash") decision.actionRequest.canonicalArgumentsHash = "0".repeat(64);
+  if (fault === "wrong invocation hash") decision.invocation.argumentsHash = "0".repeat(64);
+  if (fault === "wrong provider body") phase.providerWriteText = "A different body with launch November 8,2030";
+  if (fault === "unauthorized provider") phase.providerAuthorized = false;
+  if (fault === "extra argument") action.argumentsSummaryJson = JSON.stringify({ text: phase.reviewedText, recipient: "unrelated" });
+  if (fault === "wrong proposed date") {
+    const body = "The public launch is November 9,2030.";
+    action.argumentsSummaryJson = JSON.stringify({ text: body });
+    action.argumentsHash = createHash("sha256").update(action.argumentsSummaryJson).digest("hex");
+    phase.reviewedText = body; phase.reviewedArgumentsHash = action.argumentsHash;
+    phase.providerWriteText = body; phase.writtenAfter = body;
+    decision.actionRequest.canonicalArgumentsHash = action.argumentsHash;
+    decision.invocation.argumentsHash = action.argumentsHash;
+  }
+  expect(gradeAppReview(o).passed).toBe(false);
 });

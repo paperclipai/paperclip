@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chatQueryWithAttachments, uploadFactualQueryAttachment, verifyChatQueryAttachments, type ChatQueryAttachmentReceipt, type ChatQueryHumanComment } from "../chat-query-attachments.js";
 import { expect } from "@playwright/test";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
@@ -37,6 +38,11 @@ type Phase = {
   afterWrites: number;
   writtenAfter: string | null;
   reviewVisible: boolean;
+  proposalVisible: boolean;
+  reviewedText: string;
+  reviewedArgumentsHash: string;
+  providerWriteText: string | null;
+  providerAuthorized: boolean | null;
   displayedScope?: string;
   toolName: string;
   applicationId: string | null;
@@ -65,6 +71,23 @@ export function launchUpdateFact(text: string) {
       /2030-11-08/.test(text))
   );
 }
+/** The redacted JSON must still contain this fixture's complete immutable
+ * single-text proposal. A short summary or an unrelated original draft is not
+ * sufficient authority to approve the proposed write. */
+export function appReviewProposal(value: unknown) {
+  if (!value || typeof value !== "object") return undefined;
+  const action = value as { argumentsSummaryJson?: unknown; argumentsHash?: unknown };
+  if (typeof action.argumentsSummaryJson !== "string" || action.argumentsSummaryJson.length > 20_000
+    || typeof action.argumentsHash !== "string" || !/^[a-f0-9]{64}$/.test(action.argumentsHash)) return undefined;
+  try {
+    const args = JSON.parse(action.argumentsSummaryJson) as { text?: unknown };
+    if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length !== 1
+      || typeof args.text !== "string" || !launchUpdateFact(args.text)) return undefined;
+    const expected = createHash("sha256").update(JSON.stringify({ text: args.text })).digest("hex");
+    return expected === action.argumentsHash ? { text: args.text, summary: action.argumentsSummaryJson, hash: expected } : undefined;
+  } catch { return undefined; }
+}
+
 export function reviewOutcomeReply(reply: string, kind: Phase["kind"]) {
   const clauses = reply.split(/[.!?;\n]+|\b(?:but|and)\b/i),
     affirmative = clauses.some(
@@ -185,9 +208,14 @@ export function gradeAppReview(value: unknown) {
           )
           .find((row) => row?.invocation?.id === phase.invocationId);
         const v = decision?.invocation,
-          request = decision?.actionRequest;
+          request = decision?.actionRequest,
+          proposal = appReviewProposal(card?.payload.toolAction);
         return (
-          phase.reviewVisible &&
+          phase.reviewVisible && phase.proposalVisible && !!proposal
+          && phase.reviewedText === proposal.text && phase.reviewedArgumentsHash === proposal.hash
+          && v?.argumentsHash === proposal.hash && request?.canonicalArgumentsHash === proposal.hash
+          && (index === 0 ? phase.providerWriteText === null && phase.providerAuthorized === null
+            : phase.providerWriteText === proposal.text && phase.providerAuthorized === true) &&
           !!card &&
           card.kind === "request_confirmation" &&
           card.sourceRunId === phase.requestRunId &&
@@ -216,7 +244,7 @@ export function gradeAppReview(value: unknown) {
           phase.afterWrites === [0, 1, 2][index] &&
           (index < 2
             ? phase.writtenAfter === null
-            : launchUpdateFact(phase.writtenAfter ?? ""))
+            : phase.writtenAfter === phase.reviewedText && launchUpdateFact(phase.writtenAfter ?? ""))
         );
       }),
     "Actual card/human/run/task/catalog and action-request outcomes independently bind rejection/no call, service failure/no change, and successful exact launch update; no human action rescues a different requested resource.",
@@ -348,6 +376,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
+      oracleVersion: "paperclip.chat-catalog.app-review.v2",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
@@ -406,14 +435,15 @@ export const appReviewExternalCases = [
                 row.status === "pending" &&
                 row.payload?.toolAction?.connectionId === state.connectionId,
             )!,
-            action = card.payload.toolAction!;
+            action = card.payload.toolAction!,
+            proposal = appReviewProposal(action);
           if (
             !card.sourceRunId ||
             phases.some((row) => row.interactionId === card.id) ||
             action.toolDisplayName !== "Update launch page" ||
             action.risk !== "write" ||
             !action.rememberActionScope ||
-            !launchUpdateFact(action.previewMarkdown)
+            !proposal
           )
             throw new Error(
               "Actual review must identify the selected update action and substantive launch fact before human action",
@@ -431,6 +461,15 @@ export const appReviewExternalCases = [
             throw new Error(
               "New canonical request must independently bind exactly one new pending-action source run",
             );
+          const pending = await ctx.input.api.get<ToolRunDecisionLookup>(`${root(ctx)}/tools/runs/${card.sourceRunId}/decisions`);
+          const intended = pending.decisions.find(row => row.invocation.id === action.invocationId);
+          if (pending.runId !== card.sourceRunId || !intended || intended.invocation.companyId !== state.companyId
+            || intended.invocation.agentId !== state.leadId || intended.invocation.issueId !== state.sourceId
+            || intended.invocation.runId !== card.sourceRunId || intended.invocation.connectionId !== state.connectionId
+            || intended.invocation.catalogEntryId !== state.writeEntryId || intended.invocation.status !== "awaiting_approval"
+            || intended.invocation.argumentsHash !== proposal.hash || intended.actionRequest?.id !== action.actionRequestId
+            || intended.actionRequest.status !== "pending" || intended.actionRequest.canonicalArgumentsHash !== proposal.hash)
+            throw new Error("Full proposal must bind the actual pending owned invocation before human action");
           const phase: Phase = {
             kind,
             interactionId: card.id,
@@ -444,6 +483,11 @@ export const appReviewExternalCases = [
             afterWrites: -1,
             writtenAfter: null,
             reviewVisible: false,
+            proposalVisible: false,
+            reviewedText: proposal.text,
+            reviewedArgumentsHash: proposal.hash,
+            providerWriteText: null,
+            providerAuthorized: null,
             toolName: action.toolName,
             applicationId: action.applicationId,
           };
@@ -459,6 +503,14 @@ export const appReviewExternalCases = [
           await expect(view.getByRole("img", { name: action.appDisplayName || action.toolDisplayName, exact: true })).toBeVisible();
           await expect(view).toContainText("Update launch page");
           phase.reviewVisible = true;
+          const details = view.locator("details").filter({ hasText: "Arguments and audit hash" });
+          await expect(details).toBeVisible();
+          await details.locator("summary").click();
+          const proposedArguments = details.locator("pre");
+          await expect(proposedArguments).toBeVisible();
+          if (await proposedArguments.textContent() !== proposal.summary || await details.locator("p").textContent() !== proposal.hash)
+            throw new Error("Normal review disclosure must expose this exact immutable full proposal and hash");
+          phase.proposalVisible = true;
           if (index === 0) {
             state.agentApproveStatus = await probeAgentPermission(
               ctx,
@@ -508,6 +560,12 @@ export const appReviewExternalCases = [
             (row) => row.name === "launch_update",
           ).length;
           phase.writtenAfter = provider.written() ?? null;
+          const writes = provider.calls.filter(row => row.name === "launch_update");
+          const dispatched = index > 0 ? writes.at(-1) : undefined;
+          phase.providerWriteText = typeof dispatched?.arguments?.text === "string" ? dispatched.arguments.text : null;
+          phase.providerAuthorized = dispatched ? dispatched.authorized : null;
+          if (index === 0 ? writes.length !== 0 : phase.providerWriteText !== phase.reviewedText || phase.providerAuthorized !== true)
+            throw new Error("Actual provider dispatch differs from the exact human-reviewed proposal");
           phases.push(phase);
           const rules = await ctx.input.api.get<{ trustRules: unknown[] }>(
             `${root(ctx)}/tools/trust-rules`,
@@ -537,7 +595,7 @@ export const appReviewExternalCases = [
             phase.afterWrites !== [0, 1, 2][index] ||
             (index < 2
               ? phase.writtenAfter !== null
-              : !launchUpdateFact(phase.writtenAfter ?? ""))
+              : phase.writtenAfter !== phase.reviewedText || !launchUpdateFact(phase.writtenAfter ?? ""))
           )
             throw new Error(
               "Actual action/card/provider outcome did not settle correctly before the next human request",
