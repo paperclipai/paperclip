@@ -17,7 +17,9 @@ const migrationFile = "0423_agent_config_read_defaults.sql";
       const [otherCompany] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Other company', 'RD2') RETURNING id`;
       const candidates = [
         { name: "Legacy" },
-        { name: "Paused", status: "paused" },
+        { name: "Paused", status: "paused", lifecycleState: "paused", lifecycleHolds: ["manual"], pauseReason: "manual" },
+        { name: "Pausing", status: "paused", lifecycleState: "pausing", lifecycleHolds: ["manual"], pauseReason: "manual" },
+        { name: "Resuming", status: "paused", lifecycleState: "resuming" },
         { name: "Configured" },
         { name: "Scoped configure" },
         { name: "Scoped suggest" },
@@ -31,7 +33,8 @@ const migrationFile = "0423_agent_config_read_defaults.sql";
         { name: "Built in", metadata: { paperclipBuiltInAgent: { key: "summarizer", featureKeys: [] } } },
         { name: "Pending", status: "pending_approval" },
         { name: "Terminated", status: "terminated" },
-        { name: "Setup", lifecycleState: "setup" },
+        { name: "Setup", status: "paused", lifecycleState: "paused", lifecycleHolds: ["setup"], pauseReason: "setup" },
+        { name: "Legacy setup", status: "paused", lifecycleState: "paused", pauseReason: "setup" },
         { name: "Inactive membership", membershipStatus: "inactive" },
         { name: "No membership", membershipStatus: "absent" },
         { name: "Wrong company membership", membershipStatus: "other_company" },
@@ -40,9 +43,10 @@ const migrationFile = "0423_agent_config_read_defaults.sql";
       for (const candidate of candidates) {
         const id = randomUUID();
         ids.set(candidate.name, id);
-        await sql`INSERT INTO agents (id, company_id, name, status, lifecycle_state, permissions, metadata)
+        await sql`INSERT INTO agents (id, company_id, name, status, lifecycle_state, lifecycle_holds, pause_reason, permissions, metadata)
           VALUES (${id}, ${company!.id}, ${candidate.name}, ${candidate.status ?? "idle"},
-            ${candidate.lifecycleState ?? "ready"}, ${sql.json(candidate.permissions ?? {})}, ${sql.json(candidate.metadata ?? {})})`;
+            ${candidate.lifecycleState ?? "ready"}, ${sql.json(candidate.lifecycleHolds ?? [])}, ${candidate.pauseReason ?? null},
+            ${sql.json(candidate.permissions ?? {})}, ${sql.json(candidate.metadata ?? {})})`;
         if (candidate.membershipStatus === "absent") continue;
         await sql`INSERT INTO company_memberships (company_id, principal_type, principal_id, status, membership_role)
           VALUES (${candidate.membershipStatus === "other_company" ? otherCompany!.id : company!.id}, 'agent', ${id},
@@ -66,17 +70,17 @@ const migrationFile = "0423_agent_config_read_defaults.sql";
 
       const after = await sql`SELECT principal_id, permission_key, scope FROM principal_permission_grants ORDER BY principal_id, permission_key`;
       const added = after.filter(row => !before.some(previous => previous.principal_id === row.principal_id && previous.permission_key === row.permission_key));
-      expect(added).toEqual(expect.arrayContaining(["Legacy", "Paused", "Configured"].map(name => ({
+      expect(added).toEqual(expect.arrayContaining(["Legacy", "Paused", "Pausing", "Resuming", "Configured"].map(name => ({
         principal_id: ids.get(name), permission_key: "agents:read", scope: null,
       }))));
-      expect(added).toHaveLength(3);
+      expect(added).toHaveLength(5);
       expect(after.filter(row => row.permission_key !== "agents:read")).toEqual(before.filter(row => row.permission_key !== "agents:read"));
       expect(after.find(row => row.principal_id === ids.get("Scoped read"))).toMatchObject({ scope });
       const audit = await sql`SELECT entity_id, details FROM activity_log WHERE actor_id = 'migration:agent-config-read-defaults'`;
-      expect(audit).toHaveLength(3);
+      expect(audit).toHaveLength(5);
       expect(audit.every(row => row.details.added.length === 1 && row.details.added[0] === "agents:read")).toBe(true);
       await sql.unsafe(content);
-      expect(await sql`SELECT id FROM activity_log WHERE actor_id = 'migration:agent-config-read-defaults'`).toHaveLength(3);
+      expect(await sql`SELECT id FROM activity_log WHERE actor_id = 'migration:agent-config-read-defaults'`).toHaveLength(5);
 
       await sql`DELETE FROM principal_permission_grants WHERE principal_id = ${ids.get("Legacy")!} AND permission_key = 'agents:read'`;
       await applyPendingMigrations(database.connectionString);

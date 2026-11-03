@@ -10,7 +10,9 @@ WITH added AS (
     AND membership.principal_id = agent.id::text
     AND membership.status = 'active'
   WHERE agent.status NOT IN ('pending_approval', 'terminated')
-    AND agent.lifecycle_state = 'ready'
+    AND agent.lifecycle_state IN ('ready', 'pausing', 'paused', 'resuming')
+    AND NOT (agent.lifecycle_holds ? 'setup')
+    AND agent.pause_reason IS DISTINCT FROM 'setup'
     AND agent.metadata->'paperclipBuiltInAgent' IS NULL
     AND COALESCE(agent.permissions->>'trustPreset', 'standard') = 'standard'
     AND COALESCE(agent.permissions->'authorizationPolicy'->>'trustPreset', 'standard') = 'standard'
