@@ -17,6 +17,7 @@ import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-rete
 import { materializeTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, validateTaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
 import { inspectArchivedGitMigrationSource, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
+import { prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -38,7 +39,7 @@ const gitSourceProof = (source: ArchivedGitMigrationSource | null) => source ? {
   commit: source.commit, sourcePath: source.sourcePath, cleanupOperationId: source.cleanupOperationId,
 } : null;
 
-async function inspect(db: ReadDb, input: { companyId: string; workspaceId: string; operationId?: string }) {
+async function inspect(db: ReadDb, input: { companyId: string; workspaceId: string; operationId?: string; writersStopped?: boolean }) {
   const [workspace] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId)));
   if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
   const authority = readRemoteWorkspaceAuthority(workspace.metadata);
@@ -77,6 +78,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
         ? "restore_point_expired" : "archived_git_source_unavailable"); }
     }
     if (!retainedDirectory && !archivedGitSource && (!entry?.isDirectory() || entry.isSymbolicLink())) reasons.push("local_source_unsafe_or_missing");
+    if (entry?.isDirectory() && !entry.isSymbolicLink()) reasons.push(...await workspaceMigrationLayoutBlockers(db, workspace, input.writersStopped));
   }
   const [issue] = workspace.sourceIssueId ? await db.select().from(issues).where(and(eq(issues.companyId, workspace.companyId), eq(issues.id, workspace.sourceIssueId))) : [];
   // Historical records still own their saved files after the task selects a
@@ -142,7 +144,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   return { workspace, reasons: [...new Set(reasons)], authority, marker, source, issueBinding: issue?.executionWorkspaceId ?? null, retainedDirectory, archivedGitSource };
 }
 
-export async function inventoryRemoteWorkspaceMigration(db: Db, input: { companyId: string; workspaceId: string }) {
+export async function inventoryRemoteWorkspaceMigration(db: Db, input: { companyId: string; workspaceId: string; writersStopped?: boolean }) {
   const result = await inspect(db, input);
   return { companyId: input.companyId, workspaceId: input.workspaceId, eligible: result.reasons.length === 0,
     alreadyMigrated: Boolean(result.authority), reasons: result.reasons, localPath: result.workspace.cwd ?? result.workspace.providerRef,
@@ -153,6 +155,7 @@ export async function inventoryRemoteWorkspaceMigration(db: Db, input: { company
 /** Administrative import. The CLI enforces external deployment prerequisites. */
 export async function migrateRemoteWorkspace(input: {
   db: Db; storage: StorageService; companyId: string; workspaceId: string; apply?: boolean; source?: RemoteWorkspaceSource;
+  writersStopped?: boolean; signal?: AbortSignal;
 }) {
   if (!input.apply) return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: false };
   return withExecutionWorkspaceLifecycleLock(input.db, input.workspaceId, async lock => {
@@ -183,6 +186,7 @@ export async function migrateRemoteWorkspace(input: {
       const [operation] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
         issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
         metadata: { schema: SCHEMA, sourceFingerprint, source, sourceIssueBinding: current.issueBinding,
+          nestedWorkspaceScope: { version: 1, state: "pending" },
           ...(current.archivedGitSource ? { archivedGitSource: gitSourceProof(current.archivedGitSource) } : {}),
           ...(current.retainedDirectory ? { retainedDirectory: { restorePointId: current.retainedDirectory.restorePoint.id,
             generation: current.retainedDirectory.generation, digest: current.retainedDirectory.restorePoint.digest } } : {}) } }).returning();
@@ -193,27 +197,52 @@ export async function migrateRemoteWorkspace(input: {
       return { workspace, authority: null, operation: operation!, source, sourceFingerprint, issueBinding: current.issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource };
     });
     if (reserved.authority) return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: true, replayed: true };
-    const operation = reserved.operation!;
+    let operation = reserved.operation!;
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.companyId, workspaceId: input.workspaceId,
       operationId: operation.id, generation: 1, epoch: 1 });
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-migration-"));
     try {
+      input.signal?.throwIfAborted();
       const retained = reserved.retainedDirectory?.restorePoint;
       const sourceRoot = retained ? await materializeTaskDirectorySnapshot({
         payload: await loadTaskDirectoryRestorePoint({ storage: input.storage, workspace: reserved.workspace, ref: retained }),
         target: path.join(scratch, "retained-source"), expectedDigest: retained.digest,
       }) : reserved.archivedGitSource ? await materializeArchivedGitMigrationSource({ db: input.db, storage: input.storage,
         workspace: reserved.workspace, source: reserved.archivedGitSource, scratch }) : reserved.workspace.cwd ?? reserved.workspace.providerRef!;
+      const scope = object(operation.metadata?.nestedWorkspaceScope);
+      if (operation.metadata?.nestedWorkspaceScope !== undefined && (scope.version !== 1 || !["pending", "fixed"].includes(String(scope.state))))
+        throw new Error("nested_workspace_scope_invalid");
+      // Journals predating scoped captures included every child. Preserve that
+      // archive identity even if a later batch has already imported the leaves.
+      const recordedChildren = scope.state === "fixed" ? validateImportedWorkspaceChildren(scope.children)
+        : scope.state === "pending" ? undefined : [];
+      const nested = input.writersStopped && !retained && !reserved.archivedGitSource
+        ? await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch, recordedChildren }) : [];
+      if (scope.state === "pending") {
+        const [saved] = await input.db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
+          nestedWorkspaceScope: { version: 1, state: "fixed", children: nested } }, updatedAt: new Date() })
+          .where(and(eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.id, operation.id),
+            eq(workspaceOperations.status, "running"))).returning();
+        if (!saved) throw new Error("remote_workspace_migration_operation_changed");
+        operation = saved;
+      }
+      const exclude = nested.map(child => child.relativePath);
       const archivePath = path.join(scratch, "workspace.pcws");
-      const captured = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot, archivePath });
+      const captured = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot, archivePath, exclude, signal: input.signal });
       const ref = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage, snapshotId: snapshot.id,
-        companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest });
+        companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal });
       const restoredArchive = path.join(scratch, "verified.pcws"), restored = path.join(scratch, "restored");
-      await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref, targetPath: restoredArchive });
-      await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir: restored, expectedManifestDigest: ref.manifestDigest });
+      await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref, targetPath: restoredArchive, signal: input.signal });
+      await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir: restored, expectedManifestDigest: ref.manifestDigest, signal: input.signal });
       const currentArchive = path.join(scratch, "current.pcws");
-      const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot, archivePath: currentArchive });
+      const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot, archivePath: currentArchive, exclude, signal: input.signal });
       if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
+      if (nested.length) {
+        const verifyScratch = path.join(scratch, "verify-nested"); await fs.mkdir(verifyScratch);
+        const verified = await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch: verifyScratch, recordedChildren: nested });
+        if (canonical(verified) !== canonical(nested)) throw new Error("nested_workspace_source_changed");
+      }
+      input.signal?.throwIfAborted();
       await lock.execute(sql`select 1`);
       const publication = await input.db.transaction(async tx => {
         const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
@@ -231,11 +260,21 @@ export async function migrateRemoteWorkspace(input: {
         const [uploaded] = await tx.select().from(executionWorkspaceSnapshots).where(and(eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
           eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.id, ref.id))).for("update");
         if (!uploaded || uploaded.status !== "uploaded" || uploaded.sourceOperationId !== operation.id) throw new Error("remote_workspace_migration_snapshot_changed");
+        for (const child of [...nested].sort((a, b) => a.snapshotId.localeCompare(b.snapshotId))) {
+          const [saved] = await tx.select().from(executionWorkspaceSnapshots).where(and(
+            eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.id, child.snapshotId),
+            eq(executionWorkspaceSnapshots.executionWorkspaceId, child.workspaceId),
+          )).for("update");
+          if (!saved || !["committed", "superseded"].includes(saved.status) || saved.manifestDigest !== child.manifestDigest
+            || saved.sourceOperationId !== child.operationId) throw new Error("nested_workspace_snapshot_changed");
+        }
         const authority: RemoteWorkspaceAuthority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: ref.id,
           source: reserved.source, location: null, writerRunId: null, dirty: false };
         const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: authority }; delete metadata.remoteWorkspaceMigration;
         await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
-        await tx.update(executionWorkspaceSnapshots).set({ status: "committed", deleteAfter: null, updatedAt: new Date() }).where(eq(executionWorkspaceSnapshots.id, ref.id));
+        await tx.update(executionWorkspaceSnapshots).set({ status: "committed", deleteAfter: null,
+          metadata: { ...uploaded.metadata, ...(nested.length ? { importedWorkspaceChildren: nested } : {}) },
+          updatedAt: new Date() }).where(eq(executionWorkspaceSnapshots.id, ref.id));
         await tx.update(executionWorkspaces).set({ providerType: "cloud_sandbox", providerRef: null, cwd: `/workspaces/${workspace.id}`, metadata,
           updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id));
         await tx.update(workspaceOperations).set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date(),

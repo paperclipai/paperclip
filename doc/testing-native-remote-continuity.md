@@ -49,8 +49,11 @@ They do not qualify distinct application releases or complete webserver disk los
 
 `native-controller-recovery.integration.test.ts` separately verifies encrypted
 database discovery, one-source import, idempotency, live-owner waiting, corrupt
-bindings and paginated inventory. `native-session-resume-projection.test.ts`
-retains the 32-candidate and newer-progress barrier checks. Snapshot transaction
+bindings and paginated inventory. `native-recovered-owner-followup.test.ts`
+admits a per-turn follow-up after recovery committed an owner that never saved
+a suspension receipt, and keeps unsettled or ambiguous owners held.
+`native-session-resume-projection.test.ts` retains the 32-candidate and
+newer-progress barrier checks. Snapshot transaction
 counts and stale-generation rejection are exercised by the control-plane port
 tests; incomplete-publication retention is exercised by the expiration tests.
 
