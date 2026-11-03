@@ -488,3 +488,30 @@ within the original journey deadline. Binary attachment and browser downloads
 remain single attempts; transport failures and digest mismatches fail visibly. Git inspection consumes the exact digest-verified download
 buffer; browser downloads remain an independent result-access check. The
 repository journey shares the observation reader and browser helpers above.
+
+
+## Task editing and lifecycle
+
+`task-edit-lifecycle` creates a self-assigned task through the browser with an
+explicit title. It edits the title and adds one run-owned label through the
+ordinary Properties menu. It changes the status to In Progress, reloads, marks
+the task Done, reloads, reopens it to Todo and reloads again. Independent API
+reads bind every observed state to the same company, task and human owner.
+The exact description, assignee, project and priority remain unchanged.
+Priority editing is not part of this journey because the production UI hides
+that control. No agent or model work is allowed.
+
+The target must journal `label` resources by campaign name before browser label
+creation and by exact ID after its 201 response. Before title editing, the owned
+issue receipt retains its original name and ID and declares
+`taskEdit: { revisedTitle }` for this case. Cleanup may match only that one
+predeclared title or the original title on the same company and issue ID.
+The private target must reconcile a lost label-creation response, remove only
+its proven run-owned label, and verify absence. Targets without these ownership
+and cleanup semantics must not select this journey.
+
+The case uses no private fixture writes. Its limits require zero model calls and
+zero task runs. `private-stories/task-edit-lifecycle/task-lifecycle-observations.json`
+retains the five allowlisted task observations. Valid, wrong and missing evidence
+controls calibrate the independent oracle. Registration and local checks do not
+claim a Cloud staging pass or admission to a daily plan.
