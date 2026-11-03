@@ -2057,6 +2057,13 @@ pending and continue to block a new run; a longer wait does not certify an outco
 The one-hour client deadline does not renew with the Runner lease. If the client
 deadline expires while Runner still owns a call, its effect remains unknown
 until authoritative reconciliation. Expiry permits neither replay nor attachment.
+The OpenCode bridge emits a closed finish-input diagnostic through its existing
+optional diagnostic sink. It records the effective offered schema's SHA-256 and,
+for at most eight rejected inputs per bridge, the argument root and continuation
+presence/type enums. It records no argument values, field names, schema text or
+validator messages. A failed sink does not change admission or cancellation.
+These facts distinguish a schema/input-shape rejection from a pending MCP call;
+they do not identify the submitted value in older attempts without that evidence.
 An adopted transport can receive authenticated queued semantic calls before
 the driver publishes its recovered session and tool handler. It holds those
 calls until the handler is installed, then rechecks the original authority and
