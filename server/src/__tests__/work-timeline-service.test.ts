@@ -508,6 +508,69 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     expect(maxActiveChecks).toBeLessThanOrEqual(16);
   });
 
+  it("serves the recorded human reassignment instead of inferring the current owner at creation", async () => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const issueId = randomUUID();
+    const createdAt = new Date("2026-03-05T10:00:00Z");
+    const assignedAt = new Date("2026-03-05T11:00:00Z");
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Reassigned launch", identifier: "TL-10",
+      status: "done", priority: "medium", createdByUserId: userId,
+      assigneeAgentId: agentBId, createdAt, updatedAt: assignedAt,
+    });
+    await db.insert(activityLog).values([
+      { companyId, actorType: "user", actorId: userId, action: "issue.updated",
+        entityType: "issue", entityId: issueId, createdAt: assignedAt,
+        details: { assigneeAgentId: agentBId, _previous: { assigneeAgentId: agentAId } } },
+      { companyId, actorType: "agent", actorId: agentBId, action: "issue.updated",
+        entityType: "issue", entityId: issueId, createdAt: new Date("2026-03-05T12:00:00Z"),
+        details: { status: "done", _previous: { status: "in_progress" } } },
+    ]);
+    const res = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-05T00:00:00Z", to: "2026-03-06T00:00:00Z" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.events.filter((event: { kind: string }) => event.kind === "assigned")).toEqual([
+      { actorId: `user:${userId}`, kind: "assigned", issueId, at: assignedAt.toISOString() },
+    ]);
+    expect(res.body.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual([
+      { fromActorId: `user:${userId}`, toActorId: `agent:${agentBId}`, issueId, at: assignedAt.toISOString(), kind: "assignment" },
+    ]);
+    expect(res.body.actors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `user:${userId}`, type: "user", name: "User One" }),
+      expect.objectContaining({ id: `agent:${agentBId}`, type: "agent", name: "QA" }),
+    ]));
+  });
+
+  it("distinguishes absent, null and unchanged owners and keeps same-actor assignment history", async () => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const createdAt = new Date("2026-03-05T10:00:00Z");
+    const changedAt = new Date("2026-03-05T11:00:00Z");
+    for (const kind of ["absent", "null", "unchanged", "self-assignment"] as const) {
+      const issueId = randomUUID();
+      const assigneeAgentId = kind === "null" ? null : kind === "self-assignment" ? agentBId : agentAId;
+      await db.insert(issues).values({ id: issueId, companyId, title: kind, status: "done",
+        priority: "medium", assigneeAgentId, createdByUserId: userId, createdAt, updatedAt: changedAt });
+      const details = kind === "absent" ? { status: "done" }
+        : { assigneeAgentId, _previous: { assigneeAgentId: agentAId } };
+      await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId,
+        action: "issue.updated", entityType: "issue", entityId: issueId, details, createdAt: changedAt });
+      const res = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+        .query({ issueId, from: "2026-03-05T00:00:00Z", to: "2026-03-06T00:00:00Z" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const assigned = res.body.events.filter((event: { kind: string }) => event.kind === "assigned");
+      const assignmentEdges = res.body.edges.filter((edge: { kind: string }) => edge.kind === "assignment");
+      if (kind === "self-assignment") {
+        expect(assigned).toEqual([{ actorId: `agent:${agentAId}`, kind: "assigned", issueId, at: changedAt.toISOString() }]);
+        expect(assignmentEdges).toEqual([{ fromActorId: `agent:${agentAId}`, toActorId: `agent:${agentBId}`,
+          issueId, at: changedAt.toISOString(), kind: "assignment" }]);
+      } else {
+        expect(assigned).toEqual([]);
+        expect(assignmentEdges).toHaveLength(kind === "null" ? 0 : 1);
+        if (kind !== "null") expect(assignmentEdges[0]).toMatchObject({ at: createdAt.toISOString(), toActorId: `agent:${agentAId}` });
+      }
+    }
+  });
+
   it("serves GET /api/companies/:companyId/timeline", async () => {
     const { companyId, agentAId } = await seedBase();
     const issueId = randomUUID();

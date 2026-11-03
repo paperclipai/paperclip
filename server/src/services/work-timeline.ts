@@ -728,35 +728,35 @@ export function workTimelineService(db: Db) {
       });
     }
 
-    for (const row of logRows) {
+    // Canonical task edits use issue.updated, not an assignment-specific action.
+    // The presence of a field is distinct from a null (unassignment) value.
+    const assignments = logRows.flatMap((row) => {
+      const details = row.details && typeof row.details === "object" && !Array.isArray(row.details)
+        ? row.details as Record<string, unknown> : {};
+      const previous = details._previous && typeof details._previous === "object" && !Array.isArray(details._previous)
+        ? details._previous as Record<string, unknown> : {};
+      const changed = ["assigneeAgentId", "assigneeUserId"].some((key) =>
+        Object.hasOwn(details, key) && (!Object.hasOwn(previous, key) || details[key] !== previous[key]));
+      if (!row.action.includes("assign") && !(row.action === "issue.updated" && changed)) return [];
+      const targetAgentId = readString(details.assigneeAgentId) ?? readString(details.toAgentId);
+      const targetUserId = readString(details.assigneeUserId) ?? readString(details.toUserId);
+      return [{ row, toActorId: targetAgentId ? actorId("agent", targetAgentId)
+        : targetUserId ? actorId("user", targetUserId) : null }];
+    });
+    const recordedAssignmentIssues = new Set(assignments.map(({ row }) => row.issueId));
+    // A current owner does not prove that they owned the task when it was created.
+    for (let index = edges.length - 1; index >= 0; index--) {
+      if (edges[index]!.kind === "assignment" && recordedAssignmentIssues.has(edges[index]!.issueId)) edges.splice(index, 1);
+    }
+    for (const { row, toActorId } of assignments) {
+      if (!toActorId) continue;
       const logActorType = row.actorType === "agent" || row.actorType === "user" || row.actorType === "plugin"
-        ? row.actorType
-        : "system";
+        ? row.actorType : "system";
       const fromActorId = actorId(logActorType, row.actorId);
       actorIds.add(fromActorId);
-      if (row.action.includes("assign")) {
-        events.push({ actorId: fromActorId, kind: "assigned", issueId: row.issueId, at: row.createdAt.toISOString() });
-        const details = row.details && typeof row.details === "object" && !Array.isArray(row.details)
-          ? row.details as Record<string, unknown>
-          : {};
-        const targetAgentId = readString(details.assigneeAgentId) ?? readString(details.toAgentId);
-        const targetUserId = readString(details.assigneeUserId) ?? readString(details.toUserId);
-        const toActorId = targetAgentId
-          ? actorId("agent", targetAgentId)
-          : targetUserId
-            ? actorId("user", targetUserId)
-            : null;
-        if (toActorId) {
-          actorIds.add(toActorId);
-          edges.push({
-            fromActorId,
-            toActorId,
-            issueId: row.issueId,
-            at: row.createdAt.toISOString(),
-            kind: "assignment",
-          });
-        }
-      }
+      actorIds.add(toActorId);
+      events.push({ actorId: fromActorId, kind: "assigned", issueId: row.issueId, at: row.createdAt.toISOString() });
+      edges.push({ fromActorId, toActorId, issueId: row.issueId, at: row.createdAt.toISOString(), kind: "assignment" });
     }
 
     const actorMaps = await loadActorMaps(input.companyId, actorIds);
