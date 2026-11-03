@@ -75,7 +75,7 @@ async function verifySkill(ctx: ChatCatalogContext, state: Record<string, unknow
 }
 const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase => {
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
-  base.sourceFiles.push("chat-catalog-domains/integrator-skill-versions.ts");
+  base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
   return id === "skills.author-skill" ? { ...base, authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md") } : base;
 };
 export const integratorSkillsCases: readonly ChatCatalogCase[] = [
