@@ -1565,7 +1565,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [gate, policy, e2e_shards]
-    runs-on: ${{ needs.gate.outputs.runner }}
+    runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result
