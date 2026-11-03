@@ -18,7 +18,7 @@ it("uses the exact authenticated update endpoint and returns real successful pre
 it.each(["skill_source_ref_unavailable", "skill_source_github_rate_limited", "skill_source_github_read_failed"])("retains only the supported closed %s/status while withholding private body fields", async code => {
   const { api } = fixture(); vi.stubGlobal("fetch", vi.fn(async () => Response.json({ code, error: "Bearer private-error-canary", details: { code, status: 429, token: "secret-value", repository: "private-origin" } }, { status: 422 })));
   const error = await api.getSkillSourceUpdateStatus(company, skill).catch(error => error);
-  expect(error).toBeInstanceOf(SkillSourceUpdateReadError); expect(error).toMatchObject({ status: 422, reason: code, providerStatus: 429 });
+  expect(error).toBeInstanceOf(SkillSourceUpdateReadError); if (!(error instanceof SkillSourceUpdateReadError)) throw error; expect(error).toMatchObject({ status: 422, reason: code, providerStatus: 429 });
   expect(JSON.stringify(error)).not.toMatch(/private-error|secret-value|private-origin|Bearer/); expect(error.message).not.toMatch(/private-error|secret-value|private-origin|Bearer/);
 });
 it.each(["unknown code", "mismatched code", "oversized", "invalid JSON", "missing code", "invalid provider status"])("does not infer a reason or leak response bytes for %s", async fault => {
@@ -32,7 +32,7 @@ it.each(["unknown code", "mismatched code", "oversized", "invalid JSON", "missin
   if (fault === "invalid provider status") body = JSON.stringify({ code, details: { status: "private-error-canary" } });
   vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 422 })));
   const error = await api.getSkillSourceUpdateStatus(company, skill).catch(error => error);
-  expect(error).toBeInstanceOf(SkillSourceUpdateReadError);
+  expect(error).toBeInstanceOf(SkillSourceUpdateReadError); if (!(error instanceof SkillSourceUpdateReadError)) throw error;
   expect(error.reason).toBe(fault === "invalid provider status" ? code : "unclassified"); expect(error.providerStatus).toBeNull();
   expect(JSON.stringify(error)).not.toContain("private-error-canary"); expect(error.message).not.toContain("private-error-canary");
 });

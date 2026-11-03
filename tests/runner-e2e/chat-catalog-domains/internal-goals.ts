@@ -1,5 +1,5 @@
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
-import { project, task, goal, putDocument, entity, observation, checks, hasLink, sameTask, type Entity, type InternalObservation } from "./internal-support.js";
+import { project, task, goal, putDocument, entity, observation, checks, hasLink, sameTask, internalResultLink, type Entity, type InternalObservation } from "./internal-support.js";
 import { makeDefinition, retryDefinition, fixtureWorker } from "./internal-definition.js";
 
 export function grade_goals(value: unknown) {
