@@ -108,6 +108,7 @@ export type NativeRestartRecoveryDisposition =
       runId: string;
       reason: string;
       retryAt?: Date;
+      transitionUnchanged?: boolean;
     };
 
 export function nextNativeProviderAttempt(
@@ -639,13 +640,40 @@ export async function claimNativeRestartRecoveries(input: {
       const failedRemoteRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
         && row.coordinator.failureDetail?.recoveryMode === "exact_checkpoint_resume" && remoteWorkspace !== null;
       const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
-      const resumptionAgent = releasedRemoteRetry
+      const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3;
+      const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry;
+      const deferRemoteRetry = async (reason: string) => {
+        if (row.coordinator.leaseOwner && row.coordinator.leaseExpiresAt && row.coordinator.leaseExpiresAt > now) {
+          return { kind: "blocked", runId: row.run.id, reason, retryAt: row.coordinator.leaseExpiresAt,
+            transitionUnchanged: true } as const;
+        }
+        const retryAt = new Date(now.getTime() + 30_000);
+        const previous = row.coordinator.recoveryHistory.at(-1);
+        const transitionUnchanged = previous?.disposition === "blocked" && previous.reason === reason;
+        const updated = await tx.update(nativeRunFinalizations).set({ nextAttemptAt: retryAt, updatedAt: now,
+          ...(!transitionUnchanged ? { recoveryHistory: appendBoundedRecoveryHistory({
+            at: now.toISOString(), restartKind: input.restartKind, controllerBootId: controller.bootId,
+            controllerGeneration: row.coordinator.controllerGeneration, disposition: "blocked", reason,
+            recoveryRequestId: input.recoveryRequestId ?? null, providerAttempt: row.coordinator.attempt,
+            stateRootAction: "preserve_fail_closed", retryAt: retryAt.toISOString(),
+          }) } : {}),
+        }).where(and(eq(nativeRunFinalizations.companyId, row.run.companyId),
+          eq(nativeRunFinalizations.issueId, issue.id), eq(nativeRunFinalizations.runId, row.run.id),
+          eq(nativeRunFinalizations.phase, "retryable_failure"), eq(nativeRunFinalizations.attempt, row.coordinator.attempt),
+          isNull(nativeRunFinalizations.resultId),
+          or(isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt), lte(nativeRunFinalizations.leaseExpiresAt, now)),
+        )).returning({ runId: nativeRunFinalizations.runId });
+        if (!updated.length) return { kind: "blocked", runId: row.run.id, reason, retryAt, transitionUnchanged: true } as const;
+        await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id });
+        return { kind: "blocked", runId: row.run.id, reason, retryAt, transitionUnchanged } as const;
+      };
+      const resumptionAgent = needsResumptionAdmission
         ? await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })
         : null;
-      if (releasedRemoteRetry && !resumptionAgent) {
-        return { kind: "blocked", runId: row.run.id, reason: "native_retry_admission_ineligible" } as const;
+      if (needsResumptionAdmission && !resumptionAgent) {
+        return deferRemoteRetry("native_retry_admission_ineligible");
       }
-      if (releasedRemoteRetry) {
+      if (needsResumptionAdmission) {
         const source = alias(heartbeatRuns, "native_retry_source");
         const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
           .innerJoin(source, and(eq(source.companyId, row.run.companyId), eq(source.id, row.run.id)))
@@ -657,10 +685,7 @@ export async function claimNativeRestartRecoveries(input: {
             or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id),
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
           )).limit(1);
-        if (newer) return { kind: "blocked", runId: row.run.id, reason: "native_retry_source_superseded" } as const;
-      }
-      if (failedRemoteRetry && row.coordinator.attempt >= 3) {
-        return { kind: "blocked", runId: row.run.id, reason: "execution_recovery_budget_exhausted" } as const;
+        if (newer) return deferRemoteRetry("native_retry_source_superseded");
       }
       if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry) {
         return {
@@ -969,13 +994,13 @@ export async function claimNativeRestartRecoveries(input: {
       const ownershipChanged =
         row.issueAssigneeAgentId !== row.run.agentId ||
         ["done", "cancelled"].includes(row.issueStatus);
-      const claimKind = ownershipChanged ? null : classification.claimKind;
+      const claimKind = ownershipChanged || exhaustedRemoteRetry ? null : classification.claimKind;
       const reason = ownershipChanged
         ? "task_ownership_or_status_changed"
-        : classification.reason;
+        : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted" : classification.reason;
 
-      if (releasedRemoteRetry && (!durableAuthority || claimKind !== "reattach_remote_runner")) {
-        return { kind: "blocked", runId: row.run.id, reason: "native_retry_remote_authority_unverified" } as const;
+      if (needsResumptionAdmission && (!durableAuthority || ownershipChanged || classification.claimKind !== "reattach_remote_runner")) {
+        return deferRemoteRetry("native_retry_remote_authority_unverified");
       }
 
       if (!claimKind) {

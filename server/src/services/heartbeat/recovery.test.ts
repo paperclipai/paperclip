@@ -1233,6 +1233,23 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
   });
 
+  it("schedules deferred remote retries without repeating unchanged transition events", async () => {
+    const run = await seedRun();
+    const deps = callbacks(db), retryAt = new Date(Date.now() + 30_000);
+    deps.getRun.mockResolvedValue(run);
+    const held = { kind: "blocked" as const, runId: run.id, reason: "native_retry_admission_ineligible", retryAt };
+    native.claims.mockResolvedValue([{ ...held, transitionUnchanged: false }]);
+    const recovery = createHeartbeatRecovery(db, deps);
+    await recovery.recoverNativeRunsAfterRestart(new Date(), [run.id], { skipDelegatedWork: true });
+    expect(deps.scheduleNativeSessionResumeDispatch).toHaveBeenCalledWith(run.id, retryAt, "restart");
+    expect(deps.appendRunEvent).toHaveBeenCalledTimes(1);
+    native.claims.mockResolvedValue([{ ...held, transitionUnchanged: true }]);
+    await recovery.recoverNativeRunsAfterRestart(new Date(), [run.id], { skipDelegatedWork: true });
+    expect(deps.appendRunEvent).toHaveBeenCalledTimes(1);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+  });
+
   it.each(["nativeWorkspaceSync", "remoteWorkspace"])("routes a due %s retry to remote ownership verification", async reference => {
     const run = await seedRun();
     const leaseId = randomUUID(), workspaceId = randomUUID();

@@ -1619,8 +1619,14 @@ The task lock, controller claim, run status and recovery event commit together.
 A new failed retry consumes the existing provider attempt budget; replacing an
 active controller does not. The claim permits only inspection and attachment to
 the recorded remote execution. Missing live provider evidence
-still prevents replay or replacement. A completed turn without a semantic
-result retains its existing bounded disposition-only recovery policy.
+still prevents replay or replacement. Ineligible retries retain a 30-second
+recovery deadline. The run log records a changed hold reason once instead of
+repeating the same warning on every sweep. A historical exhausted retry can
+release its task lock only after the same admission, controller fence and exact
+remote authority checks pass. Existing terminal recovery then preserves the
+provider evidence and gives the board a reconciliation action; it authorizes no
+new provider work. A completed turn without a semantic result retains its
+existing bounded disposition-only recovery policy.
 
 A bootstrap retry requires durable evidence that no provider session, provider
 event, or checkpoint exists. A runner report that `session.open` failed or was
