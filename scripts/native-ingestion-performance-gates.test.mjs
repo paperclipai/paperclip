@@ -76,41 +76,73 @@ const workloads = [
 ];
 function browserReport(revision, latency) {
   const companyId = "00000000-0000-4000-8000-000000000001", environmentId = "00000000-0000-4000-8000-000000000002";
+  const localEnvironmentId = "00000000-0000-4000-8000-000000000003", controlAgentId = "00000000-0000-4000-8000-000000000004";
+  const remoteAgentId = "00000000-0000-4000-8000-000000000005";
   const id = (kind, caseIndex, index) => `00000000-0000-4000-8000-${(kind * 100000 + caseIndex * 1000 + index).toString(16).padStart(12, "0")}`;
-  return { protocolVersion: "v3-supported-remote-original-clock-stream", transport: "sandbox-remote", companyId,
+  const transportPolicy = { streaming: "sandbox-remote", operatorStop: "local",
+    realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" };
+  return { protocolVersion: "v4-remote-streaming-original-local-stop-clock-stream", transport: "sandbox-remote-with-local-stop", transportPolicy, companyId,
     resourceBudgets: { providerReadinessMs: 300000, fullInvocationMs: 900000, streamingMs: 120000,
       terminalDrainageMs: 180000, stopAcknowledgementMs: 30000, remoteLeaseCleanupMs: 30000 },
-    remote: { transport: "sandbox-remote", revision, buildRevision: revision, environmentId,
+    local: { transport: "local", environmentId: localEnvironmentId, controlAgentId,
+      selection: "Normal local environment + separate control agent defaultEnvironmentId; existing test-only Codex leaf command fixture",
+      commandSha256: "6".repeat(64), loaderSha256: "7".repeat(64) },
+    remote: { transport: "sandbox-remote", revision, buildRevision: revision, environmentId, agentIds: [remoteAgentId],
       runnerPublicUrl: "wss://127.0.0.1:32100",
       selection: "Normal plugin install + sandbox environment + agent defaultEnvironmentId; no runtime resolver override",
-      plugin: { pluginKey: "paperclip.fake-sandbox-provider" }, tls: { peerVerification: true, caSha256: "e".repeat(64), serverCertificateSha256: "f".repeat(64) },
+      plugin: { pluginKey: "paperclip.fake-sandbox-provider", assetHashes: Object.fromEntries(["worker.js", "plugin.js", "manifest.js", "lease-cleanup.js"].map(file => [file, "5".repeat(64)])) },
+      tls: { peerVerification: true, caSha256: "e".repeat(64), serverCertificateSha256: "f".repeat(64) },
       runner: { sha256: "d".repeat(64), metadata: { prpTransportModes: ["dial_wss"] } },
       provider: { nodeSha256: "b".repeat(64), wrapperSha256: "c".repeat(64), fixtureSha256: "a".repeat(64) } },
     fixtureSha256: "a".repeat(64), admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch", setupReadinessPollingMs: 50, complete: true, cleanup: { complete: true, errors: [] }, qualificationOnly: false, diagnosticOnly: false, performanceAcceptanceEligible: true, browserRecording: { trace: "off", video: "off", screencast: false },
     sourceRevision: revision, compiledBuildRevision: revision, serverArtifact: "compiled", serverEntrySha256: `${revision}-compiled`,
     measurementSha256: "synthetic-fixed-fixture", compiledHotPathHashes: { append: "append", port: "port", runtime: "runtime" },
-    cases: workloads.map((workload, caseIndex) => ({ ...workload, stop: Boolean(workload.stop), persistedAfterReload: true,
-      epochMs: 1000, preludeProof: workload.prelude ? { individualDeltas: workload.prelude, uniqueSourceIdentities: workload.prelude, verifiedAtMs: 999 } : undefined,
-      settledAtMs: 1000 + latency, stopRequestedAtMs: workload.stop ? 1000 : undefined,
-      stopAcknowledgedAtMs: workload.stop ? 1000 + latency : undefined, remoteLeasesCheckedAtMs: 1001 + latency,
-      runIds: Array.from({ length: workload.runs }, (_, index) => id(1, caseIndex, index)),
-      controllerAuthority: { checkedBeforeMeasuredEpoch: true, checkedAtMs: 998, connectionClosedAtMs: 999,
-        observedReadOnly: "on", observedIsolation: "repeatable read", rows: Array.from({ length: workload.runs }, (_, index) => ({
-          run_id: id(1, caseIndex, index), issue_id: id(2, caseIndex, index), company_id: companyId,
-          lease_id: id(3, caseIndex, index), environment_id: environmentId, runtime_mode: "native", provider: "fake-plugin",
-          provider_lease_id: `fake-plugin://${id(1, caseIndex, index)}/fixture`, checkpoint_part: "header", checkpoint_header_bytes: 256,
-        })) },
-      remoteLeases: Array.from({ length: workload.runs }, (_, index) => ({ id: id(3, caseIndex, index), runId: id(1, caseIndex, index),
-        companyId, environmentId, provider: "fake-plugin", providerLeaseId: `fake-plugin://${id(1, caseIndex, index)}/fixture`,
-        status: "released", cleanupStatus: "success", releasedAt: "2026-11-03T00:00:00.000Z" })),
-      visible: Array(workload.stop ? 3 : workload.events).fill({}), matchedVisibleClocks: workload.stop ? 3 : workload.events,
-      firstVisibleAfterEmissionMs: latency, emissionToVisible: { medianMs: latency, p95Ms: latency },
-      interChunkGaps: { paintCount: workload.events, count: workload.events - 1, medianMs: latency, maxMs: latency },
-      intendedToVisible: { p95Ms: latency }, drainThroughTerminalMs: latency,
-      stopThroughTerminalMs: latency, stopThroughAcknowledgementMs: latency,
-      durable: Array.from({ length: workload.runs }, (_, index) => ({ runId: id(1, caseIndex, index), token: String(index), ordered: true,
-        uniqueSourceIdentities: workload.stop ? 3 : workload.events, individualDeltas: workload.stop ? 3 : workload.events, matchedSourceClocks: workload.stop ? 3 : workload.events })),
-    })) };
+    cases: workloads.map((workload, caseIndex) => {
+      const stop = Boolean(workload.stop), actualEnvironmentId = stop ? localEnvironmentId : environmentId;
+      const launcher = stop ? "host-local" : "staged-remote", pid = 20000 + caseIndex * 1000;
+      const snapshot = { checkedBeforeMeasuredEpoch: true, checkedAtMs: 998, connectionClosedAtMs: 999,
+        observedReadOnly: "on", observedIsolation: "repeatable read", kind: stop ? "host-file-journal" : "database-controller-checkpoint" };
+      const rows = Array.from({ length: workload.runs }, (_, index) => ({
+        run_id: id(1, caseIndex, index), issue_id: id(2, caseIndex, index), company_id: companyId,
+        agent_id: stop ? controlAgentId : remoteAgentId,
+        lease_id: id(3, caseIndex, index), environment_id: actualEnvironmentId, runtime_mode: "native", provider: stop ? "local" : "fake-plugin",
+        provider_lease_id: stop ? null : `fake-plugin://${id(1, caseIndex, index)}/fixture`,
+        checkpoint_part: stop ? null : "header", checkpoint_header_bytes: stop ? null : 256,
+        runner_instance_id: id(6, caseIndex, index), native_session_id: id(7, caseIndex, index), admitted_execution_workspace_id: id(8, caseIndex, index),
+        ...(stop ? { process_pid: pid - 1, process_group_id: pid - 1, process_started_at: "2026-11-03T00:00:00.000Z",
+          process_identity_seq: 1, process_identity_source_event_id: null,
+          process_identity: { targetKind: "local", hostname: "fixture-host", processPid: pid - 1, processGroupId: pid - 1,
+            processStartedAt: "2026-11-03T00:00:00.000Z" } } : {}),
+      }));
+      const lease = { id: rows[0].lease_id, heartbeatRunId: rows[0].run_id, companyId, environmentId: localEnvironmentId,
+        provider: "local", providerLeaseId: null, status: "released", releasedAt: "2026-11-03T00:00:01.000Z", cleanupStatus: null };
+      const localProcesses = { runnerPid: pid - 1, processGroupId: pid - 1, providerPid: pid, hostname: "fixture-host",
+        checkedAtMs: 999, runnerAlive: true, groupAlive: true, providerAlive: true };
+      return { ...workload, stop, transport: stop ? "local" : "sandbox-remote", environmentId: actualEnvironmentId, persistedAfterReload: true,
+        epochMs: 1000, preludeProof: workload.prelude ? { individualDeltas: workload.prelude, uniqueSourceIdentities: workload.prelude, verifiedAtMs: 999 } : undefined,
+        settledAtMs: 1000 + latency, stopRequestedAtMs: stop ? 1000 : undefined,
+        stopAcknowledgedAtMs: stop ? 1000 + latency : undefined, remoteLeasesCheckedAtMs: stop ? undefined : 1001 + latency,
+        runIds: rows.map(row => row.run_id), controllerAuthority: { ...snapshot, rows,
+          ...(stop ? { localJournal: { schema: "paperclip.runner.durable.control-plane-state.v1", sha256: "8".repeat(64), bytes: 512, checkedAtMs: 999,
+            identity: { runId: rows[0].run_id, runnerInstanceId: rows[0].runner_instance_id, normalizedSessionId: rows[0].native_session_id, environmentLeaseId: rows[0].admitted_execution_workspace_id } } } : {}) },
+        providerClocks: rows.map((row, index) => ({ runId: row.run_id, nonce: String(index), launcher, providerPid: pid + index })),
+        clockEvidence: rows.map((row, index) => ({ nonce: String(index), launcher, providerPid: pid + index })),
+        ...(stop ? { localProcesses, localStopProof: { checkedAtMs: 1001 + latency, lease,
+          processes: { ...localProcesses, runnerAbsent: true, groupAbsent: true, providerAbsent: true },
+          database: { ...snapshot, checkedBeforeMeasuredEpoch: false, checkedAtMs: 1000 + latency, connectionClosedAtMs: 1000 + latency,
+            rows: [{ ...rows[0], process_pid: null, process_group_id: null, process_started_at: null, status: "cancelled", cancellation_dispatch_state: "acknowledged",
+              process_stopped_seq: 2, process_stopped_source_event_id: null, process_stopped: { processPid: pid - 1, processGroupId: pid - 1, processStartedAt: rows[0].process_started_at } }] } } }
+          : { remoteLeases: rows.map(row => ({ id: row.lease_id, runId: row.run_id, companyId, environmentId, provider: "fake-plugin", providerLeaseId: row.provider_lease_id,
+            status: "released", cleanupStatus: "success", releasedAt: "2026-11-03T00:00:00.000Z" })) }),
+        visible: Array(stop ? 3 : workload.events).fill({}), matchedVisibleClocks: stop ? 3 : workload.events,
+        firstVisibleAfterEmissionMs: latency, emissionToVisible: { medianMs: latency, p95Ms: latency },
+        interChunkGaps: { paintCount: workload.events, count: workload.events - 1, medianMs: latency, maxMs: latency },
+        intendedToVisible: { p95Ms: latency }, drainThroughTerminalMs: latency,
+        stopThroughTerminalMs: latency, stopThroughAcknowledgementMs: latency,
+        durable: rows.map((row, index) => ({ runId: row.run_id, token: String(index), ordered: true,
+          uniqueSourceIdentities: stop ? 3 : workload.events, individualDeltas: stop ? 3 : workload.events, matchedSourceClocks: stop ? 3 : workload.events })),
+      };
+    }) };
 }
 
 test("browser CLI rejects the three-pairs-above-noise counterexample and ineligible evidence", async () => {
@@ -146,9 +178,18 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["profile", report => { report.diagnosticOnly = true; }, /Diagnostic profiles/],
       ["profile-ineligible", report => { report.performanceAcceptanceEligible = false; }, /Profile-only evidence/],
       ["missing-retained-prelude", report => { report.cases.find(row => row.prelude).preludeProof.individualDeltas--; }, /stored prelude deltas/],
-      ["legacy-protocol", report => { delete report.protocolVersion; }, /v3 remote clock protocol/],
-      ["old-local-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; report.transport = "local"; }, /v3 remote clock protocol/],
-      ["wrong-transport", report => { report.transport = "local"; }, /sandbox remote transport/],
+      ["legacy-protocol", report => { delete report.protocolVersion; }, /v4 mixed clock protocol/],
+      ["old-local-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; report.transport = "local"; }, /v4 mixed clock protocol/],
+      ["old-remote-protocol", report => { report.protocolVersion = "v3-supported-remote-original-clock-stream"; }, /v4 mixed clock protocol/],
+      ["wrong-transport", report => { report.transport = "local"; }, /original local Stop transport/],
+      ["missing-transport-policy", report => { delete report.transportPolicy; }, /explicit transport/],
+      ["fake-remote-stop", report => { report.cases[5].transport = "sandbox-remote"; }, /Wrong per-case transport/],
+      ["local-loaded-workload", report => { report.cases[3].transport = "local"; }, /Wrong per-case transport/],
+      ["wrong-case-environment", report => { report.cases[5].environmentId = report.remote.environmentId; }, /normal environment/],
+      ["missing-local-selection", report => { delete report.local; }, /local Stop runtime provenance/],
+      ["shared-control-agent", report => { report.local.controlAgentId = report.remote.agentIds[0]; }, /separate normal control agent/],
+      ["changed-local-command", report => { report.local.commandSha256 = "9".repeat(64); }, /Local Stop fixture changed/],
+      ["changed-provider-cleanup", report => { report.remote.plugin.assetHashes["lease-cleanup.js"] = "9".repeat(64); }, /Provider cleanup build changed/],
       ["unregistered-resource-budget", report => { report.resourceBudgets.providerReadinessMs = 600000; }, /registered remote setup\/resource budgets/],
       ["missing-normal-remote", report => { delete report.remote; }, /normal remote runtime provenance/],
       ["missing-plugin", report => { delete report.remote.plugin; }, /plugin provenance/],
@@ -169,6 +210,28 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["authority-wrong-environment", report => { report.cases[3].controllerAuthority.rows[99].environment_id = "other"; }, /environment mismatch/],
       ["authority-wrong-provider", report => { report.cases[3].controllerAuthority.rows[99].provider = "fake"; }, /fake-plugin/],
       ["authority-missing-checkpoint", report => { report.cases[3].controllerAuthority.rows[99].checkpoint_part = null; }, /checkpoint header/],
+      ["local-wrong-checkpoint-authority", report => { report.cases[5].controllerAuthority.kind = "database-controller-checkpoint"; }, /Wrong checkpoint authority/],
+      ["local-fake-database-header", report => { report.cases[5].controllerAuthority.rows[0].checkpoint_part = "header"; }, /host-file authority/],
+      ["missing-local-journal", report => { delete report.cases[5].controllerAuthority.localJournal; }, /owned local journal authority/],
+      ["local-journal-wrong-run", report => { report.cases[5].controllerAuthority.localJournal.identity.runId = "other"; }, /Local journal identity mismatch/],
+      ["local-journal-wrong-workspace", report => { report.cases[5].controllerAuthority.rows[0].admitted_execution_workspace_id = report.remote.environmentId; }, /Local journal identity mismatch/],
+      ["local-journal-bookkeeping-alias", report => { report.cases[5].controllerAuthority.localJournal.identity.environmentLeaseId = report.cases[5].controllerAuthority.rows[0].lease_id; }, /Local journal identity mismatch/],
+      ["local-missing-admitted-workspace", report => { delete report.cases[5].controllerAuthority.rows[0].admitted_execution_workspace_id; }, /admitted local workspace binding/],
+      ["local-journal-wrong-policy", report => { report.cases[5].controllerAuthority.localJournal.checkpointEventPolicy = "control-v1"; }, /original local raw transport/],
+      ["missing-wrapper-provenance", report => { delete report.cases[3].providerClocks; }, /wrapper launcher and PID/],
+      ["remote-used-local-wrapper", report => { report.cases[3].providerClocks[99].launcher = "host-local"; }, /wrapper launcher/],
+      ["local-used-remote-wrapper", report => { report.cases[5].providerClocks[0].launcher = "staged-remote"; }, /wrapper launcher/],
+      ["missing-hello-pid", report => { delete report.cases[3].clockEvidence[99].providerPid; }, /hello provider PID/],
+      ["missing-local-identity-event", report => { delete report.cases[5].controllerAuthority.rows[0].process_identity; }, /targetKind|local/],
+      ["provider-authored-local-identity", report => { report.cases[5].controllerAuthority.rows[0].process_identity_source_event_id = "provider-event"; }, /server-authored/],
+      ["missing-local-physical-proof", report => { delete report.cases[5].localStopProof; }, /physical Stop/],
+      ["local-provider-still-alive", report => { report.cases[5].localStopProof.processes.providerAbsent = false; }, /remains alive/],
+      ["local-group-still-alive", report => { report.cases[5].localStopProof.processes.groupAbsent = false; }, /false.*true|false !== true/],
+      ["local-database-ack-missing", report => { report.cases[5].localStopProof.database.rows[0].cancellation_dispatch_state = "pending"; }, /acknowledged/],
+      ["local-cleared-identity-no-receipt", report => { delete report.cases[5].localStopProof.database.rows[0].process_stopped_seq; }, /server stop receipt/],
+      ["local-provider-stop-receipt", report => { report.cases[5].localStopProof.database.rows[0].process_stopped_source_event_id = "provider"; }, /null/],
+      ["local-lease-cleanup-failed", report => { report.cases[5].localStopProof.lease.cleanupStatus = "failed"; }, /Local Stop lease cleanup/],
+      ["local-lease-wrong-binding", report => { report.cases[5].localStopProof.lease.heartbeatRunId = "other"; }, /other/],
       ["missing-lease-cleanup", report => { delete report.cases[3].remoteLeases; }, /lease cleanup proof/],
       ["lease-pending", report => { report.cases[3].remoteLeases[99].status = "pending_cleanup"; }, /cleanup remains unsettled/],
       ["lease-wrong-binding", report => { report.cases[3].remoteLeases[99].providerLeaseId = "other"; }, /fake-plugin/],
@@ -189,9 +252,10 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, message);
     }
     for (const [name, change, message] of [
-      ["old-noise-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; }, /different remote protocol/],
+      ["old-noise-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; }, /different mixed protocol/],
       ["local-noise-transport", report => { report.transport = "local"; }, /different transport/],
       ["changed-noise-budget", report => { report.resourceBudgets.providerReadinessMs++; }, /budgets changed after A\/A/],
+      ["changed-noise-transport-policy", report => { report.transportPolicy.operatorStop = "sandbox-remote"; }, /Transport policy changed after A\/A/],
     ]) {
       const changed = JSON.parse(await readFile(noise, "utf8")); change(changed);
       const file = await save(name + ".json", changed);

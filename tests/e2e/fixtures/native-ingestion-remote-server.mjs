@@ -11,9 +11,10 @@ import { createServer } from 'node:tls';
 import { pathToFileURL } from 'node:url';
 
 assert.equal(process.env.NODE_ENV, 'test');
-assert.equal(process.env.PAPERCLIP_INGESTION_TRANSPORT, 'sandbox-remote');
+assert.equal(process.env.PAPERCLIP_INGESTION_TRANSPORT, 'sandbox-remote-with-local-stop');
 assert.ok(process.env.PAPERCLIP_HOME && process.env.PAPERCLIP_CONFIG);
 assert.ok(!process.env.DATABASE_URL, 'Remote fixture requires its disposable embedded database');
+assert.ok(!process.env.PAPERCLIP_RUNNER_STATE_DIR, 'H4 uses the normal owned instance journal directory');
 assert.ok(path.resolve(process.env.PAPERCLIP_CONFIG).startsWith(`${path.resolve(process.env.PAPERCLIP_HOME)}${path.sep}`));
 const ownedHome = await realpath(process.env.PAPERCLIP_HOME);
 const ownedConfiguration = await realpath(process.env.PAPERCLIP_CONFIG);
@@ -52,7 +53,7 @@ execFileSync('openssl', ['verify', '-CAfile', ca, cert], { stdio: 'ignore' });
 const fixture = path.resolve(import.meta.dirname, 'in-feed-codex.mjs');
 const wrapper = path.join(directory, 'codex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-await writeFile(wrapper, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} --ingestion-stream-fixture "$@"\n`, { mode: 0o700 });
+await writeFile(wrapper, `#!/bin/sh\nexport PAPERCLIP_INGESTION_FIXTURE_LAUNCHER=staged-remote\nexport PAPERCLIP_INGESTION_FIXTURE_PID=$$\nexec ${quote(process.execPath)} ${quote(fixture)} --ingestion-stream-fixture "$@"\n`, { mode: 0o700 });
 const runner = process.env.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH
   ?? path.join(appRoot, 'packages/paperclip-runner/runner/target/release/paperclip-runnerd');
 const runnerMetadata = JSON.parse(execFileSync(runner, ['--build-metadata'], { encoding: 'utf8' }));

@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const fixture = fileURLToPath(new URL('./in-feed-codex.mjs', import.meta.url));
+const wrapper = fileURLToPath(new URL('./native-ingestion-bin/codex', import.meta.url));
 const output = process.argv[2];
 assert.ok(output, 'Pass an owned output JSON path');
 const reports = [];
@@ -63,7 +64,7 @@ async function run({ name, count, intervalMs = 0, stopAfter, clockStatus = 200, 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const gate = `http://127.0.0.1:${server.address().port}/native-ingestion-gate/${key}`;
   const send = value => child.stdin.write(JSON.stringify(value) + '\n');
-  child = spawn(process.execPath, [fixture, '--ingestion-stream-fixture'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  child = spawn(wrapper, [], { stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.on('data', value => { stderr += value; });
   const watchdog = setTimeout(() => fail(new Error(`${name}: qualification watchdog`)), 10_000);
   createInterface({ input: child.stdout }).on('line', line => {
@@ -104,7 +105,8 @@ async function run({ name, count, intervalMs = 0, stopAfter, clockStatus = 200, 
   if (failure) throw failure;
   assert.equal(exit.code, clockStatus === 200 ? 0 : 1, stderr);
   assert.equal(clockPosts, 1); assert.equal(gateGets, 1);
-  assert.deepEqual(hello, { type: 'hello', nonce, markerCode, events: count, intervalMs });
+  assert.deepEqual(hello, { type: 'hello', nonce, markerCode, events: count, intervalMs,
+    launcher: 'host-local', providerPid: child.pid });
   assert.equal(emissions.length, deltas.length);
   assert.ok(deltas.length > 0);
   for (let index = 0; index < emissions.length; index++) {
@@ -127,6 +129,7 @@ async function run({ name, count, intervalMs = 0, stopAfter, clockStatus = 200, 
   }
   if (clockStatus !== 200) assert.match(stderr, /Ingestion fixture clock .*HTTP 503/);
   reports.push({ name, exit, count, emitted: deltas.length, clockPosts, clockRecords: clockRecords.length,
+    launcher: hello.launcher, providerPid: hello.providerPid,
     completedTextCharacters: completedItem?.text.length, terminal: terminal.status,
     uploadHeldUntilAfterTerminal: true, stopAcknowledgedBeforeUploadResponse: stopAfter ? true : undefined,
     explicitClockError: clockStatus !== 200 ? stderr.trim() : undefined });
