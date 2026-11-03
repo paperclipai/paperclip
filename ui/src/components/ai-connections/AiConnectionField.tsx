@@ -220,7 +220,7 @@ export function AiConnectionField({
           {advancedSetup ? <AiProviderSetup
             companyId={companyId} agentId={agentId} environmentId={environmentId}
             adapterType={adapterType}
-            advancedOnly={preferAdvanced || provider === "openrouter"}
+            advancedOnly={preferAdvanced}
             initialProtocol={adapterType === "claude_local" ? "messages" : adapterType === "codex_local" ? "responses" : "chat"}
             onCancel={() => (preferAdvanced || provider === "openrouter") ? setConnecting(false) : setAdvancedSetup(false)}
             onComplete={binding => {

@@ -216,7 +216,7 @@ it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a match
   expect(choice?.getAttribute("aria-disabled")).not.toBe("true");
 });
 
-it("passes adapterType and advancedOnly when connecting a hermes_local agent", async () => {
+it("passes adapterType when connecting a hermes_local agent", async () => {
   mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
   flushSync(() => root.render(<QueryClientProvider client={client}>
     <AiConnectionField companyId="company" agentId="agent" agentName="Hermes" adapterType="hermes_local"
@@ -225,5 +225,5 @@ it("passes adapterType and advancedOnly when connecting a hermes_local agent", a
   await settle();
   await click("Connect another account");
   expect(document.body.textContent).toContain("Advanced provider setup");
-  expect(setupProps).toMatchObject({ adapterType: "hermes_local", advancedOnly: true });
+  expect(setupProps).toMatchObject({ adapterType: "hermes_local", advancedOnly: false });
 });

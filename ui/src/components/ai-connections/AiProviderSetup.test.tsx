@@ -83,6 +83,38 @@ it("filters incompatible providers for claude_local", async () => {
   }
 });
 
+it("falls back to standard choices when grok_local has no advanced providers", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" adapterType="grok_local" advancedOnly onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    const choices = Array.from(container.querySelectorAll("button[aria-label]")).map(button => button.getAttribute("aria-label"));
+    expect(choices).toEqual(["xAI"]);
+    expect(container.querySelector("details")).toBeNull();
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
+it("keeps standard choices and folds openrouter under advanced for pi_local", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" adapterType="pi_local" onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    const choices = Array.from(container.querySelectorAll("button[aria-label]")).map(button => button.getAttribute("aria-label"));
+    expect(choices).toEqual(["OpenAI", "Anthropic", "Google", "OpenRouter"]);
+    expect(container.querySelector("details")).not.toBeNull();
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
 it.each(providerSources)("opens %s directly with shared access folded under Advanced", async source => {
   const preset = aiProviderSetupPreset(source)!;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });

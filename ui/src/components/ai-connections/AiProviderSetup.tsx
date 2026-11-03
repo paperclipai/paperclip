@@ -251,7 +251,8 @@ export function AiProviderSetup({
   const advancedChoices = availableProviders.filter(
     (p) => Boolean("advanced" in p && p.advanced),
   );
-  const effectiveAdvancedOnly = advancedOnly || standardChoices.length === 0;
+  const effectiveAdvancedOnly =
+    (advancedOnly && advancedChoices.length > 0) || standardChoices.length === 0;
   const choices = (advancedSection: boolean) => (
     <ConnectionChoiceList
       choices={availableProviders
