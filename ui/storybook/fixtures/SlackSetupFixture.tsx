@@ -27,9 +27,10 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
       },
     };
     const grantId = "11111111-1111-4111-8111-111111111111";
-    let authorized = workspaceCount > 0 || new URLSearchParams(window.location.search).get("slackFixtureAuthorized") === "1";
+    const authorizationReturned = new URLSearchParams(window.location.search).get("slackFixtureAuthorized") === "1";
+    let authorized = workspaceCount > 0 || authorizationReturned;
     let authorizationFailed = false;
-    if (scenario === "manager_reauthorize" && !authorized) endpoint.setup!.slackManagerError = "slack_manager_reauthorize";
+    if (scenario === "manager_reauthorize" && !authorizationReturned) endpoint.setup!.slackManagerError = "slack_manager_reauthorize";
     const created = () => {
       endpoint.setup!.slackRegistration = { status: "install", ...(managed ? { managerGrantId: grantId } : {}), appId: "ASTORY", managementUrl: "https://api.slack.com/apps/ASTORY" };
       endpoint.setup!.slackAvatar = scenario === "avatar_failed" ? { status: "failed", errorCode: "slack_avatar_upload_failed" } : { status: "uploaded", uploadedAt: new Date().toISOString() };
@@ -63,7 +64,7 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
         return Response.json({ managedAvailable: managed && managedAvailable, defaultMethod: managed ? "managed" : "automatic", workspaces: managed && authorized ? Array.from({ length: Math.max(1, workspaceCount) }, (_, i) => ({ grantId: i ? "22222222-2222-4222-8222-222222222222" : grantId, workspaceId: `TSTORY${i}`, workspaceName: i ? "Research workspace" : "Paperclip", userId: "UPERSON" })) : [] });
       }
       if (path === "/api/chat-endpoints/slack-story/slack/managed/authorize") {
-        if (scenario === "manager_authorization_failed" && !authorized && !authorizationFailed) {
+        if (scenario === "manager_authorization_failed" && !authorizationReturned && !authorizationFailed) {
           authorizationFailed = true;
           return Response.json({ error: "Reconnect your Slack workspace to continue setting up this agent." }, { status: 422 });
         }
