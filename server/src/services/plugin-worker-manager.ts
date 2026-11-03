@@ -1,3 +1,5 @@
+import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
+import { createHash, randomUUID } from "node:crypto";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
  * processes, routes JSON-RPC 2.0 calls over stdio, and handles lifecycle
@@ -19,7 +21,6 @@
  */
 
 import { fork, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { beginIdleTrackedWork, readTaskDrain, trackIdleWork } from "./task-admission.js";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
@@ -541,6 +542,7 @@ interface PendingRequest {
 }
 
 interface ActiveInvocation {
+  startupContextId?: string;
   providerSpanBudget: {remaining:number};
   scope: PluginInvocationScope;
   timer?: ReturnType<typeof setTimeout>;
@@ -680,6 +682,10 @@ interface ExecuteLogRoute {
  * with exponential backoff automatically when `autoRestart` is enabled.
  */
 export interface PluginWorkerHandle {
+  hasStartupWork?(): boolean;
+  drainStartup?(contextId: string): Promise<void>;
+  recoverStartupAcquisition?(contextId: string, creationOperationId: string): void;
+  retireStartup?(contextId: string): Promise<void>;
   prepareIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<"none" | "present" | "unknown">;
   releaseIdleSleep?(): void;
   /** The plugin ID this worker serves. */
@@ -720,6 +726,8 @@ export interface PluginWorkerHandle {
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -800,10 +808,15 @@ export interface WorkerDiagnostics {
  * for starting/stopping all workers and routing RPC calls.
  */
 export interface PluginWorkerManager {
+  drainStartup?(contextId: string): Promise<void>;
+  recoverStartupAcquisition?(contextId: string, creationOperationId: string): void;
+  retireStartup?(contextId: string): Promise<void>;
   /** Subscribe after a worker successfully applies live company configuration. */
   onConfigApplied(listener: () => void): () => void;
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
+    catalogGeneration?: string;
+    catalog?: IdlePluginCatalogEntry[];
   }>;
   releaseIdleSleep?(): void;
   /**
@@ -856,6 +869,9 @@ export interface PluginWorkerManager {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -882,6 +898,7 @@ export interface PluginWorkerManager {
 export function createPluginWorkerHandle(
   pluginId: string,
   options: WorkerStartOptions,
+  onStartupWorkChanged?: () => void,
 ): PluginWorkerHandle {
   const log = logger.child({ service: "plugin-worker", pluginId });
   const emitter = new EventEmitter();
@@ -904,6 +921,31 @@ export function createPluginWorkerHandle(
   // Unlike RPC promises, these survive timeouts. A late response is the
   // completion receipt. A worker crash cannot manufacture one.
   const unsettledCalls = new Map<string | number, () => void>();
+  const observedResults = new Map<string | number, {
+    contextId: string; response?: JsonRpcResponse; running?: Promise<void>;
+    creationOperationId?: string; track: () => void;
+    observe: (result: unknown) => Promise<void>; finish: () => void;
+  }>();
+  const startupCalls = new Map<string, Set<() => void>>();
+  const startupRetirements = new Map<string, Promise<void>>();
+  const startupHostHandlers = new Map<string, Set<Promise<void>>>();
+  const revokeStartupInvocations = (contextId: string) => {
+    for (const [id, invocation] of activeInvocations) {
+      if (invocation.startupContextId !== contextId) continue;
+      if (invocation.timer) clearTimeout(invocation.timer);
+      activeInvocations.delete(id);
+    }
+  };
+  const waitForStartupHandlers = async (contextId: string) => {
+    if (!startupHostHandlers.get(contextId)?.size) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        (async () => { while (startupHostHandlers.get(contextId)?.size) await Promise.all([...startupHostHandlers.get(contextId)!]); })(),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Task cleanup is still pending")), 15_000); timer.unref?.(); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
   const unsettledInspections = new Set<() => void>();
   let activeHostHandlers = 0;
   let idleHold: { ownerId: string; expiresAt: number; ready: boolean } | null = null;
@@ -1126,24 +1168,51 @@ export function createPluginWorkerHandle(
   /**
    * Handle a JSON-RPC response from the worker (matching a pending request).
    */
+  function settleResponse(response: JsonRpcResponse): void {
+    const id = response.id!;
+    unsettledCalls.get(id)?.();
+    unsettledCalls.delete(id);
+    const pending = pendingRequests.get(id);
+    if (!pending) { log.warn({ id }, "received response for unknown request id"); return; }
+    clearTimeout(pending.timer);
+    pendingRequests.delete(id);
+    pending.resolve(response);
+  }
+
+  function processObservedResult(id: string | number): Promise<void> {
+    const observer = observedResults.get(id);
+    if (!observer?.response) return Promise.resolve();
+    if (observer.running) return observer.running;
+    const response = observer.response;
+    const processing = (async () => {
+      if (isJsonRpcSuccessResponse(response)) await observer.observe(response.result);
+      observedResults.delete(id);
+      observer.finish();
+      settleResponse(response);
+    })();
+    observer.running = processing;
+    void processing.catch(() => {
+      const pending = pendingRequests.get(id);
+      pending?.resolve(createErrorResponse(id, JSONRPC_ERROR_CODES.INTERNAL_ERROR, "Plugin result could not be recorded"));
+    }).finally(() => { if (observer.running === processing) observer.running = undefined; });
+    return processing;
+  }
+
   function handleResponse(response: JsonRpcResponse): void {
     const id = response.id;
     if (id === null || id === undefined) {
       log.warn("received response with null/undefined id");
       return;
     }
-
-    unsettledCalls.get(id)?.();
-    unsettledCalls.delete(id);
-    const pending = pendingRequests.get(id);
-    if (!pending) {
-      log.warn({ id }, "received response for unknown request id");
+    const observer = observedResults.get(id);
+    if (observer) {
+      if (observer.response) return;
+      observer.track();
+      observer.response = response;
+      void processObservedResult(id).catch(() => log.warn({ id }, "plugin result recording will retry during cleanup"));
       return;
     }
-
-    clearTimeout(pending.timer);
-    pendingRequests.delete(id);
-    pending.resolve(response);
+    settleResponse(response);
   }
 
   function readNonEmptyString(value: unknown): string | null {
@@ -2756,6 +2825,15 @@ export function createPluginWorkerHandle(
   async function handleWorkerRequest(request: JsonRpcRequest): Promise<void> {
     const done = beginIdleTrackedWork();
     activeHostHandlers++;
+    const invocationId = readNonEmptyString((request as { paperclipInvocationId?: unknown }).paperclipInvocationId);
+    const startupId = invocationId ? activeInvocations.get(invocationId)?.startupContextId : undefined;
+    let complete = () => {}, pending: Promise<void> | undefined;
+    if (startupId) {
+      pending = new Promise<void>(resolve => { complete = resolve; });
+      let handlers = startupHostHandlers.get(startupId);
+      if (!handlers) { handlers = new Set(); startupHostHandlers.set(startupId, handlers); }
+      handlers.add(pending);
+    }
     try {
       // A queued notification may already be running in the worker while its
       // prepare request is in flight. Let its writes finish until that worker
@@ -2767,7 +2845,12 @@ export function createPluginWorkerHandle(
         return;
       }
       await dispatchWorkerRequest(request);
-    } finally { activeHostHandlers--; done(); }
+    } finally {
+      if (pending) startupHostHandlers.get(startupId ?? "")?.delete(pending);
+      if (startupId && startupHostHandlers.get(startupId)?.size === 0) startupHostHandlers.delete(startupId);
+      complete(); activeHostHandlers--; done();
+      if (startupId) onStartupWorkChanged?.();
+    }
   }
 
   async function dispatchWorkerRequest(request: JsonRpcRequest): Promise<void> {
@@ -3043,6 +3126,11 @@ export function createPluginWorkerHandle(
     // Read-only requests cannot continue in an exited worker. Do not infer
     // completion for execute/cleanup calls, whose provider work may outlive it.
     for (const finish of [...unsettledInspections]) finish();
+    for (const [id, observer] of observedResults) {
+      if (observer.response) continue;
+      observedResults.delete(id);
+      observer.finish();
+    }
 
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
     // clear the route one time. The pending pseudo-terminal calls
@@ -3378,8 +3466,10 @@ export function createPluginWorkerHandle(
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]> {
-    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled));
+    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId, observeResult));
     // Tracing wraps the RPC in a new promise. Guard the promise handed to the
     // caller as well, without swallowing its eventual rejection for that caller.
     void dispatched.catch(() => undefined);
@@ -3392,8 +3482,15 @@ export function createPluginWorkerHandle(
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
+    startupContextId?: string,
+    observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+      if (startupContextId && startupRetirements.has(startupContextId)) {
+        onWorkerSettled?.();
+        reject(new Error("Plugin startup group is retiring"));
+        return;
+      }
       const idleControl = method === "prepareIdleSleep" || method === "releaseIdleSleep";
       if (!idleControl && method !== "shutdown" && idleSleepHeld()) {
         onWorkerSettled?.();
@@ -3420,14 +3517,44 @@ export function createPluginWorkerHandle(
           finishIdle();
           unsettledInspections.delete(finish);
           unsettledCalls.delete(id);
+          startupCalls.get(startupContextId ?? "")?.delete(finish);
+          if (startupContextId && startupCalls.get(startupContextId)?.size === 0) startupCalls.delete(startupContextId);
           onWorkerSettled?.();
+          if (startupContextId) onStartupWorkChanged?.();
         };
         unsettledCalls.set(id, finish);
+        if (startupContextId) {
+          let calls = startupCalls.get(startupContextId);
+          if (!calls) { calls = new Set(); startupCalls.set(startupContextId, calls); }
+          calls.add(finish);
+        }
         if (method === "environmentInspectLease") unsettledInspections.add(finish);
+      }
+      if (observeResult && startupContextId) {
+        let processing: Promise<void> | undefined, finish!: () => void;
+        const track = () => {
+          if (processing) return;
+          processing = new Promise<void>(resolve => { finish = resolve; });
+          let handlers = startupHostHandlers.get(startupContextId);
+          if (!handlers) { handlers = new Set(); startupHostHandlers.set(startupContextId, handlers); }
+          handlers.add(processing);
+        };
+        track();
+        observedResults.set(id, { contextId: startupContextId,
+          creationOperationId: method === "environmentAcquireLease" && isRecord(params) ? readNonEmptyString((params as Record<string, unknown>).creationOperationId) ?? undefined : undefined,
+          track, observe: observeResult as (result: unknown) => Promise<void>, finish: () => {
+            if (!processing) return;
+            startupHostHandlers.get(startupContextId)?.delete(processing);
+            if (startupHostHandlers.get(startupContextId)?.size === 0) startupHostHandlers.delete(startupContextId);
+            processing = undefined;
+            finish();
+            onStartupWorkChanged?.();
+          } });
       }
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      if (invocation && startupContextId) activeInvocations.get(invocation.id)!.startupContextId = startupContextId;
       // Register the host-owned execute route only for an execute call that
       // carries a log sink. The company id comes from the host-derived
       // invocation scope, never from the worker. This binds the sink to the
@@ -3490,6 +3617,8 @@ export function createPluginWorkerHandle(
       } catch (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);
+        observedResults.get(id)?.finish();
+        observedResults.delete(id);
         unsettledCalls.get(id)?.();
         unsettledCalls.delete(id);
         clearInvocation(invocation);
@@ -3574,6 +3703,33 @@ export function createPluginWorkerHandle(
       await stopInternal();
       await startInternal();
     },
+    hasStartupWork() { return startupCalls.size > 0 || startupHostHandlers.size > 0 || startupRetirements.size > 0; },
+    recoverStartupAcquisition(contextId: string, creationOperationId: string) {
+      for (const observer of observedResults.values()) {
+        if (observer.contextId === contextId && observer.creationOperationId === creationOperationId && !observer.response) observer.finish();
+      }
+    },
+    async drainStartup(contextId: string) {
+      revokeStartupInvocations(contextId);
+      for (const [id, observer] of observedResults) if (observer.contextId === contextId) void processObservedResult(id).catch(() => undefined);
+      await waitForStartupHandlers(contextId);
+    },
+    async retireStartup(contextId: string) {
+      const current = startupRetirements.get(contextId);
+      if (current) return current;
+      const retiring = (async () => {
+        revokeStartupInvocations(contextId);
+        for (const [id, observer] of observedResults) if (observer.contextId === contextId) void processObservedResult(id).catch(() => undefined);
+        await waitForStartupHandlers(contextId);
+        for (const finish of [...startupCalls.get(contextId) ?? []]) finish();
+      })();
+      startupRetirements.set(contextId, retiring);
+      try { await retiring; }
+      finally {
+        if (startupRetirements.get(contextId) === retiring) startupRetirements.delete(contextId);
+        onStartupWorkChanged?.();
+      }
+    },
 
     call<M extends HostToWorkerMethodName>(
       method: M,
@@ -3581,6 +3737,8 @@ export function createPluginWorkerHandle(
       timeoutMs?: number,
       executeLogSink?: ExecuteLogSink,
       onWorkerSettled?: () => void,
+      startupContextId?: string,
+      observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
         onWorkerSettled?.();
@@ -3590,7 +3748,7 @@ export function createPluginWorkerHandle(
           ),
         );
       }
-      return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled);
+      return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId, observeResult);
     },
 
     openLoginPtySession(input: LoginPtyOpenInput) {
@@ -3786,6 +3944,14 @@ export function createPluginWorkerManager(
 ): PluginWorkerManager {
   const log = logger.child({ service: "plugin-worker-manager" });
   const workers = new Map<string, PluginWorkerHandle>();
+  const retiredStartupWorkers = new Set<PluginWorkerHandle>();
+  const retainStartupWorker = (handle: PluginWorkerHandle) => {
+    if (handle.hasStartupWork?.()) retiredStartupWorkers.add(handle);
+  };
+  const pruneStartupWorker = (handle: PluginWorkerHandle) => {
+    if (!handle.hasStartupWork?.()) retiredStartupWorkers.delete(handle);
+  };
+  const startupWorkers = () => new Set([...workers.values(), ...retiredStartupWorkers]);
   const configApplied = new Set<() => void>();
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
@@ -3797,6 +3963,10 @@ export function createPluginWorkerManager(
     managerOptions?.maxConcurrentDuplexRoutes,
   );
 
+  const idleWorkerIdentities = new WeakMap<PluginWorkerHandle, string>();
+  const idleWorkerManifests = new WeakMap<PluginWorkerHandle, string>();
+  const idleManagerGeneration = randomUUID();
+  let nextIdleWorkerIdentity = 0;
   return {
     onConfigApplied(listener) {
       configApplied.add(listener);
@@ -3811,7 +3981,16 @@ export function createPluginWorkerManager(
         return { backgroundWork: "unknown", pluginIds: [] };
       }
       const backgroundWork = results.includes("present") ? "present" : results.includes("unknown") ? "unknown" : "none";
-      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [] };
+      const catalogGeneration = createHash("sha256").update(JSON.stringify([idleManagerGeneration, snapshot.map(([id, worker]) => {
+        let identity = idleWorkerIdentities.get(worker);
+        if (!identity) { identity = String(++nextIdleWorkerIdentity); idleWorkerIdentities.set(worker, identity); }
+        return [id, identity, idleWorkerManifests.get(worker)];
+      })])).digest("hex");
+      const catalog = snapshot.flatMap(([pluginId, worker]) => {
+        const manifestGeneration = idleWorkerManifests.get(worker);
+        return manifestGeneration ? [{ pluginId, manifestGeneration }] : [];
+      });
+      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [], catalogGeneration, catalog };
     },
     releaseIdleSleep() {
       for (const worker of workers.values()) worker.releaseIdleSleep?.();
@@ -3839,7 +4018,9 @@ export function createPluginWorkerManager(
         // caller already supplied its own (a test may inject its own).
         duplexRouteSlots,
         ...options,
-      });
+      }, () => pruneStartupWorker(handle));
+      idleWorkerManifests.set(handle, pluginIdleManifestGeneration(options.manifest));
+      if (existing) retainStartupWorker(existing);
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding
@@ -3886,11 +4067,21 @@ export function createPluginWorkerManager(
 
       log.info({ pluginId }, "stopping plugin worker");
       await trackIdleWork(handle.stop());
-      workers.delete(pluginId);
+      retainStartupWorker(handle);
+      if (workers.get(pluginId) === handle) workers.delete(pluginId);
     },
 
     getWorker(pluginId: string): PluginWorkerHandle | undefined {
       return workers.get(pluginId);
+    },
+    async retireStartup(contextId: string) {
+      await Promise.all([...startupWorkers()].map(worker => worker.retireStartup?.(contextId)));
+    },
+    recoverStartupAcquisition(contextId: string, creationOperationId: string) {
+      for (const worker of startupWorkers()) worker.recoverStartupAcquisition?.(contextId, creationOperationId);
+    },
+    async drainStartup(contextId: string) {
+      await Promise.all([...startupWorkers()].map(worker => worker.drainStartup?.(contextId)));
     },
 
     isRunning(pluginId: string): boolean {
@@ -3915,10 +4106,12 @@ export function createPluginWorkerManager(
             },
             "error stopping worker during shutdown",
           );
+        } finally {
+          retainStartupWorker(handle);
+          if (workers.get(handle.pluginId) === handle) workers.delete(handle.pluginId);
         }
       });
       await Promise.all(promises);
-      workers.clear();
     },
 
     diagnostics(): WorkerDiagnostics[] {
@@ -3931,23 +4124,35 @@ export function createPluginWorkerManager(
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
       executeLogSink?: ExecuteLogSink,
+      onWorkerSettled?: () => void,
+      startupContextId?: string,
+      observeResult?: (result: HostToWorkerMethods[M][1]) => Promise<void>,
     ): Promise<HostToWorkerMethods[M][1]> {
       const handle = workers.get(pluginId);
+      if (!startupContextId && ["environmentReleaseLease", "environmentDestroyLease"].includes(method)) {
+        const cleanup = (params as { leaseMetadata?: { runnerTaskStartupCleanup?: { contextId?: unknown; requiresPreparationStop?: unknown } } }).leaseMetadata?.runnerTaskStartupCleanup;
+        if (typeof cleanup?.requiresPreparationStop === "boolean" && typeof cleanup.contextId === "string" && cleanup.contextId.trim()) startupContextId = cleanup.contextId.trim();
+      }
       if (!handle) {
+        onWorkerSettled?.();
         return Promise.reject(
           new Error(`No worker registered for plugin "${pluginId}"`),
         );
       }
       let finishInspection: (() => void) | undefined;
       if (method === "environmentInspectLease") {
-        if (activeInspections >= 2) return Promise.reject(new Error("Provider inspection concurrency limit reached"));
+        if (activeInspections >= 2) {
+          onWorkerSettled?.();
+          return Promise.reject(new Error("Provider inspection concurrency limit reached"));
+        }
         activeInspections += 1;
         let finished = false;
         finishInspection = () => { if (!finished) { finished = true; activeInspections -= 1; } };
       }
       // A caller timeout is not worker completion. Inspection capacity is
       // released only by its actual reply, send failure, or worker exit.
-      const result = handle.call(method, params, timeoutMs, executeLogSink, finishInspection);
+      const finish = onWorkerSettled ? () => { finishInspection?.(); onWorkerSettled(); } : finishInspection;
+      const result = handle.call(method, params, timeoutMs, executeLogSink, finish, startupContextId, observeResult);
       if (method === "configChanged") void result.then(() => {
         for (const listener of configApplied) {
           try { listener(); }

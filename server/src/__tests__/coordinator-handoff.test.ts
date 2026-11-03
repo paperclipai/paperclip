@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, assets, chatTaskHandoffs, companies, companyMemberships, createDb, documentRevisions, documents, heartbeatRuns,
+import { agents, assets, chatTaskHandoffs, companies, companyMemberships, createDb, applyPendingMigrations, decisionRetention, decisionTriage, documentRevisions, documents, heartbeatRuns,
   inboxDismissals, issueAttachments, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { requestConfirmationTargetSchema, suggestedTaskDraftSchema } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -10,6 +10,7 @@ import { issueService } from "../services/issues.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { conversationDecisionReceiptsService } from "../services/conversation-decision-receipts.js";
 import { attentionService } from "../services/attention.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 describe("Coordinator task and artifact contracts", () => {
   it("keeps a proposed plan until explicit acceptance and requires immutable attachment identity", () => {
@@ -20,13 +21,15 @@ describe("Coordinator task and artifact contracts", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_COORDINATOR_HANDOFF_TEST_DATABASE_URL");
+const support = externalDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("Coordinator canonical handoffs", () => {
   let db: ReturnType<typeof createDb>;
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("coordinator-handoff-");
-    db = createDb(temporary.connectionString);
+    if (externalDatabase) await applyPendingMigrations(externalDatabase);
+    else temporary = await startEmbeddedPostgresTestDatabase("coordinator-handoff-");
+    db = createDb(externalDatabase ?? temporary!.connectionString);
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false, enableAgentChat: true });
   }, 30_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
@@ -194,12 +197,42 @@ const support = await getEmbeddedPostgresTestSupport();
       all: true, allowUnscopedAll: true,
       actor: { type: "board", userId: f.userId, source: "session", ignoreInstanceAdmin: true }, userId: f.userId,
     });
-    expect(await f.pendingQuestions()).toEqual(canonical.items.filter(item => item.subject.id === question.id));
+    const withoutRank = ({ rank: _rank, ...item }: (typeof canonical.items)[number]) => item;
+    expect((await f.pendingQuestions()).map(withoutRank)).toEqual(canonical.items.filter(item => item.subject.id === question.id).map(withoutRank));
     expect(await f.pendingQuestions()).toMatchObject([{ sourceKind: "issue_thread_interaction",
       subject: { id: question.id, status: "pending" }, relatedIssue: { id: task.id }, detail: { kind: "questions" } }]);
     await f.service.answerQuestions(task, question.id, { answers: [{ questionId: "channel", optionIds: ["blog"] }] }, { userId: f.userId });
     expect(await f.pendingQuestions()).toEqual([]);
     expect((await f.receipts()).items).toEqual(expect.arrayContaining([expect.objectContaining({ sourceId: question.id, outcome: "answered" })]));
+  });
+
+  it("does not materialize unrelated company attention when opening task questions", async () => {
+    const f = await seed();
+    const task = await f.direct();
+    const question = await f.ask(task);
+    const [unrelated] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated", status: "blocked" }).returning();
+    const unrelatedQuestion = await f.ask(unrelated);
+    expect((await f.pendingQuestions()).map(item => item.subject.id)).toEqual([question.id]);
+    const materialized = await db.select().from(decisionRetention).where(eq(decisionRetention.companyId, f.companyId));
+    expect(materialized.map(row => row.sourceId)).toEqual([question.id]);
+    expect(materialized.map(row => row.sourceId)).not.toContain(unrelatedQuestion.id);
+    const options = { actor: { type: "board" as const, source: "local_implicit" as const, userId: f.userId }, userId: f.userId };
+    expect(await attentionService(db).taskQuestions(f.companyId, [], options)).toEqual([]);
+    expect(await attentionService(db).taskQuestions(randomUUID(), [task.id], options)).toEqual([]);
+  });
+
+  it("keeps scoped questions consistent with snooze and archive policy", async () => {
+    const f = await seed();
+    const task = await f.direct();
+    const question = await f.ask(task);
+    expect(await f.pendingQuestions()).toHaveLength(1);
+    await db.insert(decisionTriage).values({ companyId: f.companyId, sourceKind: "issue_thread_interaction",
+      sourceId: question.id, snoozedUntil: new Date(Date.now() + 60_000), setByType: "user", setByUserId: f.userId });
+    expect(await f.pendingQuestions()).toEqual([]);
+    await db.delete(decisionTriage).where(eq(decisionTriage.companyId, f.companyId));
+    expect(await f.pendingQuestions()).toHaveLength(1);
+    await db.update(decisionRetention).set({ archivedAt: new Date() }).where(eq(decisionRetention.companyId, f.companyId));
+    expect(await f.pendingQuestions()).toEqual([]);
   });
 
   it("shows only questions from tasks handed off by this agent in the current conversation generation", async () => {

@@ -4,8 +4,8 @@ import { captureProductScreenshot } from "./product-screenshot.js";
 
 const origin = "https://qa.example.test";
 afterEach(() => vi.restoreAllMocks());
-function fixture(options: { mounted?: boolean; redirect?: string; afterMount?(): void } = {}) {
-  let mounted = false, url = `${origin}/QA/issues/QA-1`;
+function fixture(options: { mounted?: boolean; redirect?: string; initialPath?: string; afterMount?(): void } = {}) {
+  let mounted = false, url = `${origin}${options.initialPath ?? "/QA/issues/QA-1"}`;
   const screenshot = vi.fn(async (_input: { path: string; timeout: number }) => {});
   const waitFor = vi.fn(async (_input: { state: string; timeout: number }) => { mounted = options.mounted !== false; if (options.redirect) url = options.redirect; options.afterMount?.(); });
   const locator = vi.fn(() => ({ waitFor, isVisible: async () => mounted, screenshot }));
@@ -13,6 +13,17 @@ function fixture(options: { mounted?: boolean; redirect?: string; afterMount?():
   return { page, locator, waitFor, screenshot };
 }
 describe("product screenshot boundary", () => {
+  it.each(["/QA/inbox/unread", "/QA/routines"])("retains an authenticated journey failure on %s", async initialPath => {
+    const f = fixture({ initialPath });
+    await captureProductScreenshot(f.page, origin, "failed.png");
+    expect(f.screenshot).toHaveBeenCalledTimes(1);
+  });
+  it.each(["/login", "/QA/settings/keys", "/QA/inboxing", "/QA/routines-export"])("excludes unrelated or authentication paths: %s", async initialPath => {
+    const f = fixture({ initialPath });
+    await expect(captureProductScreenshot(f.page, origin, "failed.png")).rejects.toThrow("product_screen_unavailable");
+    expect(f.waitFor).not.toHaveBeenCalled();
+    expect(f.screenshot).not.toHaveBeenCalled();
+  });
   it("waits for Layout to mount after the document navigation completes", async () => {
     const f = fixture();
     await captureProductScreenshot(f.page, origin, "shot.png");

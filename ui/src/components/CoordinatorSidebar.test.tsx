@@ -10,12 +10,12 @@ import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } fro
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }> }));
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }> }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: [] }) }));
-vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
+vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
@@ -47,6 +47,33 @@ beforeEach(() => {
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+});
+
+describe("Coordinator task creation", () => {
+  it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
+    fixture.collapsed = collapsed;
+    await renderSidebar();
+    const listener = vi.fn();
+    document.addEventListener("keydown", listener);
+    try {
+      const button = container.querySelector<HTMLButtonElement>('.design-sidebar-brand button[aria-label="Global search"]');
+      expect(button).not.toBeNull();
+      await act(async () => button!.click());
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ key: "k", metaKey: true }));
+    } finally { document.removeEventListener("keydown", listener); }
+  });
+  it.each([false, true])("opens the task form from New task above Chat when collapsed is %s", async (collapsed) => {
+    fixture.collapsed = collapsed;
+    await renderSidebar();
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task"]');
+    const chat = container.querySelector('a[href="/chats"]');
+    expect(button).not.toBeNull();
+    expect(chat).not.toBeNull();
+    expect(button!.compareDocumentPosition(chat!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(fixture.openNewIssue).not.toHaveBeenCalled();
+    await act(async () => button!.click());
+    expect(fixture.openNewIssue).toHaveBeenCalledOnce();
+  });
 });
 
 describe("Coordinator pinned pages", () => {
@@ -135,13 +162,13 @@ describe("Coordinator Needs You badge", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); });
     await flush();
     expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
-    expect(decisionLink().textContent).toBe("Needs You");
+    expect(decisionLink().textContent).toBe("Needs you");
   });
 
   it("announces the full outstanding count when the sidebar is collapsed", async () => {
     fixture.collapsed = true;
     await renderSidebar();
-    expect(decisionLink().getAttribute("aria-label")).toBe("Needs You, 2 decisions");
+    expect(decisionLink().getAttribute("aria-label")).toBe("Needs you, 2 decisions");
   });
 });
 

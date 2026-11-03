@@ -1,45 +1,11 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
-import { apiErrorMessage, parseRetryAfter } from "./errors";
+import { ApiError, apiErrorFromResponse } from "./api-error";
+import { errorCopy } from "./errors";
+export { ApiError, apiErrorFromResponse, type ApiErrorOptions } from "./api-error";
 import { readApiJson } from "./response";
 
 const BASE = "/api";
-
-export interface ApiErrorOptions {
-  /** Raw server error code; defaults to `body.error` when that is a string. */
-  code?: string | null;
-  /** Server-requested delay from the `Retry-After` header, in milliseconds. */
-  retryAfterMs?: number | null;
-}
-
-export class ApiError extends Error {
-  status: number;
-  body: unknown;
-  /**
-   * The raw `body.error` string (for example `tenant_app_unavailable`). Match
-   * on this, never on `message`: `message` is readable copy for people and may
-   * differ from the code (see `apiErrorMessage` in `api/errors.ts`).
-   */
-  code: string | null;
-  retryAfterMs: number | null;
-
-  constructor(message: string, status: number, body: unknown, options: ApiErrorOptions = {}) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.body = body;
-    const rawError = body && typeof body === "object" ? (body as { error?: unknown }).error : undefined;
-    this.code = options.code !== undefined ? options.code : typeof rawError === "string" ? rawError : null;
-    this.retryAfterMs = options.retryAfterMs ?? null;
-  }
-}
-
-/** Build the `ApiError` for a non-OK response whose body has been read. */
-export function apiErrorFromResponse(res: Response, body: unknown): ApiError {
-  return new ApiError(apiErrorMessage(res.status, body), res.status, body, {
-    retryAfterMs: parseRetryAfter(res.headers?.get("Retry-After") ?? null),
-  });
-}
 
 // --- Dev/QA outage simulator ----------------------------------------------------
 //
@@ -133,6 +99,8 @@ export async function apiFetch(input: string, init?: RequestInit): Promise<Respo
 }
 
 export interface RequestOptions {
+  /** Per-caller GET deadline, including the response body. A retry starts a fresh fetch. */
+  timeoutMs?: number;
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
   signal?: AbortSignal;
   /** Extra request headers (e.g. the async-import opt-in). Mutations only. */
@@ -235,28 +203,42 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const releaseRef = () => {
     if (!activeEntry.refs.delete(ref)) return;
     // Last caller gone before the fetch settled → abort the shared request.
-    if (activeEntry.refs.size === 0 && inflightGets.get(path) === activeEntry) {
-      inflightGets.delete(path);
+    if (activeEntry.refs.size === 0) {
+      if (inflightGets.get(path) === activeEntry) inflightGets.delete(path);
       activeEntry.controller.abort();
     }
   };
 
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
       signal?.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
+    };
+    const onAbort = () => {
+      cleanup();
       releaseRef();
       reject(abortError());
     };
     if (signal) signal.addEventListener("abort", onAbort);
+    if (options?.timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        cleanup();
+        // Other callers keep their request, but retries must not rejoin it.
+        if (inflightGets.get(path) === activeEntry) inflightGets.delete(path);
+        releaseRef();
+        reject(new ApiError(errorCopy("TIMEOUT").body, 408, { error: "TIMEOUT" }));
+      }, options.timeoutMs);
+    }
 
     activeEntry.promise.then(
       (value) => {
-        signal?.removeEventListener("abort", onAbort);
+        cleanup();
         activeEntry.refs.delete(ref);
         resolve(value as T);
       },
       (err) => {
-        signal?.removeEventListener("abort", onAbort);
+        cleanup();
         activeEntry.refs.delete(ref);
         reject(err);
       },

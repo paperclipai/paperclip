@@ -36,6 +36,24 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("round-trips native Cursor Cloud fields and credentials without adding local command permission defaults", () => {
+    const cloud = { provider: "cursor_cloud", repoUrl: "https://github.com/acme/repo", repoRef: "feature", cloudEnvType: "cloud", autoCreatePR: true };
+    const env = { CURSOR_API_KEY: { type: "secret_ref" as const, secretId: "company-key", version: "latest" as const } };
+    const first = buildPaperclipRunnerConfig(makeValues({ model: "caller-custom-model", envBindings: env, adapterSchemaValues: cloud }));
+    expect(first).toEqual({ ...cloud, model: "caller-custom-model", env, lifecycleMode: "per_turn" });
+    const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", envBindings: env, adapterSchemaValues: first }));
+    expect(reopened).toEqual(first);
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: cloud }))).toThrow("explicit model");
+  });
+
+  it("round-trips qualified Kimi Code with its exact selected model", () => {
+    const first = buildPaperclipRunnerConfig(makeValues({ model: "explicit-kimi-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "kimi" } }));
+    const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: JSON.parse(JSON.stringify(first)) }));
+    expect(reopened).toMatchObject({ provider: "acpx", acpxAgent: "kimi", model: "explicit-kimi-model" });
+    expect(first).not.toHaveProperty("candidateHarnesses");
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: { provider: "acpx", acpxAgent: "kimi" } })))
+      .toThrow("kimi requires an explicit provider model");
+  });
   it("refuses pending Antigravity selection before saving Runner config", () => {
     expect(() => buildPaperclipRunnerConfig(makeValues({ model: "exact-antigravity-model",
       adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } })))

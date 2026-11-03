@@ -208,7 +208,7 @@ test.describe.serial("native chat adapter UI", () => {
     await page.route("https://slack.test/manager-consent", route => route.fulfill({ contentType: "text/html", body: "Slack authorization fixture" }));
     await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
     await expect(page.getByRole("alert")).toBeVisible();
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await page.getByRole("button", { name: "Reconnect Slack workspace", exact: true }).click();
     await expect.poll(() => authorizationRequests).toBe(1);
     await expect(page).toHaveURL("https://slack.test/manager-consent");
   });
@@ -476,9 +476,9 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByRole("link", { name: "Connect a channel" }),
       ).toBeVisible();
-      await expect(
-        page.getByRole("navigation", { name: "Maya navigation" }).getByRole("link", { name: "Channels", exact: true }),
-      ).toBeVisible();
+      const agentNavigation = page.getByRole("navigation", { name: "Maya navigation" });
+      await expect(agentNavigation.getByRole("link", { name: "Identity", exact: true })).toBeVisible();
+      await expect(agentNavigation.getByRole("link", { name: "Channels", exact: true })).toHaveCount(0);
       await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
       if (!enabled) {
         await expect(page.getByText("Connect AgentMail from Connectors.", { exact: true })).toBeVisible();

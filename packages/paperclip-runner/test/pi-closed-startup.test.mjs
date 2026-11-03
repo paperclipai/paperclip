@@ -19,7 +19,7 @@ if (process.argv[2] === "--pi-no-key-probe") {
     environment: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" },
     onEvidence: value => evidence.push(value),
   });
-  let error = null; let closeError = null; let settledMs;
+  let error = null; let commandFailure = null; let closeError = null; let settledMs;
   try {
     await bundle.transport.request("initialize", { clientInfo: { name: "pi-closed-startup-regression", version: "1" } });
     await bundle.transport.request("thread/start", {
@@ -27,12 +27,12 @@ if (process.argv[2] === "--pi-no-key-probe") {
       baseInstructions: "Credential-free admission probe. No prompt is submitted.",
       permissions: "paperclip-runner-workspace-read-only", dynamicTools: [],
     });
-  } catch (failure) { error = String(failure); }
+  } catch (failure) { error = String(failure); commandFailure = failure.runnerCommandResult; }
   finally {
     settledMs = Math.round(performance.now() - started);
     try { await bundle.transport.close(); } catch (failure) { closeError = String(failure); }
   }
-  await writeFile(join(root, "report.json"), JSON.stringify({ error, closeError, settledMs, durationMs: Math.round(performance.now() - started), evidence }), { mode: 0o600 });
+  await writeFile(join(root, "report.json"), JSON.stringify({ error, commandFailure, closeError, settledMs, durationMs: Math.round(performance.now() - started), evidence }), { mode: 0o600 });
 } else {
   const packageRoot = process.env.PAPERCLIP_TEST_PI_STARTUP_PACKAGE_ROOT;
   const daemon = process.env.PAPERCLIP_TEST_PI_STARTUP_RUNNER_BINARY;
@@ -55,7 +55,11 @@ if (process.argv[2] === "--pi-no-key-probe") {
       const report = JSON.parse(await readFile(join(root, "report.json"), "utf8"));
       assert.equal(report.closeError, null, report.closeError);
       assert.match(report.error, /session\.open failed/);
-      assert.match(report.error, /retryable=false, classification=session_ensure_failed/);
+      assert.match(report.commandFailure?.result?.message ?? "", /retryable=false, classification=provider_authentication/);
+      assert.equal(report.commandFailure?.result?.providerFailure?.schema, "paperclip.provider-failure.v1");
+      assert.equal(report.commandFailure.result.providerFailure.provider, "pi");
+      assert.equal(report.commandFailure.result.providerFailure.phase, "startup");
+      assert.equal(report.commandFailure.result.providerFailure.category, "authentication");
       assert.doesNotMatch(report.error, /timed out/);
       assert.ok(report.settledMs < 60_000, `session.open took ${report.settledMs} ms`);
       assert.ok(report.evidence.some(item => item.runnerExited === true && item.runnerExitCode === 0));

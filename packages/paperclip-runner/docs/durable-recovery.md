@@ -80,7 +80,7 @@ Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
 | --- | --- | --- |
 | `installed-command` | Claude, Codex | the upstream package's launch command, hashed at installation |
 | `launcher` | Grok | the SHA-256 of the launcher shipped verbatim |
-| `closure` | Copilot, Pi | upstream versions and the complete platform closure pins |
+| `closure` | Copilot, Pi, Kimi | upstream versions and the complete platform closure pins |
 | `declaration` | Cursor, Antigravity | a checked-in release declaration, as canonical JSON |
 
 `generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
@@ -126,6 +126,12 @@ a chosen fingerprint. It is not authenticated with a secret or signature.
 An administrator-owned read-only Runner can therefore use a user-writable cache,
 but this provides weaker protection against that same user than hashing every
 executable on each admission. Removing the cache restores full hashing.
+
+Kimi retains released revision 17, which separates ordinary admission from
+pending revision 16. Its upstream-only release attestation replaces the earlier
+source-bound digest without another revision bump. Historical candidate and
+released records remain unchanged and readable; exact current digest admission
+refuses their old launch identities.
 
 ## External controller checkpoints
 

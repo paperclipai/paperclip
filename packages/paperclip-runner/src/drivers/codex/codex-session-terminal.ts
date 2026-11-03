@@ -1,4 +1,6 @@
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
+import { readProviderFailure } from "../../contracts/provider-failure.generated.js";
+import { codexProviderFailure } from "./provider-failure.js";
 import { isNativeRestartInterruption } from "../../contracts/native-session-backend.js";
 import type { PrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload, isRetainableCodexPayload } from "./codex-boundaries.js";
@@ -163,14 +165,14 @@ export function mapTerminalTurn(
     state.cancelPendingRequests("turn_terminal");
     state.activeTurnId = null;
     state.turnStarted = false;
-    state.emit(
-      eventType,
-      boundedPayload({
-        status,
-        error: turn.error ?? null,
-      }),
-      { turnId },
-    );
+    const providerFailure = status === "failed" ? readProviderFailure(record(turn.error).providerFailure)
+      ?? (state.driverKind === "codex_app_server" ? codexProviderFailure(turn.error, "turn", state.diagnosticEnvironment) : null) : null;
+    const payload = boundedPayload({ status, error: turn.error ?? null });
+    if (providerFailure) {
+      payload.status = status;
+      payload.error = { ...record(payload.error), providerFailure };
+    }
+    state.emit(eventType, payload, { turnId });
     finalize(state, status);
     if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
         !state.dispositionOnlyRecoveryConsumed) {

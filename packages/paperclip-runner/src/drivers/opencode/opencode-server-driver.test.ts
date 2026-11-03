@@ -153,6 +153,22 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
+    roots.push(root);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command: fixture, runtimeDirectory: root, durableToolRequests,
+    });
+    const session = await driver.openSession({ runId: "budget", normalizedSessionId: "budget", workingDirectory: root });
+    try {
+      const config = JSON.parse(await readFile(join(root, "budget", "config", "opencode", "opencode.json"), "utf8"));
+      expect(config.mcp.paperclip.timeout).toBe(durableToolRequests ? 60 * 60 * 1_000 : 30_000);
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
+
   it("exports company traces across warm runs without giving the ingestion key to the provider", async () => {
     await chmod(fixture, 0o755);
     const bodies: Array<Record<string, any>> = [];
@@ -1799,7 +1815,7 @@ describe("OpenCodeServerDriver", () => {
     await recovered!.session!.close({ reason: "recovery-test" });
   });
 
-  it("normalizes native question.asked events and replies with ordered OpenCode answer arrays", async () => {
+  it("preserves omitted native custom defaults and replies with ordered OpenCode answer arrays", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-question-"));
     const workspace = await mkdtemp(
@@ -2324,6 +2340,7 @@ describe("OpenCodeServerDriver", () => {
     const continuation = { kind, summary: "Wait for the saved task path.", idempotencyKey: "task-wait:saved" };
     const reads: string[] = [];
     const accepted: unknown[] = [];
+    const diagnostics: string[] = [];
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
       environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
@@ -2333,11 +2350,13 @@ describe("OpenCodeServerDriver", () => {
           completionContinuation: eligible ? continuation : null };
       },
       completionFeedback: async result => { accepted.push(result); return "Accepted monitor wait."; },
+      onDiagnostic: message => diagnostics.push(message),
     });
     const session = await driver.openSession({ runId: "monitor-default", normalizedSessionId: "monitor-default", workingDirectory: workspace });
     try {
       await session.startTurn({ message: { role: "user", text: "monitor-default" } });
       const events = await collectTurnEvents(session.events());
+      expect(diagnostics).toContainEqual(expect.stringContaining('"schema":"paperclip.opencode.finish-input-diagnostic/v1","stage":"offered"'));
       expect(reads).toEqual(["get_task_context"]);
       if (eligible) {
         expect(accepted).toMatchObject([{ reportedWorkDisposition: "yielded", continuation }]);
@@ -2750,6 +2769,10 @@ describe("OpenCodeServerDriver", () => {
         id: "prt_oversized", messageID: "msg_oversized", sessionID, type: "tool", callID: "call_oversized", tool: "bash",
         state: { status: "completed", input: { command: "pnpm test" }, output, title: "pnpm test", metadata: { exit: 1, output }, time: { start: 1, end: 2 } },
       } } });
+      send({ type: "message.part.updated", properties: { part: {
+        id: "prt_final", messageID: "msg_oversized", sessionID, type: "text",
+        text: "The suite completed: one test failed; 812 passed.", time: { start: 3, end: 4 },
+      } } });
       send({ type: "session.idle", properties: { sessionID } });
       const observed = await events;
       expect(observed.at(-1)?.eventType).toBe("turn.completed");
@@ -2767,6 +2790,37 @@ describe("OpenCodeServerDriver", () => {
     } finally {
       await session.close({ reason: "test complete" });
     }
+  });
+
+  it("keeps the provider explanation when an API error response body exceeds the payload limit", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-large-error-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-large-error-workspace-"));
+    roots.push(root, workspace);
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    let streamOpened!: () => void;
+    const opened = new Promise<void>(resolve => { streamOpened = resolve; });
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+      fetch: async (input, init) => String(input).endsWith("/event")
+        ? new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; streamOpened(); } }), { headers: { "Content-Type": "text/event-stream" } })
+        : fetch(input, init),
+    });
+    const session = await driver.openSession({ runId: "large-error", normalizedSessionId: "large-error", workingDirectory: workspace });
+    try {
+      const events = collectTurnEvents(session.events());
+      await session.startTurn({ message: { role: "user", text: "diagnostic check" } });
+      await opened;
+      stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "session.error", properties: {
+        sessionID: session.ids().providerSessionId, error: { name: "APIError", data: { message: "Provider is busy.", statusCode: 503,
+          responseBody: "private-body".repeat(7000) } },
+      } })}\n\n`));
+      const observed = await events;
+      const failure = observed.find(event => event.eventType === "turn.failed");
+      expect(failure?.payload.error).toMatchObject({ providerFailure: { provider: "openrouter", category: "overloaded", message: "Provider is busy." } });
+      expect(JSON.stringify(failure)).not.toContain("private-body");
+    } finally { await session.close({ reason: "test complete" }); }
   });
 
   it("fails the running turn with the exit cause when OpenCode stops mid-turn", async () => {

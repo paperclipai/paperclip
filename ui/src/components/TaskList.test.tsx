@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createIssue } from "../../storybook/fixtures/paperclipData";
 import { TaskList, type TaskListItem } from "./TaskList";
 import { TooltipProvider } from "./ui/tooltip";
+import { readTaskListSortParams } from "../lib/task-list";
 
 vi.mock("./IssueRow", () => ({ IssueRow: ({ issue, leadingControl }: { issue: { id: string; title: string }; leadingControl?: ReactNode }) =>
   <div data-issue-row-details={issue.id}>{leadingControl}<button>{issue.title}</button></div> }));
@@ -24,6 +25,45 @@ describe("TaskList progressive rendering", () => {
   async function more() {
     await act(async () => Array.from(host.querySelectorAll("button")).find(b => b.textContent === "Show more tasks")!.click());
   }
+  it.each([false, true])("defaults to newest updates while keeping children after their parent (controlled=%s)", async controlled => {
+    const items = [
+      { issue: createIssue({ id: "child-older", parentId: "parent", updatedAt: new Date(4000) }) },
+      { issue: createIssue({ id: "parent", parentId: null, updatedAt: new Date(1000) }) },
+      { issue: createIssue({ id: "newest-root", parentId: null, updatedAt: new Date(3000) }) },
+      { issue: createIssue({ id: "child-newest", parentId: "parent", updatedAt: new Date(5000) }) },
+    ];
+    await act(async () => root.render(<TooltipProvider><TaskList items={items} onSortChange={controlled ? vi.fn() : undefined} /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-issue-row-details"))).toEqual(["newest-root", "parent", "child-newest", "child-older"]);
+    expect(host.querySelector('[role="columnheader"][aria-sort="descending"]')?.textContent).toContain("Last updated");
+  });
+  it("honors a creation-time URL sort and reports column sorting", async () => {
+    const items = [
+      { issue: createIssue({ id: "older", title: "Older", identifier: "PAP-1", createdAt: new Date(0) }) },
+      { issue: createIssue({ id: "newer", title: "Newer", identifier: "PAP-2", createdAt: new Date(1000) }) },
+    ];
+    const onSortChange = vi.fn();
+    await act(async () => root.render(<TooltipProvider><TaskList items={items}
+      sort={{ column: "created", direction: "descending" }} onSortChange={onSortChange} /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-issue-row-details"))).toEqual(["newer", "older"]);
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Task ID: sort ascending"]')!.click());
+    expect(onSortChange).toHaveBeenLastCalledWith({ column: "taskId", direction: "ascending" });
+    await act(async () => root.render(<TooltipProvider><TaskList items={items}
+      sort={{ column: "taskId", direction: "ascending" }} onSortChange={onSortChange} /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-issue-row-details"))).toEqual(["older", "newer"]);
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Task ID: sort descending"]')!.click());
+    expect(onSortChange).toHaveBeenLastCalledWith({ column: "taskId", direction: "descending" });
+  });
+
+  it.each(["status", "workflow"])("honors a Classic %s sort link", async field => {
+    const items = [
+      { issue: createIssue({ id: "later", identifier: "PAP-1", status: "done", createdAt: new Date("2026-02-01") }) },
+      { issue: createIssue({ id: "earlier", identifier: "PAP-2", status: "in_progress", createdAt: new Date("2026-01-01") }) },
+    ];
+    await act(async () => root.render(<TooltipProvider><TaskList items={items}
+      sort={readTaskListSortParams(new URLSearchParams(`sortField=${field}&sortDir=asc`))} /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-issue-row-details"))).toEqual(["earlier", "later"]);
+  });
+
   it("bounds the first render, reveals batches, and retains mounted rows through enrichment and append", async () => {
     const items = tasks(400);
     await render(items);
@@ -40,12 +80,12 @@ describe("TaskList progressive rendering", () => {
     expect(rows()).toHaveLength(450);
     expect(host.textContent).not.toContain("Show more tasks");
   });
-  it("retains revealed rows when an older server page sorts before them", async () => {
+  it("retains revealed rows when another server page sorts before them", async () => {
     const items = tasks(200).map((item, i) => ({ issue: { ...item.issue, identifier: `PAP-${i + 21}` } }));
     await render(items, "company:person:paged");
     await more();
     const originalRows = [...rows()];
-    const older = tasks(20).map((item, i) => ({ issue: { ...item.issue, id: `older-${i}`, identifier: `PAP-${i + 1}` } }));
+    const older = tasks(20).map((item, i) => ({ issue: { ...item.issue, id: `older-${i}`, identifier: `PAP-${i + 1}`, updatedAt: new Date(200_000 - i) } }));
     await render([...items, ...older], "company:person:paged");
     expect(rows()).toHaveLength(220);
     expect(originalRows.every(row => row.isConnected)).toBe(true);

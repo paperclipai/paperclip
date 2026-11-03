@@ -138,7 +138,12 @@ impl NativeProviderCommandExecutor {
                 .config
                 .acpx_launch_profile
                 .as_ref()
-                .is_some_and(|profile| profile.candidate_admission.is_some())
+                .is_some_and(|profile| {
+                    profile
+                        .candidate_admission
+                        .as_ref()
+                        .is_some_and(|admission| admission.agent == "antigravity")
+                })
             && [
                 CODEX_PROVIDER_STATE_FILE,
                 ACPX_PROVIDER_STATE_FILE,
@@ -252,7 +257,7 @@ impl NativeProviderCommandExecutor {
                 &self.config,
                 ExternalProviderCodec::Grok,
             )),
-            "codex" | "opencode" => SelectedExecutor::LocalFacade(
+            "codex" | "opencode" | "cursor_cloud" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
             "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_runner_config(

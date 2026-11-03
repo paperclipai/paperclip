@@ -757,16 +757,18 @@ export function IssueProperties({
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
   const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
+  const catalogAcpxAgent = catalogProvider === "acpx" ? String(assigneePrimaryAdapterConfig.acpxAgent ?? "claude") : undefined;
   const catalogEnvironmentId = nativeCatalog ? assignee?.defaultEnvironmentId ?? null : null;
   const nativeCatalogScope = JSON.stringify(nativeCatalog ?? null);
   const requestNativeModels = Boolean(nativeCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);
   const { data: assigneeAdapterModels, refetch: refreshAssigneeModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), nativeCatalog ?? null]
+        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), catalogAcpxAgent ?? null, nativeCatalog ?? null]
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, {
       provider: catalogProvider,
+      ...(catalogAcpxAgent ? { acpxAgent: catalogAcpxAgent } : {}),
       ...(nativeCatalog ? { environmentId: catalogEnvironmentId, ...nativeCatalog } : {}),
     }),
     ...(nativeCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
@@ -2185,7 +2187,7 @@ export function IssueProperties({
               setParentOpen(false);
             }}
           >
-            <StatusIcon status={candidate.status} className="h-3 w-3" />
+            <StatusIcon status={candidate.status} displayStatus={candidate.displayStatus} className="h-3 w-3" />
             <span className="truncate">
               {candidate.identifier ? `${candidate.identifier} ` : ""}
               {candidate.title}
@@ -2272,7 +2274,7 @@ export function IssueProperties({
               )}
               onClick={() => toggleBlockedBy(candidate.id)}
             >
-              <StatusIcon status={candidate.status} className="h-3 w-3" />
+              <StatusIcon status={candidate.status} displayStatus={candidate.displayStatus} className="h-3 w-3" />
               <span className="truncate">
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
@@ -2310,7 +2312,7 @@ export function IssueProperties({
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50"
             onClick={() => setSubtasksOpen(false)}
           >
-            <StatusIcon status={child.status} className="h-3 w-3" />
+            <StatusIcon status={child.status} displayStatus={child.displayStatus} className="h-3 w-3" />
             <span className="min-w-0 truncate">
               {child.identifier ? `${child.identifier} ` : ""}
               {child.title}
@@ -2347,7 +2349,7 @@ export function IssueProperties({
       >
         <PropertyRow label="Status">
           <StatusIcon
-            status={issue.status}
+            status={issue.status} displayStatus={issue.displayStatus}
             externalConversationState={issue.externalConversationState}
             glyphContainerClassName="inline-flex size-6 shrink-0 items-center justify-center"
             blockerAttention={issue.blockerAttention}

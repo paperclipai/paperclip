@@ -988,6 +988,44 @@ describe("New agent setup", () => {
     expect(JSON.stringify(config)).not.toContain("cursor-test-key");
     expect(secrets.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ value: "cursor-test-key" }));
   });
+  it("configures native Cursor Cloud with an exact model and a saved cloud key through ordinary setup", async () => {
+    await render("paperclip_runner", "cursor_cloud");
+    expect(container.querySelector('[aria-label="Model"]')).toBeTruthy();
+    await fill("GitHub repository", "https://github.com/acme/repo");
+    await fill("Branch", "feature");
+    await fill("CURSOR_API_KEY", "native-cursor-test-key");
+    await fill("Model", "caller-custom-model");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      adapterConfig: expect.objectContaining({ provider: "cursor_cloud", model: "caller-custom-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature" }),
+      testCredentials: { CURSOR_API_KEY: "native-cursor-test-key" },
+    }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "paperclip_runner",
+      adapterConfig: expect.objectContaining({ provider: "cursor_cloud", model: "caller-custom-model", env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "org-secret-1", version: "latest" } } }),
+    }));
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("native-cursor-test-key");
+  });
+  it("preserves the ordinary Cursor Cloud Advanced Runner choice through test and finish", async () => {
+    adapterApi.list.mockImplementation(async () => state.adapters.map((adapter: any) => adapter.type === "cursor_cloud"
+      ? { ...adapter, supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" } : adapter));
+    await render("cursor_cloud");
+    await act(async () => [...container.querySelectorAll("summary")].find(item => item.textContent === "Advanced")!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
+    await act(async () => document.querySelector<HTMLButtonElement>('[role="option"][data-value="paperclip"]')!.click());
+    await settle();
+    await fill("GitHub repository", "https://github.com/acme/repo");
+    await fill("Branch", "feature");
+    await fill("CURSOR_API_KEY", "ordinary-cursor-test-key");
+    await fill("Model", "caller-custom-model");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "cursor_cloud", expect.objectContaining({
+      runner: "paperclip", adapterConfig: expect.objectContaining({ model: "caller-custom-model" }),
+    }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "cursor_cloud", runner: "paperclip" }));
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("ordinary-cursor-test-key");
+  });
   it("requires a new Cursor Cloud key even when organization and personal keys exist", async () => {
     secrets.list.mockResolvedValue([{ id: "existing", key: "CURSOR_API_KEY", name: "Cursor", status: "active" }]);
     secrets.listMyUserSecrets.mockResolvedValue([{ definition: { key: "CURSOR_API_KEY" }, secret: { id: "personal-key" } }]);
@@ -1014,6 +1052,80 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].adapterConfig.env[key]).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
     expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
   });
+  it("offers native Kimi separately from the existing legacy Kimi under a qualified release fixture", async () => {
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
+    profile.qualified = true;
+    try {
+      const setupId = "00000000-0000-4000-8000-000000000094";
+      state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", setupAgentId: setupId });
+      api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+      await renderCurrentParams();
+      await settle();
+      expect(document.querySelector('input[name="new-agent-adapter"][value="kimi_local"]')).not.toBeNull();
+      const native = document.querySelector<HTMLInputElement>('input[name="new-agent-adapter"][value="kimi_runtime"]');
+      expect(native).not.toBeNull();
+      await act(async () => native!.click());
+      await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
+      await settle();
+      expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } }), "company-1");
+      expect(state.navigate).toHaveBeenLastCalledWith(expect.stringContaining("runnerProvider=kimi"), { replace: true });
+    } finally { profile.qualified = previousQualified; }
+  });
+
+  it("keeps an unqualified native Kimi declaration behind qualification", async () => {
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
+    try {
+      profile.qualified = false;
+      await render("paperclip_runner", "kimi");
+      await fill("KIMI_API_KEY", "kimi-test-key");
+      await fill("Model", "explicit-kimi-model");
+      await click("Finish setup");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      expect(api.hire).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Kimi Code is not enabled for production");
+    } finally { profile.qualified = previousQualified; }
+  });
+
+  it("saves and reopens native Kimi with its exact model and one organization secret under a qualified release fixture", async () => {
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
+    profile.qualified = true;
+    try {
+      await render("paperclip_runner", "kimi");
+      expect(container.querySelector('[aria-label="Kimi API model name"]')).toBeNull();
+      await click("Run test");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Enter the exact Kimi model ID");
+      await fill("Model", "explicit-unlisted-kimi-model");
+      await fill("KIMI_API_KEY", "kimi-test-key");
+      await click("Run test");
+      expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+        adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model" }),
+        testCredentials: { KIMI_API_KEY: "kimi-test-key" },
+      }));
+      await click("Save & exit");
+      const setupId = api.create.mock.calls[0][1].setupId;
+      expect(api.update.mock.calls.at(-1)![1].adapterConfig).toMatchObject({
+        provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model",
+        env: { KIMI_API_KEY: { type: "secret_ref", secretId: "org-secret-1" } },
+      });
+      await act(async () => root.render(null));
+      cache.clear();
+      state.params = new URLSearchParams({ name: "Atlas", adapterType: "paperclip_runner", runnerProvider: "kimi", setupAgentId: setupId });
+      await renderCurrentParams();
+      await settle();
+      expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("explicit-unlisted-kimi-model");
+      expect(container.querySelector('[aria-label="KIMI_API_KEY"]')?.getAttribute("placeholder")).toBe("Using saved key");
+      await click("Finish setup");
+      expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model" }),
+      }));
+      expect(secrets.create).toHaveBeenCalledTimes(1);
+    } finally { profile.qualified = previousQualified; }
+  });
+
   it("defines a Kimi API model without overriding it with a CLI model alias", async () => {
     await render("kimi_local");
     await fill("KIMI_MODEL_API_KEY", "kimi-test-key");

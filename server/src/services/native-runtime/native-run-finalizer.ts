@@ -3,7 +3,7 @@ import { notifyExternalAgentSettlement } from "../../modules/external-agents/ind
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
 import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
-import { projectCommittedRun, recoveredExecutionFailureMetadata } from "./native-run-projection.js";
+import { projectCommittedRun, recoveredExecutionFailureMetadata, settleNativeTerminalWake } from "./native-run-projection.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -29,7 +29,7 @@ import { readPersistedNativeFailureEvidence } from "./native-provider-failure-ev
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
-import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
+import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
@@ -401,7 +401,7 @@ async function recordRetryableFailure(input: {
     if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     }
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
       .update(nativeRunFinalizations)
@@ -442,29 +442,29 @@ async function recordRetryableFailure(input: {
         executionStatusDeliveryId: randomUUID(),
         ...(projectsTerminalStatus
           ? {
-              status:
-                input.failureScope === "workspace"
-                  ? "failed"
-                  : exhaustedRunStatus,
-              finishedAt: input.run.finishedAt ?? now,
+              // Stop can win after the failure's admission snapshot. The
+              // UPDATE locks and evaluates the current row, not that snapshot.
+              status: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.status}
+                else ${input.failureScope === "workspace" ? "failed" : exhaustedRunStatus} end`,
+              finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
+                else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
             }
           : {}),
         nativePhase: phase,
         nativePhaseUpdatedAt: now,
-        resultJson: {
-          ...record(input.run.resultJson),
+        // Preserve concurrent cancellation and accounting receipts while
+        // recording the finalizer's own failure history.
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
           finalizationPhase: phase,
           failureCode,
           originalFailureCode: input.failureCode,
-          nextAttemptAt:
-            supersededByNewerRun || exhausted
-              ? null
-              : nextAttemptAt.toISOString(),
-        },
+          nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
+        })}::jsonb`,
         updatedAt: now,
       })
       .where(eq(heartbeatRuns.id, input.run.id))
       .returning();
+    if (projectsTerminalStatus && updatedRun) await settleNativeTerminalWake(tx as unknown as Db, updatedRun);
     if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
     if (supersededByNewerRun) {
       await issueRecoveryActionService(
@@ -747,6 +747,7 @@ async function recoverCommittedNativeChatResponseInScope(
 ): Promise<boolean> {
   let agentId: string | null = null;
   let materialized = false;
+  let conversationReply = false;
   const entered = beginRunPhase("response.transaction.entry");
   try {
     materialized = await measureRunPhase("response.transaction", () => db.transaction(async (transaction) => {
@@ -789,6 +790,7 @@ async function recoverCommittedNativeChatResponseInScope(
           id: heartbeatRuns.id,
           companyId: heartbeatRuns.companyId,
           agentId: heartbeatRuns.agentId,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
           nativeIssueId: heartbeatRuns.nativeIssueId,
           nativeSessionId: heartbeatRuns.nativeSessionId,
           completionContractId: heartbeatRuns.completionContractId,
@@ -803,6 +805,8 @@ async function recoverCommittedNativeChatResponseInScope(
           contextSnapshot: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.contextSnapshot} is null then null
             else jsonb_build_object(
               'skipIssueComment', ${heartbeatRuns.contextSnapshot}->'skipIssueComment',
+              'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+              'conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration',
               'source', ${heartbeatRuns.contextSnapshot}->'source',
               'externalChatContinuation', ${heartbeatRuns.contextSnapshot}->'externalChatContinuation',
               'paperclipWake', jsonb_build_object('externalInteractionContinuation',
@@ -909,19 +913,25 @@ async function recoverCommittedNativeChatResponseInScope(
         agentId = run.agentId;
         return true;
       }
-      // Copyback can be owned by reconciliation before the live heartbeat
-      // reaches its presentation step. Recover a completed internal task's
-      // exact final reply from the same accepted turn, without rerunning work
-      // or granting external-chat publication authority.
+      const conversation = isConversation(issue);
+      const currentConversation = conversation && decision.reasonCode === "conversation_turn_finished"
+        && issue.conversationAgentId === run.agentId && issue.conversationUserId === run.responsibleUserId
+        && issue.status === "in_progress" && issue.conversationState === "active"
+        && (!issue.executionRunId || issue.executionRunId === run.id)
+        && run.contextSnapshot?.issueId === issue.id
+        && typeof run.contextSnapshot.conversationSessionGeneration === "number"
+        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
+      // A deferred ordinary-task review still needs its recorded final reply.
+      // Publishing that reply must not resolve the interaction or the task.
       if (
-        !isConversation(issue) &&
+        (!conversation || currentConversation) &&
         run.status === "succeeded" &&
         record(run.contextSnapshot).skipIssueComment !== true &&
         !isExternalChatPresentationContext(run.contextSnapshot) &&
-        result.reportedWorkDisposition === "done" &&
         terminal.runTerminalState === "succeeded" &&
         terminal.turnTerminalState === "completed" &&
-        terminal.reportedWorkDisposition === "done" &&
+        ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
+          (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
@@ -929,6 +939,9 @@ async function recoverCommittedNativeChatResponseInScope(
             eq(heartbeatRunEvents.companyId, input.companyId),
             eq(heartbeatRunEvents.runId, run.id),
             eq(heartbeatRunEvents.eventType, "item.completed"),
+            conversation ? and(eq(heartbeatRunEvents.agentId, run.agentId),
+              sql`${heartbeatRunEvents.payload}->'prpEvent'->>'runId' = ${run.id}`,
+              sql`${heartbeatRunEvents.payload}->'prpEvent'->>'normalizedSessionId' = ${run.nativeSessionId}`) : undefined,
             sql`${heartbeatRunEvents.payload}->'prpEvent'->>'turnId' = ${accepted.turnId}`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
@@ -963,6 +976,7 @@ async function recoverCommittedNativeChatResponseInScope(
           })}::jsonb`, updatedAt: new Date(),
         }).where(eq(heartbeatRuns.id, run.id));
         agentId = run.agentId;
+        conversationReply = conversation;
         return true;
       }
       if (
@@ -1039,12 +1053,14 @@ async function recoverCommittedNativeChatResponseInScope(
   } finally {
     entered();
   }
-  if (materialized && agentId)
+  if (materialized && agentId) {
+    if (conversationReply) await settleConversationTurnForRun(db, input.companyId, input.runId);
     publishChatPublicationCommitSignal({
       ...input,
       agentId,
       eventType: "run.presentation.resolved",
     });
+  }
   return materialized;
 }
 
@@ -1375,7 +1391,7 @@ export async function finalizeNativeRun(input: {
         (!planWait || nativeSha256(planWait.result) !== nativeSha256(result))) {
       throw new Error("native_plan_wait_authority_lost");
     }
-    const { providerFailure, turnFailure } = await readPersistedNativeFailureEvidence(
+    const { providerFailure, turnFailure, providerExplanation } = await readPersistedNativeFailureEvidence(
       input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState,
     );
     const ownsProviderFailureDecision =
@@ -1566,6 +1582,7 @@ export async function finalizeNativeRun(input: {
       );
       const clearExecutionFailure = input.projectRunStatus && finalizationPhase === "committed" && terminalState === "succeeded";
       const finalizationMetadata = {
+        ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
         ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
         ...(turnFailure ? { nativeTurnFailure: turnFailure } : {}),
         finalizationPhase,
@@ -1602,20 +1619,29 @@ export async function finalizeNativeRun(input: {
       };
       const projectedStatus = terminalState === "succeeded" ? "succeeded" as const
         : terminalState === "cancelled" ? "cancelled" as const : "failed" as const;
+      // Workspace persistence may finish after Stop has already cancelled the
+      // run. Preserve that terminal outcome while retaining the accepted result
+      // and finalization receipts. Evaluate against the locked current row,
+      // including a cancellation that won after this finalizer read the run.
+      const projectedRunStatus = sql`case when ${heartbeatRuns.status} = 'cancelled'
+        then ${heartbeatRuns.status} else ${projectedStatus} end`;
       const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
         || ${JSON.stringify(finalizationMetadata)}::jsonb
-        || ${clearExecutionFailure ? recoveredExecutionFailureMetadata() : sql`'{}'::jsonb`}`;
-      const projectedError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
-        : clearExecutionFailure ? sql`null` : heartbeatRuns.error;
-      const projectedErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
-        : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode;
+        || ${clearExecutionFailure ? sql`case when ${heartbeatRuns.status} = 'cancelled' then '{}'::jsonb
+          else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
+      const projectedError = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
+        else ${providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+          : clearExecutionFailure ? sql`null` : heartbeatRuns.error} end`;
+      const projectedErrorCode = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
+        else ${providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
+          : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode} end`;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
         sql`${heartbeatRuns.resultJson} is distinct from ${projectedResult}`,
         sql`${heartbeatRuns.error} is distinct from ${projectedError}`,
         sql`${heartbeatRuns.errorCode} is distinct from ${projectedErrorCode}`,
         ...(input.projectRunStatus ? [
-          sql`${heartbeatRuns.status} is distinct from ${projectedStatus}`,
+          sql`${heartbeatRuns.status} is distinct from ${projectedRunStatus}`,
           isNull(heartbeatRuns.finishedAt),
         ] : []),
       );
@@ -1626,15 +1652,14 @@ export async function finalizeNativeRun(input: {
             then ${randomUUID()}::uuid else ${heartbeatRuns.executionStatusDeliveryId} end`,
           ...(input.projectRunStatus
             ? {
-                status: projectedStatus,
-                finishedAt: sql`case when ${heartbeatRuns.status} is distinct from ${projectedStatus}
-                  then ${now.toISOString()}::timestamptz else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
+                status: projectedRunStatus,
+                finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
+                  when ${heartbeatRuns.status} is distinct from ${projectedStatus} then ${now.toISOString()}::timestamptz else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
               }
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure ? { error: null, errorCode: null } : {}),
-          ...(providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(clearExecutionFailure || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })
@@ -1659,9 +1684,10 @@ export async function finalizeNativeRun(input: {
         if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyUnsafeWorkspaceExportRunChange(tx, run);
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         const [after] = await projectRun(tx);
+        if (after && input.projectRunStatus) await settleNativeTerminalWake(tx, after);
         return after ? { before, after } : null;
       });
       const updatedRun = projection?.after;

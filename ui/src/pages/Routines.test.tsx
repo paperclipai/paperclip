@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { AnchorHTMLAttributes, ReactNode } from "react";
+import type { AnchorHTMLAttributes, ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -27,6 +27,7 @@ const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
   <div data-testid="issues-list">{issues.map((issue) => issue.title).join(", ")}</div>
 ));
 const inlineEntitySelectorRenderMock = vi.fn((props: { options?: Array<{ id: string }> }) => props);
+const pickerMode = vi.hoisted(() => ({ real: false }));
 
 vi.mock("@/lib/router", () => ({
   Navigate: ({ to }: { to: string }) => <a data-redirect href={to}>Redirect</a>,
@@ -261,12 +262,14 @@ vi.mock("../components/MarkdownEditor", () => ({
   },
 }));
 
-vi.mock("../components/InlineEntitySelector", () => ({
-  InlineEntitySelector: (props: { options?: Array<{ id: string }> }) => {
+vi.mock("../components/InlineEntitySelector", async importOriginal => {
+  const actual = await importOriginal<typeof import("../components/InlineEntitySelector")>();
+  const { forwardRef } = await import("react");
+  return { InlineEntitySelector: forwardRef<HTMLButtonElement, ComponentProps<typeof actual.InlineEntitySelector>>((props, ref) => {
     inlineEntitySelectorRenderMock(props);
-    return <button type="button">selector</button>;
-  },
-}));
+    return pickerMode.real ? <actual.InlineEntitySelector {...props} ref={ref} /> : <button type="button">selector</button>;
+  }) };
+});
 
 vi.mock("../components/RoutineRunVariablesDialog", () => ({
   RoutineRunVariablesDialog: () => null,
@@ -381,6 +384,7 @@ describe("Routines page", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    pickerMode.real = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     currentSearch = "";
@@ -970,6 +974,26 @@ describe("Routines page", () => {
     });
   });
 
+  it("opens the project picker after selecting the responsible agent", async () => {
+    pickerMode.real = true;
+    routinesListMock.mockResolvedValue([]);
+    issuesListMock.mockResolvedValue([]);
+    const root = createRoot(container), queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const button = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+      .find(element => element.textContent?.trim() === text)!;
+    try {
+      await act(async () => { root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>); await flush(); });
+      await vi.waitFor(() => expect(button("Create routine")).toBeTruthy());
+      await act(async () => { button("Create routine").click(); await flush(); });
+      await act(async () => { button("Responsible").click(); await flush(); });
+      await act(async () => { button("Agent One").click(); await new Promise(resolve => requestAnimationFrame(resolve)); await flush(); });
+      // Responsible selection already opens Project through its real focus path.
+      expect(document.querySelector('input[placeholder="Search projects..."]')).not.toBeNull();
+      await act(async () => { button("Project Alpha").click(); await flush(); });
+      expect(button("Project Alpha")).toBeTruthy();
+    } finally { await act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it("excludes archived projects from the create composer project selector", async () => {
     routinesListMock.mockResolvedValue([]);
     issuesListMock.mockResolvedValue([]);
@@ -1093,7 +1117,7 @@ describe("Routines page", () => {
       await flush();
     });
     const link = Array.from(container.querySelectorAll("a")).find(anchor => anchor.textContent === "View all tasks");
-    expect(link?.getAttribute("href")).toBe("/issues?view=all&originKind=routine_execution");
+    expect(link?.getAttribute("href")).toBe("/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc");
     expect(container.textContent).not.toContain("View all runs");
     await act(() => root.unmount());
     queryClient.clear();

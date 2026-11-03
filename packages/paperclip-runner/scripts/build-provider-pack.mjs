@@ -21,6 +21,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { smokeKimiProviderPack } from "./kimi-provider-pack-smoke.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
 import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack } from "./provider-pack-runtime-tree.mjs";
@@ -183,7 +184,7 @@ try {
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: ["pi", "cursor", "copilot"].includes(provider) ? "qualified" : "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification: ["pi", "cursor", "copilot"].includes(provider) || provider === "kimi" && profiles.profiles.kimi.qualificationStatus !== "pending" ? "qualified" : "pending", path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 
@@ -385,6 +386,11 @@ try {
     `${JSON.stringify(manifest, null, 2)}\n`,
     { mode: 0o600 },
   );
+
+  if (payload.providers?.kimi && profiles.profiles.kimi.qualificationStatus !== "pending") {
+    const smoke = await smokeKimiProviderPack(temporaryRoot);
+    process.stdout.write(`${JSON.stringify(smoke)}\n`);
+  }
 
   rmSync(outputRoot, { recursive: true, force: true });
   renameSync(temporaryRoot, outputRoot);

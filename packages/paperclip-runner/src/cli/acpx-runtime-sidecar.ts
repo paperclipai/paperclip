@@ -2,6 +2,8 @@
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
+import { acpxProviderFailure, acpxTerminalResult } from "../drivers/acpx/provider-failure.js";
+import { providerFailureFromError } from "../drivers/provider-failure.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
@@ -27,6 +29,7 @@ import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichE
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
 import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
+import { createKimiMessageProjection, type KimiProjectedMessageEvent } from "../drivers/acpx/kimi-message-boundary.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
@@ -250,6 +253,8 @@ async function receiveLine(line: string): Promise<void> {
       ),
       message: safeMessage(normalized),
       retryable: normalizedRecord.retryable === true,
+      ...(request.command === "session.open" && initializedAgent
+        ? { providerFailure: providerFailureFromError(error) ?? acpxProviderFailure(error, initializedAgent, "startup", process.env) ?? undefined } : {}),
     });
   }
 }
@@ -667,7 +672,8 @@ async function pumpTurn(
     // the sidecar boundary, matching the in-process ACPX driver path.
     const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
     const piMessages = initializedAgent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
-    const normalizeMessage = piMessages ? piMessages.normalize : initializedAgent === "grok"
+    const kimiMessages = initializedAgent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
+    const normalizeMessage = kimiMessages ? kimiMessages.normalize : piMessages ? piMessages.normalize : initializedAgent === "grok"
       ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
     for await (const event of runtimeTurn.events) {
       toolEvidence?.tool(event);
@@ -680,7 +686,7 @@ async function pumpTurn(
       );
     }
     const result = await runtimeTurn.result;
-    if (result.status === "completed") piMessages?.settle();
+    if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
     await drainExtensions();
     try {
       const usageAfter = await readSidecarHostStatusWithin(activeHost);
@@ -710,7 +716,7 @@ async function pumpTurn(
       // not replace the provider's authoritative completed/cancelled result.
       diagnostic("acpx_terminal_usage_unavailable", safeMessage(error));
     }
-    terminal = boundedSidecarValue(result);
+    terminal = openParams ? acpxTerminalResult(result, openParams.agent, process.env) : boundedSidecarValue(result);
   } catch (error) {
     terminal = {
       status: "failed",
@@ -718,6 +724,7 @@ async function pumpTurn(
         ...(error instanceof AcpxApprovalRequiredError || error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}),
         message: safeMessage(error),
         retryable: false,
+        ...(openParams ? { providerFailure: acpxProviderFailure(error, openParams.agent, "turn", process.env) ?? undefined } : {}),
       },
     };
   } finally {
@@ -1037,7 +1044,7 @@ function boundRuntimeEventForNormalization(
   } as BoundedRuntimeToolEvent;
 }
 
-function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent>): Record<string, unknown> {
+function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & KimiProjectedMessageEvent<AcpRuntimeEvent>): Record<string, unknown> {
   const runtimeType = text(record(event).type);
   if (runtimeType === "plan") {
     return {
@@ -1053,6 +1060,8 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent>): 
       tag: event.tag ?? null,
       ...(event.piMessageBoundary ? { piMessageBoundary: event.piMessageBoundary } : {}),
       ...(event.piMessageHistory ? { piMessageHistory: true } : {}),
+      ...(event.assistantMessageBoundary ? { assistantMessageBoundary: event.assistantMessageBoundary } : {}),
+      ...(event.assistantMessageHistory ? { assistantMessageHistory: true } : {}),
       messageId:
         typeof event.messageId === "string" && event.messageId.length > 0
           ? stableProviderIdentity(event.messageId, "message")
@@ -1478,8 +1487,8 @@ function requireHost(
 }
 
 function requireQualifiedAgent(value: unknown, model?: string, candidateAdmission?: AcpxCandidateStartupAdmission): QualifiedAcpxAgent {
-  if (value !== "grok" && value !== "codex" && value !== "claude" && value !== "pi" && value !== "cursor" && value !== "copilot" && value !== "antigravity") {
-    throw new Error("ACPX agent must be claude, codex, grok, cursor, copilot, pi, or antigravity");
+  if (value !== "grok" && value !== "codex" && value !== "claude" && value !== "pi" && value !== "cursor" && value !== "copilot" && value !== "kimi" && value !== "antigravity") {
+    throw new Error("ACPX agent must be claude, codex, grok, cursor, copilot, kimi, pi, or antigravity");
   }
   if (candidateAdmission) assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile(value, model ?? ""), candidateAdmission);
   else assertAcpxProfileReleased(value);

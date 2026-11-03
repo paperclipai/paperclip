@@ -1,3 +1,5 @@
+import type { Request } from "express";
+import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-capability.js";
 import type { RequestHandler } from "express";
 import { logger } from "./logger.js";
 import {
@@ -6,8 +8,15 @@ import {
   type CloudControlAction,
 } from "../services/cloud-runtime-identity.js";
 
+const idleCapabilities = new WeakMap<Request, VerifiedIdleCapabilities>();
+/** Only this middleware's verified assertion can install request capabilities. */
+export function verifiedIdleCapabilities(req: Request): VerifiedIdleCapabilities | undefined {
+  return idleCapabilities.get(req);
+}
+
 /** Endpoint → method → the one action a control assertion must name to take it. */
 const ACTIONS_BY_ENDPOINT: Record<string, Record<string, CloudControlAction>> = {
+  "/api/instance/connector-events/wake": { POST: "connector-events:wake" },
   "/api/instance/task-drain": {
     GET: "task-drain:read",
     POST: "task-drain:start",
@@ -49,7 +58,8 @@ export function cloudControlMiddleware(): RequestHandler {
       return;
     }
     try {
-      verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
+      const claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
+      if (claims.idleCapabilities) idleCapabilities.set(req, claims.idleCapabilities as VerifiedIdleCapabilities);
     } catch (error) {
       logger.warn({ err: error }, "Rejected Cloud control assertion");
       res.status(401).json({ error: "invalid_cloud_control_assertion" });

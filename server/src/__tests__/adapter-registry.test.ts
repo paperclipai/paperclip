@@ -31,6 +31,8 @@ vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
   probeAcpxGrokInstallation: vi.fn(async () => undefined),
   probeAcpxPiInstallation: vi.fn(async () => undefined),
   probeAcpxCursorInstallation: vi.fn(async () => undefined),
+  probeAcpxKimiInstallation: vi.fn(async () => undefined),
+  probeKimiModels: vi.fn(async () => undefined),
 }));
 
 it("advertises tool-refresh recovery for the selected legacy harness", () => {

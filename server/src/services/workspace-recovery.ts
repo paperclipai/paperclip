@@ -10,8 +10,8 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { and, asc, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, environmentLeases, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
-import type { Environment, EnvironmentLease } from "@paperclipai/shared";
+import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { remoteWorkspaceRunReferenceSchema, type Environment, type EnvironmentLease } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
@@ -31,6 +31,7 @@ import { SYSTEM_RECOVERY_MAX_RETRIES, createSystemRecovery, failSystemRecovery, 
 import { inspectWorkspaceRecoverySource, workspaceRecoverySourceEligible, workspaceSourceBindingFailure } from "./workspace-recovery-source.js";
 import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
+import { saveRemoteWorkspace } from "./remote-workspaces.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
@@ -205,7 +206,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             continue;
           }
         }
-        let reference = source.reference;
+        let reference = source.preservationOnly ? null : source.reference;
         if (reference) {
           try { await readNativeWorkspaceSyncLocalCwd({ runId: input.runId, companyId: input.companyId,
             workspaceId: reference.workspaceId, reference }); }
@@ -278,7 +279,29 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           await inspectWorkspaceRecoverySource(db, input);
           await progress({ phase: "preserve_files" });
           let operationId: string;
-          if (reference) {
+          if (source.remoteReference && source.remoteWorkspace) {
+            const [workspace] = await db.select().from(executionWorkspaces).where(and(
+              eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, source.remoteWorkspace.id),
+            ));
+            if (!workspace) throw workspaceSourceBindingFailure("workspace_reference_mismatch");
+            const saved = await saveRemoteWorkspace({ db, workspace, runId: input.runId,
+              lease: cleanupLease as EnvironmentLease, target, assertOwned: ownership.assertHeld });
+            await ownership.assertHeld();
+            const [existing] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+              eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.heartbeatRunId, input.runId),
+              eq(workspaceOperations.phase, "workspace_recovery"), eq(workspaceOperations.status, "succeeded"),
+              sql`${workspaceOperations.metadata}->>'leaseId' = ${lease.id}`,
+              sql`${workspaceOperations.metadata}->>'snapshotId' = ${saved.snapshotId}`,
+            )).limit(1);
+            const operation = existing ?? (await db.insert(workspaceOperations).values({ companyId: input.companyId,
+              issueId: input.issueId, heartbeatRunId: input.runId, executionWorkspaceId: workspace.id,
+              phase: "workspace_recovery", status: "succeeded", finishedAt: new Date(), metadata: {
+                recoveryActionId: input.actionId, leaseId: lease.id, providerLeaseId: lease.providerLeaseId,
+                snapshotId: saved.snapshotId, generation: saved.generation, sha256: saved.sha256,
+                storage: "remote_workspace", epoch: source.remoteReference.epoch,
+              } }).returning({ id: workspaceOperations.id }))[0]!;
+            operationId = operation.id;
+          } else if (reference) {
             const copied = await resumeNativeWorkspaceSync({ db, runId: input.runId, target, assertOwnership: ownership.assertHeld });
             if (!copied) throw new SystemRecoveryFailure("snapshot_verification_failed", "service_required");
             const after = await inspectWorkspaceRecoverySource(db, input);
@@ -384,8 +407,12 @@ const unfinishedCursors = new WeakMap<Db, string>();
  * saved-file receipt and the original recorded disposition. */
 export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof heartbeatRuns.$inferSelect) {
   if (!await hasVerifiedWorkspaceRepair(db, run)) return;
-  const ref = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
-  if (ref?.resourceDisposition !== "destroy") return;
+  const legacy = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
+  const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+  const remote = parsedRemote.success && parsedRemote.data.state === "saved" ? parsedRemote.data : null;
+  const ref = legacy ?? remote;
+  const disposition = legacy?.resourceDisposition ?? (remote ? run.runnerProfileJson?.nativeResourceDisposition : undefined);
+  if (!ref || disposition !== "destroy") return;
   const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.id, ref.leaseId)));
   if (!lease || !hasRemoteTerminationReceipt(lease)) return;
   const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
@@ -394,7 +421,8 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
   if (other) return;
   await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "ephemeral",
     updatedAt: new Date(), metadata: sql`(${environmentLeases.metadata} - 'workspaceRestoreRecovery' - 'remoteExecutionTermination') ||
-      ${JSON.stringify({ workspaceRecoveryCleanup: { runId: run.id, descriptorSha256: ref.descriptorSha256 },
+      ${JSON.stringify({ workspaceRecoveryCleanup: { runId: run.id, ...(legacy ? { descriptorSha256: legacy.descriptorSha256 }
+        : { snapshotId: remote!.snapshotId, epoch: remote!.epoch }) },
         pendingCleanupInFlight: false, pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0, pendingCleanupLeaseExpiresAtMs: 0 })}::jsonb`,
   }).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.id, ref.leaseId),
     eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.providerLeaseId, ref.providerLeaseId),
@@ -403,16 +431,32 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)), { companyId: run.companyId, runId: run.id });
 }
 export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = []) {
-  const cleanup = sql`(${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy' and exists (
+  const cleanup = sql`(((${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy'
+    and ${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,leaseId}' is not null)
+    or (${heartbeatRuns.runnerProfileJson}->>'nativeResourceDisposition' = 'destroy'
+      and ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace-run.v1'
+      and ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,state}' = 'saved')) and exists (
     select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
     and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id}
-    and ${environmentLeases.id}::text = ${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,leaseId}'
+    and ${environmentLeases.id}::text = coalesce(${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,leaseId}',
+      ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,leaseId}')
     and ${environmentLeases.status} = 'released' and ${environmentLeases.cleanupStatus} = 'success'
     and ${environmentLeases.metadata}->'workspaceRecoveryCleanup' is null))`;
   const waitingInput = sql`exists (select 1 from ${agentWakeupRequests}
     where ${agentWakeupRequests.companyId} = ${issueRecoveryActions.companyId}
     and ${agentWakeupRequests.status} = 'deferred_issue_execution' and ${agentWakeupRequests.requestedByActorType} = 'user'
     and ${agentWakeupRequests.payload}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
+  const interruptedPreparation = sql`(${heartbeatRuns.runtimeMode} = 'legacy'
+    and ${heartbeatRuns.status} = 'interrupted' and ${heartbeatRuns.errorCode} = 'server_shutdown_interrupted'
+    and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'
+    and ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
+    and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+    and exists (select 1 from ${issues} where ${issues.companyId} = ${heartbeatRuns.companyId}
+      and ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
+      and ${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')
+      and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
+      and (${issues.status} <> 'blocked' or
+        ${issueRecoveryActions.evidence}#>>'{nativeBootstrapFailureBlock,statusVersion}' = ${issues.statusVersion}::text)))`;
   return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id,
       sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -421,12 +465,12 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       workspaceRecoverySourceEligible(true),
       unfinishedOnly ? sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
-        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and ${cleanup}) or ${waitingInput})` : undefined,
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
           or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,
       sql`(${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' is distinct from 'recovered' or
-        ${cleanup} or ${waitingInput})`,
+        ${cleanup} or ${waitingInput} or ${interruptedPreparation})`,
       cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
       inFlightRunIds.length ? notInArray(heartbeatRuns.id, inFlightRunIds) : undefined,
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);

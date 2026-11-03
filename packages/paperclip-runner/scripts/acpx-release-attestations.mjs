@@ -28,6 +28,10 @@ export const ACPX_RELEASE_ATTESTATIONS = Object.freeze({
     nodeVersion: ["pi-node-pins.ts", "PI_NODE_VERSION"],
     closure: ["pi-closure-pins.ts", "PI_DISTRIBUTION_CLOSURE_SHA256"],
   } },
+  kimi: { kind: "closure", pins: {
+    nodeVersion: ["kimi-closure-pins.ts", "KIMI_NODE_VERSION"],
+    closure: ["kimi-closure-pins.ts", "KIMI_DISTRIBUTION_CLOSURE_SHA256"],
+  } },
   cursor: { kind: "declaration", path: "cursor-contract.json", digestField: "commandDigest" },
   antigravity: { kind: "declaration", path: "antigravity-distributions.json" },
 });

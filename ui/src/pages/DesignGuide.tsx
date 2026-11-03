@@ -179,6 +179,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
 import { Identity } from "@/components/Identity";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
@@ -821,6 +822,10 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="Monitoring task">
+          <StatusIcon status="in_progress" displayStatus="monitoring" showLabel />
+          <IssueStatusBadge status="in_progress" displayStatus="monitoring" />
+        </SubSection>
         <SubSection title="Idle Slack conversation">
           <StatusIcon status="in_review" externalConversationState="waiting" showLabel />
           <IssueStatusBadge status="in_review" externalConversationState="waiting" />
@@ -1902,6 +1907,16 @@ export function DesignGuide() {
             <PageSkeleton variant="detail" />
           </div>
         </SubSection>
+        <SubSection title="Task conversation loading">
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="relative h-96 overflow-hidden rounded-md border border-border">
+              <TaskChatLoadingShell mobile={false} streamlined coordinator={false} />
+            </div>
+            <div className="coordinator-workspace relative h-96 overflow-hidden rounded-md border border-border">
+              <TaskChatLoadingShell mobile streamlined coordinator />
+            </div>
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}
@@ -2299,6 +2314,12 @@ export function DesignGuide() {
           execution badges. Active transcript headers keep saying Working during automatic
           recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          When retained-file recovery needs another authorized request, the source task and
+          run inspector offer Recover saved files. This queues the existing file-preservation
+          worker. Work remains held until the server verifies the saved files; a queued
+          acknowledgement does not mean that recovery finished.
         </p>
       </Section>
 
