@@ -1481,18 +1481,6 @@
           "coreHead": "50600786f755b6602989f3b0f88cd090ff948196",
           "corePRUnmerged": true,
           "condition": "Candidate-only reviewed disclosure plus bounded pre-trim guard; no authority change. CorePR18734 remainsunmerged."
-        },
-        "source5": {
-          "caseIds": [
-            53,
-            74,
-            466,
-            550,
-            578
-          ],
-          "previousTargetSha": "51ef450754370c8a8f2cbe4bd18e1536bbc93966",
-          "originalQueriesClocksModelsNativeAndHumanCountsUnchanged": true,
-          "qualifiedFeatureOutcomes": "PENDING_ACTUAL_NEW_MEASUREMENT"
         }
       },
       "candidateLauncherSnapshot": {
