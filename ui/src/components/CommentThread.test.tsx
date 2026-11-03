@@ -346,6 +346,7 @@ describe("CommentThread", () => {
       id: "approval-1",
       companyId: "company-1",
       type: "request_board_approval",
+      originRunId: null,
       requestedByAgentId: "agent-1",
       requestedByUserId: null,
       status: "pending",

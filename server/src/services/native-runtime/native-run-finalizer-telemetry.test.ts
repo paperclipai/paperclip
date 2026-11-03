@@ -20,6 +20,7 @@ import {
   agentWakeupRequests,
   workspaceOperations,
   activityLog,
+  approvals,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -481,6 +482,18 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     },
   );
 
+  it("cancels a run-scoped approval when native finalization projects cancellation", async () => {
+    const fixture = await seedNativeRun();
+    const [approval] = await db.insert(approvals).values({ companyId, type: "request_board_approval", requestedByAgentId: agentId, originRunId: fixture.runId, payload: {} }).returning();
+    await driveToCompleteResult(fixture, { ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      turnTerminalState: "cancelled", runTerminalState: "cancelled" });
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run.status).toBe("cancelled");
+    const [result] = await db.select().from(approvals).where(eq(approvals.id, approval.id));
+    expect(result.status).toBe("cancelled");
+  });
+
   it.each(["in_progress", "cancelled"])("does not redeliver a committed failure during reconciliation of a %s task", async (issueStatus) => {
     const fixture = await seedNativeRun();
     await driveToCompleteResult(fixture, {
@@ -910,6 +923,8 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       resultId,
     });
 
+    const [pendingApproval] = await db.insert(approvals).values({ companyId, type: "request_board_approval", requestedByAgentId: agentId, originRunId: fixture.runId, payload: {} }).returning();
+
     // Shaped exactly like resolveNativeCancellationStatus("issue", ...) in
     // native-session-executor.ts — the only place cancel_continuations is
     // produced today.
@@ -949,6 +964,10 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       .where(eq(heartbeatRuns.id, fixture.runId))
       .then((rows) => rows[0]);
     expect(run?.status).toBe("cancelled");
+    const [cancelledApproval] = await db.select().from(approvals).where(eq(approvals.id, pendingApproval.id));
+    expect(cancelledApproval?.status).toBe("cancelled");
+    const history = await db.select().from(activityLog).where(eq(activityLog.entityId, pendingApproval.id));
+    expect(history.some(row => row.action === "approval.cancelled" && row.runId === fixture.runId)).toBe(true);
 
     // native-run-finalizer.ts:518's own guard: it skips its emit whenever the
     // decision it just committed already included cancel_continuations,

@@ -1,3 +1,4 @@
+import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
 import { approvalResolutionRecords, resolvableApprovalStatuses as resolvableStatuses } from "../lib/approval-records.js";
@@ -5,7 +6,7 @@ import { notifyHireApproved } from "./hire-hook.js";
 
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvals, heartbeatRuns } from "@paperclipai/db";
 import { unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
@@ -55,11 +56,17 @@ export function approvalRecords(db: Db) {
     },
 
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      writeApprovalChange(db, companyId, tx => tx
-        .insert(approvals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0])),
+      writeApprovalChange(db, companyId, async tx => {
+        if (data.originRunId) {
+          // This row lock serializes creation with a run's terminal write.
+          const [run] = await tx.select().from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, data.originRunId)).for("update");
+          if (!run || run.companyId !== companyId || run.agentId !== data.requestedByAgentId || run.status !== "running" || agentRunWritesRevoked(run)) {
+            throw unprocessable("Run-scoped approval requires its authenticated agent's running execution");
+          }
+        }
+        return tx.insert(approvals).values({ ...data, companyId }).returning().then(rows => rows[0]);
+      }),
 
     // Cancel an open (pending/revision_requested) approval without a board
     // decision — e.g. when its paired agent is terminated during duplicate
@@ -91,7 +98,7 @@ export function approvalRecords(db: Db) {
       }
 
       const now = new Date();
-      return writeApprovalChange(db, existing.companyId, tx => tx
+      const updated = await writeApprovalChange(db, existing.companyId, tx => tx
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -100,9 +107,11 @@ export function approvalRecords(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
         .returning()
-        .then((rows) => rows[0]), { approvalId: id });
+        .then((rows) => rows[0] ?? null), { approvalId: id });
+      if (!updated) throw unprocessable("Only pending approvals can request revision");
+      return updated;
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
@@ -112,7 +121,7 @@ export function approvalRecords(db: Db) {
       }
 
       const now = new Date();
-      return writeApprovalChange(db, existing.companyId, tx => tx
+      const updated = await writeApprovalChange(db, existing.companyId, tx => tx
         .update(approvals)
         .set({
           status: "pending",
@@ -122,9 +131,11 @@ export function approvalRecords(db: Db) {
           decidedAt: null,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "revision_requested")))
         .returning()
-        .then((rows) => rows[0]), { approvalId: id });
+        .then((rows) => rows[0] ?? null), { approvalId: id });
+      if (!updated) throw unprocessable("Only revision requested approvals can be resubmitted");
+      return updated;
     },
 
     listComments: async (approvalId: string) => {

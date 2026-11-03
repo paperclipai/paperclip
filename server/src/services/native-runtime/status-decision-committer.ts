@@ -1,3 +1,4 @@
+import { cancelPendingRunApprovals } from "../run-approval-cancellation.js";
 import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
@@ -1122,6 +1123,7 @@ async function materializeDecisionEffect(input: {
       )
       .returning();
     if (!run) throw new Error("native_continuation_cancellation_run_missing");
+    await cancelPendingRunApprovals(input.tx, input.companyId, run.id);
     input.terminalRunsToEmit?.push(run);
     return {
       effectKind: effect.kind,

@@ -1,3 +1,4 @@
+import { cancelPendingRunApprovals } from "../run-approval-cancellation.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
@@ -1078,7 +1079,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
-      return write(tx);
+      const updated = await write(tx);
+      if (status === "cancelled" && previous && updated) {
+        await cancelPendingRunApprovals(tx, previous.companyId, previous.id);
+      }
+      return updated;
     });
   }
 
