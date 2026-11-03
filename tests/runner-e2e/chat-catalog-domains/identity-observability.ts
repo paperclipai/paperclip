@@ -1,3 +1,4 @@
+import { waitForCompanySettingsTurn } from "./identity-company-observer.js";
 import { privateIdentityBrowser } from "./identity-private-browser.js";
 import { createServer, type Server } from "node:http";
 import { randomBytes, createHash } from "node:crypto";
@@ -8,7 +9,7 @@ import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contra
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { checks } from "./internal-support.js";
-import { identityDefinition, identityObservation, observeIdentity, probeAgentPermission, waitForReply } from "./identity-support.js";
+import { identityDefinition, identityObservation, observeIdentity, probeAgentPermission } from "./identity-support.js";
 
 interface Received { path: string; authenticated: boolean; body: Buffer; sha256: string }
 interface Collector { server: Server; url: string; key: string; received: Received[] }
@@ -57,9 +58,9 @@ export const observabilityIdentityCases: readonly ChatCatalogCase[] = [identityD
   return { beforeSettings: before.settings, collectorUrl: target.url, syntheticCollector: true };
 }, gradeObservability, {
   authentication: "human-session", expectedRunCount: 3, expectedHumanMessageCount: 3, attemptTimeoutMs: 600_000,
-  sourceFiles: ["chat-catalog-domains/identity-observability.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/companies.yaml"],
+  sourceFiles: ["chat-catalog-domains/identity-observability.ts", "chat-catalog-domains/identity-company-observer.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/companies.yaml"],
   async act(ctx, state) {
-    await waitForReply(ctx); const target = collectors.get(ctx); if (!target) throw new Error("Owned synthetic collector is missing");
+    await waitForCompanySettingsTurn(ctx); const target = collectors.get(ctx); if (!target) throw new Error("Owned synthetic collector is missing");
     const root = `/api/companies/${ctx.input.fixtures.company.id}/observability`; const source = ctx.input.page.url();
     state.afterReplySettings = (await ctx.input.api.get<AgentObservabilitySettingsResponse>(root)).settings; state.beforeConfiguredCalls = target.received.length;
     state.agentWriteStatus = await probeAgentPermission(ctx, root, "PUT", { expectedRevision: null, enabled: true, destination: { provider: "otlp", endpointBaseUrl: target.url }, credentials: { mode: "replace", headers: [] }, capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false } });
@@ -75,7 +76,7 @@ export const observabilityIdentityCases: readonly ChatCatalogCase[] = [identityD
     state.collectorMatchedTestSignals = ["/v1/logs", "/v1/traces"].filter(signal => target.received.some(row => row.path === signal && row.authenticated && row.body.includes(receipt.marker)
       && row.body.includes(ctx.input.fixtures.company.id) && row.body.includes(receipt.revision))).length;
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" }); await sendChatMessage(ctx.input.page, "Please acknowledge that our test collector configuration is saved. Do not change its settings.");
-    await settled(ctx, 2); state.enabledNativeRunCount = (await ctx.allRuns()).length;
+    await waitForCompanySettingsTurn(ctx, 2); state.enabledNativeRunCount = (await ctx.allRuns()).length;
     state.nativeExportMatched = await pollUntil({ label: "actual native harness trace export", deadlineAt: Date.now() + 30_000,
       load: async () => target.received.some(row => row.authenticated && row.body.includes(ctx.input.fixtures.company.id)
         && row.body.includes(ctx.input.fixtures.agent.id) && row.body.includes(receipt.revision)), accept: Boolean });
@@ -83,7 +84,7 @@ export const observabilityIdentityCases: readonly ChatCatalogCase[] = [identityD
     await section.getByRole("button", { name: "Disable export", exact: true }).click();
     await expect.poll(async () => (await ctx.input.api.get<AgentObservabilitySettingsResponse>(root)).settings?.enabled).toBe(false); state.disabledSaved = true; state.callsAtDisable = target.received.length;
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" }); await sendChatMessage(ctx.input.page, "Please acknowledge that export is now disabled. Do not change it or start any additional work.");
-    await settled(ctx, 3); state.disabledNativeRunCount = (await ctx.allRuns()).length; state.callsAfterDisabledRun = target.received.length; state.disabledCallsDidNotIncrease = state.callsAfterDisabledRun === state.callsAtDisable;
+    await waitForCompanySettingsTurn(ctx, 3); state.disabledNativeRunCount = (await ctx.allRuns()).length; state.callsAfterDisabledRun = target.received.length; state.disabledCallsDidNotIncrease = state.callsAfterDisabledRun === state.callsAtDisable;
     await ctx.input.evidence("identity-synthetic-otlp-delivery.json", { syntheticCollector: true, savedRevision: receipt.revision, controlPlaneTestMarker: receipt.marker,
       requests: target.received.map(row => ({ path: row.path, authenticated: row.authenticated, sha256: row.sha256 })), nativeExportMatched: state.nativeExportMatched,
       enabledNativeRunCount: state.enabledNativeRunCount, disabledNativeRunCount: state.disabledNativeRunCount, callsAtDisable: state.callsAtDisable, callsAfterDisabledRun: state.callsAfterDisabledRun,
@@ -92,7 +93,3 @@ export const observabilityIdentityCases: readonly ChatCatalogCase[] = [identityD
   observe: observeIdentity,
   async cleanup(ctx) { const target = collectors.get(ctx); if (target) { target.server.closeAllConnections(); await new Promise<void>((resolve, reject) => target.server.close(error => error ? reject(error) : resolve())); target.received.length = 0; } collectors.delete(ctx); },
 })];
-async function settled(ctx: ChatCatalogContext, count: number) {
-  await pollUntil({ label: `native observability turn ${count}`, deadlineAt: Date.now() + 150_000, load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
-    accept: value => value.source?.conversationState === "waiting" && value.runs.length === count && value.runs.every(run => run.status === "succeeded") });
-}

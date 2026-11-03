@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { gradeObservability } from "./identity-observability.js";
+vi.mock("../chat-flow.js", () => ({ sendChatMessage: vi.fn() }));
 import type { IdentityObservation } from "./identity-support.js";
 function valid(): IdentityObservation { return { scenarioId: "companies.agent-observability", origin: "http://fixture.invalid", companyId: "acorn", leadId: "ceo", company: { id: "acorn" }, companies: [], agents: [], tasks: [], projects: [], goals: [], comments: [], interactions: [], documents: [], revisions: [], activity: [], links: [], humanQueries: [],
   reply: "Configure optional trace export in company settings. First-party Telemetry and the local run log are separate data paths.",

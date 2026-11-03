@@ -1,4 +1,4 @@
-import { chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
+import { waitForCompanySettingsTurn } from "./identity-company-observer.js";
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { AiConnectionList, AiManagedConnectionSummary } from "../../../packages/shared/src/ai-connections.js";
@@ -7,7 +7,7 @@ import type { PromptInjectionPreventionSettings, PromptInjectionTestResult } fro
 import type { FastResponseSettings, FastResponseTestResult } from "../../../packages/shared/src/fast-response.js";
 import type { CostSummary } from "../../../packages/shared/src/types/cost.js";
 import { checks } from "./internal-support.js";
-import { identityDefinition, identityObservation, observeIdentity, probeAgentPermission, waitForReply } from "./identity-support.js";
+import { identityDefinition, identityObservation, observeIdentity, probeAgentPermission } from "./identity-support.js";
 
 export const requestedAuxiliaryServiceModel = "deepseek/deepseek-v4.1-flash-1017";
 
@@ -84,7 +84,7 @@ export function gradeCompanyModel(value: unknown) {
   } else c.add("known-service", false, "No oracle exists for this service.");
   return c.result();
 }
-const sources = ["chat-catalog-domains/identity-company-models.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/companies.yaml"];
+const sources = ["chat-catalog-domains/identity-company-models.ts", "chat-catalog-domains/identity-company-observer.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/companies.yaml"];
 export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(spec => identityDefinition(spec.id, async ctx => {
   const key = ctx.input.privateInputs?.credentials.OPENROUTER_API_KEY;
   if (!key || !ctx.input.privateSecrets) throw new Error("Setup blocker: this selected company service requires private OPENROUTER_API_KEY; no chat-profile substitution is allowed");
@@ -105,7 +105,7 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
 }, gradeCompanyModel, {
   sourceFiles: sources, authentication: "human-session", requiredCredentials: ["OPENROUTER_API_KEY"], attemptTimeoutMs: 420_000,
   async act(ctx, state) {
-    await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); const root = `/api/companies/${ctx.input.fixtures.company.id}`; const source = ctx.input.page.url();
+    await waitForCompanySettingsTurn(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`; const source = ctx.input.page.url();
     state.afterReplyEnabled = (await ctx.input.api.get<{ settings: Settings }>(`${root}/${spec.path}`)).settings.enabled;
     state.agentWriteStatus = await probeAgentPermission(ctx, `${root}/${spec.path}`, "PUT", { enabled: true, connectionId: (state.connection as AiManagedConnectionSummary).id, grantId: (state.connection as AiManagedConnectionSummary).grantId,
       ...(spec.path === "decision-model" ? { allowBackground: false } : spec.path === "fast-response" ? { model: requestedAuxiliaryServiceModel, allowSponsored: false } : { model: requestedAuxiliaryServiceModel }) });

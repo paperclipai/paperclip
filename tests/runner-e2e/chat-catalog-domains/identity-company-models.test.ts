@@ -22,6 +22,25 @@ function valid(scenarioId: string): IdentityObservation {
   return o;
 }
 describe("company model service configuration and actual tests", () => {
+  it.each(["companies.configure-decision-model", "companies.prompt-injection-guard"])("actual %s initial native observation uses the remaining original case clock", async scenario => {
+    vi.useFakeTimers(); vi.setSystemTime(50_000);
+    try {
+      const get = vi.fn(async () => { throw new Error("Reached actual human settings phase"); });
+      const ctx = { observationDeadlineAt: 440_000, refreshIssue: async () => {},
+        issue: () => ({ conversationState: Date.now() >= 210_000 ? "waiting" : "running" }),
+        allRuns: async () => [{ status: Date.now() >= 210_000 ? "succeeded" : "running" }],
+        input: { execution: { id: `chat-features.runner-opencode.local.${scenario}` },
+          fixtures: { company: { id: "acorn" } }, page: { url: () => "https://fixture.test" }, api: { get } },
+      };
+      const d = companyModelIdentityCases.find(row => row.scenarioId === scenario)!;
+      const pending = Promise.resolve(d.act!(ctx as never, {})).then(() => null, error => error as Error);
+      await vi.dynamicImportSettled();
+      await vi.advanceTimersByTimeAsync(160_000);
+      expect((await pending)?.message).toBe("Reached actual human settings phase");
+      expect(get).toHaveBeenCalledOnce(); expect(ctx.observationDeadlineAt).toBe(440_000);
+    } finally { vi.useRealTimers(); }
+  });
+
   for (const d of companyModelIdentityCases) {
     it(`${d.scenarioId}: valid and missing public evidence`, () => { const o = valid(d.scenarioId); expect(d.grade(o), JSON.stringify(d.grade(o))).toMatchObject({ passed: true }); expect(d.grade(undefined).passed).toBe(false); });
     it(`${d.scenarioId}: wrong shared account or authority`, () => { const o = valid(d.scenarioId); (o.state.saved as { grantId: string }).grantId = "other-grant"; expect(d.grade(o).passed).toBe(false); const wrong = valid(d.scenarioId); wrong.state.agentWriteStatus = 200; expect(d.grade(wrong).passed).toBe(false); });
