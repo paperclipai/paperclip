@@ -15,8 +15,10 @@ interface Options { deadlineAt: number; directory: string; capture(id: string, l
 const journeyId = "completion-delivery" as const;
 export async function completionDeliveryJourney(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence, options: Options) {
   const { page, api, company, user } = context, lead = context.agent, worker = context.fixtures?.completionWorker;
-  let windowEndsAt: number | undefined, observationComplete = false;
-  const observations = createObservedReader(api, () => observationComplete ? options.deadlineAt : Math.min(options.deadlineAt, windowEndsAt ?? Infinity));
+  let windowEndsAt: number | undefined;
+  // The window limits batch admission; an admitted batch must still finish
+  // within the original journey deadline, including its final attribution reads.
+  const observations = createObservedReader(api, options.deadlineAt);
   const readObserved = observations.get;
   try {
     if (!lead || !worker || lead.runtimeMode !== "native" || worker.runtimeMode !== "native" || !context.environmentId
@@ -115,7 +117,7 @@ export async function completionDeliveryJourney(context: JourneyContext, session
           }
           checks = completionJourneyChecks(scope, observation, { request, expectedBody, revisions, events });
           if (task.status === "done") windowEndsAt ??= Date.now() + 120_000;
-          await retain({ scope, observation, revisions, checks });
+          await retain({ scope, observation, revisions, checks, events });
           // Retain a full post-completion window, including later corrections.
           // There is no second user message, poke, manual retry, or work replay.
           if (windowEndsAt && Date.now() >= windowEndsAt) break;
@@ -124,7 +126,6 @@ export async function completionDeliveryJourney(context: JourneyContext, session
       }
       if (!scope || !observation || !task || !windowEndsAt || Date.now() < windowEndsAt) throw new JourneyError("failed", "completion_delivery_missing");
       for (const item of checks) check(item.id, item.passed);
-      observationComplete = true;
       const delivery = completionDelivery(observation), response = delivery.response;
       if (!response) throw new JourneyError("failed", "completion_reply_missing");
       await page.reload({ waitUntil: "domcontentloaded" });
@@ -151,7 +152,7 @@ export async function completionDeliveryJourney(context: JourneyContext, session
       check("configured-model-and-environment", true);
       await options.capture(journeyId, "Delegated completion result reopened", "completion-delivery.png");
     } finally {
-      await retain({ scope, observation, revisions, checks });
+      await retain({ scope, observation, revisions, checks, events });
     }
   } finally { await observations.preserve(options.directory); }
 }
