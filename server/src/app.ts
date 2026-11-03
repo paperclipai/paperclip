@@ -1219,6 +1219,7 @@ export async function createApp(
   });
   app.locals.deliveryWork = deliveryWork;
   const unregisterRunObserverScheduler = registerRunObserverScheduler(db, deliveryWork);
+  app.locals.stopRunObserverDelivery = unregisterRunObserverScheduler;
   await scheduler.start(deliveryWork);
   const agentLifecycleDelivery = deliveryWork.register(DELIVERY_QUEUES.agentLifecycle, {
     retryMs: 1_000,
