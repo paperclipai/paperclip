@@ -249,14 +249,16 @@
       "chat-catalog-domains/internal-activity.ts",
       "chat-scenarios/activity.yaml",
       "chat-catalog-domains/internal-work-timeline.ts",
+      "chat-catalog-domains/internal-timeline-narrative.ts",
       "chat-catalog-domains/internal-timeline-verifier.ts",
       "chat-catalog-domains/internal-privacy.ts",
       "chat-catalog-domains/identity-auth.ts",
       "chat-catalog-domains/internal-routine-audit.ts",
       "../e2e/fetch-allowed-port.ts",
-      "../../server/src/services/native-runtime/status-decision-committer.ts"
+      "../../server/src/services/native-runtime/status-decision-committer.ts",
+      "../../server/src/services/work-timeline.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.work-timeline.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,
