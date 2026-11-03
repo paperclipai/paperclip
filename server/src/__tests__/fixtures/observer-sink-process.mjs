@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { spawn } from "node:child_process";
 
 const [socketPath, apiUrl] = process.argv.slice(2);
+if (process.env.PAPERCLIP_AGENT_JWT_SECRET || process.env.BETTER_AUTH_SECRET) throw new Error("Sink inherited a signing secret");
 let token = null, runId = null, worker = null, checking = false, stopped = false;
 const stop = () => {
   if (stopped) return;

@@ -73,7 +73,8 @@ describe("run observer capability", () => {
     await chmod(directory, 0o700);
     const socketPath = path.join(directory, "sink.sock");
     const script = fileURLToPath(new URL("./fixtures/observer-sink-process.mjs", import.meta.url));
-    const sink = spawn(process.execPath, [script, socketPath, server.apiUrl], { stdio: ["ignore", "pipe", "pipe"] });
+    const sink = spawn(process.execPath, [script, socketPath, server.apiUrl], { stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: process.env.PATH ?? "" } });
     let output = "";
     sink.stdout.on("data", data => { output += data.toString(); });
     const waitFor = async (message: string) => {

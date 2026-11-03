@@ -155,6 +155,22 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     }
   });
 
+  it("does not dispatch the adapter when its configured observer sink is unavailable", async () => {
+    const { input, adapter, run } = await fixture();
+    const keys = ["PAPERCLIP_OBSERVER_SINK_SOCKET", "PAPERCLIP_OBSERVER_SINK_COMPANY_ID", "PAPERCLIP_OBSERVER_SINK_AGENT_ID", "PAPERCLIP_AGENT_JWT_SECRET"] as const;
+    const saved = keys.map(key => process.env[key]);
+    process.env.PAPERCLIP_OBSERVER_SINK_SOCKET = join(await realpath(home), "missing-observer.sock");
+    process.env.PAPERCLIP_OBSERVER_SINK_COMPANY_ID = run.companyId;
+    process.env.PAPERCLIP_OBSERVER_SINK_AGENT_ID = run.agentId;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "fictional-signing-secret";
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toThrow();
+      expect(adapter.execute).not.toHaveBeenCalled();
+    } finally {
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+    }
+  });
+
   it("passes preparation renewal ownership to native dispatch", async () => {
     const { input } = await fixture(true);
     const acquired = vi.fn(async () => undefined);
