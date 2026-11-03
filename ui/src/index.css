@@ -4809,7 +4809,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   background: var(--design-page-control-surface);
   color: var(--muted-foreground);
 }
-[data-canonical-toolbar] button:is([data-size="icon"], [data-size="icon-sm"], [data-size="icon-xs"], .design-toolbar-icon) {
+[data-canonical-toolbar] button:not([data-toolbar-clear]):is([data-size="icon"], [data-size="icon-sm"], [data-size="icon-xs"], .design-toolbar-icon) {
   width: var(--collection-toolbar-height);
   padding-inline: 0;
 }
@@ -4827,7 +4827,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   background: color-mix(in oklab, var(--foreground) 90%, var(--task-list-surface));
   color: var(--background);
 }
-[data-canonical-toolbar] :is(button, a[data-slot="button"]) > svg {
+[data-canonical-toolbar] :is(button:not([data-toolbar-clear]), a[data-slot="button"]) > svg {
   width: var(--design-page-icon-size);
   height: var(--design-page-icon-size);
   margin-inline: 0;

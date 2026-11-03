@@ -636,6 +636,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 
+  it.each(["closed", "denied", "failed"])("makes standalone remote MCP sign-in retryable when %s", async (outcome) => {
+    mockSearch.value = "source=composio";
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const connection = { id: "conn-provider", status: "draft", credentialPolicy: "shared" };
+    connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
+    await render();
+    await act(async () => buttonByText("Connect Composio")!.click());
+    await vi.waitFor(() => expect(popup.location.assign).toHaveBeenCalled());
+    await flushReact();
+    if (outcome === "closed") popup.closed = true;
+    else popup.location.href = `${window.location.origin}/CO/apps/connect?resume=conn-provider&oauth=${outcome}`;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(buttonByText("Try again")).toBeTruthy();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(popup.close).toHaveBeenCalled();
+  });
+
   it.each(["arcade", "composio", "executor"])("keeps a native sign-in link when direct %s navigation is blocked", async (provider) => {
     mockSearch.value = `source=${provider}`;
     const connection = { id: "conn-provider", status: "draft", credentialPolicy: "shared" };
@@ -3579,6 +3597,31 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(popupAssignMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=retry",
     );
+  });
+
+  it("reserves a new sign-in window synchronously when retry must recreate the draft", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockRejectedValueOnce(new Error("Create failed")).mockResolvedValueOnce({
+      connectionId: "conn-retried", application: { id: "app-notion", name: "Notion" },
+      connection: { id: "conn-retried", credentialPolicy: "shared", status: "draft" },
+      actions: { readOnly: [], canMakeChanges: [] }, catalog: [], suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://mcp.notion.com/authorize?state=recreated" },
+    });
+    await render();
+    await passAccessStep();
+    await submitCuratedOAuthSetup();
+    expect(container.textContent).toContain("Create failed");
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    open.mockClear();
+    let release!: (value: { connections: never[] }) => void;
+    listConnectionsMock.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await act(async () => buttonByText("Try again")!.click());
+    expect(open).toHaveBeenCalledOnce();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    await act(async () => release({ connections: [] }));
+    await vi.waitFor(() => expect(popup.location.assign).toHaveBeenCalledWith("https://mcp.notion.com/authorize?state=recreated"));
   });
 
   it("recovers a response-lost Notion draft before retrying creation", async () => {

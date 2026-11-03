@@ -2270,6 +2270,7 @@ function StandardConnectionSetupFlow({
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         onRetry={async () => {
+          reserveOAuthPopup();
           const firstAttempt = !directOAuthAccessConfirmedRef.current;
           directOAuthAccessConfirmedRef.current = true;
           setOAuthError(null);
@@ -2307,6 +2308,8 @@ function StandardConnectionSetupFlow({
               connectionsQuery.refetch(),
             ]);
             if (applicationsResult.isError || connectionsResult.isError) {
+              oauthPopupRef.current?.close();
+              oauthPopupRef.current = null;
               setOAuthPhase("error");
               setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
               return;

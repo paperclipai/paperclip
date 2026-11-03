@@ -13,6 +13,7 @@ const toolsApiMock = vi.hoisted(() => ({
   connectApp: vi.fn(),
   startOAuth: vi.fn(),
   finishApp: vi.fn(),
+  getConnection: vi.fn(),
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
@@ -174,6 +175,7 @@ function oauthConnectResult(startUrl: string | null = null): ConnectToolAppResul
 
 describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
     popupAssignMock.mockReset();
@@ -184,6 +186,8 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   });
 
   afterEach(() => {
+    flushSync(() => mountedRoot?.unmount());
+    mountedRoot = null;
     document.body.removeChild(container);
     document.body.innerHTML = "";
     vi.restoreAllMocks();
@@ -192,6 +196,7 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
 
   async function render() {
     const root = createRoot(container);
+    mountedRoot = root;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
@@ -219,6 +224,7 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
 
 describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
     popupAssignMock.mockReset();
@@ -229,6 +235,8 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   });
 
   afterEach(() => {
+    flushSync(() => mountedRoot?.unmount());
+    mountedRoot = null;
     document.body.removeChild(container);
     document.body.innerHTML = "";
     vi.restoreAllMocks();
@@ -237,6 +245,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
 
   async function render() {
     const root = createRoot(container);
+    mountedRoot = root;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
@@ -418,6 +427,44 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).toContain("Unverified server");
     expect(container.textContent).toContain("mcp.notion.com");
     expect(container.textContent).not.toContain("Review actions for notion");
+  });
+
+  it("verifies a completed sign-in and advances the original tab", async () => {
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.mocked(window.open).mockReturnValue(popup as unknown as Window);
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("https://mcp.notion.com/authorize"));
+    toolsApiMock.getConnection.mockResolvedValue({ id: "conn-1", status: "draft" });
+    await act(async () => buttonStartingWith("Check actions")!.click());
+    await flushReact();
+    await flushReact();
+    popup.location.href = `${window.location.origin}/CO/apps/other-connection/permissions?success=1`;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(toolsApiMock.getConnection).not.toHaveBeenCalled();
+    popup.location.href = `${window.location.origin}/CO/apps/conn-1/permissions?success=1`;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(toolsApiMock.getConnection).toHaveBeenCalledWith("conn-1");
+    expect(mockNavigate).not.toHaveBeenCalled();
+    toolsApiMock.getConnection.mockResolvedValue({ id: "conn-1", status: "active" });
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
+    expect(popup.close).toHaveBeenCalled();
+  });
+
+  it.each(["closed", "denied", "failed"])("offers retry after pasted-config sign-in is %s", async (outcome) => {
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.mocked(window.open).mockReturnValue(popup as unknown as Window);
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("https://mcp.notion.com/authorize"));
+    await act(async () => buttonStartingWith("Check actions")!.click());
+    await flushReact();
+    await flushReact();
+    if (outcome === "closed") popup.closed = true;
+    else popup.location.href = `${window.location.origin}/CO/apps/connect?resume=conn-1&oauth=${outcome}`;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(buttonStartingWith("Try again")).toBeTruthy();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(toolsApiMock.getConnection).not.toHaveBeenCalled();
   });
 
   it("uses the background Cloud handoff returned with an imported OAuth connection", async () => {

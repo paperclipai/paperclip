@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { CheckCircle2, KeyRound, Loader2, ShieldCheck } from "lucide-react";
@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
+import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { useNavigate } from "@/lib/router";
 import {
   OAuthConnectStateScreen,
@@ -128,14 +129,48 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     handoff?: ToolOAuthStartResult["handoff"],
   ) => {
     try {
-      await authorization.open({ authorizationUrl, handoff });
-      setAuthorizationHost(new URL(authorizationUrl, window.location.origin).host);
+      const target = await authorization.open({ authorizationUrl, handoff });
+      setAuthorizationHost(target.host);
       setOAuthPhase("redirecting");
     } catch (error) {
       setOAuthPhase("error");
       setOAuthError(error instanceof Error ? error.message : "Paperclip couldn’t start secure sign-in. Try again.");
     }
   };
+
+  const { windowRef: authorizationWindow, cancel: closeAuthorization } = authorization;
+  const oauthConnectionId = connectResult?.connectionId;
+  useEffect(() => {
+    if (oauthPhase !== "redirecting" || !oauthConnectionId) return;
+    let cancelled = false;
+    let checking = false;
+    const check = async () => {
+      if (cancelled || checking) return;
+      const outcome = readOAuthWindowOutcome(authorizationWindow.current, oauthConnectionId);
+      if (outcome === "waiting") return;
+      if (outcome !== "connected") {
+        closeAuthorization();
+        setOAuthPhase("error");
+        setOAuthError(outcome === "closed" ? "The sign-in window closed. Try again to finish connecting."
+          : outcome === "denied" ? "Sign-in was cancelled. Try again when you’re ready."
+            : "Sign-in failed. Try again to finish connecting.");
+        return;
+      }
+      checking = true;
+      try {
+        const saved = await toolsApi.getConnection(oauthConnectionId);
+        if (!cancelled && saved.status === "active") {
+          cancelled = true;
+          closeAuthorization();
+          navigate(`/apps/${oauthConnectionId}/permissions`);
+        }
+      } catch { /* A later focus or poll can retry verification. */ }
+      finally { checking = false; }
+    };
+    const timer = window.setInterval(() => void check(), 1000);
+    window.addEventListener("focus", check);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", check); };
+  }, [oauthPhase, oauthConnectionId, authorizationWindow, closeAuthorization, navigate]);
 
   const oauthStartMutation = useMutation({
     mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),

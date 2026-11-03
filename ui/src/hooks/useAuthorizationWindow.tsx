@@ -36,10 +36,11 @@ export function useAuthorizationWindow() {
         destination.location.assign(target.url);
         destination.focus();
       }
+      return target;
     } catch (error) { cancel(); throw error; }
   }, [cancel]);
   const fallback = fallbackUrl ? <Button variant="outline" asChild>
     <a href={fallbackUrl} target="_blank" rel="noopener noreferrer">Open sign-in in a new tab</a>
   </Button> : null;
-  return { reserve, open, cancel, fallback };
+  return { reserve, open, cancel, fallback, windowRef: popup };
 }
