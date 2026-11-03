@@ -440,6 +440,29 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readFile(path.join(root, "unsaved.txt"), "utf8")).toBe("preserve local work\n");
   });
 
+  it.each(["root", "secondary"] as const)("checks out a non-default remote ref in the %s repository", async kind => {
+    const origin = await repository(), { remote } = target(), root = path.join(workspace, `release-${kind}`);
+    await git(origin, "checkout", "-b", "release");
+    await fs.writeFile(path.join(origin, "release.txt"), "release branch\n");
+    await git(origin, "add", "."); await git(origin, "commit", "-m", "Release");
+    const release = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+    await git(origin, "checkout", "main");
+    if (kind === "root") await prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: root,
+      preparationIdentity: "b".repeat(64), source: { kind: "git", repoUrl: origin, ref: "release" }, resolveGitAuth: async () => null });
+    else await prepareRemoteRepository({ target: remote, remoteCwd: root, repoUrl: origin, ref: "release", resolveGitAuth: async () => null });
+    expect((await git(root, "rev-parse", "HEAD")).stdout.trim()).toBe(release);
+    expect(await fs.readFile(path.join(root, "release.txt"), "utf8")).toBe("release branch\n");
+  });
+
+  it("does not publish a secondary checkout after its configured ref fails", async () => {
+    const origin = await repository(), { remote } = target(), root = path.join(workspace, "missing-secondary-ref");
+    await expect(prepareRemoteRepository({ target: remote, remoteCwd: root, repoUrl: origin,
+      ref: "missing-ref", resolveGitAuth: async () => null })).rejects.toThrow("remote_workspace_operation_failed");
+    await expect(fs.access(root)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(prepareRemoteRepository({ target: remote, remoteCwd: root, repoUrl: origin,
+      ref: "HEAD", resolveGitAuth: async () => null })).resolves.toMatchObject({ cwd: root });
+  });
+
   it.each(["path", "file-url"] as const)("verifies an archived secondary %s repository after its local origin disappears", async sourceKind => {
     const origin = await repository(), { remote } = target();
     const repoUrl = sourceKind === "path" ? origin : pathToFileURL(origin).href;

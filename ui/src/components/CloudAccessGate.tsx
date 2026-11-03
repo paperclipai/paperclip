@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
+import { boardAccessQueryOptions } from "@/api/board-access-query";
+import { useBootstrapQuery } from "@/api/bootstrap-query";
 import { healthApi } from "@/api/health";
 import { isTemporaryApiError } from "@/api/response";
 import { useConnectivityStore } from "@/lib/connectivity";
@@ -107,13 +109,20 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     if (sessionQuery.data) clearCloudSignInAttempt();
   }, [sessionQuery.data]);
 
-  const boardAccessQuery = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
+  const sessionBootstrap = sessionQuery.isSuccess ? sessionQuery.data?.boardBootstrap : undefined;
+  const bootstrap = sessionBootstrap?.userId === sessionQuery.data?.user.id
+    && sessionBootstrap?.boardAccess.userId === sessionQuery.data?.user.id ? sessionBootstrap : undefined;
+  const boardAccessQuery = useBootstrapQuery({
+    ...boardAccessQueryOptions(
+      sessionQuery.data?.user.id ?? null,
+      sessionQuery.data?.boardBootstrap,
+      sessionQuery.dataUpdatedAt,
+      () => { void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session }); },
+    ),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
     retry: retryWhileTransient,
     retryDelay: reconnectDelayFor,
-  });
+  }, bootstrap ? { identity: bootstrap, data: bootstrap.boardAccess, updatedAt: sessionQuery.dataUpdatedAt } : undefined);
   const claimMutation = useMutation({
     mutationFn: () => accessApi.claimBootstrapAdmin(),
     onSuccess: async () => {

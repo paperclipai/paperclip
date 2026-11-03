@@ -64,10 +64,13 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(command.status).toBe(7);
     if (process.platform === "linux") {
       const parentScore = await fs.readFile("/proc/self/oom_score_adj", "utf8");
-      expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
-        env: { ...process.env, ...hookEnv.child }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      }).trim()).toBe("1000");
-      expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
+      for (const shellLevel of ["0", "1"]) {
+        expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
+          env: { ...process.env, ...hookEnv.child, SHLVL: shellLevel }, encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim()).toBe("1000");
+        expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
+      }
     }
     const config = JSON.parse(await fs.readFile(path.join(relocated, "opencode", "opencode.json"), "utf8"));
     expect(config).toMatchObject({ plugin: ["operator-plugin"], permission: { bash: "ask" } });
