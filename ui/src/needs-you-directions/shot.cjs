@@ -128,6 +128,7 @@ async function capture(browser, base, shot, outDir) {
   const page = await context.newPage();
   const problems = watch(page);
   await page.goto(shotUrl(base, shot), { waitUntil: "networkidle", timeout: 120000 });
+  await page.waitForFunction(() => { const root = document.getElementById("root"); return Boolean(root && root.innerText.trim().length > 0); }, { timeout: 120000 });
   for (const frame of page.frames()) await frame.evaluate(settleFrame);
   const file = path.join(outDir, `${shot.kit}__${shot.surface}__${shot.theme}.png`);
   await page.screenshot({ path: file, fullPage: true });
@@ -140,6 +141,7 @@ async function captureHover(browser, base, shot, outDir) {
   const page = await context.newPage();
   const problems = watch(page);
   await page.goto(shotUrl(base, shot), { waitUntil: "networkidle", timeout: 120000 });
+  await page.waitForFunction(() => { const root = document.getElementById("root"); return Boolean(root && root.innerText.trim().length > 0); }, { timeout: 120000 });
   for (const frame of page.frames()) await frame.evaluate(settleFrame);
   const target = page.locator("[data-direction] button").first();
   const file = path.join(outDir, `${shot.kit}__${shot.surface}__${shot.theme}__hover.png`);
