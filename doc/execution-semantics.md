@@ -273,6 +273,24 @@ The cancellation records the board user's identity. Its acknowledged operator
 Stop receipt keeps recovery from promoting old queued input or creating a retry
 while the task closure commits.
 
+A persisted run-only Stop can survive a controller restart before dispatch is
+acknowledged. Recovery can claim an interrupted run only for its unfinished,
+audited Stop and an authenticated existing remote session. A cleared task lock
+does not authorize new task work or replacement of another task owner. Cleanup
+reuses the run's original held budget reservation, including during a budget
+pause. It cannot create a reservation, bootstrap a runner, or submit a provider
+turn. The recovered session sends the existing Stop through the audited
+cancellation producer. Only its acknowledgement closes the execution owner.
+Cleanup skips attachment staging and warm-owner retirement. Its transport
+retains authenticated pending semantic inputs without dispatch, recovery, or a
+semantic reply. The server derives this purpose from current audited Stop,
+lease, and held-reservation authority. Closing with unanswered input requires a
+new exact provider-stop receipt confirming process exit, the durable event drain,
+and identity-checked runner suspension. The input stays unanswered; the cleanup
+purpose alone cannot certify termination. Ordinary execution retains its existing
+semantic dispatcher requirement. Missing usage remains pending accounting debt;
+a complete receipt settles the original reservation and charge once.
+
 ## 4. Agent-Owned vs User-Owned Execution
 
 The execution model differs depending on assignee type.

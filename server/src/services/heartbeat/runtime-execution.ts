@@ -1,3 +1,4 @@
+import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
@@ -113,7 +114,7 @@ export interface HeartbeatRuntimeExecutionInput {
   run: typeof heartbeatRuns.$inferSelect;
   agent: typeof agents.$inferSelect;
   options: {
-    nativeSessionBackendFactory?: (execution: NativeExecutionInput) => NativeSessionBackend;
+    nativeSessionBackendFactory?: (execution: NativeExecutionInput, context?: { recoveryPurpose: "execution" | "stop_cleanup" }) => NativeSessionBackend;
     pluginWorkerManager?: PluginWorkerManager;
   };
   task: Pick<Selection["task"], "issueContext" | "context" | "executionContinuation"> & {
@@ -605,6 +606,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           nativeDispatchAtMs,
         }),
       );
+      const stopCleanup = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
+        && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {
@@ -622,7 +625,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               restartRecovery: runOptions.nativeRestartRecovery,
               onExecutionLeaseAcquired: runOptions.onNativeExecutionLeaseAcquired,
               backend:
-                options.nativeSessionBackendFactory?.(nativeExecution),
+                stopCleanup
+                  ? options.nativeSessionBackendFactory?.(nativeExecution, { recoveryPurpose: "stop_cleanup" })
+                  : options.nativeSessionBackendFactory?.(nativeExecution),
               useRunnerd: agent.adapterType === "paperclip_runner",
               adapterType: agent.adapterType,
               sessionGoalControl,

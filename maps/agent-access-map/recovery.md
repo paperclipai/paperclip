@@ -125,6 +125,17 @@ can restore responses, safe reads recheck current authority, and uncertain
 mutations remain pending. The [remote continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
 separates real-process/scripted-provider evidence from hosted Daytona qualification.
 
+Pending run-only Stop cleanup uses the server's exact audited intent and unfinished
+coordinator. It grants no agent retry or new provider-turn authority. An existing
+remote-session claim can reuse its original held reservation during budget pause;
+fresh startup, dead-runner resume, foreign owners and missing audit proof remain
+fenced. Cleanup transport retains pending semantic input without a tool dispatch
+or reply, and grants no attachment staging or warm-owner retirement authority.
+Closing with unanswered input still requires confirmed provider exit, durable
+event drain, and exact runner suspension.
+Local PostgreSQL tests exercise the cancellation producer and late usage
+settlement. They do not prove hosted provider termination or deployed recovery.
+
 ### `observe-automatic-attempt`
 
 API: `present` — GET /api/issues/{id}/recovery-actions; GET /api/issues/{id}; GET /api/heartbeat-runs/{runId}. Automatic recovery has no generic agent-enqueue endpoint.

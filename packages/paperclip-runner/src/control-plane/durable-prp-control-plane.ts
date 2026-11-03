@@ -269,6 +269,7 @@ export interface DurablePrpControlPlaneOptions {
     readonly identity: DurableRecoveryIdentity;
     readonly warmTransitionId: string | null;
   }) => Promise<void>;
+  semanticInputMode?: "dispatch" | "retain_only";
   onSemanticToolInput?: (input: {
     readonly callId: string;
     readonly operationId: string;
@@ -1921,6 +1922,7 @@ export class DurablePrpControlPlane {
     code: string;
   }> = [];
   #port: number | null = null;
+  #semanticInputMode: "dispatch" | "retain_only";
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
@@ -1975,6 +1977,7 @@ export class DurablePrpControlPlane {
         "Warm run transition requires its exact approved runner artifact.",
       );
     }
+    this.#semanticInputMode = options.semanticInputMode ?? "dispatch";
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
@@ -2126,7 +2129,7 @@ export class DurablePrpControlPlane {
   }
 
   async recoverPendingSemanticInputs(): Promise<void> {
-    if (!this.#recoverSemanticToolInput) return;
+    if (this.#semanticInputMode === "retain_only" || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
       if (!unsettledSemanticInput(saved, this.#store.state)) continue;
@@ -3867,7 +3870,7 @@ export class DurablePrpControlPlane {
       eventType === "semantic_tool.input" || eventType === "mcp_app.tool_input";
     if (
       isSemanticInput &&
-      (this.#onSemanticToolInput === undefined ||
+      ((this.#onSemanticToolInput === undefined && this.#semanticInputMode !== "retain_only") ||
         semantic?.phase !== "input" ||
         typeof semantic.callId !== "string" ||
         typeof semantic.operationId !== "string" ||
@@ -4007,7 +4010,7 @@ export class DurablePrpControlPlane {
     }
     if (!isCurrentOwner()) return;
 
-    const liveCall = isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
+    const liveCall = this.#semanticInputMode !== "retain_only" && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
       ? { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
           sourceEventId, sourceEventType: eventType,

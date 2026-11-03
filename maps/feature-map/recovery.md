@@ -25,6 +25,17 @@ Agent access: [companion](../agent-access-map/recovery.md).
   Restart recovery respects live heartbeat preparation before workspace
   synchronization finishes. PostgreSQL regressions cover unchanged ownership,
   no duplicate dispatch, and later recovery after preparation leaves the registry.
+  An interrupted run with an audited pending Stop can reattach its exact remote
+  session only for cleanup. It reuses the original held reservation during a
+  budget pause and cannot start another provider turn. Local PostgreSQL
+  [Stop accounting](../../server/src/services/native-runtime/native-stop-accounting.integration.test.ts)
+  and [restart selection](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts)
+  tests cover cleanup acknowledgement, fenced alternatives, and receipt debt.
+  Cleanup does not stage new attachments, retire another warm owner, or replay
+  pending semantic work. Authenticated Core intake retains that input unanswered.
+  Close still requires confirmed provider exit, durable event drain, and exact
+  runner suspension; the cleanup purpose alone cannot certify termination.
+  Hosted provider settlement remains separate acceptance.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
