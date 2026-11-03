@@ -45,6 +45,8 @@ export const queryKeys = {
   apps: {
     gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
     attention: (companyId: string) => ["apps", companyId, "attention"] as const,
+    connectionReviewCounts: (companyId: string, connectionId: string) =>
+      ["apps", companyId, "attention", "connection", connectionId, "review-counts"] as const,
   },
   chatEndpoints: {
     list: (companyId: string) => ["chat-endpoints", companyId] as const,

@@ -1921,6 +1921,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(delegation);
   });
 
+  router.get("/tool-connections/:connectionId/review-counts", managementGuard("connections:read", "GET /tool-connections/:connectionId/review-counts", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const { resource } = connectionRequestContext(req)!;
+    if (!hasCompanyAccess(req, resource.companyId)) throw notFound("Tool connection not found");
+    assertCompanyAccess(req, resource.companyId);
+    res.json(await svc.getConnectionReviewCounts(resource.companyId, resource.connectionId!));
+  });
+
   router.get("/tool-connections/:connectionId/usage", managementGuard("connections:read", "GET /tool-connections/:connectionId/usage", { personal: true }), async (req, res) => {
     assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
