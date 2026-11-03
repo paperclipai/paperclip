@@ -10,6 +10,11 @@ import {
   approvals,
   authUsers,
   companies,
+  companyMemberships,
+  documents,
+  documentRevisions,
+  issuePlanDecompositions,
+  issueThreadInteractions,
   createDb,
   heartbeatRuns,
   issueApprovals,
@@ -24,6 +29,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { companyRoutes } from "../routes/companies.js";
 import { buildOpenApiSpec } from "../routes/openapi.js";
+import { registerTimelineReceiptBoundaryCases } from "./helpers/work-timeline-receipt-cases.js";
 import { normalizeTimelineWindow, workTimelineService } from "../services/work-timeline.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -50,9 +56,14 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     await db.delete(issueApprovals);
     await db.delete(approvals);
     await db.delete(heartbeatRuns);
+    await db.delete(issuePlanDecompositions);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(agentWakeupRequests);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(authUsers);
     await db.delete(companies);
   });
@@ -61,11 +72,11 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(actorUserId = "local-board", includeIssues = false) {
+  function createApp(actorUserId = "local-board", includeIssues = false, agentActor?: { companyId: string; agentId: string }) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      (req as any).actor = {
+      (req as any).actor = agentActor ? { type: "agent", source: "agent_key", ...agentActor } : {
         type: "board",
         userId: actorUserId,
         companyIds: [],
@@ -100,6 +111,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
       createdAt: new Date("2026-01-01T00:00:00Z"),
       updatedAt: new Date("2026-01-01T00:00:00Z"),
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "operator" });
     await db.insert(agents).values([
       {
         id: agentAId,
@@ -969,5 +981,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     expect(response.body.events.filter((event: { kind: string }) => event.kind === "delegated")).toEqual([]);
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
   });
+
+  registerTimelineReceiptBoundaryCases({ getDb: () => db, seedBase, createApp });
 
 });
