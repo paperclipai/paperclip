@@ -1,9 +1,9 @@
 import { and, eq } from "drizzle-orm";
-import { agents, authUsers, companyMemberships, type Db } from "@paperclipai/db";
+import { agents, authUsers, companyMemberships, issues, type Db } from "@paperclipai/db";
 
 const TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
 
-/** Called only after the viewer can read the activity's task. Never copy details. */
+/** Called only after the viewer can read the activity's task. Never copy arbitrary details. */
 export async function activityToastIdentity(
   db: Db,
   companyId: string,
@@ -11,8 +11,18 @@ export async function activityToastIdentity(
 ) {
   const actorType = typeof payload.actorType === "string" ? payload.actorType : null;
   const actorId = typeof payload.actorId === "string" ? payload.actorId : null;
-  const identity = { actorType, actorId };
-  if (!actorId || !TOAST_ACTIONS.has(String(payload.action))) return identity;
+  const actorIdentity = { actorType, actorId };
+  if (!TOAST_ACTIONS.has(String(payload.action))) return actorIdentity;
+
+  const issueId = payload.entityType === "issue" && typeof payload.entityId === "string"
+    ? payload.entityId : null;
+  const [issue] = issueId ? await db
+    .select({ identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+    .limit(1) : [];
+  const identity = { ...actorIdentity, ...(issueId ? { issueIdentifier: issue?.identifier ?? null } : {}) };
+  if (!actorId) return identity;
 
   if (actorType === "agent") {
     const [agent] = await db

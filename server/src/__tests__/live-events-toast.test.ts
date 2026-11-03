@@ -29,7 +29,7 @@ function database(onPredicate: (kind: "where" | "join", condition: SQL) => void 
       innerJoin: (_table: unknown, condition: SQL) => { onPredicate("join", condition); return query; },
       where: (condition: SQL) => { onPredicate("where", condition); return query; },
       limit: async () => {
-        if (table === "issues") return [{ id: "task" }];
+        if (table === "issues") return [{ id: "task", identifier: "PAP-1234" }];
         if (table === "company_memberships") return fields.name ? [{ name: "Alex Example", image: "/alex.png" }] : [{ id: "membership" }];
         if (table === "agents") return [{ name: "Coder", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "bubblegum-sky" } }];
         return [];
@@ -88,6 +88,7 @@ describe("authenticated activity notifications", () => {
       } });
       const [data] = await delivery;
       expect(JSON.parse(data.toString()).toastEligible).toBe(true);
+      expect(JSON.parse(data.toString()).payload.issueIdentifier).toBe("PAP-1234");
       expect(taskToastEligible).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), "local-board");
     } finally {
       socket.terminate();
@@ -123,6 +124,8 @@ describe("authenticated activity notifications", () => {
         expect(b.toastEligible).toBe(false);
         expect(a.payload.entityId).toBe(entityId);
         expect(b.payload.entityId).toBe(entityId);
+        expect(a.payload.issueIdentifier).toBe("PAP-1234");
+        expect(b.payload.issueIdentifier).toBe("PAP-1234");
         expect(original).not.toHaveProperty("toastEligible");
       }
     } finally {
@@ -132,9 +135,9 @@ describe("authenticated activity notifications", () => {
     }
   });
 
-  it("keeps actor identity after authorization and excludes hidden tasks and private details", async () => {
+  it.each(["authenticated", "local_trusted"] as const)("keeps task and actor identity for %s without exposing hidden tasks or copying private details", async (deploymentMode) => {
     const server = createServer();
-    setupLiveEventsWebSocketServer(server, database() as never, { deploymentMode: "authenticated",
+    setupLiveEventsWebSocketServer(server, database() as never, { deploymentMode,
       resolveCloudActor: async () => ({ userId: "viewer", companyIds: ["company"] }) });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -145,19 +148,21 @@ describe("authenticated activity notifications", () => {
       socket.on("message", (data) => messages.push(JSON.parse(data.toString())));
       const activity = (entityId: string, actorType = "user") => publishLiveEvent({ companyId: "company", type: "activity.logged", payload: {
         action: "issue.created", entityType: "issue", entityId, actorType, actorId: actorType === "user" ? "viewer" : "agent",
+        issueIdentifier: "SPOOF-1",
         details: { bodySnippet: "private comment", secret: "not for the socket" },
       } });
-      activity("hidden");
+      if (deploymentMode === "authenticated") activity("hidden");
       const first = once(socket, "message");
       activity("visible");
       await first;
       expect(messages).toHaveLength(1);
-      expect(messages[0].payload).toEqual({ action: "issue.created", entityType: "issue", entityId: "visible", actorType: "user", actorId: "viewer", actorName: "Alex Example", actorImage: "/alex.png" });
+      expect(messages[0].payload).toMatchObject({ action: "issue.created", entityType: "issue", entityId: "visible", issueIdentifier: "PAP-1234", actorType: "user", actorId: "viewer", actorName: "Alex Example", actorImage: "/alex.png" });
+      if (deploymentMode === "authenticated") expect(messages[0].payload).not.toHaveProperty("details");
       const second = once(socket, "message");
       activity("visible", "agent");
       await second;
-      expect(messages[1].payload).toMatchObject({ actorName: "Coder", actorType: "agent", actorId: "agent", actorAppearance: { paletteId: "bubblegum-sky" } });
-      expect(messages[1].payload).not.toHaveProperty("details");
+      expect(messages[1].payload).toMatchObject({ issueIdentifier: "PAP-1234", actorName: "Coder", actorType: "agent", actorId: "agent", actorAppearance: { paletteId: "bubblegum-sky" } });
+      if (deploymentMode === "authenticated") expect(messages[1].payload).not.toHaveProperty("details");
     } finally {
       socket.terminate();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -167,6 +172,20 @@ describe("authenticated activity notifications", () => {
 
 
 describe("activity profile query boundaries", () => {
+  it("reads the task identifier within its company even when there is no actor", async () => {
+    const predicates: { sql: string; params: unknown[] }[] = [];
+    const db = database((_kind, condition) => {
+      const { sql, params } = new PgDialect().sqlToQuery(condition);
+      predicates.push({ sql, params });
+    });
+    expect(await activityToastIdentity(db as never, "company-A", {
+      action: "issue.updated", entityType: "issue", entityId: "task-A", actorType: "system",
+    })).toMatchObject({ issueIdentifier: "PAP-1234" });
+    expect(predicates).toEqual([
+      { sql: '("issues"."company_id" = $1 and "issues"."id" = $2)', params: ["company-A", "task-A"] },
+    ]);
+  });
+
   it("requires the exact company, human actor, and active membership before reading a person profile", async () => {
     const predicates: { kind: string; sql: string; params: unknown[] }[] = [];
     const db = database((kind, condition) => {
