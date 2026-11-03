@@ -370,6 +370,8 @@ export const appReviewExternalCases = [
         "../../server/src/services/tool-action-delivery.ts",
         "../../server/src/services/tool-access-policy.ts",
         "../../ui/src/components/IssueThreadInteractionCard.tsx",
+        "../../ui/src/components/task-chat/TaskChatInteractionCard.tsx",
+        "../../ui/src/components/task-chat/TaskChatComposer.tsx",
         "chat-scenarios/app-permissions.yaml",
       ],
       async act(ctx, state) {
@@ -445,10 +447,17 @@ export const appReviewExternalCases = [
             toolName: action.toolName,
             applicationId: action.applicationId,
           };
-          const view = ctx.input.page.locator(
+          const timeline = ctx.input.page.locator(
             `[id=${JSON.stringify(`interaction-${card.id}`)}]`,
           );
+          await expect(timeline).toBeVisible();
+          await expect(timeline).toContainText("Update launch page");
+          // The timeline is a preview. Open this exact pending request before
+          // using the production decision controls in the composer takeover.
+          await timeline.getByRole("button", { name: "Review request", exact: true }).click();
+          const view = ctx.input.page.getByTestId("task-chat-composer-takeover");
           await expect(view).toBeVisible();
+          await expect(view.getByRole("img", { name: action.appDisplayName || action.toolDisplayName, exact: true })).toBeVisible();
           await expect(view).toContainText("Update launch page");
           phase.reviewVisible = true;
           if (index === 0) {
