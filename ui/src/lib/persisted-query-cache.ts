@@ -3,6 +3,7 @@ import { classifyError, isTransientError } from "@/api/errors";
 import { detachInflightGets } from "@/api/client";
 import { markCachedSession, verifyCachedSession, hasUnverifiedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
+import { createUuid } from "./uuid";
 
 export const QUERY_CACHE_PREFIX = "paperclip:query-cache:v1:";
 export const QUERY_CACHE_ACTIVE = `${QUERY_CACHE_PREFIX}active`;
@@ -170,7 +171,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     sessionEpoch += 1;
     cancelTimer();
     const previous = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));
-    const token = crypto.randomUUID();
+    const token = createUuid();
     const publish = () => {
       if (previous) storage?.setItem(revisionKey(previous), token);
       observedClear = JSON.stringify({ token, userId: previous });
