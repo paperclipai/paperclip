@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, type ReactNode, useEffect, useId, useState } from "react";
 import { AgentObservabilitySettingsSection } from "../components/observability/AgentObservabilitySettings";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +29,7 @@ import {
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
+  HintIcon,
   ToggleField,
 } from "../components/agent-config-primitives";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
@@ -55,14 +56,24 @@ export function CompanySettings() {
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
 
-  // Sync local state from selected company
+  // Sync local state from the selected company. Keyed on the saved values, not
+  // the company object: the sections that save on change (Hiring, Decisions,
+  // governance, logo) refetch the company list, and that fresh object must not
+  // wipe an unsaved name or description draft.
+  const savedName = selectedCompany?.name ?? null;
+  const savedDescription = selectedCompany?.description ?? "";
+  const savedLogoUrl = selectedCompany?.logoUrl ?? "";
+  const savedGovernance = selectedCompany?.interactionResolverGovernance;
   useEffect(() => {
-    if (!selectedCompany) return;
-    setCompanyName(selectedCompany.name);
-    setDescription(selectedCompany.description ?? "");
-    setLogoUrl(selectedCompany.logoUrl ?? "");
-    setGovernance(selectedCompany.interactionResolverGovernance ?? {});
-  }, [selectedCompany]);
+    if (savedName === null) return;
+    setCompanyName(savedName);
+    setDescription(savedDescription);
+  }, [selectedCompanyId, savedName, savedDescription]);
+  useEffect(() => {
+    if (savedName === null) return;
+    setLogoUrl(savedLogoUrl);
+    setGovernance(savedGovernance ?? {});
+  }, [selectedCompanyId, savedName, savedLogoUrl, savedGovernance]);
 
   const generalDirty =
     !!selectedCompany &&
@@ -100,21 +111,20 @@ export function CompanySettings() {
     enabled: !!selectedCompanyId,
   });
 
-  const decisionOwnerMutation = useMutation({
-    mutationFn: (defaultDecisionOwnerUserId: string | null) =>
-      companiesApi.update(selectedCompanyId!, { defaultDecisionOwnerUserId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
-  });
+  // Each owner saves on change with only its own field, so neither belongs to
+  // the General draft or its "Save changes" button. Waiting for the refetch
+  // keeps the picker on the new owner instead of flashing back to the old one.
+  async function saveDefaultDecisionOwner(defaultDecisionOwnerUserId: string | null) {
+    const company = await companiesApi.update(selectedCompanyId!, { defaultDecisionOwnerUserId });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    return company;
+  }
 
-  const budgetOwnerMutation = useMutation({
-    mutationFn: (budgetOwnerUserId: string | null) =>
-      companiesApi.update(selectedCompanyId!, { budgetOwnerUserId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
-  });
+  async function saveBudgetOwner(budgetOwnerUserId: string | null) {
+    const company = await companiesApi.update(selectedCompanyId!, { budgetOwnerUserId });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    return company;
+  }
 
   const memberOptions = (membersQuery.data?.members ?? [])
     .filter((member) => member.user?.id)
@@ -394,70 +404,67 @@ export function CompanySettings() {
 
       {/* Decisions */}
       <div className="max-w-2xl space-y-4" data-testid="company-settings-decisions-section">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Decisions
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Decisions
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Each owner saves as soon as you choose it.
+          </p>
         </div>
-        <Field
+        {membersQuery.isError && (
+          <p role="alert" className="text-xs text-destructive">
+            {membersQuery.error instanceof Error && membersQuery.error.message
+              ? `Couldn't load organization members: ${membersQuery.error.message}`
+              : "Couldn't load organization members."}
+          </p>
+        )}
+        <DecisionOwnerField
           label="Default decision owner"
           hint="When a card needs a person but has no explicit owner, it goes to this user's For you list. Leave as Unassigned to keep ownerless cards in the claimable pool."
-        >
-          <NativeSelect
-            data-testid="company-settings-default-decision-owner"
-            value={selectedCompany.defaultDecisionOwnerUserId ?? ""}
-            disabled={decisionOwnerMutation.isPending || membersQuery.isLoading}
-            onChange={(e) =>
-              decisionOwnerMutation.mutate(e.target.value === "" ? null : e.target.value)
-            }
-          >
-            <option value="">Unassigned (no default owner)</option>
-            {memberOptions}
-          </NativeSelect>
-        </Field>
-        {decisionOwnerMutation.isError && (
-          <span className="text-xs text-destructive">
-            {decisionOwnerMutation.error instanceof Error
-              ? decisionOwnerMutation.error.message
-              : "Failed to update default decision owner"}
-          </span>
-        )}
-        <Field
+          testId="company-settings-default-decision-owner"
+          unsetLabel="Unassigned (no default owner)"
+          savedUserId={selectedCompany.defaultDecisionOwnerUserId ?? null}
+          memberOptions={memberOptions}
+          membersLoading={membersQuery.isLoading}
+          fallbackError="Couldn't save the default decision owner."
+          save={saveDefaultDecisionOwner}
+        />
+        <DecisionOwnerField
           label="Budget owner"
           hint="A budget hard stop also goes to this user's For you list, with Raise limit and Keep paused. The Company view still shows it to every operator."
-        >
-          <NativeSelect
-            data-testid="company-settings-budget-owner"
-            value={selectedCompany.budgetOwnerUserId ?? ""}
-            disabled={budgetOwnerMutation.isPending || membersQuery.isLoading}
-            onChange={(e) =>
-              budgetOwnerMutation.mutate(e.target.value === "" ? null : e.target.value)
-            }
-          >
-            <option value="">No budget owner (Company view only)</option>
-            {memberOptions}
-          </NativeSelect>
-        </Field>
-        {budgetOwnerMutation.isError && (
-          <span className="text-xs text-destructive">
-            {budgetOwnerMutation.error instanceof Error
-              ? budgetOwnerMutation.error.message
-              : "Failed to update budget owner"}
-          </span>
-        )}
+          testId="company-settings-budget-owner"
+          unsetLabel="No budget owner (Company view only)"
+          savedUserId={selectedCompany.budgetOwnerUserId ?? null}
+          memberOptions={memberOptions}
+          membersLoading={membersQuery.isLoading}
+          fallbackError="Couldn't save the budget owner."
+          save={saveBudgetOwner}
+        />
       </div>
 
-      {/* Interaction governance */}
-      <InteractionGovernancePanel
-        governance={governance}
-        onChange={handleGovernanceChange}
-        isPending={governanceMutation.isPending}
-        errorMessage={
-          governanceMutation.isError
-            ? governanceMutation.error instanceof Error
-              ? governanceMutation.error.message
-              : "Failed to save interaction governance"
-            : null
-        }
-      />
+      {/* Interaction governance. Held to the form column like the sections
+          above; the wrapper scrolls rather than letting the policy grid push
+          past the column when the content area is narrow. The padding keeps
+          the selects' focus rings inside the scroll box, and the negative
+          inline margin keeps the panel aligned with the other sections. */}
+      <div
+        className="-mx-1 min-w-0 max-w-2xl overflow-x-auto p-1"
+        data-testid="company-settings-interaction-governance-frame"
+      >
+        <InteractionGovernancePanel
+          governance={governance}
+          onChange={handleGovernanceChange}
+          isPending={governanceMutation.isPending}
+          errorMessage={
+            governanceMutation.isError
+              ? governanceMutation.error instanceof Error
+                ? governanceMutation.error.message
+                : "Failed to save interaction governance"
+              : null
+          }
+        />
+      </div>
 
       <AgentObservabilitySettingsSection companyId={selectedCompanyId!} />
 
@@ -506,6 +513,84 @@ export function CompanySettings() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One Decisions owner picker. It saves on change, on its own, so the page's
+ * General "Save changes" never carries it. A real `<label htmlFor>` names the
+ * select, and the line under it reports saving, saved, or the server's error
+ * (for example the 422 for an owner who is not an active member).
+ */
+function DecisionOwnerField({
+  label,
+  hint,
+  testId,
+  unsetLabel,
+  savedUserId,
+  memberOptions,
+  membersLoading,
+  fallbackError,
+  save,
+}: {
+  label: string;
+  hint: string;
+  testId: string;
+  unsetLabel: string;
+  savedUserId: string | null;
+  memberOptions: ReactNode;
+  membersLoading: boolean;
+  fallbackError: string;
+  save: (userId: string | null) => Promise<unknown>;
+}) {
+  const controlId = useId();
+  const errorId = `${controlId}-error`;
+  const mutation = useMutation({
+    mutationFn: save,
+    // Quick successive picks save in order, so the last choice is what sticks.
+    scope: { id: `company-settings:${testId}` },
+  });
+  // Show the choice while it saves. Otherwise show what the server holds, so
+  // a rejected owner snaps back beside its error.
+  const value = mutation.isPending ? (mutation.variables ?? "") : (savedUserId ?? "");
+  const errorMessage = mutation.isError
+    ? mutation.error instanceof Error && mutation.error.message
+      ? mutation.error.message
+      : fallbackError
+    : null;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5">
+        <label htmlFor={controlId} className="text-xs text-muted-foreground">
+          {label}
+        </label>
+        <HintIcon text={hint} />
+      </div>
+      <NativeSelect
+        id={controlId}
+        data-testid={testId}
+        value={value}
+        // Not disabled while saving: disabling would drop keyboard focus.
+        disabled={membersLoading}
+        aria-busy={mutation.isPending || undefined}
+        aria-invalid={errorMessage ? true : undefined}
+        aria-describedby={errorMessage ? errorId : undefined}
+        onChange={(event) => mutation.mutate(event.target.value === "" ? null : event.target.value)}
+      >
+        <option value="">{unsetLabel}</option>
+        {memberOptions}
+      </NativeSelect>
+      {errorMessage ? (
+        <p id={errorId} role="alert" className="text-xs text-destructive">
+          {errorMessage}
+        </p>
+      ) : (
+        <p role="status" className="min-h-4 text-xs text-muted-foreground">
+          {mutation.isPending ? "Saving…" : mutation.isSuccess ? "Saved" : null}
+        </p>
+      )}
     </div>
   );
 }
