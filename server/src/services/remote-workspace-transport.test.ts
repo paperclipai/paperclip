@@ -311,6 +311,37 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
   });
 
+  it.each([
+    { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/` },
+    { step: "archive write", failing: String.raw`/workspace\.pcws$/` },
+  ])("names a full sandbox disk when the $step runs out of space", async ({ failing }) => {
+    await fs.writeFile(path.join(workspace, "result.txt"), "synthetic saved result\n");
+    // Every sandbox Node process inherits this preload and fails one write with ENOSPC.
+    const preload = path.join(scratch, "enospc.cjs");
+    await fs.writeFile(preload, String.raw`const fs=require('node:fs/promises'),failing=${failing};
+      const enospc=file=>Object.assign(new Error("ENOSPC: no space left on device, open '"+file+"'"),{code:'ENOSPC',errno:-28,syscall:'open'});
+      for(const name of ['open','writeFile']){const original=fs[name];fs[name]=async(file,...rest)=>{if(failing.test(String(file)))throw enospc(file);return original(file,...rest);};}
+      require('node:module').syncBuiltinESMExports();`);
+    const { remote, execute } = target();
+    const run = execute.getMockImplementation()!;
+    execute.mockImplementation(input => run({ ...input, env: { ...input.env, NODE_OPTIONS: `--require ${preload}` } }));
+    const operationId = randomUUID();
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
+      .rejects.toThrow(/^remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace$/);
+    const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+    const leftovers = await fs.readdir(directory).catch(() => []);
+    expect(leftovers.filter(name => name !== "archive.cjs")).toEqual([]);
+  });
+
+  it("keeps the full-disk diagnostic exact", async () => {
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", timedOut: false, signal: null, pid: process.pid,
+      startedAt: new Date().toISOString(),
+      stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace\nSYNTHETIC_PRIVATE_PATH" });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+  });
+
   it("never follows a preexisting snapshot receipt temporary symlink", async () => {
     await fs.writeFile(path.join(workspace, "result.txt"), "synthetic saved result\n");
     const operationId = randomUUID();
