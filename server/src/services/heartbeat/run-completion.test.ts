@@ -22,6 +22,7 @@ import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
 import { reserveRunBudget } from "../budget-reservations.js";
+import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -438,7 +439,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
   });
 
-  it.each(["current", "stale_snapshot", "stale_profile", "concurrent_ack"] as const)("retains an existing native Stop and receipt debt when recovery configuration fails (%s)", async mode => {
+  it.each(["current", "stale_snapshot", "stale_profile", "concurrent_ack", "handoff_ack"] as const)("retains an existing native Stop and receipt debt when recovery configuration fails (%s)", async mode => {
     const f = await fixture({ runtimeMode: "native", costAccountingPending: true,
       usageJson: { accountingReceiptReady: false, accountingReceiptSequence: 0 } });
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));
@@ -469,6 +470,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution,
       sessionCheckpoint: { identity: { ...binding, sessionId: native.normalizedSessionId }, providerSessionId: "existing-provider-session", activeTurnId: native.turnId } },
       resultJson: { oldNonControlField: "replace this stale projection", nativeCancellation, startupCancellation: { requestedAt: new Date().toISOString(), beforeNativeSelection: false },
+        ...(mode === "handoff_ack" ? { reassignmentStopRequested: true } : {}),
         executionCancellation: { state: "requested", requestedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.run.id));
     Object.assign(f.run, await read(f.run.id));
     expect(await readPendingNativeRunStop(db, f.run)).toBe(true);
@@ -477,7 +479,8 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     if (mode === "stale_snapshot") setup.run = { ...setup.run, resultJson: {} };
     if (mode === "stale_profile") setup.run = { ...setup.run, runnerProfileJson: {} };
     let expectedCancellation: Record<string, unknown> = nativeCancellation;
-    if (mode === "concurrent_ack") {
+    const acknowledged = mode === "concurrent_ack" || mode === "handoff_ack";
+    if (acknowledged) {
       const acknowledgementAuditId = randomUUID();
       await db.insert(activityLog).values({ id: acknowledgementAuditId, companyId: f.run.companyId, actorType: "system", actorId: "native-session-cancellation",
         action: "native.cancellation_dispatch_acknowledged", entityType: "heartbeat_run", entityId: f.run.id, runId: f.run.id, agentId: f.agent.id });
@@ -490,8 +493,9 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         blockerPid = backend.pid;
         const [current] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)).for("update");
         enter(); await released;
-        await tx.update(heartbeatRuns).set({ resultJson: { ...current.resultJson, nativeCancellation: expectedCancellation } })
-          .where(eq(heartbeatRuns.id, f.run.id));
+        const [committed] = await tx.update(heartbeatRuns).set({ resultJson: { ...current.resultJson, nativeCancellation: expectedCancellation } })
+          .where(eq(heartbeatRuns.id, f.run.id)).returning();
+        expect(hasAcknowledgedNativeReassignmentStopIntent(committed)).toBe(mode === "handoff_ack");
       });
       await entered;
       const failure = f.completion.failRunSetup(setup);
@@ -506,7 +510,8 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const failed = await read(f.run.id);
     expect(failed).toMatchObject({ status: "failed", errorCode: "configuration_incomplete" });
     expect.soft(failed.resultJson?.nativeCancellation).toEqual(expectedCancellation);
-    expect.soft(await readPendingNativeRunStop(db, failed)).toBe(mode !== "concurrent_ack");
+    expect.soft(await readPendingNativeRunStop(db, failed)).toBe(!acknowledged);
+    expect.soft(hasAcknowledgedNativeReassignmentStopIntent(failed)).toBe(mode === "handoff_ack");
     expect(failed.resultJson).not.toHaveProperty("oldNonControlField");
     expect.soft((failed.resultJson?.executionRecovery as Record<string, unknown> | undefined)?.providerWorkStarted).not.toBe(false);
     expect.soft(await (await import("../run-cost-accounting.js")).accountRunCost(db, f.run.id)).toBe(false);
@@ -561,6 +566,32 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       costAccountedAt: expect.any(Date), resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
     const [hold] = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, f.run.id));
     expect(hold.state).toBe("released");
+  });
+
+  it("lets a completed Stop advance its budget delivery metadata", async () => {
+    const f = await fixture({ runtimeMode: "native" });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Budget Stop delivery" }).returning();
+    const intentAuditId = randomUUID(), acknowledgementAuditId = randomUUID();
+    await db.insert(activityLog).values([
+      { id: intentAuditId, companyId: f.run.companyId, actorType: "system", actorId: "native-session-cancellation",
+        action: "native.cancellation_intent_recorded", entityType: "heartbeat_run", entityId: f.run.id, runId: f.run.id, agentId: f.agent.id },
+      { id: acknowledgementAuditId, companyId: f.run.companyId, actorType: "system", actorId: "native-session-cancellation",
+        action: "native.cancellation_dispatch_acknowledged", entityType: "heartbeat_run", entityId: f.run.id, runId: f.run.id, agentId: f.agent.id },
+    ]);
+    const nativeCancellation = { schema: "paperclip.native-cancellation.v1", companyId: f.run.companyId, runId: f.run.id, issueId: issue.id,
+      scope: "run", reasonCode: "cancellation_run_only", intentAuditId, acknowledgementAuditId, dispatched: true, dispatchState: "acknowledged" };
+    const startupCancellation = { requestedAt: new Date().toISOString(), beforeNativeSelection: false,
+      budgetEnforcement: { companyId: f.run.companyId, scopeType: "agent", scopeId: f.agent.id, policyId: randomUUID(), version: 1 } };
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, resultJson: { nativeCancellation, startupCancellation } })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    const deliveredAt = new Date().toISOString();
+    const outcome = await f.deps.setRunStatusFromLive(f.run.id, "cancelled", ["running"], {
+      finishedAt: new Date(), resultJson: { nativeCancellation, startupCancellation: {
+        ...startupCancellation, budgetEnforcement: { ...startupCancellation.budgetEnforcement, deliveredAt } } },
+    });
+    expect(outcome.updated).toBe(true);
+    expect(await read(f.run.id)).toMatchObject({ status: "cancelled", resultJson: {
+      nativeCancellation, startupCancellation: { budgetEnforcement: { deliveredAt } } } });
   });
 
   it("retains the default branch needed to repair an unresolved workspace base ref", async () => {

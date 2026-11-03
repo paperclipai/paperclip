@@ -302,8 +302,9 @@ a complete receipt settles the original reservation and charge once.
 A recovery setup failure does not establish that the original execution never
 started. Saved native execution and current Stop metadata survive configuration
 failure, including an acknowledgement committed while the terminal write waits.
-Only the bounded run-Stop fields are retained; stale result projections are
-replaced. Missing usage keeps its existing hold and accounting debt. Fresh setup
+Only the bounded run-Stop fields, including intentional handoff, are retained;
+stale result projections are replaced. Normal Stop writes can still advance
+delivery metadata. Missing usage keeps its existing hold and accounting debt. Fresh setup
 that genuinely never dispatched can still settle without a provider receipt.
 Account-identity checks continue to reject incompatible execution; preserving
 cleanup obligations does not authorize a new provider turn or repair historical

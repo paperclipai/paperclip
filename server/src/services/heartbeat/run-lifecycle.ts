@@ -664,7 +664,7 @@ function preserveNativeExecutionObligationsSql(incoming: Record<string, unknown>
       select coalesce(jsonb_object_agg(stop_field.key, stop_field.value), '{}'::jsonb)
       from jsonb_each(${heartbeatRuns.resultJson}) as stop_field(key, value)
       where stop_field.key in ('nativeCancellation', 'executionCancellation', 'startupCancellation',
-        'cancellation', 'cancelledByActorType', 'cancelledByUserId')
+        'cancellation', 'cancelledByActorType', 'cancelledByUserId', 'reassignmentStopRequested')
     ) else ${result} end`;
 }
 
@@ -1132,7 +1132,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
-              ...(patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson) } : {}),
+              ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
@@ -1236,7 +1236,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
-              ...(patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson, options?.setupFailure) } : {}),
+              ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson, options?.setupFailure) } : {}),
               ...(patch?.usageJson ? { usageJson: preserveAcceptedRunUsageProjectionSql(patch.usageJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
