@@ -2712,7 +2712,7 @@ async function hashSkillDirectory(root: string): Promise<string> {
   async function visit(candidate: string, relativePath: string): Promise<void> {
     const stat = await fs.lstat(candidate);
     if (stat.isSymbolicLink()) {
-      hash.update(`symlink:${relativePath}\n`);
+      hash.update(`symlink:${relativePath}:${await fs.readlink(candidate)}\n`);
       return;
     }
     if (stat.isDirectory()) {
@@ -2867,6 +2867,14 @@ export async function materializePaperclipSkillCopy(
   }
 
   try {
+    // A skill without a SKILL.md is not a skill. Symlinks are never copied, so a
+    // symlinked entry file would materialize an empty skill with no signal.
+    const entryStat = await fs.lstat(path.join(sourceRoot, "SKILL.md")).catch(() => null);
+    if (entryStat?.isSymbolicLink()) {
+      throw new Error(
+        "Refusing to materialize a skill whose SKILL.md is itself a symlink. Replace the link with a real file.",
+      );
+    }
     const sourceFingerprint = await hashSkillDirectory(sourceRoot);
     if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
     await copyEntry(sourceRoot, tempRoot, "");

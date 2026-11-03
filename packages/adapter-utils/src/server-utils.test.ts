@@ -206,6 +206,127 @@ describe("materializePaperclipSkillCopy", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  describe("symlinked skill entries", () => {
+    async function withRoot(fn: (root: string) => Promise<void>) {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-copy-"));
+      try {
+        await fn(root);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    }
+    const skillMdLinkError = /SKILL\.md is itself a symlink/;
+
+    it("A: refuses a symlinked skill root", async () => {
+      await withRoot(async (root) => {
+        const real = path.join(root, "real");
+        await fs.mkdir(real);
+        await fs.writeFile(path.join(real, "SKILL.md"), "# skill\n", "utf8");
+        await fs.symlink(real, path.join(root, "link"));
+        await expect(materializePaperclipSkillCopy(path.join(root, "link"), path.join(root, "t"))).rejects.toThrow(
+          /skill root that is itself a symlink/,
+        );
+      });
+    });
+
+    it("B/C: refuses a symlinked SKILL.md beside real files, every time", async () => {
+      await withRoot(async (root) => {
+        const source = path.join(root, "source");
+        const target = path.join(root, "target");
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(root, "canonical.md"), "# real\n", "utf8");
+        await fs.writeFile(path.join(source, "notes.md"), "n\n", "utf8");
+        await fs.symlink(path.join(root, "canonical.md"), path.join(source, "SKILL.md"));
+        await expect(materializePaperclipSkillCopy(source, target)).rejects.toThrow(skillMdLinkError);
+        await expect(materializePaperclipSkillCopy(source, target)).rejects.toThrow(skillMdLinkError);
+        await expect(fs.stat(target)).rejects.toThrow();
+      });
+    });
+
+    it("D: refuses a dangling SKILL.md link, and repointing at a valid file still refuses", async () => {
+      await withRoot(async (root) => {
+        const source = path.join(root, "source");
+        const target = path.join(root, "target");
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(source, "notes.md"), "n\n", "utf8");
+        await fs.symlink(path.join(root, "missing.md"), path.join(source, "SKILL.md"));
+        await expect(materializePaperclipSkillCopy(source, target)).rejects.toThrow(skillMdLinkError);
+        await fs.writeFile(path.join(root, "a.md"), "# a\n", "utf8");
+        await fs.rm(path.join(source, "SKILL.md"));
+        await fs.symlink(path.join(root, "a.md"), path.join(source, "SKILL.md"));
+        await expect(materializePaperclipSkillCopy(source, target)).rejects.toThrow(skillMdLinkError);
+      });
+    });
+
+    it("D: replacing the link with a real file heals the skill", async () => {
+      await withRoot(async (root) => {
+        const source = path.join(root, "source");
+        const target = path.join(root, "target");
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(root, "a.md"), "# a\n", "utf8");
+        await fs.symlink(path.join(root, "a.md"), path.join(source, "SKILL.md"));
+        await expect(materializePaperclipSkillCopy(source, target)).rejects.toThrow(skillMdLinkError);
+        await fs.rm(path.join(source, "SKILL.md"));
+        await fs.writeFile(path.join(source, "SKILL.md"), "# real\n", "utf8");
+        await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
+        await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# real\n");
+      });
+    });
+
+    it("E: refuses when the symlinked SKILL.md is the only file", async () => {
+      await withRoot(async (root) => {
+        const source = path.join(root, "source");
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(root, "x.md"), "x\n", "utf8");
+        await fs.symlink(path.join(root, "x.md"), path.join(source, "SKILL.md"));
+        await expect(materializePaperclipSkillCopy(source, path.join(root, "t"))).rejects.toThrow(skillMdLinkError);
+      });
+    });
+
+    it("refuses even when a stale manifest already matches", async () => {
+      await withRoot(async (root) => {
+        const source = path.join(root, "source");
+        const target = path.join(root, "target");
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+        await materializePaperclipSkillCopy(source, target);
+        await fs.rm(path.join(source, "SKILL.md"));
+        await fs.writeFile(path.join(root, "x.md"), "x\n", "utf8");
+        await fs.symlink(path.join(root, "x.md"), path.join(source, "SKILL.md"));
+        await expect(materializePaperclipSkillCopy(source, target)).rejects.toThrow(skillMdLinkError);
+      });
+    });
+
+    it("control: a real SKILL.md edited in place re-materializes", async () => {
+      await withRoot(async (root) => {
+        const source = path.join(root, "source");
+        const target = path.join(root, "target");
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(source, "SKILL.md"), "# one\n", "utf8");
+        await materializePaperclipSkillCopy(source, target);
+        await fs.writeFile(path.join(source, "SKILL.md"), "# two\n", "utf8");
+        await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
+        await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# two\n");
+      });
+    });
+
+    it("re-materializes when a nested (non-entry) symlink is repointed", async () => {
+      await withRoot(async (root) => {
+        const source = path.join(root, "source");
+        const target = path.join(root, "target");
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+        await fs.symlink(path.join(root, "a"), path.join(source, "extra.md"));
+        const first = await materializePaperclipSkillCopy(source, target);
+        expect(first.skippedSymlinks).toEqual(["extra.md"]);
+        await fs.rm(path.join(source, "extra.md"));
+        await fs.symlink(path.join(root, "b"), path.join(source, "extra.md"));
+        // Fingerprint changed, so the copy ran again (SKILL.md recopied).
+        await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
+      });
+    });
+  });
 });
 
 describe("adapter skill snapshots", () => {
