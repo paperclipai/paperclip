@@ -54,6 +54,14 @@ runner startup and provider startup. Shell operations acquire credentials for
 the active run through that broker. They do not require a persistent GitHub CLI
 login or inherit an ambient host broker capability.
 
+Claude through native ACPX retains the controller-projected broker URL and
+session/bridge capabilities alongside its managed launcher paths. Both isolated
+and preconfigured homes use this transport for shell `git` and `gh` operations.
+These capabilities stay out of persisted session environment data. Raw GitHub
+tokens remain confined to each managed command; ambient host capabilities and
+task-supplied broker overrides are excluded. A working connector tool alone does
+not prove that the terminal received its broker transport.
+
 Without a managed identity, local commits default to
 `Paperclip <noreply@paperclip.ing>`. The launcher writes this token-free default
 to a private per-operation global Git configuration file, removed on exit.
