@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { availableParallelism, loadavg } from "node:os";
@@ -74,6 +75,13 @@ const scenarios = quick ? ["ordered"] : ["ordered", "replay", "late-gap", "warm-
 const workload = { histories, pairs, events, groups, scenarios, payloadTextBytes: 128, warmSourceOffset: 1000,
   seed: "native-event-ingestion-v1", retainedHistory: "vacuum-analyzed", quick };
 const workloadSha256 = createHash("sha256").update(JSON.stringify(workload)).digest("hex");
+// GNU ps reports CPU time in whole seconds. Read Linux process clock ticks
+// directly; resolve their frequency once, outside every measured interval.
+const databaseCpuClockTicks = process.platform === "linux"
+  ? Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8" }).trim()) : null;
+if (databaseCpuClockTicks !== null) assert.ok(Number.isFinite(databaseCpuClockTicks) && databaseCpuClockTicks > 0);
+const databaseCpuResolutionMillis = databaseCpuClockTicks !== null ? 1000 / databaseCpuClockTicks
+  : process.platform === "darwin" ? 10 : null;
 const output = arg("output");
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EVENT_INGESTION_BENCHMARK_DATABASE_URL");
 if (externalUrl) assert.ok(["127.0.0.1", "localhost"].includes(new URL(externalUrl).hostname), "Use a disposable local database");
@@ -108,7 +116,8 @@ const report: Record<string, unknown> = {
   scope: "Real append service / real PostgreSQL; closed-loop service cost, not assembled application, browser, or hosted acceptance",
   phase, baselineRevision, candidateRevision, workload, workloadSha256,
   baselineSourceSha256: createHash("sha256").update(baselineSource).digest("hex"),
-  measurement: { warmups: 2, pairedOrder: "alternating", cache: "warm; seed and projection preparation excluded", databaseCpuResolutionMillis: 10 },
+  measurement: { warmups: 2, pairedOrder: "alternating", cache: "warm; seed and projection preparation excluded", databaseCpuResolutionMillis,
+    databaseCpuSource: databaseCpuClockTicks === null ? "ps process CPU time" : "/proc/PID/stat utime+stime clock ticks" },
   environment: { node: process.version, platform: process.platform, architecture: process.arch, cpus: availableParallelism(), loadBefore },
   results: [], incomplete: true, cleanupComplete: false,
 };
@@ -120,6 +129,12 @@ async function save() {
 
 function backendCpuMillis(pid: number): number | null {
   if (process.platform === "win32") return null;
+  if (databaseCpuClockTicks !== null) {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // Fields after the parenthesized comm begin at field 3 (state).
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+    return (Number(fields[11]) + Number(fields[12])) / databaseCpuClockTicks * 1000;
+  }
   const value = execFileSync("ps", ["-o", "time=", "-p", String(pid)], { encoding: "utf8" }).trim();
   const parts = value.split(":").map(Number);
   return parts.length >= 2 && parts.every(Number.isFinite)
