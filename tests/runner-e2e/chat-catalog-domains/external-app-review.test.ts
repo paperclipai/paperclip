@@ -314,6 +314,7 @@ it.each([
   ["You declined. If you want the edit I already applied, approve a new request.", false],
   ["You declined. If you would like the proposal I have written for your review, approve a new request.", true],
   ["You declined. If you would like the draft I have saved in the notes app, approve a new request.", false],
+  ["I declined the request. In the notes app, I have saved a draft for your review.", false],
 ] as const)("the whole grade preserves saved boundaries and checks the declined reply: %s", (reply, passed) => {
   const o = valid();
   o.phaseReplies[0]!.body = reply;
