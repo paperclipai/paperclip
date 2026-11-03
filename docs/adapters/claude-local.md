@@ -62,9 +62,19 @@ workspace the agent runs in gets the same hooks without a manual step:
 Paperclip appends each managed hook group to the workspace's own groups for that
 event, and it skips a group that is already present. A managed `env` value
 overrides a workspace value with the same key. The `permissions` block is not
-changed. A value that is not an object of hook groups and string values adds
-nothing. Only a board user or the API can set `adapterConfig`, because agent
-credentials cannot change another agent's adapter config.
+changed.
+
+Paperclip records the groups and env keys that it manages in its own run state,
+keyed by the workspace path. On the next run it removes the previous managed
+entries before it applies the current ones. An edit or a removal of
+`managedHooks` therefore takes effect, and a hook group that you wrote yourself
+stays.
+
+A value that is not a set of hook groups (each group holds a list of commands
+with a `type`, and a `command` for `type: "command"`) and string env values adds
+nothing. On a local run the file is `<cwd>/.claude/settings.local.json`. An
+agent credential cannot set `managedHooks`, because agent key updates to
+`command`, `env` and the other host-executed keys are refused.
 
 An edit to `managedHooks` starts a new Claude session. The SDK reads the settings
 file when the process starts, so a warm session keeps the old block.

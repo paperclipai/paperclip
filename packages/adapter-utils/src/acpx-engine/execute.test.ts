@@ -3014,6 +3014,49 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(written.env).toEqual({ KEEP_ME: "1", MEMORY_LOG_FILE: "/managed/plugin.log" });
   });
 
+  it("removes the previous managed block when the operator edits or clears managedHooks", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    const userStop = { hooks: [{ type: "command", command: "echo user-stop" }] };
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".claude", "settings.local.json"),
+      JSON.stringify({ hooks: { Stop: [userStop] } }, null, 2),
+      "utf8",
+    );
+    const base = { agent: "claude", stateDir, cwd };
+    const v1 = { hooks: [{ type: "command", command: "node v1.js" }] };
+    const v2 = { hooks: [{ type: "command", command: "node v2.js" }] };
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const readSettings = async () =>
+      JSON.parse(await fs.readFile(settingsPath, "utf8")) as {
+        hooks?: Record<string, unknown[]>;
+        env?: Record<string, string>;
+      };
+
+    await runExecutor(
+      { ...base, managedHooks: { hooks: { SessionStart: [v1] }, env: { MANAGED_LOG: "/v1.log" } } },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+    expect((await readSettings()).hooks?.SessionStart).toEqual([v1]);
+
+    await runExecutor(
+      { ...base, managedHooks: { hooks: { SessionStart: [v2] }, env: { MANAGED_LOG: "/v2.log" } } },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+    const edited = await readSettings();
+    expect(edited.hooks?.SessionStart).toEqual([v2]);
+    expect(edited.hooks?.Stop).toEqual([userStop]);
+    expect(edited.env).toEqual({ MANAGED_LOG: "/v2.log" });
+
+    await runExecutor(base, { context: { paperclipWorkspace: { cwd } } });
+    const cleared = await readSettings();
+    expect(cleared.hooks?.SessionStart).toBeUndefined();
+    expect(cleared.hooks?.Stop).toEqual([userStop]);
+    expect(cleared.env).toBeUndefined();
+  });
+
   it("ignores a malformed managedHooks value instead of writing it to the settings file", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -3025,7 +3068,14 @@ describe("shared ACPX engine runtime behavior", () => {
         agent: "claude",
         stateDir,
         cwd,
-        managedHooks: { hooks: "not-an-object", env: { BROKEN: 42, "  ": "blank-key" } },
+        managedHooks: {
+          hooks: {
+            SessionStart: ["not-a-group"],
+            Stop: [{ hooks: "wrong" }, {}, { hooks: [{ type: "command" }] }],
+            UserPromptSubmit: [{ matcher: 7, hooks: [{ type: "command", command: "echo hi" }] }],
+          },
+          env: { BROKEN: 42, "  ": "blank-key" },
+        },
       },
       { context: { paperclipWorkspace: { cwd } } },
     );

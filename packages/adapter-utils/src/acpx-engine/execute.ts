@@ -1649,22 +1649,57 @@ interface PaperclipClaudeManagedHooks {
   env: Record<string, string>;
 }
 
+function isManagedHookCommand(value: unknown): boolean {
+  const entry = parseObject(value);
+  if (typeof entry.type !== "string" || entry.type.trim().length === 0) return false;
+  if (entry.type === "command") return typeof entry.command === "string" && entry.command.trim().length > 0;
+  return true;
+}
+
+function isManagedHookGroup(value: unknown): boolean {
+  const group = parseObject(value);
+  if (group.matcher !== undefined && typeof group.matcher !== "string") return false;
+  if (!Array.isArray(group.hooks) || group.hooks.length === 0) return false;
+  return group.hooks.every((entry) => isManagedHookCommand(entry));
+}
+
 function normalizeManagedHooks(value: unknown): PaperclipClaudeManagedHooks {
   const source = parseObject(value);
   const hooks: Record<string, unknown[]> = {};
   const env: Record<string, string> = {};
   for (const [event, groups] of Object.entries(parseObject(source.hooks))) {
     if (!Array.isArray(groups)) continue;
-    const entries = groups.filter(
-      (group): group is Record<string, unknown> =>
-        typeof group === "object" && group !== null && !Array.isArray(group),
-    );
+    const entries = groups.filter((group) => isManagedHookGroup(group)) as Record<string, unknown>[];
     if (entries.length > 0) hooks[event] = entries;
   }
   for (const [key, entry] of Object.entries(parseObject(source.env))) {
     if (key.trim().length > 0 && typeof entry === "string") env[key] = entry;
   }
   return { hooks, env };
+}
+
+interface ManagedHooksManifest {
+  hooks: Record<string, unknown[]>;
+  envKeys: string[];
+}
+
+function managedHooksManifestPath(stateDir: string, cwd: string): string {
+  const workspaceKey = createHash("sha256").update(path.resolve(cwd)).digest("hex").slice(0, 16);
+  return path.join(stateDir, "claude-managed-hooks", `${workspaceKey}.json`);
+}
+
+async function readManagedHooksManifest(filePath: string): Promise<ManagedHooksManifest> {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => null);
+  if (!raw) return { hooks: {}, envKeys: [] };
+  try {
+    const parsed = parseObject(JSON.parse(raw));
+    const envKeys = Array.isArray(parsed.envKeys)
+      ? parsed.envKeys.filter((key): key is string => typeof key === "string")
+      : [];
+    return { hooks: normalizeManagedHooks({ hooks: parsed.hooks }).hooks, envKeys };
+  } catch {
+    return { hooks: {}, envKeys: [] };
+  }
 }
 
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
@@ -1739,8 +1774,20 @@ async function writePaperclipClaudeSettings(input: {
     defaultMode,
   };
   const managedHooks = normalizeManagedHooks(input.managedHooks);
-  const existingHooks = parseObject(existing.hooks);
-  const mergedHooks: Record<string, unknown> = { ...existingHooks };
+  const manifestPath = managedHooksManifestPath(input.stateDir, input.cwd);
+  const previousManaged = await readManagedHooksManifest(manifestPath);
+  const mergedHooks: Record<string, unknown> = { ...parseObject(existing.hooks) };
+  for (const [event, groups] of Object.entries(previousManaged.hooks)) {
+    if (!Array.isArray(mergedHooks[event])) continue;
+    const owned = new Set(groups.map((group) => stableJson(group)));
+    const kept = (mergedHooks[event] as unknown[]).filter((entry) => !owned.has(stableJson(entry)));
+    if (kept.length > 0) mergedHooks[event] = kept;
+    else delete mergedHooks[event];
+  }
+  const mergedEnv: Record<string, unknown> = { ...parseObject(existing.env) };
+  for (const key of previousManaged.envKeys) {
+    if (!(key in managedHooks.env)) delete mergedEnv[key];
+  }
   for (const [event, groups] of Object.entries(managedHooks.hooks)) {
     const current = Array.isArray(mergedHooks[event]) ? [...(mergedHooks[event] as unknown[])] : [];
     for (const group of groups) {
@@ -1752,14 +1799,34 @@ async function writePaperclipClaudeSettings(input: {
   const managedHookEvents = Object.keys(managedHooks.hooks);
   const managedHookCount = managedHookEvents.reduce((total, event) => total + managedHooks.hooks[event].length, 0);
   const managedEnvKeys = Object.keys(managedHooks.env);
+  const previousHookEvents = Object.keys(previousManaged.hooks);
+  const hooksChanged = managedHookEvents.length > 0 || previousHookEvents.length > 0;
+  const envChanged = managedEnvKeys.length > 0 || previousManaged.envKeys.length > 0;
   const next: Record<string, unknown> = { ...existing, permissions: nextPermissions };
-  if (managedHookEvents.length > 0) next.hooks = mergedHooks;
-  if (managedEnvKeys.length > 0) next.env = { ...parseObject(existing.env), ...managedHooks.env };
+  if (hooksChanged) {
+    if (Object.keys(mergedHooks).length > 0) next.hooks = mergedHooks;
+    else delete next.hooks;
+  }
+  if (envChanged) {
+    const nextEnv = { ...mergedEnv, ...managedHooks.env };
+    if (Object.keys(nextEnv).length > 0) next.env = nextEnv;
+    else delete next.env;
+  }
   await writeFileAtomically({
     target: filePath,
     contents: `${JSON.stringify(next, null, 2)}\n`,
     mode: 0o600,
   });
+  if (managedHookEvents.length > 0 || managedEnvKeys.length > 0) {
+    await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+    await writeFileAtomically({
+      target: manifestPath,
+      contents: `${JSON.stringify({ hooks: managedHooks.hooks, envKeys: managedEnvKeys }, null, 2)}\n`,
+      mode: 0o600,
+    });
+  } else {
+    await fs.rm(manifestPath, { force: true }).catch(() => undefined);
+  }
   return {
     filePath,
     allow: mergedAllow,
