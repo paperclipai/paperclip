@@ -43,6 +43,27 @@ const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 // Issue statuses that mean the work is finished. A descendant in any other status
 // is still an open unit of work under the source issue.
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+
+/**
+ * True when a run reached a terminal state WITHOUT ever starting.
+ *
+ * The scheduler cancels a run before dispatch for reasons that have nothing to
+ * do with the seat's behaviour: the per-agent daily run cap was already
+ * reached, the issue was reassigned, the issue went terminal, dependencies
+ * were still blocked. Such a run produced no output, no comment and no next
+ * action - so it cannot be evidence that the agent "stayed silent on a
+ * completed run", exactly like a provider-quota refusal (TON-981).
+ *
+ * The distinction is `started_at IS NULL`: a run that did start and then died
+ * (`failed`, `timed_out`, a `cancelled` run that was interrupted mid-flight)
+ * DID have the chance to comment, so it still counts.
+ */
+function isNeverStartedTerminalRun(run: { status: string | null; startedAt: Date | null }): boolean {
+  if (!TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number])) {
+    return false;
+  }
+  return !run.startedAt;
+}
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 // How many runs are SCANNED before provider-quota failures are removed. The
@@ -84,6 +105,7 @@ type ProductivityReviewEvidence = {
   totalRunCount: number;
   terminalRunCount: number;
   providerQuotaExcludedRunCount: number;
+  neverStartedExcludedRunCount: number;
   activeRunCount: number;
   runCountLastHour: number;
   runCountLastSixHours: number;
@@ -396,14 +418,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }
 
   /**
-   * Counts the runs in a rolling window, EXCLUDING the runs that died on a
-   * provider-quota refusal.
+   * Counts the runs in a rolling window, EXCLUDING the runs that never
+   * started: provider-quota refusals, and runs the scheduler cancelled before
+   * dispatch (daily run cap, reassignment, terminal issue).
    *
-   * A quota-failed run never started: it produced no output, no comment and no
-   * next action. Counting it as agent activity measures the outage, not the
-   * seat - the same false positive the no-comment streak used to produce
-   * (TON-981). The classification is done in-process (rather than with
-   * `count(*)`) so that it uses the exact same classifier as the streak.
+   * A run that never started produced no output, no comment and no next
+   * action. Counting it as agent activity measures the outage or the
+   * scheduler, not the seat - the same false positive the no-comment streak
+   * used to produce (TON-981). The classification is done in-process (rather
+   * than with `count(*)`) so that it uses the exact same classifier as the
+   * streak.
    */
   async function countEligibleIssueRunsSince(
     companyId: string,
@@ -413,6 +437,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const rows = await db
       .select({
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
         errorCode: heartbeatRuns.errorCode,
         error: heartbeatRuns.error,
         errorFamily: sql<string | null>`${heartbeatRuns.resultJson}->>'errorFamily'`,
@@ -441,7 +467,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
     let excluded = 0;
     for (const row of rows) {
-      if (isFlattenedProviderQuotaFailedRun(row)) excluded += 1;
+      if (isFlattenedProviderQuotaFailedRun(row) || isNeverStartedTerminalRun(row)) {
+        excluded += 1;
+      }
     }
     return { count: rows.length - excluded, excluded };
   }
@@ -582,7 +610,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     // measured the outage instead of the seat, and generated 30+ bogus
     // "Review productivity for ..." cards (TON-981).
     const quotaFailedRuns = scannedRuns.filter((run) => isProviderQuotaFailedRun(run));
-    const eligibleRuns = scannedRuns.filter((run) => !isProviderQuotaFailedRun(run));
+    const neverStartedRuns = scannedRuns.filter(
+      (run) => !isProviderQuotaFailedRun(run) && isNeverStartedTerminalRun(run),
+    );
+    const eligibleRuns = scannedRuns.filter(
+      (run) => !isProviderQuotaFailedRun(run) && !isNeverStartedTerminalRun(run),
+    );
     const latestRuns = eligibleRuns.slice(0, MAX_RUNS_FOR_STREAK);
 
     const runIds = latestRuns.map((run) => run.id);
@@ -698,6 +731,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       totalRunCount: latestRuns.length,
       terminalRunCount: terminalRuns.length,
       providerQuotaExcludedRunCount: quotaFailedRuns.length,
+      neverStartedExcludedRunCount: neverStartedRuns.length,
       activeRunCount,
       runCountLastHour,
       runCountLastSixHours,
@@ -782,6 +816,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
       `- Terminal sampled runs: ${evidence.terminalRunCount}`,
       `- Provider-quota-failed runs excluded from the sample: ${evidence.providerQuotaExcludedRunCount} (these runs never started, so they cannot count as silence)`,
+      `- Runs cancelled before dispatch (never started) excluded from the sample: ${evidence.neverStartedExcludedRunCount} (daily run cap, reassignment or terminal issue - not the agent's silence)`,
       `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
       `- No-comment completed-run streak: ${evidence.noCommentStreak}`,
       `- Current active elapsed time: ${msToHuman(evidence.elapsedMs)}`,

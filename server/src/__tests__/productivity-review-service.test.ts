@@ -203,6 +203,43 @@ describeEmbeddedPostgres("productivity review service", () => {
     return runs;
   }
 
+  /**
+   * Inserts runs the scheduler cancelled BEFORE dispatch (daily run cap
+   * reached, issue reassigned, issue already terminal). `started_at IS NULL`
+   * is the marker: the run never started, so it produced no output and no
+   * comment and cannot count toward the no-comment streak (TON-981).
+   */
+  async function insertNeverStartedRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    count: number;
+    now: Date;
+    errorCode?: string;
+  }) {
+    const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
+    for (let index = 0; index < input.count; index += 1) {
+      const createdAt = new Date(input.now.getTime() - index * 60_000);
+      runs.push({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "cancelled",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: null,
+        finishedAt: null,
+        error: "Cancelled before dispatch",
+        errorCode: input.errorCode ?? "heartbeat.daily_run_limit",
+        contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
+    await db.insert(heartbeatRuns).values(runs);
+    return runs;
+  }
+
   async function listProductivityReviews(companyId: string) {
     return db
       .select()
@@ -328,6 +365,99 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain(
       "Provider-quota-failed runs excluded from the sample: 5",
     );
+  });
+
+  it("does not fire a no-comment streak when every sampled run was cancelled before dispatch", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // Cancelled before dispatch (daily run cap, reassignment, terminal
+    // issue): the run never started, so it cannot have commented.
+    await insertNeverStartedRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS * 2,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not let runs cancelled before dispatch break a real no-comment streak", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // Real, completed runs that produced no comment - these DO count.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: new Date(now.getTime() - 60 * 60 * 1000),
+    });
+    // Cancelled-before-dispatch runs are newer; they must be skipped entirely
+    // rather than terminating or extending the streak.
+    await insertNeverStartedRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 5,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+    expect(reviews[0]?.description).toContain(
+      "Runs cancelled before dispatch (never started) excluded from the sample: 5",
+    );
+  });
+
+  it("still counts a run that started and then failed as silence", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // These runs STARTED and then died mid-flight. They had the chance to
+    // comment and did not, so they remain evidence of agent silence.
+    const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
+    for (let index = 0; index < DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS; index += 1) {
+      const createdAt = new Date(now.getTime() - index * 60_000);
+      runs.push({
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        status: "failed",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 30_000),
+        error: "Process lost -- server may have restarted",
+        errorCode: "process_lost",
+        contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
+    await db.insert(heartbeatRuns).values(runs);
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
