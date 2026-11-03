@@ -216,11 +216,11 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
-test("runner authorization uses hosted capacity and executes metadata checks only", () => {
+test("runner authorization uses reserved capacity and executes metadata checks only", () => {
   const workflow = readFileSync(routingWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow.split(/^jobs:\n/m)[1]);
   assert.deepEqual([...jobs.keys()], ["gate"]);
-  assert.match(jobs.get("gate"), /^ {4}runs-on: ubuntu-latest$/m);
+  assert.match(jobs.get("gate"), /runs-on\/fleet=paperclip-ci-routing-x64\/env=public-ci/);
   assert.doesNotMatch(jobs.get("gate"), /uses:|actions\/checkout|secrets\./);
   assert.match(workflow, /^ {6}runner:\n {8}value: \$\{\{ jobs\.gate\.outputs\.runner \}\}$/m);
   assert.match(workflow, /^ {6}full_ci:\n {8}value: \$\{\{ jobs\.gate\.outputs\.full_ci \}\}$/m);
