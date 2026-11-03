@@ -64,7 +64,10 @@ function forkCopyExplained(reply: string, forkName: string) {
     const claim = /\b(?:use|assign)\b[^.!?\n]{0,50}\b(?:upstream|original source|another copy|different copy|unrelated copy)\b/i.exec(sentence);
     return !!claim && !/\b(?:not|never|don't|don’t)\s*$/i.test(sentence.slice(0, claim.index));
   };
-  return reply.includes(forkName) && (copyOutcome || preservedSource)
+  const escapedName = forkName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const refusedCopy = new RegExp(`\\b(?:don't|don’t|do not|never|avoid)\\s+(?:use|assign(?: to)?)\\s+${escapedName}`, "i");
+  const unusableCopy = new RegExp(`${escapedName}\\s+(?:is|remains)\\s+not\\s+(?:for|usable for)\\s+(?:use|assignments?)\\b`, "i");
+  return reply.includes(forkName) && !refusedCopy.test(reply) && !unusableCopy.test(reply) && (copyOutcome || preservedSource)
     && !sentences.some(sentence => falseSourceEdit(sentence) || wrongDestination(sentence)
       || source.test(sentence) && (negatedPreservation.test(sentence) || differentSource.test(sentence)));
 }

@@ -65,7 +65,13 @@ describe("fork preservation explanation semantic calibration", () => {
     const reply = "I saved the mobile checks in the editable copy Accessibility local notes; use that copy for assignments.";
     expect(gradeIntegratorSkillImports({ ...valid("skills.fork-read-only"), reply }).passed).toBe(true);
   });
+  it("allows declining an upstream edit while directing actual copy use", () => {
+    const reply = "Don't edit the upstream; use Accessibility local notes for the mobile checks.";
+    expect(gradeIntegratorSkillImports({ ...valid("skills.fork-read-only"), reply }).passed).toBe(true);
+  });
   for (const reply of [
+    "Don't use Accessibility local notes. The upstream is untouched.",
+    "Accessibility local notes is not for assignments. The upstream is unchanged.",
     "Accessibility local notes is updated. The upstream is not untouched.",
     "Accessibility local notes is updated. The upstream was not left unmodified.",
     "Accessibility local notes is updated. The upstream is untouched. I edited the upstream.",
