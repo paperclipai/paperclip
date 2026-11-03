@@ -65,6 +65,30 @@ describe("persisted read cache", () => {
     expect(client.getQueryData(queryKeys.auth.session)).toMatchObject({ user: { id: "bob" } });
   });
 
+  it("strips embedded documents and capabilities from real task-shaped responses and nested inbox rows", () => {
+    const first = setup(); seed(first.client);
+    const task = { id: "task-one", companyId: "company-one", title: "Saved task", description: "Approved task description",
+      planDocument: { id: "plan-one", key: "plan", format: "markdown", body: "excluded-plan-body" },
+      legacyPlanDocument: { body: "excluded-legacy-body" }, documentSummaries: [{ key: "plan" }],
+      workProducts: [{ type: "preview_url", url: "https://viewer.example.test/excluded-capability" }] };
+    first.client.setQueryData([...queryKeys.issues.detail(task.id), "core"], task);
+    first.client.setQueryData([...queryKeys.issues.listMineByMe("company-one"), "index", "with-routine-executions", "live-descendant-summary", 100, "alice"], [task]);
+    first.client.setQueryData(queryKeys.agents.list("company-one"), [{ id: "agent-one", name: "Saved agent", adapterConfig: { Authorization: "excluded-header", access_token: "excluded-token" }, runtimeConfig: { env: { OPENAI_API_KEY: "excluded-env-token" } } }]);
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toMatch(/excluded-/);
+    const key = `${QUERY_CACHE_PREFIX}alice:company-one`;
+    const record = JSON.parse(first.storage.getItem(key)!);
+    record.state.queries.find((query: { queryKey: string[] }) => query.queryKey[1] === "detail").state.data.planDocument = { body: "excluded-old-body" };
+    first.storage.setItem(key, JSON.stringify(record));
+    const restored = setup(first.storage);
+    const cached = restored.client.getQueryData([...queryKeys.issues.detail(task.id), "core"]);
+    expect(cached).toMatchObject({ description: "Approved task description" });
+    expect(cached).not.toHaveProperty("planDocument");
+    expect(cached).not.toHaveProperty("legacyPlanDocument");
+    expect(cached).not.toHaveProperty("workProducts");
+    expect(restored.client.getQueryData(queryKeys.agents.list("company-one"))).toEqual([{ id: "agent-one", name: "Saved agent" }]);
+  });
+
   it("counts a task's UUID and identifier reads as one recent task", () => {
     const first = setup(); seed(first.client);
     for (let i = 0; i < 20; i += 1) {
@@ -155,6 +179,24 @@ describe("persisted read cache", () => {
     expect([...first.storage.values.values()].join(" ")).not.toContain("Saved task");
   });
 
+  it.each([{ status: 403, uncachedAlias: false }, { status: 404, uncachedAlias: false }, { status: 403, uncachedAlias: true }])("evicts UUID, identifier, core and inbox copies after a $status task denial (uncached alias=$uncachedAlias)", async ({ status, uncachedAlias }) => {
+    const first = setup(); seed(first.client);
+    const task = { id: "task-one", identifier: "TST-1", companyId: "company-one", title: "Denied task body" };
+    const keys = [queryKeys.issues.detail(task.id), [...queryKeys.issues.detail(task.id), "core"],
+      queryKeys.issues.detail(task.identifier), [...queryKeys.issues.detail(task.identifier), "core"]];
+    for (const key of keys) first.client.setQueryData(key, task);
+    first.client.setQueryData([...queryKeys.issues.listMineByMe("company-one"), "index", "with-routine-executions", "live-descendant-summary", 100, "alice"], [task]);
+    first.handle.flush();
+    await first.client.fetchQuery({ queryKey: uncachedAlias ? [...queryKeys.issues.detail("tst-1"), "core"] : keys[3]!, queryFn: async () => { throw new ApiError("Denied", status, null); } }).catch(() => {});
+    for (const key of keys) expect(first.client.getQueryData(key)).toBeUndefined();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Denied task body");
+    const restored = setup(first.storage);
+    for (const key of keys) expect(restored.client.getQueryData(key)).toBeUndefined();
+    await first.client.fetchQuery({ queryKey: keys[3]!, queryFn: async () => ({ ...task, title: "Access restored" }) });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).toContain("Access restored");
+  });
+
   it("tolerates unavailable or corrupt storage", () => {
     const storage = new MemoryStorage();
     storage.setItem(QUERY_CACHE_ACTIVE, "alice");
@@ -196,11 +238,41 @@ describe("persisted read cache", () => {
     handles.push(() => { handle.dispose(); client.clear(); });
     const account = bindAccount(client);
     clearPersistedQueryCache(first.client);
-    events.dispatchEvent(Object.assign(new Event("storage"), { key: QUERY_CACHE_CLEARED, newValue: "signed-out" }));
+    events.dispatchEvent(Object.assign(new Event("storage"), { key: QUERY_CACHE_CLEARED, newValue: first.storage.getItem(QUERY_CACHE_CLEARED) }));
     expect(client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
     expect(client.getQueryData(queryKeys.auth.session)).toBeNull();
     expect(account.isCurrentScope()).toBe(false);
     handle.flush();
     expect(first.storage.getItem(QUERY_CACHE_ACTIVE)).toBeNull();
+  });
+
+  it.each(["sign-out", "session-ended"])("rejects a delayed tab flush and stale records after %s, while preserving a newer account", async ended => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const events = new EventTarget();
+    const second = startPersistedQueryCache(client, { storage: first.storage, buildId: "build-one", eventTarget: events as Window });
+    handles.push(() => { second.dispose(); client.clear(); });
+    await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => session(), staleTime: 0 });
+    second.flush();
+    const oldRecords = [...first.storage.values].filter(([key]) => key.startsWith(QUERY_CACHE_PREFIX));
+    if (ended === "sign-out") first.handle.clear();
+    else await first.client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => null, staleTime: 0 });
+    const token = first.storage.getItem(QUERY_CACHE_CLEARED);
+    second.flush();
+    expect(first.storage.getItem(QUERY_CACHE_ACTIVE)).toBeNull();
+    for (const [key, value] of oldRecords) first.storage.setItem(key, value);
+    const cold = setup(first.storage);
+    expect(cold.client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+    for (const [key, value] of oldRecords) first.storage.setItem(key, value);
+    events.dispatchEvent(Object.assign(new Event("storage"), { key: QUERY_CACHE_CLEARED, newValue: token }));
+    expect([...first.storage.values.keys()].filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toHaveLength(0);
+    const bob = new QueryClient();
+    bob.setQueryData(queryKeys.auth.session, session("bob"));
+    const fresh = setup(first.storage, undefined, bob);
+    seed(bob, "bob", "company-two");
+    fresh.handle.flush();
+    events.dispatchEvent(Object.assign(new Event("storage"), { key: QUERY_CACHE_CLEARED, newValue: token }));
+    expect(first.storage.getItem(QUERY_CACHE_ACTIVE)).toBe("bob");
+    expect(first.storage.getItem(`${QUERY_CACHE_PREFIX}bob:root`)).toContain('"bob"');
   });
 });

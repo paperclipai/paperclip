@@ -49,7 +49,7 @@ export function bindAccount(client: QueryClient) {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (stopped || (account.owner !== undefined && !hasUnverifiedSession(client)) || !isCurrentScope()) return;
         try {
-          await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession(), retry: false });
+          await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession(), retry: false, staleTime: 0 });
           return;
         } catch (error) {
           if (stopped || (account.owner !== undefined && !hasUnverifiedSession(client)) || !isCurrentScope()) return;

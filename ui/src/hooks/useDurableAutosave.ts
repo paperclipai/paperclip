@@ -8,6 +8,7 @@ import { classifySendFailure, MAX_ONLINE_RESENDS, resendDelayFor, type SendOutco
 import { useAutoResend } from "./useDurableSubmit";
 import { useDraftOwner, useDraftOwnerReader } from "./useDraftOwner";
 import { trackPendingWrite } from "@/lib/reload-safety";
+import { hasUnverifiedSession } from "@/lib/cached-session";
 
 export type DurableAutosaveStatus =
   | "idle"
@@ -263,7 +264,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       return { kind: "saved" };
     };
     try {
-      if (!mounted.current && job.account && !job.account.isCurrentAccount()) {
+      if (job.account && (!mounted.current || (client && hasUnverifiedSession(client))) && !job.account.isCurrentAccount()) {
         try { await job.account.whenAccountReady(); }
         catch {
           // Session discovery has not attempted the write. Keep its draft within
@@ -272,6 +273,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
           return { kind: "waiting" };
         }
       }
+      if (client && hasUnverifiedSession(client)) { publish("waiting"); return { kind: "waiting" }; }
       if (!stillOwned()) { remove(); return { kind: "waiting" }; }
       await job.save(job.draft);
       return done();
@@ -291,7 +293,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       remove();
       return { kind: "failed", error: cause };
     } finally { finishWrite(); job.saving = false; if (mounted.current) refresh(value => value + 1); else detachedWake.current?.(); }
-  }, [clearTimers, store, readOwner]);
+  }, [clearTimers, store, readOwner, client]);
   const run = useCallback(async (draft: T, overrides: DurableAutosaveJob<T> = {}) => {
     const current = optionsRef.current;
     const target = current.targetKey ?? current.sourceId;

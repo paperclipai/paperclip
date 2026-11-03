@@ -9,6 +9,8 @@ import { authApi } from "@/api/auth";
 import { useSignOut } from "./useSignOut";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { markCachedSession } from "@/lib/cached-session";
+import { startPersistedQueryCache } from "@/lib/persisted-query-cache";
 import {
   ConnectivityProvider,
   createConnectivityStore,
@@ -81,6 +83,32 @@ describe("useDurableAutosave", () => {
     act(() => current.markDirty());
     act(() => current.reset());
     expect(hasPendingWrites()).toBe(false);
+  });
+
+  it.each(["user-1", "user-2"])("verifies a restored identity before a mounted plain autosave (%s)", async verifiedUser => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    let complete!: (id: string) => void;
+    const lookup = vi.spyOn(authApi, "getSession").mockReturnValue(new Promise(resolve => {
+      complete = id => resolve({ user: { id } } as never);
+    }));
+    const save = vi.fn().mockResolvedValue(undefined);
+    try {
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="cached-document" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      let saving!: ReturnType<typeof current.run>;
+      act(() => { saving = current.run("Private text"); });
+      expect(lookup).toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      await act(async () => { complete(verifiedUser); await saving; });
+      expect(save).toHaveBeenCalledTimes(verifiedUser === "user-1" ? 1 : 0);
+    } finally {
+      act(() => root.unmount()); root = createRoot(container);
+      cache.dispose(); client.clear(); lookup.mockRestore();
+    }
   });
 
   it("keeps a conflict verification read pending through an outage", async () => {
