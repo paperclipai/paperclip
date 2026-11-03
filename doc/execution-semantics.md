@@ -2377,6 +2377,15 @@ runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file
 size. Remote checkpoint archive and expanded-size limits remain 64 MiB.
 
+Remote provider checkpoints normally apply exclusions through a filtered copy
+inside the sandbox. If that copy fails with a full-disk diagnostic, the controller
+removes the partial copy and passes the exclusions to the provider's sync-out.
+That transfer can stream without another sandbox archive. Provider exclusions can
+also omit a nested entry with the same name; credentials remain excluded. Other
+copy failures and timeouts still fail. Workspace capture itself still needs free
+sandbox space. Its failed save operation names `remote_workspace_sandbox_disk_full`
+when that capacity is exhausted, without changing retry or ownership rules.
+
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in
 UTF-8 pages under the same task, agent, and responsible-user access checks.
