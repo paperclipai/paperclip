@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
+import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   approvals,
   authUsers,
@@ -19,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
 import { companyRoutes } from "../routes/companies.js";
 import { normalizeTimelineWindow, workTimelineService } from "../services/work-timeline.js";
 
@@ -47,6 +50,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     await db.delete(approvals);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(authUsers);
     await db.delete(companies);
@@ -56,13 +60,13 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp() {
+  function createApp(actorUserId = "local-board", includeIssues = false) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       (req as any).actor = {
         type: "board",
-        userId: "local-board",
+        userId: actorUserId,
         companyIds: [],
         memberships: [],
         source: "local_implicit",
@@ -71,6 +75,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
       next();
     });
     app.use("/api/companies", companyRoutes(db, {} as any));
+    if (includeIssues) app.use("/api", issueRoutes(db, {} as any));
     app.use(errorHandler);
     return app;
   }
@@ -569,6 +574,50 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
         if (kind !== "null") expect(assignmentEdges[0]).toMatchObject({ at: createdAt.toISOString(), toActorId: `agent:${agentAId}` });
       }
     }
+  });
+
+  it("uses actual PATCH receipts to separate repeated owners from reassignment and unassignment", async () => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.companyId, companyId));
+    const issueId = randomUUID();
+    const createdAt = new Date(Date.now() - 60_000);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Producer receipt launch",
+      status: "todo", priority: "medium", assigneeAgentId: agentAId, createdByUserId: userId, createdAt, updatedAt: createdAt });
+    const app = createApp(userId, true);
+    const repeated = await request(app).patch(`/api/issues/${issueId}`).send({ status: "backlog", assigneeAgentId: agentAId });
+    expect(repeated.status, JSON.stringify(repeated.body)).toBe(200);
+    const repeatedEvent = (await db.select().from(activityLog)).find(row => row.action === "issue.updated" && row.entityId === issueId)!;
+    expect(repeatedEvent).toMatchObject({ actorType: "user", actorId: userId });
+    const details = repeatedEvent.details as Record<string, any>;
+    expect(details.assigneeAgentId).toBe(agentAId);
+    expect(Object.keys(details.changes)).toContain("status");
+    expect(details.changes).not.toHaveProperty("assigneeAgentId");
+    expect(details._previous).not.toHaveProperty("assigneeAgentId");
+    const timeline = async () => {
+      const response = await request(app).get(`/api/companies/${companyId}/timeline`)
+        .query({ issueId, from: new Date(createdAt.getTime() - 1000).toISOString(), to: new Date().toISOString() });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      return response.body;
+    };
+    const unchanged = await timeline();
+    expect(unchanged.events.filter((event: { kind: string }) => event.kind === "assigned")).toEqual([]);
+    expect(unchanged.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual([
+      { fromActorId: `user:${userId}`, toActorId: `agent:${agentAId}`, issueId, at: createdAt.toISOString(), kind: "assignment" },
+    ]);
+    const reassigned = await request(app).patch(`/api/issues/${issueId}`).send({ assigneeAgentId: agentBId });
+    expect(reassigned.status, JSON.stringify(reassigned.body)).toBe(200);
+    const changed = await timeline();
+    expect(changed.events.filter((event: { kind: string }) => event.kind === "assigned")).toEqual([
+      expect.objectContaining({ actorId: `user:${userId}`, issueId, kind: "assigned" }),
+    ]);
+    expect(changed.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual([
+      expect.objectContaining({ fromActorId: `user:${userId}`, toActorId: `agent:${agentBId}`, issueId }),
+    ]);
+    const unassigned = await request(app).patch(`/api/issues/${issueId}`).send({ assigneeAgentId: null });
+    expect(unassigned.status, JSON.stringify(unassigned.body)).toBe(200);
+    const cleared = await timeline();
+    expect(cleared.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual(changed.edges.filter((edge: { kind: string }) => edge.kind === "assignment"));
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
   });
 
   it("serves GET /api/companies/:companyId/timeline", async () => {

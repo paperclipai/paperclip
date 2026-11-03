@@ -77,6 +77,7 @@ it.each([
   "Today (UTC): Morgan's verification failed and work paused. Avery handed it to Riley. Riley fixed the label and the command passed. Neither native run failed.",
   "Today (UTC): Morgan's verification failed and work paused. The task was reassigned to Riley by Avery. Riley fixed the label and the command passed. Did a native run fail? Both native runs succeeded.",
   "Today (UTC): Morgan's verification failed and work paused. You reassigned the task to Riley. Riley fixed the label and the command passed. If a native run failed, it would be recorded; both native runs succeeded.",
+  "Today (UTC): Morgan's verification failed and work paused. The task was reassigned to Riley by the operator. Riley fixed the label and the command passed.",
   "Today (UTC): Overview: Riley completed the repair. First Morgan's verification failed and the task was blocked. Then the board reassigned the task to Riley. Riley fixed the input and the check passed.",
 ])("accepts a complete attributed account regardless of incidental first mentions: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
@@ -91,6 +92,9 @@ it.each([
   "Today (UTC): Morgan's verification failed and work paused. Jordan reassigned the task to Riley. Riley repaired the label and the check passed.",
   "Today (UTC): Morgan's verification failed and work paused. Jordan the human reassigned the task to Riley. Riley repaired the label and the check passed.",
   "Today (UTC): Morgan's verification failed and work paused. Another person reassigned the task to Riley. Riley repaired the label and the check passed.",
+  "Today (UTC): Morgan's verification failed and work paused. A human watched while Morgan reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today (UTC): Morgan's verification failed and work paused. You asked Morgan to reassign the task to Riley. Riley fixed the label and the check passed.",
+  "Today (UTC): Morgan's verification failed and work paused. Morgan reassigned the task to Riley while watched by a human. Riley fixed the label and the check passed.",
   "Today (UTC): Morgan's native run failed and work paused. The human reassigned the task to Riley. Riley repaired the label and the check passed.",
 ])("rejects missing, wrong or unordered consequential actors: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
