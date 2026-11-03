@@ -1656,9 +1656,6 @@ export function agentRoutes(
     // are never exposed. Mutations and environment probes still gate on
     // agents:create or agents:configure via the mutating route helpers.
     //
-    // For AGENT actors we keep a stricter gate: an agent must have either
-    // agents:configure or agents:suggest-changes before it can inspect peer
-    // agent configuration for a proposed diff.
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
       const decision = await access.decide({
@@ -1683,7 +1680,7 @@ export function agentRoutes(
     return agent;
   }
 
-  async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
+  async function actorCanReadConfigurationsForCompany(req: Request, companyId: string, targetAgentId?: string) {
     // Mirrors assertCanReadConfigurations but returns a boolean instead of
     // throwing. Board actors only need company access; agent actors must pass
     // the agent configuration read grant ladder so peer agents cannot snoop
@@ -1697,7 +1694,8 @@ export function agentRoutes(
     const decision = await access.decide({
       actor: req.actor,
       action: "agent_config:read",
-      resource: { type: "company", companyId },
+      resource: targetAgentId ? { type: "agent", companyId, agentId: targetAgentId } : { type: "company", companyId },
+      ...(targetAgentId ? { scope: { targetAgentId } } : {}),
     });
     return decision.allowed;
   }
@@ -1839,6 +1837,7 @@ export function agentRoutes(
       actor: req.actor,
       action: "agent_config:read",
       resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      scope: { targetAgentId: targetAgent.id },
     });
     if (decision.allowed) return;
 
@@ -3799,7 +3798,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    await assertCanReadAgent(req, agent);
 
     const adapter = findActiveServerAdapter(agent.adapterType);
     if (!adapter?.listSkills) {
@@ -4188,7 +4187,7 @@ export function agentRoutes(
     }
     const canReadSensitiveDetail = isSelf
       ? true
-      : await actorCanReadConfigurationsForCompany(req, agent.companyId);
+      : await actorCanReadConfigurationsForCompany(req, agent.companyId, agent.id);
     if (!canReadSensitiveDetail) {
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
@@ -4203,7 +4202,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    await assertCanReadAgent(req, agent);
     res.json(redactAgentConfiguration(agent));
   });
 
@@ -4214,7 +4213,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    await assertCanReadAgent(req, agent);
     const revisions = await svc.listConfigRevisions(id);
     res.json(revisions.map((revision) => redactConfigRevision(revision)));
   });
@@ -4227,7 +4226,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    await assertCanReadAgent(req, agent);
     const revision = await svc.getConfigRevision(id, revisionId);
     if (!revision) {
       res.status(404).json({ error: "Revision not found" });

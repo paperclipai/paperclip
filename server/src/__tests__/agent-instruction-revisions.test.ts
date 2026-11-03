@@ -64,6 +64,20 @@ describe("canonical instruction revisions", () => {
   async function save(content: string, baseRevisionId: string | null) {
     return service.commit({ ...target(), entryFile, content, baseRevisionId, source: "cleanup" }, actor);
   }
+  it("reads peer instructions with read-only agent and responsible-user grants but denies saves", async () => {
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+    await db.insert(principalPermissionGrants).values([
+      { companyId, principalType: "user", principalId: userId, permissionKey: "agents:read", scope: { agentIds: [agentId] } },
+      { companyId, principalType: "agent", principalId: actorId, permissionKey: "agents:read", scope: { agentIds: [agentId] } },
+    ]);
+    const first = await base();
+    expect(first.content).toBe(initial);
+    await expect(service.history({ ...target(), entryFile }, actor)).resolves.toMatchObject({ revisions: [] });
+    await expect(save("read access cannot write", first.revision.id)).rejects.toMatchObject({ status: 403 });
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));
+    await expect(base()).rejects.toMatchObject({ status: 403 });
+    expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+  });
   it.each(["current", "history", "revision", "diff", "candidates"])("denies peer %s reads without a configuration grant or responsible-user target access", async (operation) => {
     const first = await base();
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));

@@ -18,6 +18,51 @@ it("preserves the actual workspace preparation error without changing retry auth
     .not.toHaveProperty("workspaceFailure");
 });
 
+function operatorStoppedRun() {
+  return { ...run, status: "cancelled", runtimeMode: "native" as const, companyId: issue.companyId,
+    nativeIssueId: issue.id, errorCode: "cancelled", resultJson: {
+      cancelledByActorType: "user", cancelledByUserId: "board",
+      executionCancellation: { state: "requested" },
+      nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: run.id,
+        companyId: issue.companyId, issueId: issue.id, scope: "run",
+        reasonCode: "cancellation_run_only", dispatched: true, dispatchState: "acknowledged",
+        intentAuditId: "intent", acknowledgementAuditId: "ack" },
+    } };
+}
+
+describe("intentional native Stop presentation", () => {
+  const workingIssue = { ...issue, status: "in_progress" };
+  it("does not offer a failed-attempt Retry for an audited operator Stop that keeps its task in progress", () => {
+    expect(projectTaskInterruption(workingIssue, { run: operatorStoppedRun(), agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false, userAction: null });
+    expect(workingIssue.status).toBe("in_progress");
+  });
+
+  it.each([{ runId: "foreign" }, { companyId: "foreign" }, { issueId: "foreign" },
+    { dispatchState: "pending" }, { dispatched: false }, { acknowledgementAuditId: undefined },
+    { intentAuditId: 123 }, { acknowledgementAuditId: {} },
+    { scope: "subtree" }])("retains failure presentation without the matching operator receipt %j", change => {
+    const stopped = operatorStoppedRun();
+    expect(projectTaskInterruption(workingIssue, { run: { ...stopped, resultJson: { ...stopped.resultJson,
+      nativeCancellation: { ...stopped.resultJson.nativeCancellation, ...change } } }, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("keeps pause, approval, non-user cancellation and new input authoritative", () => {
+    const stopped = operatorStoppedRun();
+    expect(projectTaskInterruption(workingIssue, { run: stopped, agent, paused: true, approval: false }))
+      .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
+    expect(projectTaskInterruption(workingIssue, { run: stopped, agent, paused: false, approval: true }))
+      .toMatchObject({ state: "waiting_for_user", userAction: "approval" });
+    expect(projectTaskInterruption(workingIssue, { run: { ...stopped, resultJson: {
+      ...stopped.resultJson, cancelledByActorType: "system" } }, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(workingIssue, { run: stopped, agent, paused: false, approval: false,
+      wait: { id: "new-input", requestedAt: new Date() } }))
+      .toMatchObject({ state: "working", canRetry: false });
+  });
+});
+
 it("preserves a provider explanation on a failed task without changing retry authority", () => {
   const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "rate_limit", message: "API error: 429 This request would exceed your account's rate limit.",

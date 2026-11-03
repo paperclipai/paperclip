@@ -16407,6 +16407,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           runtimeGeneration: Number(oldWindow.generation) + 1 } as typeof endpoint.setup }).where(eq(chatEndpoints.id, endpoint.id));
       };
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let pauseRearm = false;
+      let rearmEntered = false;
+      let releaseRearm!: () => void;
+      const rearmMayFinish = new Promise<void>(resolve => { releaseRearm = resolve; });
+      const register = coordinator.register.bind(coordinator);
+      const registration = vi.spyOn(coordinator, "register").mockImplementation((queue, task) => register(queue, {
+        ...task,
+        hasPending: async () => {
+          const pending = await task.hasPending();
+          if (pauseRearm) {
+            const window = (await f.checkpoint()).value as Record<string, unknown>;
+            if (window.generation === Number(oldWindow.generation) + 1 && window.outcome === "epoch_initialized") {
+              rearmEntered = true;
+              await rearmMayFinish;
+            }
+          }
+          return pending;
+        },
+      }));
       let release!: () => void;
       let pending: Promise<unknown> | undefined;
       try {
@@ -16420,16 +16439,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await held;
         expect((await f.checkpoint()).version).toBe(old.version);
         expect(f.requests).toEqual([]);
-        release(); await pending;
+        pauseRearm = true; release(); await pending;
         await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
           generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
+        await expect.poll(() => rearmEntered, { timeout: 5000 }).toBe(true);
         expect(f.requests).toEqual([]);
-        // The checkpoint commits before this coordinator pass rearms its deadline.
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+        pauseRearm = false;
+        releaseRearm();
         await expect.poll(() => {
           const next = coordinator.nextWakeAt();
-          return next !== null && next < Date.now() + 90_000;
-        }, { timeout: 5000 }).toBe(true);
-      } finally { release?.(); await pending; await coordinator.stop(); }
+          return { active: idleWorkSnapshot().active, bounded: next !== null && next < Date.now() + 90_000 };
+        }, { timeout: 5000 }).toEqual({ active: 0, bounded: true });
+        expect(f.requests).toEqual([]);
+      } finally { releaseRearm(); release?.(); await pending; await coordinator.stop(); registration.mockRestore(); }
     });
 
     it("preempts a future GitHub recovery window when only credential references change", async () => {
@@ -74864,7 +74888,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("settles responses on different endpoints for one principal without retrying its own identity lock", async () => {
+  it.each(["initial", "rescoped"] as const)("settles responses on different endpoints for one principal without retrying its own identity lock: %s", async (mode) => {
     const fixture = await seedCompany();
     const first = await configuredSlackEndpoint(fixture);
     const second = await configuredSlackEndpoint(fixture);
@@ -74882,10 +74906,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const functionName = `hold_identity_${randomUUID().replaceAll("-", "")}`;
     await db.execute(sql.raw(`create function ${functionName}() returns trigger language plpgsql as $$ begin perform pg_sleep(0.1); return NEW; end $$`));
     await db.execute(sql.raw(`create trigger ${functionName} before insert on issue_comments for each row execute function ${functionName}()`));
+    const scopedWork = await import("../services/scoped-deadline-work.js");
+    const register = scopedWork.registerScopedDeadlineWork;
+    let invalidated = false;
+    let invalidateSource: (() => void) | undefined;
+    const registration = vi.spyOn(scopedWork, "registerScopedDeadlineWork").mockImplementation((owner, options, canRun) =>
+      register(owner, { ...options, load: async (scope, signal) => {
+        const entries = await options.load(scope, signal);
+        // An authority registration can invalidate discovery while its read is
+        // in flight. The real worker retains another pass under its deadline.
+        if (mode === "rescoped" && !invalidated) {
+          invalidated = true;
+          invalidateSource!();
+        }
+        return entries;
+      } }, canRun));
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    invalidateSource = () => worker.invalidate();
+    registration.mockRestore();
     try {
       await worker.ready;
       await expect.poll(() => idleWorkSnapshot().active, { timeout: 10_000 }).toBe(0);
+      if (mode === "rescoped") {
+        expect(invalidated).toBe(true);
+        expect(coordinator.nextWakeAt()).not.toBeNull();
+      }
+      await expect.poll(async () => Promise.all(contexts.map(async context =>
+        (await db.select({ id: issueComments.id }).from(issueComments)
+          .where(eq(issueComments.createdByRunId, context.runId))).length)), { timeout: 10_000 }).toEqual([1, 1]);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, nextWakeAt: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, nextWakeAt: null });
       expect(errors).toEqual([]);
       for (const context of contexts) {
         const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId));

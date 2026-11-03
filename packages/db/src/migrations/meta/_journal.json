@@ -2948,6 +2948,13 @@
       "when": 1793503729899,
       "tag": "0422_eminent_darwin",
       "breakpoints": true
+    },
+    {
+      "idx": 423,
+      "version": "7",
+      "when": 1793685600000,
+      "tag": "0423_agent_config_read_defaults",
+      "breakpoints": true
     }
   ]
 }

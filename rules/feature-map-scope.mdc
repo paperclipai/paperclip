@@ -1,0 +1,44 @@
+---
+description: Reserve feature-map additions for substantial new features and avoid incidental map updates.
+globs: "maps/**"
+alwaysApply: false
+---
+
+# Feature maps require substantial new features
+
+Applies to changes under `maps/`, especially `maps/feature-map/` and its
+same-named agent-access companions.
+
+## Requirements
+
+- Add a feature recipe, capability ID, sub-feature, entry point, or descriptive
+  expansion only for a substantial new user-facing feature: a distinct,
+  meaningful task that users could not previously perform and that an existing
+  capability does not already cover. A new workflow such as reusable scheduled
+  routines qualifies; an extra sort option in an existing task list does not.
+- Leave maps unchanged for routine bug fixes, small behavior adjustments, UI or
+  copy polish, additional filters or settings within an existing capability,
+  refactors, performance work, logging, and test changes. Code changes alone do
+  not require a map update, regardless of how many files they touch.
+- Do not append implementation details, edge-case narratives, regression notes,
+  test results, or PR summaries to existing recipes to document small updates.
+  Keep those in the relevant tests, technical docs, PR, or issue.
+- Keep additions focused on the new feature and reuse existing capability IDs
+  when they already cover the work. Do not expand unrelated recipes or companion
+  files. When the feature threshold is unclear, leave the maps unchanged.
+
+## Existing-entry corrections
+
+Instructions to keep maps synchronized require a minimal correction only when an
+existing entry would become materially inaccurate, such as a removed entry
+point, changed access requirement, or obsolete user journey. Correct or remove
+the affected text in place and preserve stable IDs; this does not justify new
+capabilities or incidental detail. Explicitly requested map maintenance may fix
+existing entries but must apply the same threshold to additions.
+
+## Review
+
+For every addition, identify the substantial new user capability and why an
+existing entry cannot cover it. Reject additions for minor updates and unrelated
+map edits. For corrections, check that the edit fixes a concrete inaccuracy and
+stays limited to the affected entry.

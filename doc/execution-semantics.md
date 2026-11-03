@@ -299,6 +299,20 @@ purpose alone cannot certify termination. Ordinary execution retains its existin
 semantic dispatcher requirement. Missing usage remains pending accounting debt;
 a complete receipt settles the original reservation and charge once.
 
+A recovery setup failure does not establish that the original execution never
+started. A same-run, company- and issue-bound coordinator attempt proves that
+native execution or result finalization was entered; selected input alone does
+not. Setup-failure writes lock that coordinator before the run, so a concurrently
+committed claim cannot be missed. Current Stop metadata survives configuration
+failure, including an acknowledgement committed while the terminal write waits.
+Only the bounded run-Stop fields, including intentional handoff, are retained;
+stale result projections are replaced. Normal Stop writes can still advance
+delivery metadata. Missing usage keeps its existing hold and accounting debt. Fresh setup
+that genuinely never dispatched can still settle without a provider receipt.
+Account-identity checks continue to reject incompatible execution; preserving
+cleanup obligations does not authorize a new provider turn or repair historical
+state that was already overwritten.
+
 ## 4. Agent-Owned vs User-Owned Execution
 
 The execution model differs depending on assignee type.
@@ -2376,6 +2390,15 @@ Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file
 size. Remote checkpoint archive and expanded-size limits remain 64 MiB.
+
+Remote provider checkpoints normally apply exclusions through a filtered copy
+inside the sandbox. If that copy fails with a full-disk diagnostic, the controller
+removes the partial copy and passes the exclusions to the provider's sync-out.
+That transfer can stream without another sandbox archive. Provider exclusions can
+also omit a nested entry with the same name; credentials remain excluded. Other
+copy failures and timeouts still fail. Workspace capture itself still needs free
+sandbox space. Its failed save operation names `remote_workspace_sandbox_disk_full`
+when that capacity is exhausted, without changing retry or ownership rules.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in
