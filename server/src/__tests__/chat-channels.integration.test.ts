@@ -74864,7 +74864,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("settles responses on different endpoints for one principal without retrying its own identity lock", async () => {
+  it.each(["initial", "rescoped"] as const)("settles responses on different endpoints for one principal without retrying its own identity lock: %s", async (mode) => {
     const fixture = await seedCompany();
     const first = await configuredSlackEndpoint(fixture);
     const second = await configuredSlackEndpoint(fixture);
@@ -74882,10 +74882,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const functionName = `hold_identity_${randomUUID().replaceAll("-", "")}`;
     await db.execute(sql.raw(`create function ${functionName}() returns trigger language plpgsql as $$ begin perform pg_sleep(0.1); return NEW; end $$`));
     await db.execute(sql.raw(`create trigger ${functionName} before insert on issue_comments for each row execute function ${functionName}()`));
+    const scopedWork = await import("../services/scoped-deadline-work.js");
+    const register = scopedWork.registerScopedDeadlineWork;
+    let invalidated = false;
+    let invalidateSource: (() => void) | undefined;
+    const registration = vi.spyOn(scopedWork, "registerScopedDeadlineWork").mockImplementation((owner, options, canRun) =>
+      register(owner, { ...options, load: async (scope, signal) => {
+        const entries = await options.load(scope, signal);
+        // An authority registration can invalidate discovery while its read is
+        // in flight. The real worker retains another pass under its deadline.
+        if (mode === "rescoped" && !invalidated) {
+          invalidated = true;
+          invalidateSource!();
+        }
+        return entries;
+      } }, canRun));
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    invalidateSource = () => worker.invalidate();
+    registration.mockRestore();
     try {
       await worker.ready;
       await expect.poll(() => idleWorkSnapshot().active, { timeout: 10_000 }).toBe(0);
+      if (mode === "rescoped") {
+        expect(invalidated).toBe(true);
+        expect(coordinator.nextWakeAt()).not.toBeNull();
+      }
+      await expect.poll(async () => Promise.all(contexts.map(async context =>
+        (await db.select({ id: issueComments.id }).from(issueComments)
+          .where(eq(issueComments.createdByRunId, context.runId))).length)), { timeout: 10_000 }).toEqual([1, 1]);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, nextWakeAt: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, nextWakeAt: null });
       expect(errors).toEqual([]);
       for (const context of contexts) {
         const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId));
