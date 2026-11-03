@@ -61,6 +61,8 @@ if [ -f "$CONFIG_JSON" ]; then
       checks.push(["7 revisores registrados", reviewers.length === 7]);
       checks.push(["oro en sesión nueva (subagent)", reviewers.every((n) => agents[n].mode === "subagent")]);
       checks.push(["oro en jaula read-only", reviewers.every((n) => JSON.stringify(agents[n].permission || {}).includes("\"grep\":\"deny\"") || JSON.stringify(agents[n].permission || {}).includes("\"grep\": \"deny\""))]);
+      checks.push(["oro NO puede escribir", reviewers.every((n) => agents[n].permission?.edit === "deny" && agents[n].permission?.write === "deny")]);
+      checks.push(["oro puede leer el artefacto", reviewers.every((n) => JSON.stringify(agents[n].permission?.external_directory || {}).includes("/home/paperclip/egm-artifacts"))]);
       checks.push(["oro en el lane barato (sin thinking)", reviewers.every((n) => String(agents[n].model || "").endsWith("clusty-nothink"))]);
       checks.push(["small_model barato", String(c.small_model || "").endsWith("clusty-nothink")]);
       checks.push(["skills.paths declarado", Boolean(c.skills && Array.isArray(c.skills.paths) && c.skills.paths.length > 0)]);

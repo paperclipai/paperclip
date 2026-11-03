@@ -156,6 +156,9 @@ Paperclip y devuelve el veredicto:
 | `cross_issue_influence_run_context_required` en loop | el agente reintenta el mismo POST | el mensaje pedía reenviar el mismo header | copy del 403 (ver commit) + regla anti-loop |
 | `ok` pero el agente no hace nada | el issue quedó `in_review` y nadie lo toma | la skill de Paperclip manda no cerrar planes sin aprobación | el handoff es por comentario en el issue |
 | El entregable desaparece | el diseño quedó en el scratch del run | el scratch se borra al terminar | subirlo al doc `plan` + copia en `artifacts/<issue>/` |
+| **El oro no puede leer el artefacto** | el subagente devuelve error de read-scope y el elefante reintenta (loop) | el bundle de EGM trae `external_directory: {"*": "deny", "<bundle>/**": "allow"}`: el artefacto vive **fuera** del bundle | agregar `external_directory` con `<artifacts>/**` y `<projects>/**`; el health check lo verifica |
+| La guardia corta el run equivocado | mata el run vivo | un log viejo (run muerto) nunca escribe `lifecycle: run` y parece abierto | la guardia mira **sólo el log más reciente por agente** y compara el `mtime` |
+| `Low-trust review requires a concrete project…` | el run muere en setup y el agente queda en `error` | `trustPreset=low_trust_review` exige run atado a una tarea | un agente low-trust no puede recibir pulsos |
 
 ## 11. Cómo probarlo sin quemar tokens
 

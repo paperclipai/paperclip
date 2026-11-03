@@ -61,6 +61,12 @@ Leé la variable de entorno **una sola vez por run** (`printenv EGM`):
      absolutas de standards y la lista de lectura. **Nunca** el historial de la
      conversación ni el texto crudo del issue: el oro tiene que leer el
      artefacto, no tu charla.
+   - **Dónde está el artefacto para el oro**: el oro tiene el alcance de lectura
+     restringido al bundle, a `/home/paperclip/egm-artifacts/<issueId>/` y a los
+     checkouts de proyecto. Un archivo en `/tmp` o en el scratch **no** lo puede
+     leer (queda bloqueado por `external_directory`). Por eso el entregable se
+     sube al documento `plan` **y** se copia a
+     `/home/paperclip/egm-artifacts/<issueId>/` antes de pedir la revisión.
    - **En paralelo, no en serie.** Todos los revisores de una etapa van en un
      mismo mensaje de tool calls. Es la diferencia entre 30 s y 3 min.
    - **Tanda máxima de 4 a la vez.** El pool tiene 16 streams y lo comparten
