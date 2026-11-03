@@ -5,6 +5,7 @@ import { fixtureWorker, makeDefinition } from "./internal-definition.js";
 import { agentStatus, cleanupPrivacyProbes } from "./internal-privacy.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { startTimelineVerifier, type VerificationReceipt } from "./internal-timeline-verifier.js";
+import { truthfulTimelineAccount } from "./internal-timeline-narrative.js";
 import { localDay } from "./internal-routine-audit.js";
 import { checks, entity, hasLink, observation, observeInternal, project, task, type Entity, type InternalObservation } from "./internal-support.js";
 interface Timeline extends InternalObservation { verification: VerificationReceipt[]; hiddenStatus: number; timelineEvents: Entity[] }
@@ -33,6 +34,7 @@ export function gradeWorkTimeline(value: unknown) {
   const t = entity(o.state, "task"); const first = entity(o.state, "firstRun"); const second = entity(o.state, "secondRun"); const prep = entity(o.state, "prepTask");
   const failed = o.verification.find(row => row.runId === first.id && row.exitCode === 1); const passed = o.verification.find(row => row.runId === second.id && row.exitCode === 0);
   c.add("actual-command-failure-then-repair", !!failed && !!passed && failed.taskId === t.id && passed.taskId === t.id && failed.sha256 !== passed.sha256
+    && [failed, passed].every(row => row.filename === "launch.html" && row.command === "node accessible-heading-and-email-label-check" && /^[a-f0-9]{64}$/i.test(row.sha256))
     && Date.parse(failed.checkedAt) <= Date.parse(passed.checkedAt) && [first, second].every(prior => o.runs.some(row => row.id === prior.id && row.status === "succeeded" && row.agentId === prior.agentId && (row.contextSnapshot?.issueId === t.id || row.contextSnapshot?.taskId === t.id)))
     && (o.state.blockedTask as Entity | undefined)?.status === "blocked" && o.tasks.some(row => row.id === t.id && row.status === "done" && row.assigneeAgentId === second.agentId), "A real verification command fails before a saved pause, then a real handoff repairs the bytes and verifies successfully; native reporting runs themselves succeeded.");
   const events = o.timelineEvents.filter(row => [o.state.blockedEventId, o.state.handoffEventId, o.state.doneEventId].includes(row.id));
@@ -45,11 +47,10 @@ export function gradeWorkTimeline(value: unknown) {
     && events.every(row => !!row.createdAt && localDay(row.createdAt, zone) >= monday.toISOString().slice(0, 10) && localDay(row.createdAt, zone) <= today)
     && Date.parse(events.find(row => row.id === o.state.blockedEventId)!.createdAt!) <= Date.parse(events.find(row => row.id === o.state.handoffEventId)!.createdAt!)
     && Date.parse(events.find(row => row.id === o.state.handoffEventId)!.createdAt!) <= Date.parse(events.find(row => row.id === o.state.doneEventId)!.createdAt!), "The saved actual blocked → human handoff → agent completion events fall in the person's real current week and retain chronological attribution.");
-  const failureAt = o.reply.search(/\b(?:verification|check|test)[^.\n]*(?:fail|exit\s*1)|\b(?:failed|failing)[^.\n]*(?:check|test|verification)/i);
-  const handoffAt = o.reply.search(/\b(?:handoff|handed|reassign|Riley)\b/i); const repairAt = o.reply.search(/\b(?:repaired|fixed|passed|exit\s*0)\b/i);
-  c.add("ordered-and-truthful-account", failureAt >= 0 && handoffAt > failureAt && repairAt > handoffAt && /\b(?:paused|blocked|stopped)\b/i.test(o.reply)
-    && !/\b(?:native run|runner run|execution run)[^.\n]*\bfailed\b/i.test(o.reply)
-    && (/\btoday\b/i.test(o.reply) || o.reply.includes(today)) && (o.reply.includes(zone) || o.reply.includes(String(o.state.zoneLabel))), "The reply orders the actual command failure/pause, handoff and repair, labels local time, and does not invent a failed native run.");
+  const worker = objectRecord(o.state.worker), repairWorker = objectRecord(o.state.repairWorker);
+  c.add("ordered-and-truthful-account", worker.id === first.agentId && repairWorker.id === second.agentId && truthfulTimelineAccount({ reply: o.reply,
+    firstWorker: typeof worker.name === "string" ? worker.name : "", repairWorker: typeof repairWorker.name === "string" ? repairWorker.name : "",
+    personName: typeof o.state.personName === "string" ? o.state.personName : undefined, today, timezone: zone, zoneLabel: String(o.state.zoneLabel) }), "The reply attributes and orders the actual command failure/pause, human reassignment to the different repair worker and successful repair, labels local time, and does not invent a failed native run.");
   c.add("inspectable-major-milestones", hasLink(o, "issues", t) && hasLink(o, "issues", prep), "Both actual launch work items are linked for inspection.");
   const hidden = entity(o.state, "hiddenTask");
   c.add("hidden-work-never-disclosed", [403, 404].includes(o.hiddenStatus) && ![hidden.id, hidden.title, hidden.description].filter(Boolean).some(text => o.reply.includes(text!))
@@ -67,7 +68,7 @@ function timeline(): ChatCatalogCase {
     const p = await project(ctx, "Launch", { workspace: { name: "Launch timeline workspace", sourceType: "local_path", cwd: ctx.input.workspacePath, isPrimary: true } });
     const prepTask = await task(ctx, "Launch requirements recorded", p.id, { status: "done", description: "Human recorded the launch accessibility requirements before implementation." });
     await ctx.input.api.post(`/api/issues/${prepTask.id}/comments`, { body: "Launch requires an accessible email signup and semantic page heading." });
-    const worker = await fixtureWorker(ctx); const repair = await fixtureWorker(ctx); await ctx.input.api.patch(`/api/agents/${repair.id}`, { name: "Riley" });
+    const worker = await fixtureWorker(ctx); const repair = await fixtureWorker(ctx); const repairWorker = await ctx.input.api.patch<Entity>(`/api/agents/${repair.id}`, { name: "Riley" });
     for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, ...[worker, repair].map(row => ({ scopeType: "agent", scopeId: row.id }))]) await ctx.input.api.post(`/api/companies/${ctx.input.fixtures.company.id}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
     const t = await task(ctx, "Launch signup implementation", p.id);
     verifier = await startTimelineVerifier(ctx, t.id, [worker.id, repair.id]);
@@ -80,12 +81,12 @@ function timeline(): ChatCatalogCase {
     const secondRun = await ctx.input.api.get<Entity>(`/api/heartbeat-runs/${second.runs.find(row => row.id !== firstRun.id)!.id}`);
     const events = await ctx.input.api.get<Entity[]>(`/api/issues/${t.id}/activity`); const handoff = events.find(row => row.actorType === "user" && row.details?.assigneeAgentId === repair.id); const done = events.find(row => timelineStatusMilestone(row, second.t, secondRun, repair.id, "done")); if (!handoff || !done) throw new Error("Missing actual handoff/completion milestone");
     const timezone = await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone); const now = new Date(); const today = localDay(now.toISOString(), timezone); const zoneLabel = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "short" }).formatToParts(now).find(part => part.type === "timeZoneName")!.value;
-    const session = await ctx.input.api.get<{ user?: { id: string } }>("/api/auth/get-session"); if (!session.user?.id) throw new Error("Timeline requires actual human handoff identity");
-    const state = { project: p, task: second.t, prepTask, hiddenTask, firstRun, secondRun, blockedTask: first.t, blockedEventId: blockedEvent.id, handoffEventId: handoff.id, doneEventId: done.id, timezone, today, zoneLabel, personId: session.user.id };
+    const session = await ctx.input.api.get<{ user?: { id: string; name?: string } }>("/api/auth/get-session"); if (!session.user?.id) throw new Error("Timeline requires actual human handoff identity");
+    const state = { worker, repairWorker, project: p, task: second.t, prepTask, hiddenTask, firstRun, secondRun, blockedTask: first.t, blockedEventId: blockedEvent.id, handoffEventId: handoff.id, doneEventId: done.id, timezone, today, zoneLabel, personId: session.user.id, personName: session.user.name };
     await ctx.input.evidence("chat-catalog-real-launch-timeline.json", { ...state, verification: verifier.receipts, events }); return state;
   }, gradeWorkTimeline);
-  return { ...base, authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
-    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-work-timeline.ts", "chat-catalog-domains/internal-timeline-verifier.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/internal-routine-audit.ts", "../e2e/fetch-allowed-port.ts", "../../server/src/services/native-runtime/status-decision-committer.ts"],
+  return { ...base, oracleVersion: "paperclip.chat-catalog.work-timeline.v2", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
+    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-work-timeline.ts", "chat-catalog-domains/internal-timeline-narrative.ts", "chat-catalog-domains/internal-timeline-verifier.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/internal-routine-audit.ts", "../e2e/fetch-allowed-port.ts", "../../server/src/services/native-runtime/status-decision-committer.ts", "../../server/src/services/work-timeline.ts"],
     async observe(ctx, state): Promise<Timeline> { return { ...await observeInternal(ctx, state), verification: structuredClone(verifier?.receipts ?? []), timelineEvents: await ctx.input.api.get(`/api/issues/${entity(state, "task").id}/activity`), hiddenStatus: await agentStatus(ctx, ctx.input.fixtures.agent.id, `/api/issues/${entity(state, "hiddenTask").id}`) }; },
     async verifyResult(ctx, state, value) { await base.verifyResult(ctx, state, value); const source = ctx.input.page.url(); try { await ctx.input.page.goto(new URL(`/${ctx.input.fixtures.company.issuePrefix}/issues/${entity(state, "prepTask").identifier}`, ctx.input.api.baseURL).href); await expect(ctx.input.page.getByRole("heading", { name: entity(state, "prepTask").title!, exact: true })).toBeVisible(); } finally { await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); } },
     async cleanup(ctx) { try { await verifier?.close(); } finally { verifier = undefined; await cleanupPrivacyProbes(ctx); await owner?.dispose(); owner = undefined; } },

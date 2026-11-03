@@ -199,8 +199,12 @@ Agent access: `available` — REST / native call_api.
 Policy: Same company plus visibility/audit/cost/run permissions where the route requires
 them.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/activity.ts#L224) at
-the reviewed commit above.
+Evidence: `source-only` — [route](../../server/src/routes/companies.ts) and
+[assignment projection](../../server/src/services/work-timeline.ts).
+Ordinary `issue.updated` assignment fields preserve recorded human or agent
+attribution and time. Status-only, null and unchanged owners remain distinct.
+[Local route tests](../../server/src/__tests__/work-timeline-service.test.ts)
+exercise these cases separately from live agent access.
 
 Verification: `not-run` — exercise a listed permitted operation with actual agent
 credentials/run context; inspect its result and applicable persistence/attribution.
