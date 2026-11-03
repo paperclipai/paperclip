@@ -247,3 +247,46 @@ it.each([
 ])("preserves chronology and actors with ordinary command noun phrases: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
 });
+
+
+it.each([
+  { reply: "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. Riley fixed the label. The check passed.", expected: true },
+  { reply: "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. Riley fixed the label and the check passed. The native run ultimately failed.", expected: false },
+])("handles reviewed adjacent success and native failure wording: $reply", ({ reply, expected }) => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
+
+
+it.each([
+  { ending: "Riley fixed the label. The automated smoke check passed.", expected: true },
+  { ending: "Riley fixed the label. Riley's command succeeded.", expected: true },
+  { ending: "Riley fixed the label. Morgan's check passed.", expected: false },
+  { ending: "Morgan fixed the label. The check passed.", expected: false },
+  { ending: "Riley fixed the label. Before that the check passed.", expected: false },
+  { ending: "Riley fixed the label. The check passed before the repair.", expected: false },
+  { ending: "Riley fixed the label. An unrelated check passed.", expected: false },
+  { ending: "Riley fixed the label. A meeting ended. The check passed.", expected: false },
+  { ending: "Riley fixed the label. The check passed?", expected: false },
+  { ending: "Riley fixed the label? The check passed.", expected: false },
+  { ending: "Riley fixed the label, then Morgan ran a different check. The check passed.", expected: false },
+  { ending: "Riley fixed the label, but Morgan broke the page. The check passed.", expected: false },
+  { ending: "If Riley fixed the label, the release might work. The check passed.", expected: false },
+  { ending: "The label was fixed by Riley. The check passed.", expected: true },
+  { ending: "Riley fixed the missing accessible email label. The check passed.", expected: true },
+  { ending: "The check passed. Riley fixed the label.", expected: false },
+])("keeps adjacent success bound to the repair and event order: $ending", ({ ending, expected }) => {
+  const o = fixture(); o.reply = "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. " + ending;
+  expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
+it.each([
+  { ending: "The native run unexpectedly failed.", expected: false },
+  { ending: "The runner runs eventually failed.", expected: false },
+  { ending: "No native run ultimately failed.", expected: true },
+  { ending: "The native run never ultimately failed.", expected: true },
+  { ending: "Did the native run ultimately fail?", expected: true },
+  { ending: "If a native run ultimately failed, it would be recorded.", expected: true },
+  { ending: "The native run hypothetically failed.", expected: true },
+  { ending: "The native run's verification unexpectedly failed, while the native run succeeded.", expected: true },
+])("distinguishes bounded native failure assertions from denials and checks: $ending", ({ ending, expected }) => {
+  const o = fixture(); o.reply += " " + ending; expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
