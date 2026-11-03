@@ -3,7 +3,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { hasPendingWrites } from "@/lib/reload-safety";
+import { hasPendingWrites, subscribePendingWrites } from "@/lib/reload-safety";
+import { startServiceWorkerUpdates } from "@/lib/service-worker-updates";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { useSignOut } from "./useSignOut";
@@ -65,6 +66,38 @@ describe("useDurableAutosave", () => {
 
   const advance = (ms: number) => act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+  });
+
+  it("defers a hidden-tab update across online autosave retries until the document is saved", async () => {
+    let reject!: (error: unknown) => void;
+    const save = vi.fn().mockImplementationOnce(() => new Promise((_, no) => { reject = no; }))
+      .mockRejectedValueOnce(new ApiError("Try again", 429, null)).mockResolvedValue(undefined);
+    render({ save });
+    let pending!: ReturnType<typeof current.run>;
+    act(() => { pending = current.run("Keep this document"); });
+    const worker = Object.assign(new EventTarget(), { controller: {}, register: vi.fn().mockResolvedValue({ update: vi.fn() }) });
+    const doc = Object.assign(new EventTarget(), { visibilityState: "hidden" });
+    const reload = vi.fn();
+    const stop = startServiceWorkerUpdates({ container: worker as unknown as ServiceWorkerContainer,
+      documentRef: doc as unknown as Document, reload,
+      canReload: () => store.getSnapshot().pendingWrites === 0 && !hasPendingWrites(),
+      subscribeReloadSafety: listener => {
+        const cleanups = [store.subscribe(listener), subscribePendingWrites(listener)];
+        return () => cleanups.forEach(cleanup => cleanup());
+      } });
+    try {
+      worker.dispatchEvent(new Event("controllerchange"));
+      await act(async () => { reject(new ApiError("Try again", 429, null)); await pending; });
+      expect(store.getSnapshot().status).toBe("online");
+      expect(reload).not.toHaveBeenCalled();
+      await advance(1_000);
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(reload).not.toHaveBeenCalled();
+      await advance(2_000);
+      expect(save).toHaveBeenCalledTimes(3);
+      expect(current.status).toBe("saved");
+      expect(reload).toHaveBeenCalledOnce();
+    } finally { stop(); }
   });
 
   it("cancels a restored write if the account changes during its fresh-base check", async () => {

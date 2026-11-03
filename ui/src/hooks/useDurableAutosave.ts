@@ -151,6 +151,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     });
   }, []);
   const store = useConnectivityStore();
+  // Waiting work must remain visible to reload safety before React renders
+  // the next retry state, including the interval between network attempts.
+  const reportPendingJobs = () => {
+    if (mounted.current) store.setPendingWrites(optionsRef.current.sourceId, jobs.current.size);
+  };
   const registry = autosaveRegistry(store);
   const releaseJob = (job: Job) => {
     const entry = registry.get(job.registryKey);
@@ -202,10 +207,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
         }
       }
       refresh(value => value + 1);
+      reportPendingJobs();
       return;
     }
     for (const job of jobs.current.values()) releaseJob(job);
     jobs.current.clear(); generations.current.clear(); clearTimers();
+    reportPendingJobs();
     for (const dirty of dirtyWrites.current.values()) dirty.release();
     dirtyWrites.current.clear();
     setView({ target: targetRef.current, status: "idle", error: null });
@@ -232,6 +239,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     };
     if (!stillOwned()) {
       if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
+      reportPendingJobs();
       releaseJob(job);
       releaseDirty(job.target, job.dirtyVersion);
       if (mounted.current) refresh(value => value + 1);
@@ -248,6 +256,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     const remove = () => {
       releaseJob(job);
       if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
+      reportPendingJobs();
       releaseDirty(job.target, job.dirtyVersion);
       if (mounted.current) refresh(value => value + 1);
     };
@@ -302,7 +311,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       publish("error", describeError(cause, { action: job.action }));
       remove();
       return { kind: "failed", error: cause };
-    } finally { finishWrite(); job.saving = false; if (mounted.current) refresh(value => value + 1); else detachedWake.current?.(); }
+    } finally { job.saving = false; finishWrite(); if (mounted.current) refresh(value => value + 1); else detachedWake.current?.(); }
   }, [clearTimers, store, readOwner, client]);
   const run = useCallback(async (draft: T, overrides: DurableAutosaveJob<T> = {}) => {
     const current = optionsRef.current;
@@ -320,11 +329,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (!revision) { revision = { latest: job.token, active: new Set() }; registry.set(job.registryKey, revision); }
     revision.latest = job.token; revision.active.add(job.token);
     generations.current.set(target, job.id); jobs.current.set(target, job);
+    reportPendingJobs();
     refresh(value => value + 1);
     return execute(job);
   }, [client, execute, readOwner]);
   const waitingJobs = [...jobs.current.values()].filter(job => !job.saving).length;
-  const auto = useAutoResend({ sourceId: options.sourceId, active: waitingJobs > 0, pendingCount: waitingJobs,
+  const auto = useAutoResend({ sourceId: options.sourceId, active: waitingJobs > 0, pendingCount: jobs.current.size,
     resend: async (): Promise<SendOutcome> => {
       for (const job of [...jobs.current.values()]) {
         if (jobs.current.get(job.target) !== job) continue;
@@ -404,6 +414,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       releaseJob(job);
     }
     generations.current.delete(targetRef.current); const removed = jobs.current.delete(targetRef.current); clearTimers();
+    reportPendingJobs();
     setView({ target: targetRef.current, status: "idle", error: null }); if (removed) refresh(value => value + 1);
   }, [clearTimers]);
   const baseStatus = view.target === targetKey ? view.status : jobs.current.has(targetKey) ? "waiting" : "idle";
