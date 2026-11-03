@@ -30,7 +30,7 @@
   },
   "workloadSha256": "7c8abf644080c5e75f07ed7c1925e8d40a0c573a7160cbf0b5c99c06135b321a",
   "units": {
-    "ordinaryTimedSample": "512 append attempts:16 consecutive groups of32; replay attempts create0new events",
+    "ordinaryTimedSample": "512 append attempts:16 consecutive groups of32; mixed replay samples create256new events and reuse256duplicate receipts",
     "lateGapTimedSample": "one gap-closing append, structural-only latency gate",
     "ownerCpu": "benchmark process only",
     "databaseCpu": "PostgreSQL backend process,10msclockresolution",

@@ -1,0 +1,732 @@
+{
+  "scope": "Diagnostic only; no performance acceptance claim",
+  "method": "Weight each sampled frame by its corresponding V8 timeDelta; inclusive frames deduplicate recursion",
+  "limits": [
+    "Includes idle and native blocking time; this is not process CPU usage",
+    "Inclusive frames overlap and must not be summed",
+    "Instrumented wrapper residence can include byte counting or other probe work",
+    "Instrumentation and failed-run phases must remain identified"
+  ],
+  "profiles": [
+    {
+      "file": "focused-100-run-app.cpuprofile",
+      "decompressedSha256": "c53b3fb457c6df5bcbba0d2cf3265df45d6dfb7e7a58b83a0cb286e53cc3a2c8",
+      "samples": 25045,
+      "weightedMillis": 31062.924,
+      "self": [
+        {
+          "function": "(idle)",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 26194.861,
+          "sampledSharePercent": 84.32838132044492
+        },
+        {
+          "function": "writeFileUtf8",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 1366.912,
+          "sampledSharePercent": 4.400461463318778
+        },
+        {
+          "function": "(program)",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 1008.754,
+          "sampledSharePercent": 3.247453459307308
+        },
+        {
+          "function": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 297.565,
+          "sampledSharePercent": 0.9579426585855214
+        },
+        {
+          "function": "#pumpEvents",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5328,
+          "weightedMillis": 262.525,
+          "sampledSharePercent": 0.8451393693652278
+        },
+        {
+          "function": "is",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/entity.js",
+          "line": 3,
+          "weightedMillis": 179.036,
+          "sampledSharePercent": 0.576365573311772
+        },
+        {
+          "function": "recoveryIdentityMatches",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 115,
+          "weightedMillis": 159.983,
+          "sampledSharePercent": 0.5150287847982373
+        },
+        {
+          "function": "<anonymous>",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 4157,
+          "weightedMillis": 121.288,
+          "sampledSharePercent": 0.39045905659106656
+        },
+        {
+          "function": "writeBuffer",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 115.834,
+          "sampledSharePercent": 0.372901147361401
+        },
+        {
+          "function": "listOnTimeout",
+          "url": "node:internal/timers",
+          "line": 546,
+          "weightedMillis": 92.142,
+          "sampledSharePercent": 0.29663015625959743
+        },
+        {
+          "function": "<anonymous>",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5344,
+          "weightedMillis": 81.664,
+          "sampledSharePercent": 0.26289862473989895
+        },
+        {
+          "function": "match",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/path-to-regexp@8.3.0/node_modules/path-to-regexp/dist/index.js",
+          "line": 245,
+          "weightedMillis": 65.137,
+          "sampledSharePercent": 0.20969371717871763
+        },
+        {
+          "function": "readFileUtf8",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 65.043,
+          "sampledSharePercent": 0.20939110561517002
+        },
+        {
+          "function": "runMicrotasks",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 38.792,
+          "sampledSharePercent": 0.1248819975865762
+        },
+        {
+          "function": "#pumpEventsSafely",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5790,
+          "weightedMillis": 37.647,
+          "sampledSharePercent": 0.12119593120081033
+        },
+        {
+          "function": "parse",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/postgres@3.4.9_patch_hash=6q4cic6qawywsyeo2spgnjamda/node_modules/postgres/src/types.js",
+          "line": 20,
+          "weightedMillis": 34.626,
+          "sampledSharePercent": 0.11147051063190316
+        },
+        {
+          "function": "<anonymous>",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/sql/sql.js",
+          "line": 83,
+          "weightedMillis": 34.617,
+          "sampledSharePercent": 0.11144153718432946
+        },
+        {
+          "function": "buildQueryFromSourceParams",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/sql/sql.js",
+          "line": 70,
+          "weightedMillis": 23.75,
+          "sampledSharePercent": 0.07645770887505632
+        },
+        {
+          "function": "match",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/lib/layer.js",
+          "line": 178,
+          "weightedMillis": 22.833,
+          "sampledSharePercent": 0.07350563649449099
+        },
+        {
+          "function": "readLinuxProcessGroupActivity",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/services/local-service-supervisor.js",
+          "line": 208,
+          "weightedMillis": 20.191,
+          "sampledSharePercent": 0.06500031999563209
+        }
+      ],
+      "inclusiveFileFrames": [
+        {
+          "function": "flush",
+          "url": "file:///home/ubuntu/native-ingestion/helpers/native-ingestion-diagnostic-preload.mjs",
+          "line": 23,
+          "weightedMillis": 1371.1,
+          "sampledSharePercent": 4.413943774256409
+        },
+        {
+          "function": "#pumpEventsSafely",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5790,
+          "weightedMillis": 564.661,
+          "sampledSharePercent": 1.817797320046239
+        },
+        {
+          "function": "#pumpEvents",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5328,
+          "weightedMillis": 527.014,
+          "sampledSharePercent": 1.6966013888454288
+        },
+        {
+          "function": "startActiveSpan",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/tracing.js",
+          "line": 6,
+          "weightedMillis": 358.223,
+          "sampledSharePercent": 1.1532172566883916
+        },
+        {
+          "function": "then",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/query-promise.js",
+          "line": 20,
+          "weightedMillis": 328.862,
+          "sampledSharePercent": 1.0586962128871062
+        },
+        {
+          "function": "execute",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/query-builders/select.js",
+          "line": 795,
+          "weightedMillis": 324.707,
+          "sampledSharePercent": 1.045320137923912
+        },
+        {
+          "function": "_prepare",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/query-builders/select.js",
+          "line": 763,
+          "weightedMillis": 314.452,
+          "sampledSharePercent": 1.012306504049651
+        },
+        {
+          "function": "handleRequest",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/lib/layer.js",
+          "line": 142,
+          "weightedMillis": 196.007,
+          "sampledSharePercent": 0.6309998376199227
+        },
+        {
+          "function": "handle",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/index.js",
+          "line": 149,
+          "weightedMillis": 182.942,
+          "sampledSharePercent": 0.5889400495587601
+        },
+        {
+          "function": "next",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/index.js",
+          "line": 188,
+          "weightedMillis": 182.932,
+          "sampledSharePercent": 0.5889078568392339
+        },
+        {
+          "function": "processParams",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/index.js",
+          "line": 576,
+          "weightedMillis": 182.932,
+          "sampledSharePercent": 0.5889078568392339
+        },
+        {
+          "function": "trimPrefix",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/index.js",
+          "line": 304,
+          "weightedMillis": 181.87,
+          "sampledSharePercent": 0.5854889900255366
+        },
+        {
+          "function": "is",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/entity.js",
+          "line": 3,
+          "weightedMillis": 179.036,
+          "sampledSharePercent": 0.576365573311772
+        },
+        {
+          "function": "toQuery",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/sql/sql.js",
+          "line": 60,
+          "weightedMillis": 163.084,
+          "sampledSharePercent": 0.5250117471233552
+        },
+        {
+          "function": "sqlToQuery",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/dialect.js",
+          "line": 428,
+          "weightedMillis": 163.084,
+          "sampledSharePercent": 0.5250117471233552
+        },
+        {
+          "function": "buildQueryFromSourceParams",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/sql/sql.js",
+          "line": 70,
+          "weightedMillis": 160.083,
+          "sampledSharePercent": 0.5153507119935007
+        },
+        {
+          "function": "recoveryIdentityMatches",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 115,
+          "weightedMillis": 159.983,
+          "sampledSharePercent": 0.5150287847982373
+        },
+        {
+          "function": "invoke",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/middleware/idle-admission.js",
+          "line": 118,
+          "weightedMillis": 159.227,
+          "sampledSharePercent": 0.512595015202046
+        },
+        {
+          "function": "layer.handle",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/middleware/idle-admission.js",
+          "line": 156,
+          "weightedMillis": 159.227,
+          "sampledSharePercent": 0.512595015202046
+        },
+        {
+          "function": "router",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/index.js",
+          "line": 59,
+          "weightedMillis": 155.053,
+          "sampledSharePercent": 0.4991577740717519
+        },
+        {
+          "function": "data",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/postgres@3.4.9_patch_hash=6q4cic6qawywsyeo2spgnjamda/node_modules/postgres/src/connection.js",
+          "line": 302,
+          "weightedMillis": 149.056,
+          "sampledSharePercent": 0.4798518001718061
+        },
+        {
+          "function": "getSQL",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/query-builders/select.js",
+          "line": 727,
+          "weightedMillis": 140.294,
+          "sampledSharePercent": 0.45164453932282744
+        },
+        {
+          "function": "handle",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/postgres@3.4.9_patch_hash=6q4cic6qawywsyeo2spgnjamda/node_modules/postgres/src/connection.js",
+          "line": 466,
+          "weightedMillis": 138.418,
+          "sampledSharePercent": 0.44560518513968617
+        },
+        {
+          "function": "buildSelectQuery",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/dialect.js",
+          "line": 240,
+          "weightedMillis": 134.883,
+          "sampledSharePercent": 0.43422505878712514
+        },
+        {
+          "function": "args.<computed>",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/middleware/idle-admission.js",
+          "line": 133,
+          "weightedMillis": 131.239,
+          "sampledSharePercent": 0.422494031791727
+        },
+        {
+          "function": "nextWrite",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/postgres@3.4.9_patch_hash=6q4cic6qawywsyeo2spgnjamda/node_modules/postgres/src/connection.js",
+          "line": 255,
+          "weightedMillis": 124.865,
+          "sampledSharePercent": 0.4019743923656382
+        },
+        {
+          "function": "recoverActiveExecutions",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/services/heartbeat/recovery.js",
+          "line": 1645,
+          "weightedMillis": 103.554,
+          "sampledSharePercent": 0.3333684877830561
+        },
+        {
+          "function": "readLinuxProcessGroupActivity",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/services/local-service-supervisor.js",
+          "line": 208,
+          "weightedMillis": 94.908,
+          "sampledSharePercent": 0.305534662480583
+        },
+        {
+          "function": "isProcessGroupAlive",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/services/local-service-supervisor.js",
+          "line": 190,
+          "weightedMillis": 94.908,
+          "sampledSharePercent": 0.305534662480583
+        },
+        {
+          "function": "matchLayer",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/router@2.2.0/node_modules/router/index.js",
+          "line": 517,
+          "weightedMillis": 94.37,
+          "sampledSharePercent": 0.3038026941700659
+        }
+      ]
+    },
+    {
+      "file": "postfailure-hotqueue-app.cpuprofile",
+      "decompressedSha256": "4b9a0ef0a04e863d076160af1151ef51baead05feaf0231aa45776e51caebf3d",
+      "samples": 19496,
+      "weightedMillis": 30846.88,
+      "self": [
+        {
+          "function": "fsync",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 13998.407,
+          "sampledSharePercent": 45.38030102234002
+        },
+        {
+          "function": "serialize",
+          "url": "file:///home/ubuntu/native-ingestion/helpers/native-ingestion-diagnostic-preload.mjs",
+          "line": 87,
+          "weightedMillis": 6558.807,
+          "sampledSharePercent": 21.26246479384625
+        },
+        {
+          "function": "utf8Write",
+          "url": "node:internal/buffer",
+          "line": 982,
+          "weightedMillis": 2287.385,
+          "sampledSharePercent": 7.415288029129688
+        },
+        {
+          "function": "<anonymous>",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 2106.694,
+          "sampledSharePercent": 6.829520522010654
+        },
+        {
+          "function": "rename",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 1179.849,
+          "sampledSharePercent": 3.8248568412753574
+        },
+        {
+          "function": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 1069.057,
+          "sampledSharePercent": 3.465689236642409
+        },
+        {
+          "function": "<anonymous>",
+          "url": "node:internal/validators",
+          "line": 547,
+          "weightedMillis": 844.865,
+          "sampledSharePercent": 2.7388993635661047
+        },
+        {
+          "function": "<anonymous>",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5344,
+          "weightedMillis": 338.32,
+          "sampledSharePercent": 1.0967721857121369
+        },
+        {
+          "function": "writeBuffer",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 118.827,
+          "sampledSharePercent": 0.385215619861717
+        },
+        {
+          "function": "(program)",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 118.335,
+          "sampledSharePercent": 0.38362064494042836
+        },
+        {
+          "function": "getKeyObjectSlots",
+          "url": "node:internal/crypto/keys",
+          "line": 219,
+          "weightedMillis": 103.851,
+          "sampledSharePercent": 0.3366661393307848
+        },
+        {
+          "function": "fchmod",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 91.41,
+          "sampledSharePercent": 0.296334669827224
+        },
+        {
+          "function": "fstat",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 87.082,
+          "sampledSharePercent": 0.28230407743019714
+        },
+        {
+          "function": "<anonymous>",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 3019,
+          "weightedMillis": 83.088,
+          "sampledSharePercent": 0.26935625256103696
+        },
+        {
+          "function": "decryptSecureJson",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 893,
+          "weightedMillis": 80.018,
+          "sampledSharePercent": 0.2594038683977115
+        },
+        {
+          "function": "(idle)",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 79.126,
+          "sampledSharePercent": 0.25651216589813947
+        },
+        {
+          "function": "#pumpEvents",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5328,
+          "weightedMillis": 79.033,
+          "sampledSharePercent": 0.2562106767361886
+        },
+        {
+          "function": "getSlots",
+          "url": "node:internal/crypto/keys",
+          "line": 1108,
+          "weightedMillis": 70.972,
+          "sampledSharePercent": 0.23007837421483146
+        },
+        {
+          "function": "PgDatabase",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/db.js",
+          "line": 17,
+          "weightedMillis": 66.396,
+          "sampledSharePercent": 0.21524381071926885
+        },
+        {
+          "function": "close",
+          "url": "",
+          "line": 0,
+          "weightedMillis": 56.314,
+          "sampledSharePercent": 0.18255979210863466
+        }
+      ],
+      "inclusiveFileFrames": [
+        {
+          "function": "withStagedPrivateWrite",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/staged-private-write.js",
+          "line": 7,
+          "weightedMillis": 20800.069,
+          "sampledSharePercent": 67.43005775624634
+        },
+        {
+          "function": "syncParentDirectory",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 982,
+          "weightedMillis": 14832.746,
+          "sampledSharePercent": 48.0850769996836
+        },
+        {
+          "function": "syncWork",
+          "url": "file:///home/ubuntu/native-ingestion/helpers/native-ingestion-diagnostic-preload.mjs",
+          "line": 96,
+          "weightedMillis": 14820.52,
+          "sampledSharePercent": 48.045442521253364
+        },
+        {
+          "function": "#event",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 2957,
+          "weightedMillis": 7375.811,
+          "sampledSharePercent": 23.911043839765966
+        },
+        {
+          "function": "commitEvent",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 1118,
+          "weightedMillis": 6876.781,
+          "sampledSharePercent": 22.293278931289
+        },
+        {
+          "function": "serialize",
+          "url": "file:///home/ubuntu/native-ingestion/helpers/native-ingestion-diagnostic-preload.mjs",
+          "line": 87,
+          "weightedMillis": 6674.31,
+          "sampledSharePercent": 21.636904607532433
+        },
+        {
+          "function": "asyncWork",
+          "url": "file:///home/ubuntu/native-ingestion/helpers/native-ingestion-diagnostic-preload.mjs",
+          "line": 102,
+          "weightedMillis": 2476.23,
+          "sampledSharePercent": 8.027489327932031
+        },
+        {
+          "function": "#pumpEventsSafely",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5790,
+          "weightedMillis": 454.703,
+          "sampledSharePercent": 1.474064800070542
+        },
+        {
+          "function": "#pumpEvents",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js",
+          "line": 5328,
+          "weightedMillis": 452.498,
+          "sampledSharePercent": 1.4669165892952545
+        },
+        {
+          "function": "#handleJson",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 2126,
+          "weightedMillis": 392.106,
+          "sampledSharePercent": 1.27113665952602
+        },
+        {
+          "function": "sendJson",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 1349,
+          "weightedMillis": 346.178,
+          "sampledSharePercent": 1.122246398987515
+        },
+        {
+          "function": "#sendJson",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 1539,
+          "weightedMillis": 346.178,
+          "sampledSharePercent": 1.122246398987515
+        },
+        {
+          "function": "encryptSecureJson",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 877,
+          "weightedMillis": 243.404,
+          "sampledSharePercent": 0.7890716986612585
+        },
+        {
+          "function": "decryptSecureJson",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 893,
+          "weightedMillis": 204.594,
+          "sampledSharePercent": 0.6632567053783073
+        },
+        {
+          "function": "pumpNotifications",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/drivers/codex/codex-session-notifications.js",
+          "line": 15,
+          "weightedMillis": 118.523,
+          "sampledSharePercent": 0.38423010690222154
+        },
+        {
+          "function": "mapNotification",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/drivers/codex/codex-session-notifications.js",
+          "line": 34,
+          "weightedMillis": 118.296,
+          "sampledSharePercent": 0.3834942140015457
+        },
+        {
+          "function": "mapNotificationBody",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/drivers/codex/codex-session-notifications.js",
+          "line": 76,
+          "weightedMillis": 116.174,
+          "sampledSharePercent": 0.376615074198752
+        },
+        {
+          "function": "startActiveSpan",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/tracing.js",
+          "line": 6,
+          "weightedMillis": 113.346,
+          "sampledSharePercent": 0.3674472102202881
+        },
+        {
+          "function": "then",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/query-promise.js",
+          "line": 20,
+          "weightedMillis": 105.065,
+          "sampledSharePercent": 0.3406017075308751
+        },
+        {
+          "function": "sendJson",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 1224,
+          "weightedMillis": 100.048,
+          "sampledSharePercent": 0.324337501880255
+        },
+        {
+          "function": "scope",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/postgres@3.4.9_patch_hash=6q4cic6qawywsyeo2spgnjamda/node_modules/postgres/src/index.js",
+          "line": 270,
+          "weightedMillis": 94.549,
+          "sampledSharePercent": 0.30651073949780333
+        },
+        {
+          "function": "sendText",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 1227,
+          "weightedMillis": 91.045,
+          "sampledSharePercent": 0.29515140591204037
+        },
+        {
+          "function": "result",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/postgres@3.4.9_patch_hash=6q4cic6qawywsyeo2spgnjamda/node_modules/postgres/src/index.js",
+          "line": 279,
+          "weightedMillis": 90.314,
+          "sampledSharePercent": 0.2927816362627274
+        },
+        {
+          "function": "buildCandidate",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/control-plane/durable-prp-control-plane.js",
+          "line": 3081,
+          "weightedMillis": 84.653,
+          "sampledSharePercent": 0.27442969921107097
+        },
+        {
+          "function": "emit",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/server/dist/vendor/paperclip-runner/drivers/codex/codex-session-state.js",
+          "line": 322,
+          "weightedMillis": 73.384,
+          "sampledSharePercent": 0.23789764151188061
+        },
+        {
+          "function": "PgTransaction",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/session.js",
+          "line": 138,
+          "weightedMillis": 71.739,
+          "sampledSharePercent": 0.23256484934618996
+        },
+        {
+          "function": "PostgresJsTransaction",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/postgres-js/session.js",
+          "line": 125,
+          "weightedMillis": 71.739,
+          "sampledSharePercent": 0.23256484934618996
+        },
+        {
+          "function": "PgDatabase",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/db.js",
+          "line": 17,
+          "weightedMillis": 70.663,
+          "sampledSharePercent": 0.2290766521606075
+        },
+        {
+          "function": "toQuery",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/sql/sql.js",
+          "line": 60,
+          "weightedMillis": 57.216,
+          "sampledSharePercent": 0.18548391279766382
+        },
+        {
+          "function": "sqlToQuery",
+          "url": "file:///home/ubuntu/native-ingestion/baseline/node_modules/.pnpm/drizzle-orm@0.45.2_@opentelemetry+api@1.9.1_kysely@0.29.5_pg@8.18.0_postgres@3.4.9_patch_hash_4ringkigkncd6jisnfxlswcv6m/node_modules/drizzle-orm/pg-core/dialect.js",
+          "line": 428,
+          "weightedMillis": 57.216,
+          "sampledSharePercent": 0.18548391279766382
+        }
+      ]
+    }
+  ]
+}

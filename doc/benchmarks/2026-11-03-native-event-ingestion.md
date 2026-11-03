@@ -1,12 +1,12 @@
 # Native event ingestion measurements (2026-11-03)
 
-Cursor service acceptance has passed. Application and batching acceptance remain in progress. These measurements use the actual append service and real PostgreSQL on a dedicated quiet host. They establish a local service improvement.
+Historical cursor service acceptance passed at B0 `83b5f7d` and B1 `7922802f`. The current common-base revisions require fresh qualification; their first A/A run failed the frozen noise gates, so no candidate comparison has started. Application and batching acceptance remain in progress. These measurements use the actual append service and real PostgreSQL on a dedicated quiet host. They establish a local service improvement.
 
 The long-history cursor/range operations are bounded; replay still performs its required indexed event identity lookup. At 100k seeded events, the separately recorded baseline plans examine about 100,000 source entries; the candidate performs a one-row identity lookup and bounded projection work. The raw reports retain the SQL and plans.
 
 ## Cursor comparison
 
-Each ordinary sample contains **512 append attempts** (16 groups of 32). Five baseline/candidate pairs alternate order; two warmups, seeding, rebuild preparation and verification are excluded. Replay attempts reuse receipts and create no new events. The table reports median wall time per 512 attempts, not individual event latency.
+Each ordinary sample contains **512 append attempts** (16 groups of 32). Five baseline/candidate pairs alternate order; two warmups, seeding, rebuild preparation and verification are excluded. The mixed replay case contains 256 new events and 256 exact duplicates; duplicate attempts reuse receipts and allocate nothing. The table reports median wall time per 512 attempts, not individual event latency.
 
 | Seeded history / case | B0 ms/512 | B1 ms/512 | Change | Pairs beating noise | A/A noise | SQL calls/attempt B0 → B1 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -35,6 +35,6 @@ See [experiment commands](../../scripts/native-ingestion/README.md) and the [imp
 | [service-aa-b0.json.gz](native-event-ingestion-2026-11-03/service-aa-b0.json.gz) | `92ae98cd5bb22b4bf1b6425150b2615d280d046c3d24ca341358847eede28fe5` |
 | [service-b0-b1.json.gz](native-event-ingestion-2026-11-03/service-b0-b1.json.gz) | `11d7f4c5fcfbeab39d9b38224aa151a3cf6430bb103c4d45b847789e72cb2899` |
 
-Use `gzip -dc <report.json.gz>` to inspect the complete original JSON. Its byte-for-byte SHA256 is recorded above and in the summary. No p99 is inferred from five service samples. The initial noisy calibration and failed browser qualifications remain excluded; the final report will record their failure ledger alongside the application comparisons.
+Use `gzip -dc <report.json.gz>` to inspect the complete original JSON. Its byte-for-byte SHA256 is recorded above and in the summary. No p99 is inferred from five service samples. The initial noisy calibration and failed browser qualifications remain excluded; the final report will record their failure ledger alongside the application comparisons. The [local-journal diagnostic](2026-11-03-native-event-ingestion-local-journal.md) records a separate baseline bottleneck and its measurement limits.
 
 Application streaming, control responsiveness, batching, profile-only backlog/resource diagnostics, final delivery revisions and current-head CI remain pending. The live-provider functional journey has passed separately. This report makes no deployed production or 10,000-agent qualification claim.

@@ -1,0 +1,108 @@
+{
+  "scope": "Historical baseline diagnostic only; not an acceptance measurement or current-head result",
+  "revision": "83b5f7d486e70e484acd9a41bc957054f4e10175",
+  "driverRevision": "f5c560d80d9d4ee089297d3b3f300c052db17c9e",
+  "files": [
+    {
+      "file": "focused-100-run-app.cpuprofile.gz",
+      "decompressedSha256": "c53b3fb457c6df5bcbba0d2cf3265df45d6dfb7e7a58b83a0cb286e53cc3a2c8",
+      "decompressedBytes": 1818639,
+      "gzipSha256": "8997313d74c22f00035f9f412632ba318f277cf3094b8b4fd5df42f23bfe0c65",
+      "gzipBytes": 105696
+    },
+    {
+      "file": "postfailure-hotqueue-app.cpuprofile.gz",
+      "decompressedSha256": "4b9a0ef0a04e863d076160af1151ef51baead05feaf0231aa45776e51caebf3d",
+      "decompressedBytes": 537091,
+      "gzipSha256": "59b3a71614aa5235206172f7a61ee2da92381d5c9f8426051be204d4202d3ef9",
+      "gzipBytes": 69617
+    },
+    {
+      "file": "pg-live.ndjson.gz",
+      "decompressedSha256": "c827f92db6efe93256cd0445e26233313a7832cf419696517bdd581fcaf99040",
+      "decompressedBytes": 16600029,
+      "gzipSha256": "a8bef8f260fdcd43d523fd28f09e9437aeb577a4e8f2228b5e569356e8580842",
+      "gzipBytes": 987192
+    },
+    {
+      "file": "weighted-cpu-summary.json",
+      "sha256": "4a5b4c48c4ad848291515568b4e45b5ff135b82a62c438a8cad7a4f6f1721976",
+      "bytes": 31558
+    },
+    {
+      "file": "postfailure-hotqueue-profile-receipt.json",
+      "sha256": "1754f09164bb1325d852f43b823f781b1ff2a14c34bb756188a4c7ee8a464d17",
+      "bytes": 182
+    },
+    {
+      "file": "native-ingestion-evidence.json.gz",
+      "decompressedSha256": "35e7babc19bfd29a50e3f428b03b1e99cd9bc2c20df9f66145b99532c85d6ce4",
+      "decompressedBytes": 14830386,
+      "gzipSha256": "a5554fcc7b705b69bde5afd1514fd6a95a8bf26e555bec456addc1cb3b492fab",
+      "gzipBytes": 218190
+    },
+    {
+      "file": "measured-delta-counts.json.gz",
+      "decompressedSha256": "9a9c1f98844161fd0aaaaef1b4b98df9f14f1409a7eacaf693bdae9b6ea4691b",
+      "decompressedBytes": 134067,
+      "gzipSha256": "3e3918b4252808543e892bc7620ee22d9eda09ae32e9f07242147d69a937d07c",
+      "gzipBytes": 6720
+    },
+    {
+      "file": "external-cleanup-receipt.json.gz",
+      "decompressedSha256": "17ce9e81ed9a5d05bb757d1f2105713419ed0e3753a753e6abae418c0d4e7dfb",
+      "decompressedBytes": 84489,
+      "gzipSha256": "05fe48458e3e478c50ae14fd4588a947e451ad55934347ac8aa57a56f735b502",
+      "gzipBytes": 5934
+    },
+    {
+      "file": "forensic-receipt.json.gz",
+      "decompressedSha256": "57f104658c3505b3ce4c0adbe194bf721c819ba5c1f2f389f167300ffc4b0c56",
+      "decompressedBytes": 90658,
+      "gzipSha256": "881a95cf93992d50265be49c8f420a909745e12938fb9efe1f06af002fa026f8",
+      "gzipBytes": 7192
+    },
+    {
+      "file": "app-46347.ndjson.gz",
+      "decompressedSha256": "f2ee482283b97c6b29602e70c0b8b121e649b38bf7aaaeaedf80da0bbdba8665",
+      "decompressedBytes": 4918482,
+      "gzipSha256": "278b5133c714eeb7bd94dd6b91f0efcaac4ee6f8ad83eeeaac5e8b37b6dc3a19",
+      "gzipBytes": 860079
+    },
+    {
+      "file": "app-46347.metadata.json",
+      "sha256": "77486d6c3e87f6f2fc8d0a9bd3fea5585659878a7fca5e0cfd652a27a01e23e1",
+      "bytes": 352
+    },
+    {
+      "file": "diagnostic-command.json",
+      "sha256": "58540aa8bf3c4845419a3fb923a4dd45da742241d3e7ffcdc7b78bbf9cb7d198",
+      "bytes": 1507
+    },
+    {
+      "file": "diagnostic-quiet-returned.json",
+      "sha256": "aad920ab5333e59cf082c46e653e7460cd53e70600d5f5394948674884bab88e",
+      "bytes": 320
+    },
+    {
+      "file": "instrumentation-native-ingestion-diagnostic-preload.mjs",
+      "sha256": "98bf2eb6994f13d6957535f5799b5994dda8920af97c2965c1d8baab925d3386",
+      "bytes": 14742
+    },
+    {
+      "file": "instrumentation-native-ingestion-diagnostic-run.mjs",
+      "sha256": "35a9b220aef9005ceb8110d538231e12fdab901c56f25cf020631b1d27648f50",
+      "bytes": 20010
+    },
+    {
+      "file": "instrumentation-native-ingestion-failure-replay-observer.mjs",
+      "sha256": "5536dec1b0b39c3777eeda7b11822e6b5ef6bc902985d654a5128ee8eb20291f",
+      "bytes": 6097
+    },
+    {
+      "file": "app-counter-summary.json",
+      "sha256": "4bad67a1e4553204d907f20c1da62298623961ef0946897a51dd536b28b27ed5",
+      "bytes": 3078
+    }
+  ]
+}

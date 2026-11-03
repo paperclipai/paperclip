@@ -1,0 +1,10 @@
+{
+  "diagnosticOnly": true,
+  "role": "app",
+  "pid": 46347,
+  "parentPid": 46338,
+  "startedAtMs": 1793741799526,
+  "cwd": "/home/ubuntu/native-ingestion/baseline",
+  "configPath": "/tmp/paperclip-e2e-home-4gIRB7/instances/playwright-e2e/config.json",
+  "disclosure": "Profile-only instrumentation; never use these timings for unprofiled acceptance"
+}

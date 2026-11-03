@@ -1,0 +1,21 @@
+{
+  "diagnosticOnly": true,
+  "tree": "B0",
+  "sourceRevision": "83b5f7d486e70e484acd9a41bc957054f4e10175",
+  "childPid": 46312,
+  "startedAtMs": 1793741797774,
+  "env": {
+    "PAPERCLIP_E2E_PORT": "46821",
+    "PAPERCLIP_INGESTION_SMOKE": "0",
+    "PAPERCLIP_INGESTION_VARIANT": "PROFILE-ONLY-B0",
+    "PAPERCLIP_INGESTION_APP_ROOT": "/home/ubuntu/native-ingestion/baseline",
+    "PAPERCLIP_INGESTION_EVIDENCE_DIR": "/tmp/native-ingestion-local-journal-profile-f5",
+    "PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR": "/tmp/native-ingestion-local-journal-profile-f5/profile",
+    "PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_CODEX_COMMAND": "/tmp/native-ingestion-local-journal-profile-f5/profile/codex-profile-only",
+    "PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_FS": "1",
+    "PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_INSPECTOR": "1",
+    "PAPERCLIP_INGESTION_DRIVER_DEPENDENCIES": "Driver-only tooling links to frozen B1 locked dependencies; each app owns independent installs",
+    "PAPERCLIP_INGESTION_SERVER_COMMAND": "node --import ./server/node_modules/tsx/dist/loader.mjs '/home/ubuntu/native-ingestion/harness/tests/e2e/fixtures/native-ingestion-bootstrap.mjs' && node --cpu-prof --cpu-prof-dir='/tmp/native-ingestion-local-journal-profile-f5/profile/cpu' --import '/home/ubuntu/native-ingestion/helpers/native-ingestion-diagnostic-preload.mjs' --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"
+  },
+  "preloadSha256": "98bf2eb6994f13d6957535f5799b5994dda8920af97c2965c1d8baab925d3386"
+}

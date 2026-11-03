@@ -1,0 +1,12 @@
+{
+  "at": "2026-11-03T21:51:30.093116+00:00",
+  "dataDirectory": "/tmp/paperclip-e2e-home-4gIRB7/instances/playwright-e2e/db",
+  "postgresStop": "already-stopped",
+  "remainingOwnedRelevantProcesses": [],
+  "ports": {
+    "54329": "closed",
+    "46821": "closed"
+  },
+  "cleanupComplete": true,
+  "syncComplete": true
+}
