@@ -14,31 +14,40 @@ const lockDir = path.join(rootDir, "node_modules", ".cache", "paperclip-plugin-b
 const lockTimeoutMs = 60_000;
 const lockPollMs = 100;
 
+const sharedDependencies = JSON.parse(fs.readFileSync(path.join(rootDir, "packages/shared/package.json"), "utf8")).dependencies ?? {};
+const pluginDependencies = JSON.parse(fs.readFileSync(path.join(rootDir, "packages/plugins/sdk/package.json"), "utf8")).dependencies ?? {};
+const sharedUsesRunnerSdk = Object.hasOwn(sharedDependencies, "@paperclipai/runner-sdk");
+const pluginUsesRunnerSdk = Object.hasOwn(pluginDependencies, "@paperclipai/runner-sdk");
+const runnerSdkTarget = {
+  name: "@paperclipai/runner-sdk",
+  output: path.join(rootDir, "packages/runner-sdk/dist/index.js"),
+  completion: path.join(rootDir, "packages/runner-sdk/dist/.paperclip-build-complete"),
+  sourceDir: path.join(rootDir, "packages/runner-sdk/src"),
+  tsconfig: path.join(rootDir, "packages/runner-sdk/tsconfig.json"),
+  dependencies: [],
+};
+const sharedTarget = {
+  name: "@paperclipai/shared",
+  output: path.join(rootDir, "packages/shared/dist/index.js"),
+  completion: path.join(rootDir, "packages/shared/dist/.paperclip-build-complete"),
+  sourceDir: path.join(rootDir, "packages/shared/src"),
+  tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
+  dependencies: sharedUsesRunnerSdk ? [runnerSdkTarget] : [],
+};
+const pluginSdkTarget = {
+  name: "@paperclipai/plugin-sdk",
+  output: path.join(rootDir, "packages/plugins/sdk/dist/index.js"),
+  completion: path.join(rootDir, "packages/plugins/sdk/dist/.paperclip-build-complete"),
+  sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
+  tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
+  dependencies: [
+    ...(Object.hasOwn(pluginDependencies, "@paperclipai/shared") ? [sharedTarget] : []),
+    ...(pluginUsesRunnerSdk ? [runnerSdkTarget] : []),
+  ],
+};
 const buildTargets = [
-  {
-    name: "@paperclipai/runner-sdk",
-    output: path.join(rootDir, "packages/runner-sdk/dist/index.js"),
-    completion: path.join(rootDir, "packages/runner-sdk/dist/.paperclip-build-complete"),
-    sourceDir: path.join(rootDir, "packages/runner-sdk/src"),
-    tsconfig: path.join(rootDir, "packages/runner-sdk/tsconfig.json"),
-    dependencies: [],
-  },
-  {
-    name: "@paperclipai/shared",
-    output: path.join(rootDir, "packages/shared/dist/index.js"),
-    completion: path.join(rootDir, "packages/shared/dist/.paperclip-build-complete"),
-    sourceDir: path.join(rootDir, "packages/shared/src"),
-    tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
-    dependencies: [0],
-  },
-  {
-    name: "@paperclipai/plugin-sdk",
-    output: path.join(rootDir, "packages/plugins/sdk/dist/index.js"),
-    completion: path.join(rootDir, "packages/plugins/sdk/dist/.paperclip-build-complete"),
-    sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
-    tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
-    dependencies: [1],
-  },
+  ...(sharedUsesRunnerSdk || pluginUsesRunnerSdk ? [runnerSdkTarget] : []),
+  sharedTarget, pluginSdkTarget,
 ];
 
 if (!fs.existsSync(tscCliPath)) {
@@ -76,7 +85,7 @@ function sourceFingerprint(target) {
   ]) {
     if (fs.existsSync(config)) hash.update(fs.readFileSync(config));
   }
-  for (const dependency of target.dependencies) hash.update(sourceFingerprint(buildTargets[dependency]));
+  for (const dependency of target.dependencies) hash.update(sourceFingerprint(dependency));
   return hash.digest("hex");
 }
 

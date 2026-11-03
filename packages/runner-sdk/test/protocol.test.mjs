@@ -147,3 +147,24 @@ test("checkpoints and launch profiles accept ordinary UNC paths and reject devic
     assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }), undefined, directory);
   }
 });
+
+
+test("Windows resource paths reject reserved DOS device names and aliases", () => {
+  const checkpoint = { schema: "paperclip.harness-checkpoint.v1", identity, normalizedSessionId: "session_1",
+    model: "selected-model", config: {}, providerState: {}, processGroup: null };
+  const launch = { schema: "paperclip.harness-launch.v1", identity,
+    command: { path: "/runtime/node", sha256: `sha256:${"c".repeat(64)}` }, args: [], environmentKeys: [] };
+  const names = ["NUL", "nul", "CON", "con.txt", "CON .txt", "PRN.tar.gz", "AUX", "COM1", "COM9.log", "LPT1",
+    "LPT9.backup", "COM¹", "COM².txt", "LPT³", "CONIN$", "CONOUT$.log"];
+  const invalid = [String.raw`C:\NUL`, String.raw`C:\foo\CON`, String.raw`C:\COM1\bar`, String.raw`\\server\share\NUL`,
+    ...names.flatMap(name => [`C:/workspace/${name}`, `C:/workspace/${name}/child`, `//server/share/${name}`])];
+  for (const directory of invalid) {
+    assert.throws(() => parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }), undefined, directory);
+    assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }), undefined, directory);
+  }
+  for (const directory of ["C:/workspace/connection.txt", "C:/workspace/NULfile", "C:/workspace/com10", "C:/workspace/lpt11",
+    "//server/share/normal.txt", "/workspace/NUL.txt"]) {
+    assert.equal(parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }).cwd, directory);
+    assert.equal(parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }).command.path, directory);
+  }
+});

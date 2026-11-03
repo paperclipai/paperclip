@@ -7,7 +7,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 
-function fixture(t) {
+function fixture(t, { sharedUsesSdk = true, pluginUsesSdk = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-build-lock-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "scripts"));
@@ -18,10 +18,11 @@ function fixture(t) {
 const fs = require("node:fs");
 const path = require("node:path");
 const target = path.dirname(process.argv[3]);
-// Model the actual package dependency: shared cannot resolve the SDK's dist
-// exports until the prerequisite compiler has completed successfully.
-if (target.endsWith(path.join("packages", "shared"))
-  && !fs.existsSync(path.resolve("packages/runner-sdk/dist/complete"))) process.exit(43);
+const manifest = JSON.parse(fs.readFileSync(path.join(target, "package.json"), "utf8"));
+for (const [name, directory] of [["@paperclipai/runner-sdk", "packages/runner-sdk"], ["@paperclipai/shared", "packages/shared"]]) {
+  if (Object.hasOwn(manifest.dependencies ?? {}, name)
+    && !fs.existsSync(path.resolve(directory, "dist/complete"))) process.exit(43);
+}
 const active = path.resolve("compiler-active");
 try { fs.mkdirSync(active); } catch { process.exit(42); }
 process.on("exit", () => fs.rmSync(active, { recursive: true, force: true }));
@@ -40,6 +41,9 @@ setTimeout(() => {
     fs.mkdirSync(path.join(root, target, "src"), { recursive: true });
     fs.writeFileSync(path.join(root, target, "src/index.ts"), "export {};\n");
     fs.writeFileSync(path.join(root, target, "tsconfig.json"), "{}");
+    const dependencies = target === "packages/shared" ? (sharedUsesSdk ? { "@paperclipai/runner-sdk": "workspace:*" } : {})
+      : target === "packages/plugins/sdk" ? { "@paperclipai/shared": "workspace:*", ...(pluginUsesSdk ? { "@paperclipai/runner-sdk": "workspace:*" } : {}) } : {};
+    fs.writeFileSync(path.join(root, target, "package.json"), JSON.stringify({ dependencies }));
   }
   const lock = path.join(root, "node_modules/.cache/paperclip-plugin-build-deps.lock");
   const launch = (env = {}) => {
@@ -260,5 +264,33 @@ test("shared source changes invalidate both shared and dependent SDK output", as
   assert.equal(retry.code, 0, retry.output);
   assert.match(retry.output, /Building @paperclipai\/shared/);
   assert.match(retry.output, /Building @paperclipai\/plugin-sdk/);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 5);
+});
+
+
+test("plugin builds without SDK consumers neither build nor track unrelated SDK changes", async t => {
+  const f = fixture(t, { sharedUsesSdk: false, pluginUsesSdk: false });
+  const result = await f.launch().done;
+  assert.equal(result.code, 0, result.output);
+  assert.doesNotMatch(result.output, /Building @paperclipai\/runner-sdk/);
+  assert.equal(fs.existsSync(path.join(f.root, "packages/runner-sdk/dist/index.js")), false);
+  const builds = fs.readFileSync(path.join(f.root, "builds"), "utf8");
+  assert.equal(builds.trim().split("\n").length, 2);
+  fs.appendFileSync(path.join(f.root, "packages/runner-sdk/src/index.ts"), "export const unrelated = true;\n");
+  const next = await f.launch().done;
+  assert.equal(next.code, 0, next.output);
+  assert.doesNotMatch(next.output, /Building/);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8"), builds);
+});
+
+test("a direct plugin SDK dependency builds the SDK without invalidating independent shared output", async t => {
+  const f = fixture(t, { sharedUsesSdk: false, pluginUsesSdk: true });
+  assert.equal((await f.launch().done).code, 0);
+  fs.appendFileSync(path.join(f.root, "packages/runner-sdk/src/index.ts"), "export const dependencyChanged = true;\n");
+  const next = await f.launch().done;
+  assert.equal(next.code, 0, next.output);
+  assert.match(next.output, /Building @paperclipai\/runner-sdk/);
+  assert.match(next.output, /Building @paperclipai\/plugin-sdk/);
+  assert.doesNotMatch(next.output, /Building @paperclipai\/shared/);
   assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 5);
 });
