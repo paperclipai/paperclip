@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { subscribeDatabaseWork } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -38,6 +38,10 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
 import { secretService } from "../services/secrets.ts";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { readTaskCreationProvenance } from "../services/task-creation-provenance.js";
+import { createSentryRunLinkResolver } from "../services/sentry-run-links.js";
+import { addSentryRunLinks, setSentryRunLinkResolver } from "../sentry-links.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ROUTINES_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -62,6 +66,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
+    setSentryRunLinkResolver(null);
     if (originalSecretsProviderEnv === undefined) {
       delete process.env.PAPERCLIP_SECRETS_PROVIDER;
     } else {
@@ -217,6 +223,245 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
+
+  it("preserves creation ancestry through regular webhooks, child tasks, and standalone follow-ups", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    const f = await seedFixture();
+    const a = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const first = await f.svc.firePublicTrigger(a.trigger.publicId!, {
+      authorizationHeader: `Bearer ${a.secretMaterial!.webhookSecret}`, payload: { event: "build.failed" },
+    });
+    const [root] = await db.select().from(issues).where(eq(issues.id, first.linkedIssueId!));
+    const [caller] = await db.update(heartbeatRuns).set({ status: "running" })
+      .where(eq(heartbeatRuns.id, root!.executionRunId!)).returning();
+    const child = await f.issueSvc.create(f.companyId, { title: "Child", parentId: root!.id,
+      createdByAgentId: f.agentId, actorRunId: caller!.id });
+    const followup = await f.issueSvc.create(f.companyId, { title: "Standalone follow-up",
+      createdByAgentId: f.agentId, actorRunId: caller!.id });
+    for (const task of [root!, child, followup]) expect(await readTaskCreationProvenance(db, f.companyId, task.id))
+      .toEqual({ status: "complete", routineIds: [f.routine.id], shareable: true });
+
+    const secondRoutine = await f.svc.create(f.companyId, { title: "Independent webhook consumer", assigneeAgentId: f.agentId,
+      priority: "medium", status: "active", concurrencyPolicy: "coalesce_if_active", catchUpPolicy: "skip_missed" }, {});
+    const b = await f.svc.createTrigger(secondRoutine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const legacy = await f.svc.firePublicTrigger(b.trigger.publicId!, {
+      authorizationHeader: `Bearer ${b.secretMaterial!.webhookSecret}`, payload: { event: "another-provider.completed" },
+    });
+    await db.update(issues).set({ originFingerprint: "default" }).where(eq(issues.id, legacy.linkedIssueId!));
+    const second = await f.svc.firePublicTrigger(b.trigger.publicId!, {
+      authorizationHeader: `Bearer ${b.secretMaterial!.webhookSecret}`,
+      sourceRunToken: createLocalAgentJwt(f.agentId, f.companyId, "codex_local", caller!.id)!,
+      payload: { event: "another-provider.completed" },
+    });
+    expect(second.createdByRunId).toBe(caller!.id);
+    expect(second.linkedIssueId).not.toBe(legacy.linkedIssueId);
+    const expectedIds = [f.routine.id, secondRoutine.id].sort();
+    expect(await readTaskCreationProvenance(db, f.companyId, second.linkedIssueId!))
+      .toEqual({ status: "complete", routineIds: expectedIds, shareable: true });
+    const [secondTask] = await db.select().from(issues).where(eq(issues.id, second.linkedIssueId!));
+    setSentryRunLinkResolver(createSentryRunLinkResolver(db));
+    const event = await addSentryRunLinks({ tags: { event_kind: "run_failure", failure_source: "task_interruption",
+      company_id: f.companyId, agent_id: f.agentId, run_id: secondTask!.executionRunId! } });
+    expect(event.tags).toMatchObject({ automation_origin_status: "complete", automation_routine_ids: expectedIds.join(","), task_shareable: "true" });
+    expect(event).toHaveProperty("contexts.paperclip_creation.routineIds", expectedIds);
+    const manual = await f.svc.runRoutine(secondRoutine.id, { source: "manual", payload: { event: "internal.call" } },
+      { agentId: f.agentId, runId: caller!.id });
+    expect(await readTaskCreationProvenance(db, f.companyId, manual.linkedIssueId!))
+      .toMatchObject({ status: "complete", routineIds: expectedIds });
+    const unattributed = await f.svc.runRoutine(secondRoutine.id, { source: "api", payload: { event: "unattributed" } }, { agentId: f.agentId });
+    expect(await readTaskCreationProvenance(db, f.companyId, unattributed.linkedIssueId!)).toMatchObject({ status: "unknown" });
+    const independent = await f.issueSvc.create(f.companyId, { title: "Independent caller" });
+    const [otherCaller] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: independent.id, status: "running" }).returning();
+    const another = await f.svc.firePublicTrigger(b.trigger.publicId!, {
+      authorizationHeader: `Bearer ${b.secretMaterial!.webhookSecret}`,
+      sourceRunToken: createLocalAgentJwt(f.agentId, f.companyId, "codex_local", otherCaller!.id)!,
+      payload: { event: "another-provider.completed" },
+    });
+    expect(another.linkedIssueId).not.toBe(second.linkedIssueId);
+    expect(await readTaskCreationProvenance(db, f.companyId, another.linkedIssueId!))
+      .toEqual({ status: "complete", routineIds: [secondRoutine.id], shareable: true });
+    await db.update(issues).set({ parentId: null }).where(eq(issues.id, child.id));
+    await f.svc.deleteTrigger(a.trigger.id, {});
+    expect(await readTaskCreationProvenance(db, f.companyId, child.id)).toMatchObject({ status: "complete", routineIds: [f.routine.id] });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, caller!.id));
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, second.id)))[0]?.createdByRunId).toBe(caller!.id);
+    expect(await readTaskCreationProvenance(db, f.companyId, second.linkedIssueId!)).toMatchObject({ status: "unknown" });
+  });
+
+  it("ignores sender-supplied provenance in ordinary webhook payloads", async () => {
+    const f = await seedFixture();
+    const configured = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const claimed = randomUUID();
+    const receipt = await f.svc.firePublicTrigger(configured.trigger.publicId!, {
+      authorizationHeader: `Bearer ${configured.secretMaterial!.webhookSecret}`,
+      payload: { event: "run_failure", createdByRunId: claimed, creationProvenance: { routineIds: [claimed] },
+        automation_origin_status: "complete", automation_routine_ids: claimed },
+    });
+    expect(receipt.createdByRunId).toBeNull();
+    expect(await readTaskCreationProvenance(db, f.companyId, receipt.linkedIssueId!))
+      .toEqual({ status: "complete", routineIds: [f.routine.id], shareable: true });
+  });
+
+  it("rejects forged, foreign, and stopped caller tokens before creating work", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_TTL_SECONDS", "3600");
+    const f = await seedFixture(), other = await seedFixture();
+    const configured = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const [foreign] = await db.insert(heartbeatRuns).values({ companyId: other.companyId, agentId: other.agentId, status: "running" }).returning();
+    const [stopped] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+      resultJson: { executionCancellation: { state: "requested" } } }).returning();
+    const [cancelled] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "cancelled" }).returning();
+    const [live] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
+    const originalNow = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(originalNow - 3 * 24 * 60 * 60 * 1000);
+    const expired = createLocalAgentJwt(f.agentId, f.companyId, "codex_local", live!.id)!;
+    clock.mockRestore();
+    const tokens = ["forged", createLocalAgentJwt(other.agentId, other.companyId, "codex_local", foreign!.id)!,
+      createLocalAgentJwt(f.agentId, f.companyId, "codex_local", stopped!.id)!,
+      createLocalAgentJwt(f.agentId, f.companyId, "codex_local", cancelled!.id)!, expired];
+    for (const sourceRunToken of tokens) await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, {
+      authorizationHeader: `Bearer ${configured.secretMaterial!.webhookSecret}`, sourceRunToken, payload: { event: "failure" },
+    })).rejects.toMatchObject({ status: 401 });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, f.routine.id))).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+  });
+
+  it("keeps missing, cyclic, or foreign creation links unknown and private sources unshareable", async () => {
+    const f = await seedFixture();
+    const configured = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "bearer" }, {});
+    const receipt = await f.svc.firePublicTrigger(configured.trigger.publicId!, { authorizationHeader: `Bearer ${configured.secretMaterial!.webhookSecret}` });
+    const rootId = receipt.linkedIssueId!;
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, f.projectId));
+    expect(await readTaskCreationProvenance(db, f.companyId, rootId)).toMatchObject({ shareable: false });
+    await db.update(projects).set({ visibility: "open" }).where(eq(projects.id, f.projectId));
+    const [unknown] = await db.insert(issues).values({ companyId: f.companyId, title: "Missing creation run",
+      createdByAgentId: f.agentId, originRunId: randomUUID() }).returning();
+    expect(await readTaskCreationProvenance(db, f.companyId, unknown!.id)).toMatchObject({ status: "unknown" });
+    await db.update(issues).set({ parentId: rootId }).where(eq(issues.id, rootId));
+    expect(await readTaskCreationProvenance(db, f.companyId, rootId)).toMatchObject({ status: "unknown" });
+    await db.update(issues).set({ parentId: null, visibility: "private" }).where(eq(issues.id, rootId));
+    expect(await readTaskCreationProvenance(db, f.companyId, rootId)).toMatchObject({ status: "complete", shareable: false });
+    expect(await readTaskCreationProvenance(db, randomUUID(), rootId)).toEqual({ status: "unknown", routineIds: [], shareable: null });
+    await db.update(issues).set({ originKind: "plugin:example", visibility: "open" }).where(eq(issues.id, rootId));
+    expect(await readTaskCreationProvenance(db, f.companyId, rootId)).toEqual({ status: "complete", routineIds: [f.routine.id], shareable: true });
+    await db.update(routineRuns).set({ createdByRunId: randomUUID() }).where(eq(routineRuns.id, receipt.id));
+    expect(await readTaskCreationProvenance(db, f.companyId, rootId)).toMatchObject({ status: "unknown", routineIds: [f.routine.id] });
+  });
+
+  it("bounds the provenance query count for a long creator chain", async () => {
+    const f = await seedFixture();
+    const root = await f.svc.runRoutine(f.routine.id, { source: "manual" }, {});
+    let taskId = root.linkedIssueId!;
+    for (let n = 0; n < 12; n++) {
+      const [creator] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        nativeIssueId: taskId, status: "succeeded" }).returning();
+      const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Standalone created task",
+        createdByAgentId: f.agentId, originRunId: creator!.id }).returning();
+      taskId = task!.id;
+    }
+    const selects = vi.spyOn(db, "select");
+    try {
+      expect(await readTaskCreationProvenance(db, f.companyId, taskId)).toMatchObject({ status: "unknown" });
+      expect(selects).toHaveBeenCalledTimes(32);
+    } finally { selects.mockRestore(); }
+  });
+
+  it("does not read expired provenance after an upstream lookup spent its deadline", async () => {
+    const f = await seedFixture();
+    const root = await f.svc.runRoutine(f.routine.id, { source: "manual" }, {});
+    const selects = vi.spyOn(db, "select");
+    try {
+      expect(await readTaskCreationProvenance(db, f.companyId, root.linkedIssueId!, Date.now() - 1))
+        .toEqual({ status: "unknown", routineIds: [], shareable: null });
+      expect(selects).not.toHaveBeenCalled();
+    } finally { selects.mockRestore(); }
+  });
+
+  it("preserves the original database error and permits retry after a provenance lookup outage", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    const f = await seedFixture();
+    const configured = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const source = await f.issueSvc.create(f.companyId, { title: "Caller source" });
+    const [caller] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: source.id, status: "running" }).returning();
+    const delivery = { authorizationHeader: `Bearer ${configured.secretMaterial!.webhookSecret}`,
+      sourceRunToken: createLocalAgentJwt(f.agentId, f.companyId, "codex_local", caller!.id)!, idempotencyKey: "database-retry" };
+    await db.execute(sql`ALTER TABLE heartbeat_runs RENAME TO routine_test_unavailable_runs`);
+    try {
+      await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, delivery))
+        .rejects.toMatchObject({ cause: { code: "42P01" } });
+    } finally {
+      await db.execute(sql`ALTER TABLE routine_test_unavailable_runs RENAME TO heartbeat_runs`);
+    }
+    expect(await db.select().from(routineRuns)).toHaveLength(0);
+    expect(f.wakeups).toEqual([]);
+    await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, delivery))
+      .resolves.toMatchObject({ status: "issue_created", createdByRunId: caller!.id });
+  });
+
+  it("resolves legacy creation activity and bounds excessive ancestry", async () => {
+    const f = await seedFixture();
+    const configured = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const receipt = await f.svc.firePublicTrigger(configured.trigger.publicId!, {
+      authorizationHeader: `Bearer ${configured.secretMaterial!.webhookSecret}` });
+    const [root] = await db.select().from(issues).where(eq(issues.id, receipt.linkedIssueId!));
+    const [legacy] = await db.insert(issues).values({ companyId: f.companyId, title: "Legacy standalone", createdByAgentId: f.agentId }).returning();
+    expect(await readTaskCreationProvenance(db, f.companyId, legacy!.id)).toMatchObject({ status: "unknown" });
+    await db.insert(activityLog).values({ companyId: f.companyId, entityType: "issue", entityId: legacy!.id,
+      action: "issue.created", actorType: "agent", actorId: f.agentId, runId: root!.executionRunId });
+    expect(await readTaskCreationProvenance(db, f.companyId, legacy!.id))
+      .toEqual({ status: "complete", routineIds: [f.routine.id], shareable: true });
+    const chain = Array.from({ length: 18 }, () => randomUUID());
+    await db.insert(issues).values(chain.map((id, n) => ({ id, companyId: f.companyId, title: "Deep task",
+      parentId: n ? chain[n - 1]! : root!.id })));
+    expect(await readTaskCreationProvenance(db, f.companyId, chain.at(-1)!)).toMatchObject({ status: "unknown" });
+  });
+
+  it("preserves timestamped HMAC replay protection when routine scope is requested", async () => {
+    const f = await seedFixture();
+    const configured = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "hmac_sha256", replayWindowSec: 300 }, {});
+    const timestampHeader = String(Date.now()), rawBody = Buffer.from('{"event":"build.failed"}');
+    const signatureHeader = `sha256=${createHmac("sha256", configured.secretMaterial!.webhookSecret).update(timestampHeader + ".").update(rawBody).digest("hex")}`;
+    const delivery = { timestampHeader, rawBody, signatureHeader, payload: { event: "build.failed" } };
+    await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, { ...delivery, idempotencyScope: "routine" }))
+      .rejects.toMatchObject({ status: 400 });
+    await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, delivery)).resolves.toMatchObject({ status: "issue_created" });
+    await expect(f.svc.firePublicTrigger(configured.trigger.publicId!, delivery)).rejects.toMatchObject({ status: 409 });
+    expect(f.wakeups).toHaveLength(1);
+  });
+
+  it.each(["trigger", "routine"] as const)("supports explicit %s-scoped webhook idempotency", async idempotencyScope => {
+    const f = await seedFixture();
+    const a = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const b = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "app_webhook" }, {});
+    const first = await f.svc.firePublicTrigger(a.trigger.publicId!, { authorizationHeader: `Bearer ${a.secretMaterial!.webhookSecret}`,
+      idempotencyScope, idempotencyKey: "occurrence-1", payload: { sender: "A" } });
+    const second = await f.svc.firePublicTrigger(b.trigger.publicId!, { authorizationHeader: `Bearer ${b.secretMaterial!.webhookSecret}`,
+      idempotencyScope, idempotencyKey: "occurrence-1", payload: { sender: "B" } });
+    if (idempotencyScope === "routine") {
+      expect(second.id).toBe(first.id);
+      await f.svc.deleteTrigger(a.trigger.id, {});
+      const retry = await f.svc.firePublicTrigger(b.trigger.publicId!, { authorizationHeader: `Bearer ${b.secretMaterial!.webhookSecret}`,
+        idempotencyScope, idempotencyKey: "occurrence-1", payload: { sender: "retry" } });
+      expect(retry.id).toBe(first.id);
+      expect(f.wakeups).toHaveLength(1);
+    } else {
+      expect(second.id).not.toBe(first.id);
+      expect(f.wakeups).toHaveLength(2);
+    }
+  });
+
+  it("shares routine-scoped suppressed receipts across triggers without enqueuing work", async () => {
+    const f = await seedFixture({ runtimeEnv: { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" } });
+    const a = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "none" }, {});
+    const b = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "none" }, {});
+    const first = await f.svc.firePublicTrigger(a.trigger.publicId!, { idempotencyScope: "routine", idempotencyKey: "occurrence" });
+    const retry = await f.svc.firePublicTrigger(b.trigger.publicId!, { idempotencyScope: "routine", idempotencyKey: "occurrence" });
+    expect(first).toMatchObject({ status: "skipped", failureReason: "worktree_execution_cutoff" });
+    expect(retry.id).toBe(first.id);
+    expect(f.wakeups).toEqual([]);
+  });
 
   it("notifies scheduled routine work after trigger transactions settle", async () => {
     const f = await seedFixture();
@@ -2413,177 +2658,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     } finally {
       getSecretProviderSpy.mockRestore();
     }
-  });
-
-  async function sentryFailureFixture(setupPending = false, runtimeEnv?: Record<string, string | undefined>) {
-    const fixture = await seedFixture({ runtimeEnv });
-    await fixture.svc.update(fixture.routine.id, { concurrencyPolicy: "always_enqueue" }, {});
-    const created = await fixture.svc.createTrigger(fixture.routine.id, { kind: "webhook", signingMode: "bearer", setupPending }, {});
-    const [sourceTask] = await db.insert(issues).values({
-      companyId: fixture.companyId, projectId: fixture.projectId, title: "Failed source task", status: "blocked",
-    }).returning();
-    const [sourceRun] = await db.insert(heartbeatRuns).values({
-      companyId: fixture.companyId, agentId: fixture.agentId, nativeIssueId: sourceTask!.id, status: "failed",
-    }).returning();
-    const delivery = (taskId = sourceTask!.id, runId = sourceRun!.id) => ({
-      sentryRunFailure: true,
-      authorizationHeader: `Bearer ${created.secretMaterial!.webhookSecret}`,
-      payload: { action: "triggered", data: { event: { event_id: "a".repeat(32), tags: [
-        ["event_kind", "run_failure"], ["task_id", taskId], ["run_id", runId], ["error_code", "task_attempt_failed"],
-      ] } } },
-    });
-    return { ...fixture, ...created, sourceTask: sourceTask!, sourceRun: sourceRun!, delivery };
-  }
-
-  it("ignores Sentry failures of a task generated by the receiving routine before creating work", async () => {
-    const f = await sentryFailureFixture();
-    await db.update(issues).set({ originKind: "routine_execution", originId: f.routine.id }).where(eq(issues.id, f.sourceTask.id));
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).resolves.toMatchObject({
-      status: "ignored", routineStarted: false,
-    });
-    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
-    expect(f.wakeups).toEqual([]);
-  });
-
-  it("deduplicates Sentry events by the source run and retains only trusted repair context", async () => {
-    const f = await sentryFailureFixture();
-    const first = f.delivery();
-    Object.assign(first.payload, { variables: { task_identifier: "untrusted", instructions: "untrusted" }, extra: "do not persist" });
-    const a = await f.svc.firePublicTrigger(f.trigger.publicId!, first);
-    const second = f.delivery();
-    second.payload.data.event.event_id = "b".repeat(32);
-    second.payload.data.event.tags[1]![1] = ` ${f.sourceTask.id.toUpperCase()} `;
-    second.payload.data.event.tags[2]![1] = ` ${f.sourceRun.id.toUpperCase()} `;
-    const b = await f.svc.firePublicTrigger(f.trigger.publicId!, second);
-    expect(a.id).toBe(b.id);
-    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(1);
-    const [run] = await f.svc.listRuns(f.routine.id);
-    expect(run!.triggerPayload).toMatchObject({ source: "sentry_run_failure", taskId: f.sourceTask.id, runId: f.sourceRun.id });
-    expect(JSON.stringify(run!.triggerPayload)).not.toContain("untrusted");
-    expect(JSON.stringify(run!.triggerPayload)).not.toContain("do not persist");
-  });
-
-  it.each(["child", "standalone", "legacy"] as const)("ignores a Sentry failure with %s creation provenance from this routine", async (kind) => {
-    const f = await sentryFailureFixture();
-    const [root] = await db.insert(issues).values({ companyId: f.companyId, title: "Repair task",
-      originKind: "routine_execution", originId: f.routine.id, status: "blocked" }).returning();
-    const [creator] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
-      nativeIssueId: root!.id, status: "failed" }).returning();
-    await db.update(issues).set(kind === "child" ? { parentId: root!.id }
-      : kind === "standalone" ? { originRunId: creator!.id }
-        : { createdByAgentId: f.agentId }).where(eq(issues.id, f.sourceTask.id));
-    if (kind === "legacy") await db.insert(activityLog).values({ companyId: f.companyId, actorType: "agent", actorId: f.agentId,
-      action: "issue.created", entityType: "issue", entityId: f.sourceTask.id, runId: creator!.id });
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).resolves.toMatchObject({ status: "ignored" });
-    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
-    expect(f.wakeups).toEqual([]);
-  });
-
-  it.each(["unknown_run", "mismatched_task", "not_failure", "private", "private_project", "succeeded"] as const)("does not create a repair for a Sentry event with %s", async (kind) => {
-    const f = await sentryFailureFixture();
-    const delivery = f.delivery(kind === "mismatched_task" ? randomUUID() : undefined,
-      kind === "unknown_run" ? randomUUID() : undefined);
-    if (kind === "not_failure") delivery.payload.data.event.tags[0]![1] = "other";
-    if (kind === "private") await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.sourceTask.id));
-    if (kind === "private_project") await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, f.projectId));
-    if (kind === "succeeded") await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.sourceRun.id));
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, delivery)).resolves.toMatchObject({ status: "ignored" });
-    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
-  });
-
-  it("deduplicates concurrent Sentry deliveries across two triggers and still admits a distinct failed run", async () => {
-    const f = await sentryFailureFixture();
-    const second = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "bearer" }, {});
-    const results = await Promise.all([
-      f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery()),
-      f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(), authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` }),
-    ]);
-    expect(results[0].id).toBe(results[1].id);
-    const [anotherRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
-      nativeIssueId: f.sourceTask.id, status: "failed" }).returning();
-    await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery(f.sourceTask.id, anotherRun!.id));
-    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(2);
-    await f.svc.deleteTrigger(f.trigger.id, {});
-    await f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(),
-      authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` });
-    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(2);
-  });
-
-  it.each(["routine_execution", "plugin:fixture:operation"])("ignores tasks from a different Sentry repair routine with %s origin", async (originKind) => {
-    const f = await sentryFailureFixture();
-    const original = await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery());
-    const [repair] = await db.select().from(issues).where(eq(issues.id, original.linkedIssueId!));
-    await db.update(issues).set({ originKind, originId: originKind === "routine_execution" ? f.routine.id : "plugin-instance" })
-      .where(eq(issues.id, repair!.id));
-    const [failure] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
-      nativeIssueId: repair!.id, status: "failed" }).returning();
-    const other = await f.svc.create(f.companyId, { title: "Other repair routine", projectId: f.projectId,
-      assigneeAgentId: f.agentId, concurrencyPolicy: "always_enqueue" }, {});
-    const trigger = await f.svc.createTrigger(other.id, { kind: "webhook", signingMode: "bearer" }, {});
-    await expect(f.svc.firePublicTrigger(trigger.trigger.publicId!, { ...f.delivery(repair!.id, failure!.id),
-      authorizationHeader: `Bearer ${trigger.secretMaterial!.webhookSecret}` })).resolves.toMatchObject({ status: "ignored" });
-    expect(await f.svc.listRuns(other.id)).toEqual([]);
-  });
-
-  it("accepts independent plugin-operation tasks whose origin is a routine run", async () => {
-    const f = await sentryFailureFixture();
-    const other = await f.svc.create(f.companyId, { title: "Plugin routine", projectId: f.projectId, assigneeAgentId: f.agentId }, {});
-    const [origin] = await db.insert(routineRuns).values({ companyId: f.companyId, routineId: other.id,
-      source: "manual", status: "issue_created", linkedIssueId: f.sourceTask.id }).returning();
-    await db.update(issues).set({ originKind: "plugin:fixture:operation", originId: "plugin-instance",
-      originRunId: origin!.id }).where(eq(issues.id, f.sourceTask.id));
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).resolves.toMatchObject({ status: "issue_created" });
-  });
-
-  it("deduplicates suppressed Sentry receipts across triggers", async () => {
-    const f = await sentryFailureFixture(false, { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-sentry-test" });
-    const second = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "bearer" }, {});
-    const a = await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery());
-    const b = await f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(),
-      authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` });
-    expect(a).toMatchObject({ status: "skipped", failureReason: "worktree_execution_cutoff" });
-    expect(b.id).toBe(a.id);
-    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(1);
-    expect(f.wakeups).toEqual([]);
-  });
-
-  it.each(["none", "app_webhook"] as const)("requires explicit bearer mode on Sentry intake instead of %s", async (signingMode) => {
-    const f = await sentryFailureFixture();
-    await f.svc.updateTrigger(f.trigger.id, { signingMode }, {});
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).rejects.toMatchObject({ status: 401 });
-    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
-    expect(f.wakeups).toEqual([]);
-  });
-
-  it.each([false, true])("never promotes a Sentry setup receipt into work after activation (generic ingress: %s)", async (genericIngress) => {
-    const f = await sentryFailureFixture(true);
-    const delivery = { ...f.delivery(), idempotencyKey: "sentry-connection-test" };
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, { ...delivery, sentryRunFailure: !genericIngress }))
-      .resolves.toMatchObject({ status: "test_received" });
-    await f.svc.updateTrigger(f.trigger.id, { setupPending: false }, {});
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, delivery)).resolves.toMatchObject({ status: "test_received" });
-    if (!genericIngress) await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery()))
-      .resolves.toMatchObject({ status: "test_received" });
-    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
-    expect(f.wakeups).toEqual([]);
-    const [another] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
-      nativeIssueId: f.sourceTask.id, status: "failed" }).returning();
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery(f.sourceTask.id, another!.id)))
-      .resolves.toMatchObject({ status: "issue_created" });
-  });
-
-  it.each(["pairs", "objects", "dictionary"])("accepts Sentry %s tags and rejects a different company", async (format) => {
-    const f = await sentryFailureFixture();
-    const delivery = f.delivery();
-    const tags = [...delivery.payload.data.event.tags, ["company_id", f.companyId]];
-    const event = (pairs: string[][]) => ({ ...delivery.payload, data: { event: { ...delivery.payload.data.event,
-      tags: format === "objects" ? pairs.map(([key, value]) => ({ key, value })) : format === "dictionary" ? Object.fromEntries(pairs) : pairs,
-    } } });
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, { ...delivery,
-      payload: event([...tags.slice(0, -1), ["company_id", randomUUID()]]) })).resolves.toMatchObject({ status: "ignored" });
-    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
-    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, { ...delivery, payload: event(tags) }))
-      .resolves.toMatchObject({ status: "issue_created" });
   });
 
   async function firefliesFixture(setupPending = false, signingMode: "app_webhook" | "fireflies_hmac" = "fireflies_hmac") {
