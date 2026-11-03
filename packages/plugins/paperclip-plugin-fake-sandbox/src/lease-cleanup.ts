@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, readdir, rm } from "node:fs/promises";
+import { lstat, open, readdir, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 
 export interface LeaseRootIdentity {
@@ -11,8 +11,18 @@ async function makeDirectoriesWritable(directory: string, expected?: LeaseRootId
   const handle = await open(
     directory,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  ).catch((error: NodeJS.ErrnoException) => {
+  ).catch(async (error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
+    if (error.code === "EACCES") {
+      const identity = await lstat(directory);
+      if (!identity.isDirectory() || (expected && (identity.dev !== expected.dev || identity.ino !== expected.ino))) {
+        throw new Error("Refusing to remove a replaced fake sandbox lease root");
+      }
+      // Removing an empty directory only needs access to its parent. Opening
+      // it first would regress cleanup of owned directories with mode 000.
+      await rmdir(directory);
+      return null;
+    }
     throw error;
   });
   if (!handle) return false;
