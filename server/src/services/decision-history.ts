@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, ilike, inArray, isNotNull, notInArray, or, sql, type SQL } from "drizzle-orm";
-import { activityLog, agents, approvals, companies, decisions, decisionTargetIssues, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
-import type { DecisionHistoryItem, DecisionHistoryPage, DecisionHistoryQuery, DecisionHistoryResultOutcome } from "@paperclipai/shared";
+import { activityLog, agents, approvals, budgetIncidents, companies, decisions, decisionTargetIssues, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
+import { ATTENTION_RECEIPT_OUTCOME_TEXT, type DecisionHistoryAction, type DecisionHistoryItem, type DecisionHistoryPage, type DecisionHistoryQuery, type DecisionHistoryResultOutcome } from "@paperclipai/shared";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { badRequest } from "../errors.js";
 import { firstApprovalIssueId } from "./approval-visibility.js";
@@ -55,10 +55,56 @@ export function interactionHistoryResultOutcome(result: unknown): DecisionHistor
   return typeof outcome === "string" && RESULT_OUTCOMES.has(outcome) ? outcome as DecisionHistoryResultOutcome : null;
 }
 
+/**
+ * A budget hard stop's approval closes through the budget card: Raise limit
+ * approves it and Keep paused rejects it (`budgets.resolveIncident`).
+ */
+const BUDGET_APPROVAL_ACTIONS: Record<string, DecisionHistoryAction["outcome"]> = {
+  approved: "limit_raised", rejected: "kept_paused",
+};
+const APPROVAL_ACTIONS: Record<string, DecisionHistoryAction["outcome"]> = {
+  approved: "approved", rejected: "rejected", revision_requested: "revision_requested", cancelled: "withdrawn",
+};
+
 /** An approval's history label: a cancel by a person is a withdraw (PAP-749 plan §2, Rule 6). */
-export function approvalHistoryLabel(row: { status: string; decidedByUserId: string | null }) {
+export function approvalHistoryLabel(row: { status: string; decidedByUserId: string | null; type?: string }) {
   if (row.status === "cancelled" && row.decidedByUserId) return HISTORY_OUTCOME_LABELS.withdrawn_by_user!;
+  const budgetAction = row.type === "budget_override_required" ? BUDGET_APPROVAL_ACTIONS[row.status] : undefined;
+  if (budgetAction) return ATTENTION_RECEIPT_OUTCOME_TEXT[budgetAction];
   return APPROVAL_OUTCOME_LABELS[row.status] ?? "Decision recorded";
+}
+
+/**
+ * What the person did, in the receipt's words (PAP-767): the UI renders
+ * "Kept paused by @dotta" from this, so a history row and the receipt for the
+ * same action read the same verb. `null` when no person acted.
+ */
+export function approvalHistoryAction(row: { status: string; decidedByUserId: string | null; type: string }): DecisionHistoryAction | null {
+  if (!row.decidedByUserId) return null;
+  const budgetAction = row.type === "budget_override_required" ? BUDGET_APPROVAL_ACTIONS[row.status] : undefined;
+  if (budgetAction) return { outcome: budgetAction, detail: null };
+  const outcome = APPROVAL_ACTIONS[row.status];
+  return outcome ? { outcome, detail: null } : null;
+}
+
+export function interactionHistoryAction(row: { kind: string; status: string; result: unknown; resolvedByUserId: string | null }): DecisionHistoryAction | null {
+  if (!row.resolvedByUserId) return null;
+  const resultOutcome = interactionHistoryResultOutcome(row.result);
+  if (resultOutcome === "withdrawn" || resultOutcome === "skipped") return { outcome: resultOutcome, detail: null };
+  if (resultOutcome) return null;
+  if (row.status === "accepted") return { outcome: "approved", detail: null };
+  if (row.status === "rejected") return { outcome: "changes_requested", detail: null };
+  if (row.status === "answered") {
+    return { outcome: "answered", detail: row.kind === "request_item_verdicts" ? itemVerdictsHistoryLabel(row.result) : null };
+  }
+  return null;
+}
+
+export function decisionHistoryAction(row: { status: string; resolvedByUserId: string | null; chosenLabel: string | null }): DecisionHistoryAction | null {
+  if (!row.resolvedByUserId) return null;
+  if (row.status === "decided") return { outcome: "decided", detail: row.chosenLabel };
+  if (row.status === "cancelled") return { outcome: "withdrawn", detail: null };
+  return null;
 }
 
 
@@ -126,12 +172,21 @@ export function pageDecisionHistory(items: DecisionHistoryItem[], limit: number,
  * action's activity entry.
  */
 function handledForUserSourceCondition(companyId: string, userId: string, sourceKind: DecisionHistoryItem["sourceKind"], sourceId: SQL | typeof decisions.id | typeof issueThreadInteractions.id | typeof approvals.id) {
+  // A budget hard stop is answered on its budget card, so the receipt names
+  // the incident; history lists the incident's approval (PAP-767).
+  const budgetReceipt = sourceKind === "approval"
+    ? sql`or (${activityLog.details} -> 'receipt' ->> 'sourceKind' = 'budget_alert'
+        and ${activityLog.details} -> 'receipt' ->> 'sourceId' in (
+          select ${budgetIncidents.id}::text from ${budgetIncidents}
+          where ${budgetIncidents.companyId} = ${companyId} and ${budgetIncidents.approvalId} = ${sourceId}))`
+    : sql``;
   return sql<boolean>`exists (
     select 1 from ${activityLog}
     where ${activityLog.companyId} = ${companyId}
       and (${activityLog.details} ->> 'handledForUserId') = ${userId}
-      and ${activityLog.details} -> 'receipt' ->> 'sourceKind' = ${sourceKind}
-      and ${activityLog.details} -> 'receipt' ->> 'sourceId' = ${sourceId}::text
+      and ((${activityLog.details} -> 'receipt' ->> 'sourceKind' = ${sourceKind}
+        and ${activityLog.details} -> 'receipt' ->> 'sourceId' = ${sourceId}::text)
+        ${budgetReceipt})
   )`;
 }
 
@@ -139,9 +194,17 @@ function handledForUserSourceCondition(companyId: string, userId: string, source
  * The person each answered card was for, when someone else answered it
  * ("Answered by @x for @y"). A transfer is not the answer, so it is skipped.
  */
-async function handledForBySource(db: Db, companyId: string, sourceIds: string[]) {
+async function handledForBySource(db: Db, companyId: string, items: Array<Pick<DecisionHistoryItem, "sourceKind" | "sourceId">>) {
   const result = new Map<string, string>();
-  if (sourceIds.length === 0) return result;
+  if (items.length === 0) return result;
+  // A budget hard stop's receipt names the incident, not its approval (PAP-767).
+  const approvalIds = items.filter((item) => item.sourceKind === "approval").map((item) => item.sourceId);
+  const incidentRows = approvalIds.length === 0 ? [] : await db
+    .select({ id: budgetIncidents.id, approvalId: budgetIncidents.approvalId })
+    .from(budgetIncidents)
+    .where(and(eq(budgetIncidents.companyId, companyId), inArray(budgetIncidents.approvalId, approvalIds)));
+  const approvalByIncident = new Map(incidentRows.map((row) => [row.id, row.approvalId!]));
+  const sourceIds = [...items.map((item) => item.sourceId), ...approvalByIncident.keys()];
   const rows = await db
     .select({ details: activityLog.details, createdAt: activityLog.createdAt })
     .from(activityLog)
@@ -155,7 +218,8 @@ async function handledForBySource(db: Db, companyId: string, sourceIds: string[]
     const receipt = readAttentionHandledDetails(row.details);
     const userId = (row.details as Record<string, unknown> | null)?.handledForUserId;
     if (!receipt || receipt.outcome === "transferred" || typeof userId !== "string") continue;
-    const key = `${receipt.sourceKind}:${receipt.sourceId}`;
+    const budgetApprovalId = receipt.sourceKind === "budget_alert" ? approvalByIncident.get(receipt.sourceId) : undefined;
+    const key = budgetApprovalId ? `approval:${budgetApprovalId}` : `${receipt.sourceKind}:${receipt.sourceId}`;
     if (!result.has(key)) result.set(key, userId);
   }
   return result;
@@ -284,25 +348,31 @@ export function decisionHistoryService(db: Db) {
       return { ...row, title: row.title ?? row.issueTitle, resolvedAt: new Date(row.resolvedAt!).toISOString(),
         id: `issue_thread_interaction:${row.sourceId}`, sourceKind: "issue_thread_interaction",
         label: interactionHistoryLabel({ kind, status: row.outcome, result, resolvedByUserId: row.resolvedByUserId }),
+        action: interactionHistoryAction({ kind, status: row.outcome, result, resolvedByUserId: row.resolvedByUserId }),
         resultOutcome: interactionHistoryResultOutcome(result),
         reason: interactionHistoryReason(result), target,
         href: decisionHistoryHref(company.prefix, row.issueIdentifier ?? row.issueId, "issue_thread_interaction", row.sourceId, target) };
     });
-    const decisionItems: DecisionHistoryItem[] = decisionRows.map(({ chosenOptionId, options: choices, metadata, ...row }) => ({
+    const decisionItems: DecisionHistoryItem[] = decisionRows.map(({ chosenOptionId, options: choices, metadata, ...row }) => {
+      const chosenLabel = choices.find((choice) => choice.id === chosenOptionId)?.label ?? null;
+      return {
       ...row, id: `decision:${row.sourceId}`, sourceKind: "decision", resolvedByAgentId: null,
       resolvedAt: new Date(row.resolvedAt).toISOString(), target: null,
-      label: choices.find((choice) => choice.id === chosenOptionId)?.label ?? (row.outcome === "expired" ? "Expired"
+      label: chosenLabel ?? (row.outcome === "expired" ? "Expired"
         : row.outcome === "cancelled" ? HISTORY_OUTCOME_LABELS[row.resolvedByUserId ? "withdrawn_by_user" : "cancelled"] : "Decision recorded"),
+      action: decisionHistoryAction({ status: row.outcome, resolvedByUserId: row.resolvedByUserId, chosenLabel }),
       resultOutcome: row.outcome === "cancelled" && row.resolvedByUserId ? "withdrawn" : null,
       reason: interactionHistoryReason({ reason: metadata.cancelReason }),
       href: decisionHistoryHref(company.prefix, row.issueIdentifier ?? row.issueId, "decision", row.sourceId, null),
-    }));
+      };
+    });
     const approvalItems: DecisionHistoryItem[] = approvalRows.map(({ type, payload, decisionNote, ...row }) => {
       const withdrawn = row.outcome === "cancelled" && row.resolvedByUserId != null;
       return {
         ...row, id: `approval:${row.sourceId}`, sourceKind: "approval", resolvedByAgentId: null,
         title: approvalTitle(type, payload), resolvedAt: new Date(row.resolvedAt).toISOString(), target: null,
-        label: approvalHistoryLabel({ status: row.outcome, decidedByUserId: row.resolvedByUserId }),
+        label: approvalHistoryLabel({ status: row.outcome, decidedByUserId: row.resolvedByUserId, type }),
+        action: approvalHistoryAction({ status: row.outcome, decidedByUserId: row.resolvedByUserId, type }),
         resultOutcome: withdrawn ? "withdrawn" : null,
         // The decision note is the withdraw reason only for a cancel.
         reason: row.outcome === "cancelled" ? interactionHistoryReason({ reason: decisionNote }) : null,
@@ -311,7 +381,7 @@ export function decisionHistoryService(db: Db) {
       };
     });
     const page = pageDecisionHistory([...interactionItems, ...decisionItems, ...approvalItems], limit, sort);
-    const handledFor = await handledForBySource(db, companyId, page.items.map((item) => item.sourceId));
+    const handledFor = await handledForBySource(db, companyId, page.items);
     for (const item of page.items) item.handledForUserId = handledFor.get(item.id) ?? null;
     return page;
   } };

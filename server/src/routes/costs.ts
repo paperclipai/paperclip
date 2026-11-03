@@ -375,14 +375,13 @@ export function costRoutes(
       const actorUserId = req.actor.userId ?? "board";
       // A hard stop is the budget owner's card. When someone else raises or
       // keeps the limit, read that before the incident closes, so the owner
-      // gets "Answered by @x" (PAP-749 plan §6, Rule 12).
+      // gets "Kept paused by @x" or "Limit raised by @x", the verbs of the
+      // card's buttons and of Decision history (PAP-749 plan §6; PAP-767).
       const handledFor = await attentionHandledFor(
         db, companyId, { sourceKind: "budget_alert", sourceId: incidentId }, req.actor.userId,
       );
       const incident = await budgets.resolveIncident(companyId, incidentId, req.body, actorUserId, {
-        activityDetails: attentionHandledDetails(handledFor, "answered", {
-          reason: req.body.action === "keep_paused" ? "Kept paused" : "Raised the limit and resumed work",
-        }),
+        activityDetails: attentionHandledDetails(handledFor, req.body.action === "keep_paused" ? "kept_paused" : "limit_raised"),
       });
       res.json(incident);
     },

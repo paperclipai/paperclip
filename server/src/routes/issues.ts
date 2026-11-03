@@ -17653,7 +17653,9 @@ export function issueRoutes(
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.skippedClientKeys?.length ?? 0)
               : 0,
-          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, "answered")),
+          // The receipt uses the history verb: an accepted card reads
+          // "Approved by @x", an answered one "Answered by @x" (PAP-767).
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, interaction.status === "answered" ? "answered" : "approved")),
         },
       });
 
@@ -17827,7 +17829,8 @@ export function issueRoutes(
                   interaction.kind === "request_checkbox_confirmation"
                 ? (interaction.result?.reason ?? null)
                 : null,
-          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, "rejected")),
+          // Reject and Revise… both record "Changes requested" (PAP-767).
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, "changes_requested")),
         },
       });
 

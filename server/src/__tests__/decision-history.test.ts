@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, approvals, companies, createDb, decisions, decisionTargetIssues, heartbeatRuns, issueApprovals, issues, issueThreadInteractions, projects } from "@paperclipai/db";
-import { decisionHistoryService, decodeDecisionHistoryCursor, decisionHistoryHref, decisionHistoryTarget, itemVerdictsHistoryLabel } from "../services/decision-history.js";
+import { activityLog, agents, approvals, budgetIncidents, budgetPolicies, companies, createDb, decisions, decisionTargetIssues, heartbeatRuns, issueApprovals, issues, issueThreadInteractions, projects } from "@paperclipai/db";
+import { approvalHistoryAction, decisionHistoryAction, decisionHistoryService, decodeDecisionHistoryCursor, decisionHistoryHref, decisionHistoryTarget, interactionHistoryAction, itemVerdictsHistoryLabel } from "../services/decision-history.js";
 import { documentService } from "../services/documents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -21,6 +21,23 @@ describe("decision receipt navigation", () => {
   it("rejects malformed or incompatible pagination cursors", () => {
     expect(() => decodeDecisionHistoryCursor("nope", "newest")).toThrow("Invalid decision history cursor");
     expect(() => decodeDecisionHistoryCursor(Buffer.from(JSON.stringify({ at: "today", id: "x", sort: "oldest" })).toString("base64url"), "newest")).toThrow();
+  });
+  it("names each action with the receipt's verb (PAP-767)", () => {
+    const by = { resolvedByUserId: "scott" };
+    expect(interactionHistoryAction({ ...by, kind: "request_confirmation", status: "accepted", result: { outcome: "accepted" } })).toEqual({ outcome: "approved", detail: null });
+    expect(interactionHistoryAction({ ...by, kind: "request_confirmation", status: "rejected", result: { outcome: "rejected" } })).toEqual({ outcome: "changes_requested", detail: null });
+    expect(interactionHistoryAction({ ...by, kind: "ask_user_questions", status: "answered", result: {} })).toEqual({ outcome: "answered", detail: null });
+    expect(interactionHistoryAction({ ...by, kind: "request_item_verdicts", status: "answered", result: { outcome: "resolved", items: [{ verdict: "approve" }] } }))
+      .toEqual({ outcome: "answered", detail: "1 approved" });
+    expect(interactionHistoryAction({ ...by, kind: "ask_user_questions", status: "cancelled", result: { outcome: "withdrawn" } })).toEqual({ outcome: "withdrawn", detail: null });
+    // Nobody acted on an expired or task-closed card, or the agent withdrew it.
+    expect(interactionHistoryAction({ ...by, kind: "request_confirmation", status: "expired", result: { outcome: "issue_closed" } })).toBeNull();
+    expect(interactionHistoryAction({ resolvedByUserId: null, kind: "ask_user_questions", status: "cancelled", result: { outcome: "withdrawn" } })).toBeNull();
+    expect(approvalHistoryAction({ status: "approved", decidedByUserId: "scott", type: "request_board_approval" })).toEqual({ outcome: "approved", detail: null });
+    expect(approvalHistoryAction({ status: "rejected", decidedByUserId: "dotta", type: "budget_override_required" })).toEqual({ outcome: "kept_paused", detail: null });
+    expect(approvalHistoryAction({ status: "approved", decidedByUserId: "dotta", type: "budget_override_required" })).toEqual({ outcome: "limit_raised", detail: null });
+    expect(approvalHistoryAction({ status: "cancelled", decidedByUserId: null, type: "budget_override_required" })).toBeNull();
+    expect(decisionHistoryAction({ status: "decided", resolvedByUserId: "scott", chosenLabel: "Ship it" })).toEqual({ outcome: "decided", detail: "Ship it" });
   });
   it("preserves the owning task while the receipt points to its origin interaction", () => {
     const target = decisionHistoryTarget({ target: { type: "issue_document", issueId: "task-b", key: "plan", revisionId: "b-v1" } });
@@ -198,6 +215,31 @@ const support = await getEmbeddedPostgresTestSupport();
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
     expect(paged).toEqual(all.items.map((item) => item.id));
+  });
+
+  it("shows Keep paused on a budget hard stop as kept paused by the actor, for the budget owner (PAP-767)", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), policyId = randomUUID(), incidentId = randomUUID(), approvalId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Budget history", issuePrefix: "BDH" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Spendy Agent", role: "engineer", adapterType: "codex_local" });
+    await db.insert(budgetPolicies).values({ id: policyId, companyId, scopeType: "agent", scopeId: agentId, windowKind: "calendar_month_utc", amount: 10_000 });
+    // `budgets.resolveIncident` rejects the approval as the person who kept it paused.
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "budget_override_required", status: "rejected",
+      payload: { scopeName: "Spendy Agent" }, decidedByUserId: "dotta", decidedAt: new Date() });
+    await db.insert(budgetIncidents).values({ id: incidentId, companyId, policyId, scopeType: "agent", scopeId: agentId, metric: "billed_cents",
+      windowKind: "calendar_month_utc", windowStart: new Date("2026-11-01T00:00:00.000Z"), windowEnd: new Date("2026-12-01T00:00:00.000Z"),
+      thresholdType: "hard", amountLimit: 10_000, amountObserved: 10_000, status: "dismissed", approvalId });
+    // The receipt names the budget card (the incident), not its approval.
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: "dotta", action: "budget.incident_resolved", entityType: "budget_incident", entityId: incidentId,
+      details: { action: "keep_paused", handledForUserId: "scott", receipt: { outcome: "kept_paused", sourceKind: "budget_alert", sourceId: incidentId, issueId: null, title: "Spendy Agent budget hard stop", actorUserId: "dotta" } } });
+
+    const service = decisionHistoryService(db);
+    const scott = { actor: { type: "board" as const, userId: "scott", ignoreInstanceAdmin: true, authorizingUserId: "scott" }, userId: "scott", limit: 100 };
+    const handled = await service.list(companyId, { ...scott, handledForMe: true });
+    expect(handled.items).toEqual([expect.objectContaining({ sourceKind: "approval", sourceId: approvalId, label: "Kept paused",
+      action: { outcome: "kept_paused", detail: null }, resolvedByUserId: "dotta", handledForUserId: "scott" })]);
+    // Dotta acted for Scott, so it is not in her own "Handled for me".
+    expect((await service.list(companyId, { ...scott, userId: "dotta", handledForMe: true })).items).toEqual([]);
+    expect((await service.list(companyId, scott)).items.find((item) => item.sourceId === approvalId)?.handledForUserId).toBe("scott");
   });
 
   it("paginates both sources without losing answered questions; filters before limiting; isolates companies and private tasks", async () => {

@@ -1,4 +1,4 @@
-import type { AttentionItem, AttentionPersonalView, DecisionHistoryItem, DecisionHistoryOutcomeFilter } from "@paperclipai/shared";
+import { attentionReceiptText, type AttentionItem, type AttentionPersonalView, type DecisionHistoryItem, type DecisionHistoryOutcomeFilter } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 
 /**
@@ -39,14 +39,18 @@ export const DECISION_HISTORY_OUTCOME_OPTIONS: ReadonlyArray<{ value: DecisionHi
 ];
 
 /**
- * A history entry's headline. A withdrawn card names who withdrew it
- * ("Withdrawn by @scott", PAP-749 plan §3); everything else keeps the
- * server's label.
+ * A history entry's headline. When a person acted, it names them with the
+ * receipt's verb for the same action ("Approved by @scott", "Kept paused by
+ * @dotta"; PAP-749 plan §3, PAP-767). A decision adds the option chosen and an
+ * item review its verdict counts. Everything else keeps the server's label.
  */
 export function decisionHistoryHeadline(item: DecisionHistoryItem, userLabelMap?: ReadonlyMap<string, string> | null) {
-  if (item.resultOutcome === "withdrawn" && item.resolvedByUserId) {
-    return `Withdrawn by @${userLabelMap?.get(item.resolvedByUserId) ?? "someone"}`;
+  const actorLabel = item.resolvedByUserId ? userLabelMap?.get(item.resolvedByUserId) ?? "someone" : null;
+  if (item.action && actorLabel) {
+    const line = attentionReceiptText({ outcome: item.action.outcome, actorLabel });
+    return item.action.detail ? `${line}: ${item.action.detail}` : line;
   }
+  if (item.resultOutcome === "withdrawn" && actorLabel) return `Withdrawn by @${actorLabel}`;
   return item.label;
 }
 

@@ -18,7 +18,7 @@
  * reload, the confirmation dialogs, the classic page's layout). Those steps are
  * reported as API-level checks only.
  */
-import type { AttentionFeed, AttentionItem, AttentionReceipt } from "../packages/shared/src/index.js";
+import type { AttentionFeed, AttentionItem, AttentionReceipt, DecisionHistoryItem } from "../packages/shared/src/index.js";
 
 const BASE_URL = (process.env.BASE_URL ?? "http://127.0.0.1:3200").replace(/\/$/, "");
 const PASSWORD = process.env.SEED_DEMO_PASSWORD ?? "needs-you-demo-2026";
@@ -211,7 +211,7 @@ async function main() {
     `"${titleOf(staleApproval)}" in Company, stale ${staleApproval?.stale?.reason}, status ${staleApproval?.subject.status}`);
 
   // 8. Decision history filters.
-  type History = { items: Array<{ sourceId: string; label: string; reason?: string | null }> };
+  type History = { items: Array<Pick<DecisionHistoryItem, "sourceKind" | "sourceId" | "label" | "reason" | "action" | "resolvedByUserId" | "handledForUserId">> };
   const history = async (session: Session, query: string) =>
     (await http<History>(session, "GET", `/api/companies/${companyId}/attention/history?limit=100&${query}`)).json.items;
   const withdrawn = await history(scott, "outcome=withdrawn");
@@ -235,8 +235,17 @@ async function main() {
     const budgetReceipt = (scottAfterBudget.receipts ?? []).find((receipt: AttentionReceipt) => receipt.sourceId === hardStop.subject.id);
     const companyAfterBudget = await feed(riley, "company");
     check("1d receipt for the budget owner", resolve.status === 200 && budgetReceipt?.actorUserId === dotta.userId
+      && budgetReceipt.outcome === "kept_paused"
       && !has(scottAfterBudget.items, hardStop.id) && !has(companyAfterBudget.items, hardStop.id),
-    `Keep paused by Dotta -> ${resolve.status}; Scott receipt: ${budgetReceipt ? `${budgetReceipt.outcome} by ${name(budgetReceipt.actorUserId)} (${budgetReceipt.reason}) -> ${budgetReceipt.href}` : "none"}`);
+    `Keep paused by Dotta -> ${resolve.status}; Scott receipt: ${budgetReceipt ? `${budgetReceipt.outcome} by ${name(budgetReceipt.actorUserId)} -> ${budgetReceipt.href}` : "none"}`);
+    // PAP-767: the same action is in Scott's "Handled for me" history as the
+    // hard stop's approval, kept paused by Dotta for Scott.
+    const approvalId = (hardStop.subject.metadata as { approvalId?: string | null } | null)?.approvalId ?? null;
+    const scottHandled = await history(scott, "handledForMe=true");
+    const keptPaused = scottHandled.find((item) => item.sourceKind === "approval" && item.sourceId === approvalId);
+    check("1d history: kept paused by Dotta for Scott", Boolean(approvalId) && keptPaused?.action?.outcome === "kept_paused"
+      && keptPaused.resolvedByUserId === dotta.userId && keptPaused.handledForUserId === scott.userId,
+    keptPaused ? `${keptPaused.action?.outcome} by ${name(keptPaused.resolvedByUserId)} for ${name(keptPaused.handledForUserId)}` : `not in Scott's Handled for me (${scottHandled.length} entries)`);
   }
 
   const failed = results.filter((result) => !result.ok);

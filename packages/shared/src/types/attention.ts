@@ -408,15 +408,21 @@ export interface AttentionStale {
  * What a different person did with a card that was for you (PAP-749 plan §6,
  * Rule 12). Archive and snooze are personal, so they never make a receipt;
  * Claim takes only ownerless cards, so it has no audience person to tell.
+ * Decision history names the same action with the same value, so a receipt
+ * and its history row read the same verb (PAP-767).
  */
 export const ATTENTION_RECEIPT_OUTCOMES = [
   "answered",
   "approved",
   "rejected",
+  "changes_requested",
   "revision_requested",
+  "decided",
   "withdrawn",
   "skipped",
   "transferred",
+  "kept_paused",
+  "limit_raised",
 ] as const;
 export type AttentionReceiptOutcome = (typeof ATTENTION_RECEIPT_OUTCOMES)[number];
 
@@ -599,6 +605,14 @@ export interface DecisionHistoryItem {
    */
   resultOutcome?: DecisionHistoryResultOutcome | null;
   label: string;
+  /**
+   * What the person did, in the receipt's words: the UI renders "Approved by
+   * @scott" from this and `resolvedByUserId`, like the receipt for the same
+   * action (PAP-767). `detail` is what the verb leaves out: the chosen option
+   * of a decision, or the verdict counts of an item review. `null` when no
+   * person acted (expired, closed with its task, superseded).
+   */
+  action?: DecisionHistoryAction | null;
   /** Why the request was withdrawn or skipped, when the person gave a reason. */
   reason?: string | null;
   resolvedAt: string;
@@ -614,6 +628,11 @@ export interface DecisionHistoryItem {
 }
 
 export type DecisionHistoryResultOutcome = "withdrawn" | "skipped" | "issue_closed";
+
+export interface DecisionHistoryAction {
+  outcome: AttentionReceiptOutcome;
+  detail: string | null;
+}
 
 /**
  * Outcome filters of the Decision history panel (PAP-749 plan §3). Each value

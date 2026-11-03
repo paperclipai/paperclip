@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  approvals,
   budgetIncidents,
   budgetPolicies,
   companies,
@@ -26,6 +27,7 @@ import {
   attentionReceiptService,
 } from "../services/attention-receipts.js";
 import { budgetService } from "../services/budgets.js";
+import { decisionHistoryService } from "../services/decision-history.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATTENTION_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -231,6 +233,11 @@ describeEmbeddedPostgres("attention escalation owners (PAP-749 task 1d)", () => 
     const { companyId } = await seedCompany("BGR");
     await db.update(companies).set({ budgetOwnerUserId: SCOTT }).where(eq(companies.id, companyId));
     const hardStop = await insertBudgetIncident(companyId, "hard");
+    // A hard stop opens a budget override approval; Keep paused rejects it.
+    const [approval] = await db.insert(approvals).values({
+      companyId, type: "budget_override_required", status: "pending", payload: { scopeName: "BGR Co" },
+    }).returning({ id: approvals.id });
+    await db.update(budgetIncidents).set({ approvalId: approval!.id }).where(eq(budgetIncidents.id, hardStop));
     const warning = await insertBudgetIncident(companyId, "soft");
 
     // The owner acting on their own card, or anyone on a warning, is no receipt.
@@ -239,8 +246,9 @@ describeEmbeddedPostgres("attention escalation owners (PAP-749 task 1d)", () => 
 
     const handledFor = await attentionHandledFor(db, companyId, { sourceKind: "budget_alert", sourceId: hardStop }, DOTTA);
     expect(handledFor).toMatchObject({ userId: SCOTT, actorUserId: DOTTA, title: "BGR Co budget hard stop" });
+    // Same details as the resolve route (routes/costs.ts).
     await budgetService(db).resolveIncident(companyId, hardStop, { action: "keep_paused" }, DOTTA, {
-      activityDetails: attentionHandledDetails(handledFor, "answered", { reason: "Kept paused" }),
+      activityDetails: attentionHandledDetails(handledFor, "kept_paused"),
     });
 
     const [entry] = await db
@@ -255,13 +263,26 @@ describeEmbeddedPostgres("attention escalation owners (PAP-749 task 1d)", () => 
     });
     expect(receipts).toHaveLength(1);
     expect(receipts[0]).toMatchObject({
-      outcome: "answered",
+      outcome: "kept_paused",
       sourceKind: "budget_alert",
       sourceId: hardStop,
       actorUserId: DOTTA,
-      reason: "Kept paused",
+      reason: null,
       href: "/BGR/costs",
     });
+
+    // PAP-767: Scott's "Handled for me" history has the same action, kept
+    // paused by Dotta for him, on the hard stop's approval.
+    const scottActor = { type: "board" as const, userId: SCOTT, isInstanceAdmin: true, companyIds: [companyId] };
+    const handled = await decisionHistoryService(db).list(companyId, { actor: scottActor, userId: SCOTT, handledForMe: true });
+    expect(handled.items).toEqual([expect.objectContaining({
+      sourceKind: "approval",
+      sourceId: approval!.id,
+      label: "Kept paused",
+      action: { outcome: "kept_paused", detail: null },
+      resolvedByUserId: DOTTA,
+      handledForUserId: SCOTT,
+    })]);
 
     // The card is gone for everyone once the incident closes.
     const company = await list(companyId, DOTTA, "company");

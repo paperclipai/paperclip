@@ -724,9 +724,9 @@ async function seed(db: Db) {
     await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: now(), resolvedByUserId: scott, result: { outcome: "accepted" }, updatedAt: now() }).where(eq(issueThreadInteractions.id, answered.id));
     await logActivity(db, {
       companyId, actorType: "user", actorId: scott, action: "issue.thread_interaction_accepted", entityType: "issue", entityId: answeredIssue.id,
-      details: { interactionId: answered.id, interactionKind: "request_confirmation", interactionStatus: "accepted", ...attentionHandledDetails(answeredFor, "answered") },
+      details: { interactionId: answered.id, interactionKind: "request_confirmation", interactionStatus: "accepted", ...attentionHandledDetails(answeredFor, "approved") },
     });
-    card("Receipts", "Dotta: \"Answered by @Scott\" (confirmation on her task)");
+    card("Receipts", "Dotta: \"Approved by @Scott\" (confirmation on her task)");
 
     const withdrawnIssue = await makeIssue({ title: "Dotta: vendor shortlist", status: "todo", createdByUserId: dotta, responsibleUserId: dotta });
     const withdrawn = await makeInteraction(withdrawnIssue, "ask_user_questions", {

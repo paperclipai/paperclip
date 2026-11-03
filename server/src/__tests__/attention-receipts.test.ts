@@ -84,6 +84,12 @@ describe("attention receipt details (PAP-749 task 2f)", () => {
     expect(attentionReceiptText({ outcome: "withdrawn", actorLabel: "scott" })).toBe("Withdrawn by @scott");
     expect(attentionReceiptText({ outcome: "transferred", actorLabel: "scott", transferredToLabel: "riley" }))
       .toBe("Transferred to @riley by @scott");
+    // The verbs of the card's buttons and of Decision history (PAP-767).
+    expect(attentionReceiptText({ outcome: "approved", actorLabel: "scott" })).toBe("Approved by @scott");
+    expect(attentionReceiptText({ outcome: "changes_requested", actorLabel: "scott" })).toBe("Changes requested by @scott");
+    expect(attentionReceiptText({ outcome: "decided", actorLabel: "scott" })).toBe("Decided by @scott");
+    expect(attentionReceiptText({ outcome: "kept_paused", actorLabel: "dotta" })).toBe("Kept paused by @dotta");
+    expect(attentionReceiptText({ outcome: "limit_raised", actorLabel: "dotta" })).toBe("Limit raised by @dotta");
   });
 });
 

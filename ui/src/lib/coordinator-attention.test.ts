@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
+import { attentionReceiptText, type AttentionItem, type DecisionHistoryItem } from "@paperclipai/shared";
 import {
   COORDINATOR_RECENT_DECISION_MS,
   DECISION_HISTORY_OUTCOME_OPTIONS,
@@ -49,6 +49,20 @@ describe("Decision history presentation (PAP-749 task 2e)", () => {
     expect(decisionHistoryHeadline(entry({}), labels)).toBe("Withdrawn by @Scott");
     expect(decisionHistoryHeadline(entry({ resolvedByUserId: null, label: "Withdrawn" }), labels)).toBe("Withdrawn");
     expect(decisionHistoryHeadline(entry({ resultOutcome: null, label: "Approved", outcome: "accepted" }), labels)).toBe("Approved");
+  });
+
+  it("names who acted with the receipt's verb for the same action (PAP-767)", () => {
+    const labels = new Map([["scott", "Scott"], ["dotta", "Dotta"]]);
+    const approved = entry({ resultOutcome: null, label: "Approved", outcome: "accepted", action: { outcome: "approved", detail: null } });
+    expect(decisionHistoryHeadline(approved, labels)).toBe("Approved by @Scott");
+    expect(decisionHistoryHeadline(approved, labels)).toBe(attentionReceiptText({ outcome: "approved", actorLabel: "Scott" }));
+    const keptPaused = entry({ sourceKind: "approval", resultOutcome: null, label: "Kept paused", outcome: "rejected",
+      resolvedByUserId: "dotta", action: { outcome: "kept_paused", detail: null } });
+    expect(decisionHistoryHeadline(keptPaused, labels)).toBe("Kept paused by @Dotta");
+    const decided = entry({ sourceKind: "decision", resultOutcome: null, label: "Ship it", outcome: "decided", action: { outcome: "decided", detail: "Ship it" } });
+    expect(decisionHistoryHeadline(decided, labels)).toBe("Decided by @Scott: Ship it");
+    // An expired card has no actor: the label stays.
+    expect(decisionHistoryHeadline(entry({ resultOutcome: null, label: "Expired", outcome: "expired", resolvedByUserId: null, action: null }), labels)).toBe("Expired");
   });
 
   it("shows the task, or names an approval that has no task", () => {

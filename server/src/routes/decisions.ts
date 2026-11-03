@@ -186,7 +186,7 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
     // Who the card was for, read before the answer (PAP-749 plan §6).
     const handledFor = await attentionHandledFor(db, decision.companyId, { sourceKind: "decision", sourceId: decision.id }, userId);
     res.json(await svc.decide({ id: decision.id, decidedByUserId: userId, userActor: req.actor, ...req.body,
-      activityDetails: attentionHandledDetails(handledFor, "answered") }));
+      activityDetails: attentionHandledDetails(handledFor, "decided") }));
   });
   router.post("/decisions/:id/dismiss", validate(dismissSchema), async (req, res) => {
     const userId = boardUserId(req);

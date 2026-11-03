@@ -182,6 +182,7 @@ export type {
   DecisionHistoryQuery,
   DecisionHistoryPage,
   DecisionHistoryResultOutcome,
+  DecisionHistoryAction,
   AttentionDetailImage,
   AttentionFeed,
   AttentionFeedView,

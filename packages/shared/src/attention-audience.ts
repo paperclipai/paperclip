@@ -41,15 +41,25 @@ export function attentionStaleReasonText(reason: AttentionStaleReason): string {
   return ATTENTION_STALE_REASON_TEXT[reason];
 }
 
-/** The verb of each receipt (PAP-749 plan §6, Rule 12). Exhaustive, like the copy above. */
+/**
+ * The verb of each action (PAP-749 plan §6, Rule 12). Receipts and Decision
+ * history rows both read it, so one action has one verb everywhere (PAP-767).
+ * The verbs follow the card's buttons: Approve, Request changes (Reject or
+ * Revise… on a confirmation), Keep paused, Raise limit. Exhaustive, like the
+ * copy above.
+ */
 export const ATTENTION_RECEIPT_OUTCOME_TEXT: Record<AttentionReceiptOutcome, string> = {
   answered: "Answered",
   approved: "Approved",
   rejected: "Rejected",
+  changes_requested: "Changes requested",
   revision_requested: "Revision requested",
+  decided: "Decided",
   withdrawn: "Withdrawn",
   skipped: "Skipped",
   transferred: "Transferred",
+  kept_paused: "Kept paused",
+  limit_raised: "Limit raised",
 };
 
 /**
