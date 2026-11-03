@@ -20,6 +20,8 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
+import { isInterruptedNativePreparation } from "./cancelled-native-startup.js";
+import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -85,6 +87,7 @@ export function legacyExecutionNeedsReconciliation(
 /** Admission-wait receipts are only exempt after retained execution evidence agrees.
  * The synchronous classifier stays conservative for callers without a DB proof. */
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
+  if (run.status === "interrupted" && await isInterruptedNativePreparation(db, run)) return false;
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
       && !(await isPreDispatchExecutionWaitVerified(db, run)));
@@ -306,9 +309,6 @@ export async function terminalizeLegacyExecution(input: {
   });
 }
 
-/** Called only by the exact executor's finally block after preparation/cleanup
- * settles. A shutdown can win the terminal-status race before the setup catch
- * records that no provider started. Retire only that mistaken recovery hold. */
 export async function settleInterruptedNativeBootstrap(
   db: Db, input: { run: Run; providerDispatchStarted: boolean },
 ): Promise<Run | null> {
@@ -322,7 +322,8 @@ export async function settleInterruptedNativeBootstrap(
         run.contextSnapshot?.issueId !== task.id ||
         run.status !== "interrupted" || run.errorCode !== "server_shutdown_interrupted" ||
         claimedAdapterType(run) !== "paperclip_runner" || run.processPid || run.processGroupId ||
-        hasWorkspaceRestoreFailure(run.resultJson) || executionFailureRetryCount(run) >= 2) return null;
+        executionFailureRetryCount(run) >= 2) return null;
+    if (hasWorkspaceRestoreFailure(run.resultJson) && !await hasVerifiedWorkspaceRepair(tx as unknown as Db, run)) return null;
     const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
     const [lease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -357,7 +358,7 @@ export async function settleInterruptedNativeBootstrap(
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     if (holds.length) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
-      resolutionNote: "The interrupted executor finished preparation and cleanup without starting a provider.",
+      resolutionNote: "The interrupted preparation has no provider execution and its cleanup is complete.",
       resolvedAt: now, updatedAt: now,
       // An automatic disposition may already have resolved the incident but
       // left replay blocked. Preserve its history while correcting that verdict.
