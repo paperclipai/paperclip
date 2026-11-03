@@ -29,7 +29,7 @@ it.each([1, 2, 3])("does not reset the original deadline for late turn %s", asyn
   expect(f.ctx.observationDeadlineAt).toBe(start + 10_000);
 });
 it.each([undefined, NaN, Infinity, start, start - 1])("rejects missing, invalid or exhausted original deadline %s before observing", async deadline => {
-  const f = fixture(); f.ctx.observationDeadlineAt = deadline;
+  const f = fixture(); Object.assign(f.ctx, { observationDeadlineAt: deadline });
   await expect(waitForCompanySettingsTurn(f.ctx)).rejects.toThrow(/Original identity observation budget/);
   expect(f.refreshIssue).not.toHaveBeenCalled();
 });
