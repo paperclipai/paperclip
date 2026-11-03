@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { taskLifecycleEvidence, type LifecycleObservation, type LifecycleTask } from "./task-lifecycle-evidence.js";
+import { createIssueLabelSchema } from "../../../packages/shared/src/validators/issue.js";
+import { taskLifecycleEvidence, taskLifecycleLabelName, type LifecycleObservation, type LifecycleTask } from "./task-lifecycle-evidence.js";
 import { parseTargetConfig, preparationPreview } from "./catalog.js";
 import { journeyRequiredChecks } from "./success-contract.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
@@ -22,6 +23,18 @@ function fixture(): Parameters<typeof taskLifecycleEvidence>[0] {
 const stages = ["created", "edited", "reloaded", "completed", "reopened"] as const;
 
 describe("task lifecycle saved-state oracle", () => {
+  it("keeps a full generated campaign identity within the production label-name limit", () => {
+    const campaigns = ["journey-1793720364049-f3055878", "journey-9999999999999-ffffffff"];
+    const labels = campaigns.map(taskLifecycleLabelName);
+    for (const [index, name] of labels.entries()) {
+      expect(name).toContain(campaigns[index]);
+      expect(createIssueLabelSchema.shape.name.safeParse(name).success).toBe(true);
+    }
+    expect(new Set(labels).size).toBe(campaigns.length);
+  });
+  it("rejects an overlong campaign before it can produce a browser label", () => {
+    expect(() => taskLifecycleLabelName("c".repeat(32))).toThrow("task_lifecycle_campaign_label_name_invalid");
+  });
   it("accepts the complete browser-edit/reload/complete/reopen sequence", () => {
     expect(taskLifecycleEvidence(fixture())).toEqual({ created: true, edited: true, reloaded: true,
       completedAndReopened: true, uneditedFieldsPreserved: true, noAgentWork: true });

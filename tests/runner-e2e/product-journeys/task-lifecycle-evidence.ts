@@ -1,3 +1,14 @@
+import { createIssueLabelSchema } from "../../../packages/shared/src/validators/issue.js";
+import { JourneyError } from "./types.js";
+
+export function taskLifecycleLabelName(campaignId: string): string {
+  const name = `Journey QA label ${campaignId}`;
+  if (!createIssueLabelSchema.shape.name.safeParse(name).success) {
+    throw new JourneyError("unsupported", "task_lifecycle_campaign_label_name_invalid");
+  }
+  return name;
+}
+
 export interface LifecycleTask {
   id: string;
   companyId: string;

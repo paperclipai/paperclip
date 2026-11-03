@@ -501,6 +501,10 @@ The exact description, assignee, project and priority remain unchanged.
 Priority editing is not part of this journey because the production UI hides
 that control. No agent or model work is allowed.
 
+Labels use `Journey QA label ${campaignId}`, retaining the complete campaign
+identity within the production 48-character limit for ordinary generated
+campaigns. The production schema rejects an overlong name before any browser
+mutation or ownership intent; names are never truncated or hashed.
 The target must journal `label` resources by campaign name before browser label
 creation and by exact ID after its 201 response. Before title editing, the owned
 issue receipt retains its original name and ID and declares

@@ -3,7 +3,7 @@ import path from "node:path";
 import { expect } from "@playwright/test";
 import { createTaskThroughUi, withBrowserEvent } from "../user-actions.js";
 import { createObservedReader } from "./observation-read.js";
-import { taskLifecycleEvidence, type LifecycleExpectation, type LifecycleLabel, type LifecycleObservation, type LifecycleTask } from "./task-lifecycle-evidence.js";
+import { taskLifecycleEvidence, taskLifecycleLabelName, type LifecycleExpectation, type LifecycleLabel, type LifecycleObservation, type LifecycleTask } from "./task-lifecycle-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Stage = "create" | "initial_read" | "rename" | "label" | "in_progress" | "reload" | "complete" | "reopen";
@@ -40,7 +40,7 @@ export async function taskEditLifecycle(context: JourneyContext, session: Target
   const originalTitle = `Journey QA task lifecycle ${campaignId}`;
   const revisedTitle = `Journey QA task lifecycle revised ${campaignId}`;
   const description = `Keep this task assigned to me. Saved task context ${campaignId} must survive every edit.`;
-  const labelName = `Journey QA lifecycle label ${campaignId}`;
+  const labelName = taskLifecycleLabelName(campaignId);
   const observed = { created: emptyObservation(), edited: emptyObservation(), reloaded: emptyObservation(),
     completed: emptyObservation(), reopened: emptyObservation() };
   let expected: LifecycleExpectation | undefined;
@@ -155,5 +155,5 @@ export async function taskEditLifecycle(context: JourneyContext, session: Target
   } catch (error) {
     if (error instanceof JourneyError) throw error;
     throw new JourneyError("failed", `task_lifecycle_${stage}_failed`);
-  } finally { await read.preserve(options.directory); }
+  } finally { await preserve(); await read.preserve(options.directory); }
 }
