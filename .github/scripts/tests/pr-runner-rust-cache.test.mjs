@@ -21,6 +21,14 @@ const job = (workflow, name) => {
 const READ_STEP = "      - name: Restore Runner Rust dependencies (read only)";
 const WRITE_STEP = "      - name: Cache Runner Rust dependencies";
 const SELECT_STEP = "      - name: Select the pinned Runner Rust toolchain";
+const BUILD_CRATE_STEPS = [
+  "Compute the Runner release crate cache key",
+  "Restore the Runner release crate (read only)",
+  "Mark the restored Runner release crate current",
+];
+// The one condition a restore may carry: Build skips it when the release
+// crate it needs cargo for was restored and marked.
+const BUILD_SKIP = "if: ${{ steps.runner_release_crate_mark.outputs.marked != 'true' }}";
 
 // Every PR job that builds the Runner restores master's `release-runner-v2`
 // entry. Each one has to agree with the writer on every key input, or that
@@ -72,8 +80,13 @@ test("every PR reader pins the compiler before the key is computed", () => {
     const cache = pr.indexOf(READ_STEP);
     assert.ok(select >= 0 && cache > select, `${name}: the toolchain must be selected before the cache step`);
     const setup = pr.slice(select, cache);
-    // Nothing may sit between the pin and the restore that could change the key.
-    assert.equal(setup.match(/^      - name: /gm).length, 1, `${name}: no step between the toolchain pin and the restore`);
+    // Nothing may sit between the pin and the restore that could change the
+    // key. Build restores the Runner release crate there first, because a
+    // marked crate lets it skip this restore; those steps read the pinned
+    // compiler and write nothing the key reads.
+    const between = [...setup.matchAll(/^      - name: (.+)$/gm)].map((match) => match[1]).slice(1);
+    assert.deepEqual(between, name === "build" ? BUILD_CRATE_STEPS : [], `${name}: no other step between the toolchain pin and the restore`);
+    assert.equal(setup.match(/GITHUB_ENV/g).length, 1, `${name}: only the pin may change the environment the key hashes`);
     assert.match(setup, /working-directory: packages\/paperclip-runner/, name);
     assert.match(setup, /rustup show active-toolchain/, name);
     assert.match(setup, /echo "RUSTUP_TOOLCHAIN=\$toolchain" >> "\$GITHUB_ENV"/, name);
@@ -90,7 +103,8 @@ test("a pull request never writes to or evicts the master cache entry", () => {
     const nextStep = after.search(/\n      - name: /);
     const step = nextStep === -1 ? after : after.slice(0, nextStep);
     assert.equal(step.match(/^\s*save-if: (.+)$/m)?.[1], "false", `${name}: the restore must set save-if: false`);
-    assert.doesNotMatch(step, /^\s*if:/m, `${name}: the restore must not be conditional; a miss is already free`);
+    const conditions = step.match(/^\s*if:.*$/gm) ?? [];
+    assert.deepEqual(conditions.map((line) => line.trim()), name === "build" ? [BUILD_SKIP] : [], `${name}: the restore must not be conditional; a miss is already free`);
   }
   assert.doesNotMatch(prWorkflow, /uses: Swatinem\/rust-cache@[0-9a-f]{40}[\s\S]*?save-if: (?!false)/);
 });
