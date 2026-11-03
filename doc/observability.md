@@ -45,10 +45,15 @@ Keep credential values out of logs and diagnostic reports.
 ## Budget admission, accounting, and enforcement
 
 The operator-gated `paperclip.budgets` tracer records
+`budget.admission.inspect`, `budget.admission.reconcile`,
 `budget.admission.evaluate`, `budget.admission.reserve`,
 `budget.accounting.transaction`, `budget.accounting.settlement`, `budget.accounting.lock_wait`,
 `budget.exposure.evaluate`, `budget.enforcement.deliver`,
 `budget.enforcement.scope`, `budget.cancellation.deliver`, and `budget.accounting.recover`.
+Inspection spans cover the preliminary read-only snapshot. Reconciliation spans
+exist only when that inspection finds a transition requiring the company lock;
+compare their counts to measure how often preliminary checks bypass the lock.
+Authoritative reservation and transactional evaluation retain their own spans.
 Transaction spans include commit time. Lock-wait spans cover acquisition of the
 company accounting lock. Settlement spans cover the ledger and reservation
 transaction. Enforcement spans measure asynchronous delivery; cancellation

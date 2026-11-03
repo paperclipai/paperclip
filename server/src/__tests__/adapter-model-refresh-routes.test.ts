@@ -101,13 +101,15 @@ function registerModuleMocks() {
   }));
 }
 
+registerModuleMocks();
+const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+  vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+  vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+]);
+
 const refreshableAdapterType = "refreshable_adapter_route_test";
 
 async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -159,11 +161,6 @@ async function unregisterTestAdapter(type: string) {
 
 describe("adapter model refresh route", () => {
   beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);

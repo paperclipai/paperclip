@@ -9844,7 +9844,8 @@ async function executePaperclipNativeSessionWithinScope(
               );
             },
             onSession: async (session) => {
-              if (session && usesPluginTask) {
+              if (session && input.runnerExecutionTarget?.kind === "remote"
+                && input.runnerExecutionTarget.transport === "sandbox") {
                 rmSync(resolve(scopedRunnerdStateRoot(input.execution), "plugin-runner-state.json"), { force: true });
               }
               if (session && session === existingWarmSession) remoteWarmRecoveryPending = false;

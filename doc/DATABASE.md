@@ -746,6 +746,43 @@ blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
 
+## Execution admission accounting
+
+The execution-admission module (`server/src/modules/execution-admission/`) owns
+three tables. Nothing writes admissions or caps in production yet, and no claim
+path enforces a project maximum.
+
+- `project_task_execution_policies` stores a project's maximum concurrent tasks
+  apart from `projects`, so project readers never return an unenforced cap. No
+  row means never configured. A row with a null maximum means an explicit "no
+  limit", which a later legacy migration must not overwrite. Maximums are
+  positive. The row is deleted with its project.
+- `execution_admissions` stores one admission attempt of a run. A run can be
+  released before dispatch and admitted again, so `(run_id, attempt)` is unique
+  and a partial unique index allows one unsettled attempt per run. The row keeps
+  the context revision, the nullable primary project as provenance (no foreign
+  key) and the settlement identity, which is set together with `settled_at`.
+- `execution_admission_project_charges` stores one row per distinct admitted
+  project, including unlimited projects. An admission without projects has no
+  rows. Composite `(company_id, …)` foreign keys keep admissions and projects in
+  one company. Rows exist only while the admission is unsettled: settlement
+  deletes the whole set in one transaction, and `(company_id, project_id)` is
+  indexed for active counts, so lookups scale with active work, not history.
+
+Archiving a project changes no charge. Deleting a project with a charge returns
+`409 project_execution_admission_pending`; the foreign key is the backstop.
+Deleting an agent refuses unsettled admissions on its runs and removes settled
+ones. Company deletion removes the company's admissions before its runs and
+projects.
+
+The proposed global lock order for the admission transaction is: company row
+(`FOR NO KEY UPDATE`), native finalization recovery owner, the whole project set
+in ascending ID order (`FOR NO KEY UPDATE`, one statement), issues, wake
+requests, the run, the external-admission advisory lock, the admission row and
+its charges, then budget reservations. Policy updates take the same project
+lock. Settlement takes no project lock. Only the project-set step is implemented
+so far; claim paths keep their current locks until they are integrated.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:
