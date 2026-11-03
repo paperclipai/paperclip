@@ -3,6 +3,7 @@ import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } fr
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
 import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.js";
 import * as controllerRecovery from "./native-controller-recovery.js";
+import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginTaskRuntime from "./plugin-runner-task.js";
@@ -35,7 +36,8 @@ import {
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { inspect } from "node:util";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
   heartbeatRuns,
   environmentLeases,
@@ -13953,6 +13955,78 @@ describe("runnerd provider runtime wiring", () => {
       state.toolAuthorityDefinitions.mockReset().mockResolvedValue([]);
       restore.mockRestore();
       await controller.stop();
+    }
+  });
+
+  it.each(["settled", "pending", "current-run", "legacy-file", "binding-mismatch"] as const)("refreshes a prior warm controller projection after its same-run checkpoint advances: %s", async mode => {
+    const prior = scopedNativeExecution("warm-same-run-checkpoint-advance");
+    prior.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+    const current = { ...prior, binding: { ...prior.binding,
+      runId: mode === "current-run" ? prior.binding.runId : `${prior.binding.runId}-next` } };
+    const identity = { runId: prior.binding.runId, normalizedSessionId: prior.session.normalizedSessionId!,
+      runnerInstanceId: "runner-warm-checkpoint-advance", environmentLeaseId: "lease-warm-checkpoint-advance",
+      turnId: "prior-turn", itemId: "prior-item" };
+    const root = await initializeScopedRunnerRoot(prior, identity.runnerInstanceId);
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity,
+      expectedRunnerVersion: "warm-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    controller.queueCommand("run.prepare", { provider: prior.provider });
+    const path = join(root, "control-plane/control-plane-state.json");
+    const staleProjection = await readFile(path, "utf8");
+    if (mode !== "pending") {
+      controller.store.state.commands[0]!.status = "completed";
+      controller.store.state.commands[0]!.result = { status: "completed" };
+      controller.store.state.committedEvents.push({ sourceSeq: 1, sourceEventId: "warm-terminal",
+        eventType: "run.terminal", priority: 0, envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
+      controller.store.state.ackedSourceSeq = 1;
+    }
+    controller.persistRunAttachTemplate({ provider: prior.provider, normalizedSessionId: identity.normalizedSessionId });
+    let saved!: import("../../vendor/paperclip-runner/index.js").DurablePrpCheckpoint;
+    controller.setCheckpointPersistence(async checkpoint => { saved = checkpoint; });
+    await controller.flushCheckpoint();
+    // A previous admission can leave a full local projection while the owner
+    // later commits its completed command and terminal under the same run ID.
+    await writeFile(path, staleProjection);
+    await mkdir(join(root, "runner"), { recursive: true });
+    await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(identity, "suspended")));
+    const supervisorDirectory = join(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/sessions");
+    await mkdir(supervisorDirectory, { recursive: true });
+    const supervisorPath = join(supervisorDirectory, `${basename(root)}.json`);
+    await writeFile(supervisorPath, JSON.stringify({ schema: "paperclip.native-session-supervisor.v1",
+      snapshot: { identity: { ...prior.binding, sessionId: identity.normalizedSessionId } } }));
+    const restore = vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockImplementation(async (_db, binding, directory, sessionId) => {
+      expect(binding).toEqual({ companyId: prior.binding.companyId, issueId: prior.binding.issueId, runId: prior.binding.runId });
+      expect(sessionId).toBe(identity.normalizedSessionId);
+      if (mode === "legacy-file") return null;
+      if (mode === "binding-mismatch") throw new Error("native_runner_checkpoint_binding_mismatch");
+      saved.restoreSessionDirectory(directory);
+      return saved;
+    });
+    const admitted = new Error("warm resume reached current tool authority");
+    state.toolAuthorityDefinitions.mockRejectedValueOnce(admitted);
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    try {
+      await expect(createRunnerdBackend({ db: priorNativeRunDb(prior), execution: current,
+        runnerInstanceId: "next-warm-runner", runnerExecutionTarget: { kind: "remote", transport: "sandbox",
+          remoteCwd: "/workspace", runner: { execute: vi.fn() } } as never })).rejects.toThrow(
+        mode === "binding-mismatch" ? "native_runner_checkpoint_binding_mismatch" : admitted.message);
+      const refreshed = JSON.parse(await readFile(path, "utf8"));
+      const refreshedFromDatabase = mode === "settled" || mode === "pending";
+      expect(refreshed.commands).toEqual([expect.objectContaining({ type: "run.prepare",
+        status: mode === "settled" ? "completed" : "pending" })]);
+      expect(refreshed.committedEvents).toEqual(mode === "settled"
+        ? [expect.objectContaining({ eventType: "run.terminal" })] : []);
+      expect(isSettledRemoteWarmControlState(refreshed, identity)).toBe(mode === "settled");
+      if (refreshedFromDatabase) expect(refreshed.runAttachTemplate).not.toBeNull();
+      else expect(await readFile(path, "utf8")).toBe(staleProjection);
+      expect(restore).toHaveBeenCalledTimes(mode === "current-run" ? 0 : 1);
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(state.createTransport).not.toHaveBeenCalled();
+    } finally {
+      state.toolAuthorityDefinitions.mockReset().mockResolvedValue([]);
+      restore.mockRestore();
+      await controller.stop();
+      await rm(supervisorPath, { force: true });
     }
   });
 

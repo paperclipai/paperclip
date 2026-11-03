@@ -2666,8 +2666,11 @@ loss. The marker may describe the first turn, so it cannot identify every later
 warm checkpoint. Legacy file-backed roots retain their existing checks. A
 restored checkpoint must match the normalized session before writing its local
 projection. This adds a scoped checkpoint read and local reconstruction only
-when warm admission encounters an external marker or an older projection; it
-adds no streaming checkpoint writes or recurring idle work.
+when warm admission encounters an external marker or a prior-run projection.
+A prior-run projection refreshes even when its run ID already matches the saved
+supervisor: the canonical checkpoint can have advanced after an earlier read.
+Current-run state and a retained in-memory warm owner keep their existing
+authority. This adds no streaming checkpoint writes or recurring idle work.
 
 Ordinary remote `per_turn` continuations restore a valid external controller
 marker from the referenced run's company/task-bound checkpoint before reading

@@ -322,7 +322,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     };
   }
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "stale-projection", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = !["warm", "same-server"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
     const perTurn = scenario.startsWith("diskless-per-turn");
@@ -533,6 +533,28 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           changed++;
         }
         expect(changed).toBe(1);
+      }
+      if (scenario === "stale-projection") {
+        const checkpoint = await loadNativeRunnerCheckpoint(fixture.db, { companyId,
+          issueId: fixture.issueId, runId: fixture.runId });
+        expect(checkpoint).not.toBeNull();
+        const sessions = resolve(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/durable-sessions");
+        let projected = 0;
+        for (const name of await readdir(sessions)) {
+          const root = resolve(sessions, name), path = resolve(root, "control-plane/control-plane-state.json");
+          if (!existsSync(path) || JSON.parse(await readFile(path, "utf8")).identity?.runId !== fixture.runId) continue;
+          checkpoint!.restoreSessionDirectory(root);
+          const state = JSON.parse(await readFile(path, "utf8"));
+          const terminalIndex = state.committedEvents.findLastIndex((event: { eventType: string }) => event.eventType === "run.terminal");
+          expect(terminalIndex).toBeGreaterThan(0);
+          // Retain a full local projection from just before the terminal. The
+          // database keeps the complete same-run checkpoint and all receipts.
+          state.committedEvents = state.committedEvents.slice(0, terminalIndex);
+          state.ackedSourceSeq = state.committedEvents.at(-1).sourceSeq;
+          await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+          projected++;
+        }
+        expect(projected).toBe(1);
       }
       if (diskless) {
         // Preserve sandbox/provider storage and workspace dependencies. Delete
