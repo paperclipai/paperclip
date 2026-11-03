@@ -18,6 +18,7 @@ import { isOAuthEndpointRejection } from "./tool-access/catalog/failures.js";
 import { createCatalogDefaultAccess, toPolicy } from "./tool-access/catalog/default-access.js";
 import { createToolCatalogDiscovery } from "./tool-access/catalog/discovery.js";
 import { createConnectionHealth } from "./tool-access/catalog/health.js";
+import { getToolConnectionReviewCounts } from "./tool-access/catalog/review-counts.js";
 import { createToolAppAttention } from "./tool-access/catalog/attention.js";
 import { createToolCatalogPublication } from "./tool-access/catalog/publication.js";
 import { createToolCatalogReader } from "./tool-access/catalog/reader.js";
@@ -4737,6 +4738,7 @@ export function toolAccessService(
     },
 
     listAppsNeedingAttention,
+    getConnectionReviewCounts: (companyId: string, connectionId: string) => getToolConnectionReviewCounts(db, companyId, connectionId),
 
     sweepConnectionHealth,
     scheduledHealth: connectionHealthSchedule(db, checkConnectionHealth),

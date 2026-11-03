@@ -107,7 +107,7 @@ function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = 
   app.get("/actor", (req, res) => {
     res.json(req.actor);
   });
-  app.post("/api/routine-triggers/public/:publicId/fire", (req, res) => {
+  app.post(["/api/routine-triggers/public/:publicId/fire", "/api/routine-triggers/public/:publicId/sentry-run-failures"], (req, res) => {
     res.json({ reachedWebhook: true, actorType: req.actor.type });
   });
   app.post("/mcp/gateways/:gatewayPublicId", (req, res) => {
@@ -242,12 +242,14 @@ describe("agent auth middleware", () => {
     "leaves webhook authentication to the trigger in %s mode",
     async (deploymentMode) => {
       const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
-      const res = await request(createApp(db, deploymentMode))
-        .post(`/api/routine-triggers/public/${"a".repeat(24)}/fire`)
-        .set("Authorization", "Bearer routine-secret")
-        .send({ event: "created" });
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ reachedWebhook: true, actorType: "none" });
+      for (const route of ["fire", "sentry-run-failures"]) {
+        const res = await request(createApp(db, deploymentMode))
+          .post(`/api/routine-triggers/public/${"a".repeat(24)}/${route}`)
+          .set("Authorization", "Bearer routine-secret")
+          .send({ event: "created" });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ reachedWebhook: true, actorType: "none" });
+      }
     },
   );
 
@@ -255,6 +257,7 @@ describe("agent auth middleware", () => {
     `/api/routine-triggers/public/${"a".repeat(24)}/rotate-secret`,
     "/api/routine-triggers/public/not-a-public-id/fire",
     `/api/routine-triggers/public/${"a".repeat(24)}/fire/extra`,
+    `/api/routine-triggers/public/${"a".repeat(24)}/sentry-run-failures/extra`,
   ])("does not bypass actor authentication for %s", async (path) => {
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
     const res = await request(createApp(db)).post(path).set("Authorization", "Bearer routine-secret");

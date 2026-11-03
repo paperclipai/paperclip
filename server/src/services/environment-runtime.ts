@@ -1,6 +1,6 @@
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
-import { createOwnedSandbox, recoverSandboxCreations } from "./sandbox-creation-operations.js";
+import { createOwnedSandbox, recoverSandboxCreations, recoverableTaskCreation } from "./sandbox-creation-operations.js";
 import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
 import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
@@ -3382,7 +3382,7 @@ function createPluginEnvironmentDriver(
     async releaseRunLease(input) {
       await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
       const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true);
+        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
       const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
       await workerManager.call(plugin.id, "environmentReleaseLease", {
         driverKey,
@@ -3425,7 +3425,7 @@ function createPluginEnvironmentDriver(
     async destroyRunLease(input) {
       await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"destroy"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
       const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true);
+        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
       const { pluginKey, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
       await destroyPluginEnvironmentLease({
         db,
@@ -3462,7 +3462,7 @@ function createPluginEnvironmentDriver(
 
     async retryPendingSandboxTeardown(input) {
       const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true);
+        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
       const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
       const environmentId = input.environment?.id ?? readString(input.lease.metadata?.environmentId);
       if (!environmentId) throw new Error("Plugin lease cleanup has no saved environment identity");
@@ -3778,7 +3778,7 @@ export function environmentRuntimeService(
     },
 
     /** Dispatch plugin-provided Runner execution, including resource preparation and task lifecycle. */
-    async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation }) {
+    async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation; executionContext?: unknown }) {
       if (!options.pluginWorkerManager) throw new Error("Plugin-provided Runner execution worker manager unavailable");
       return executeEnvironmentTask(db, options.pluginWorkerManager, input);
     },
@@ -4100,7 +4100,8 @@ export function environmentRuntimeService(
     async flushDeferredOrphanCleanups(): Promise<{ recovered: number; pending: number }> {
       orphanRecoveryFlush ??= (async () => {
         await recoverSandboxCreations(db, async operation => {
-          if (!operation.pluginId || operation.metadata.sandboxProviderPlugin !== true) return null;
+          const taskCreation = recoverableTaskCreation(operation);
+          if (!operation.pluginId || (operation.metadata.sandboxProviderPlugin !== true && !taskCreation)) return null;
           if (!options.pluginWorkerManager) throw new Error("Sandbox creation recovery worker is unavailable");
           const plugin = await pluginRegistryService(db).getById(operation.pluginId);
           const driver = plugin?.manifestJson.environmentDrivers?.find(value => value.driverKey === operation.driverKey);
@@ -4109,6 +4110,11 @@ export function environmentRuntimeService(
             !options.pluginWorkerManager.getWorker(operation.pluginId)?.supportedMethods.includes("environmentInspectLease")) {
             throw new Error("Sandbox creation recovery worker is unavailable");
           }
+          if (taskCreation) return options.pluginWorkerManager.call(operation.pluginId, "environmentInspectLease", {
+            driverKey: operation.driverKey, companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
+            config: operation.config, providerLeaseId: operation.id, creationOperation: { id: operation.id, runId: operation.runId },
+            leaseMetadata: { ...operation.metadata, runId: operation.runId },
+          });
           let resolved: SandboxEnvironmentConfig;
           try {
             resolved = await resolveSandboxCleanupConfigSecrets(db, operation.companyId,
@@ -4136,6 +4142,9 @@ export function environmentRuntimeService(
             config: stripSandboxProviderEnvelope(resolved), providerLeaseId: operation.id,
             creationOperation: { id: operation.id, runId: operation.runId },
           });
+        }, operation => {
+          const contextId = operation.metadata.runnerTaskCreationContextId;
+          if (typeof contextId === "string") options.pluginWorkerManager?.recoverStartupAcquisition?.(contextId, operation.id);
         });
         return flushDeferredEnvironmentCleanup(db, Array.from(drivers.values())
           .flatMap(driver => driver.flushDeferredOrphanCleanups ? [driver.flushDeferredOrphanCleanups] : []));

@@ -1,5 +1,5 @@
 import { expect } from "@playwright/test";
-import { createTaskThroughUi } from "../user-actions.js";
+import { createTaskThroughUi, withBrowserEvent } from "../user-actions.js";
 import { projectContextEvidencePasses, type ProjectContextObservation } from "./project-context-evidence.js";
 import { openProjectTaskThroughList, reopenProjectThroughList } from "./project-context-readback.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
@@ -15,10 +15,10 @@ export async function projectTaskContext(context: JourneyContext, session: Targe
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox", { name: "Project name", exact: true }).fill(projectName);
   await session.own({ kind: "project", name: projectName, journeyId });
-  const responsePromise = page.waitForResponse(response => response.request().method() === "POST"
-    && new URL(response.url()).pathname === `/api/companies/${company.id}/projects`);
-  await dialog.getByRole("button", { name: "Create project", exact: true }).click();
-  const response = await responsePromise;
+  const response = await withBrowserEvent(
+    () => page.waitForResponse(response => response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/companies/${company.id}/projects`),
+    () => dialog.getByRole("button", { name: "Create project", exact: true }).click());
   if (response.status() !== 201) throw new JourneyError("failed", "project_ui_creation_failed");
   const createdProject = await response.json();
   if (typeof createdProject.id !== "string" || !createdProject.id || createdProject.companyId !== company.id || createdProject.name !== projectName) {

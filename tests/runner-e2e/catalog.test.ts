@@ -126,7 +126,7 @@ describe("runner E2E catalog", () => {
   });
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
-    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "hire-delegate-reuse", "cloud-onboarding"]);
+    expect(productJourneys.map(journey => journey.id)).toEqual(["repository-continuation", "routine-scheduled-run", "inbox-triage", "file-input-answer", "task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "hire-delegate-reuse", "cloud-onboarding"]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
     expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
@@ -408,6 +408,10 @@ describe("runner E2E catalog", () => {
     const suite = runnerSuites.find(
       (candidate) => candidate.id === "daytona-warm-continuity",
     )!;
+    expect(suite.definitionMetadata).toMatchObject({ version: 5,
+      managedSaveReceipt: "latest-paginated-run-log-instruction-save" });
+    expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite,
+      definitionMetadata: { version: 4, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 } }));
     expect(
       suiteDefinitionHash({
         ...suite,
