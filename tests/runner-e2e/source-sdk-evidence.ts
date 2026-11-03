@@ -59,7 +59,12 @@ export async function retainPreparedSourceSdk(input: { repositoryRoot: string; t
   if (input.installed || !selected(input.executionIds)) return;
   if (!/^[a-f0-9]{40}$/.test(input.sourceRevision ?? "")) throw new Error("Source SDK retention requires exact source revision");
   const root = await realpath(input.temporaryRoot), repository = await realpath(input.repositoryRoot);
-  if (await realpath(path.join(root, "artifacts-private")) !== path.join(root, "artifacts-private")) throw new Error("Source SDK staging custody invalid");
+  // External private capture need not create the local SDK staging parent.
+  // Own its initialization before retention instead of relying on later server-log setup.
+  const privateRoot = path.join(root, "artifacts-private");
+  try { await mkdir(privateRoot, { mode: 0o700 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  if (await realpath(privateRoot) !== privateRoot) throw new Error("Source SDK staging custody invalid");
   const secrets = diagnosticSecrets(readPrivateDiagnosticSecrets(path.join(root, "selected-private-inputs", "diagnostic-redaction.json"), root)).values;
   const scanner = createSdkArtifactScanner(repository, secrets);
   const buffers: Array<BuiltFile & { bytes: Buffer }> = [], certifiedTargets: RetainedBuild["certifiedTargets"] = [];
