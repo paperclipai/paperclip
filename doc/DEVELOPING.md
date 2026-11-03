@@ -4178,6 +4178,12 @@ Focused coverage lives in `task-workspace-binding.test.ts`, `task-workspace-repo
 
 Channel defaults can be configured in Apps connection settings and per destination. They affect new conversations only. A queued selection or repository request is applied on the next normal admission; configuration changes do not interrupt a live run. See [the architecture](plans/2026-10-09-task-workspaces.md).
 
+GitHub repository discovery and admission recheck current grant access. Installation
+changes advance the access revision and invalidate an in-flight refresh. Ordinary
+pull-request webhooks update delivery health without invalidating repository
+access. A refresh preserves their latest webhook timestamp and health when it
+commits. Concurrent access refreshes retain the existing one-retry limit.
+
 ### Slack provisioning paths
 
 Self-hosted development continues to use independent Slack app setup. Managed
