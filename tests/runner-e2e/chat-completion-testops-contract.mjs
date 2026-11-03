@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { fullCatalogCases, fullCatalogPlanName, catalogTargetSha } from './chat-full-catalog-testops-manifest.mjs';
+import { fullCatalogCases, fullCatalogPlanName, catalogTargetSha, catalogLauncherSha256 } from './chat-full-catalog-testops-manifest.mjs';
 
 // The catalog remains on its preservation/integration branch. Updating this
 // immutable source pin requires a reviewed source change.
@@ -18,7 +18,7 @@ export const cases = Object.freeze([
 export const positive = value => Number.isSafeInteger(value) && value > 0;
 export function catalogDefinition(context = {}) {
   if (context.catalog === 'full') return { cases: fullCatalogCases, planName: fullCatalogPlanName,
-    targetSha: catalogTargetSha, workflow: catalogWorkflow, bindingKey: 'CHAT_FULL_CATALOG_TESTOPS_BINDING' };
+    targetSha: catalogTargetSha, launchSha256: catalogLauncherSha256, workflow: catalogWorkflow, bindingKey: 'CHAT_FULL_CATALOG_TESTOPS_BINDING' };
   if (context.catalog !== undefined) reject('catalog');
   return { cases, planName, targetSha, workflow, bindingKey: 'CHAT_COMPLETION_TESTOPS_BINDING' };
 }
@@ -87,5 +87,5 @@ export function evidencePolicy(selection, context, jobRunId) {
   const selected = validateSelection(selection, context, jobRunId);
   return { version: 1, approvals: [{ workflowSha: context.workflowSha, targetSha: catalogDefinition(context).targetSha,
     runId: context.runId, attempt: '1', executionIds: selected.map(row => row.executionId),
-    protocol: 'paperclip.manual-private-evidence/v1', launchSha256 }] };
+    protocol: 'paperclip.manual-private-evidence/v1', launchSha256: context.catalog === 'full' ? catalogDefinition(context).launchSha256 : launchSha256 }] };
 }
