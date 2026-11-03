@@ -105,9 +105,10 @@ export function Issues() {
   const location = useLocation();
   const requestedView = normalizeTaskViewKey(params.get(TASK_VIEW_PARAM));
   const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId"].some(param => params.getAll(param).some(Boolean));
-  // Saved merged-Inbox URLs retain their original surface inside Coordinator.
-  // Its effective Combined Inbox setting is off, so these routes do not loop.
-  if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && taskView(requestedView).surface === "inbox") {
+  // Retired merged-Inbox views retain their original owner. Unread is also a
+  // native Coordinator task view and stays on Tasks. Combined Inbox is off
+  // inside Coordinator, so the retained Inbox routes do not loop.
+  if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && requestedView !== "unread" && taskView(requestedView).surface === "inbox") {
     const next = new URLSearchParams(params); next.delete(TASK_VIEW_PARAM);
     const search = next.toString();
     return <Navigate to={`/inbox/${taskView(requestedView).inboxTab}${search ? `?${search}` : ""}${location.hash}`} replace />;

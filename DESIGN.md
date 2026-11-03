@@ -627,6 +627,16 @@ and full page consume the same `TaskList` collection.
   Sidebar links exercise the memory router; destination pages, creation API
   behavior, production preferences and production routes are outside this preview.
 
+Coordinator adopts the same four-option menu with Inbox as its initial and
+fallback view. Its last-used view is stored per user across organizations;
+explicit view URLs take precedence, and organization-filter links without a
+view open All tasks. Unread uses the server's viewer read state. Coordinator's
+Needs attention view retains its canonical pending-decision task feed.
+Its sidebar groups Chat, Tasks and Needs you with space after New task and
+before More, and keeps global search beside the organization menu (below it
+in the collapsed rail).
+Recents appears only when it contains entries, without an empty state.
+
 ### Reuse collection behavior as well as appearance
 
 `useTaskListCollection` in `ui/src/hooks/` is the shared presentation controller
