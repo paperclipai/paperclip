@@ -250,16 +250,19 @@ export function describeIssueWriteDenial(
         status: 403,
         tone: "boundary",
         boundary: "Heartbeat run context",
-        title: "Cross-issue writes need a run to attribute them to",
+        title: "This run cannot be attributed, so cross-issue writes are closed",
         description:
-          `Every agent comment and task update is attributed to a heartbeat run so the ` +
-          `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
+          `Every agent comment and task update is attributed to a persisted heartbeat run so ` +
+          `the cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
+          `This run is not persisted — a pulse or on-demand wake with no issue attached — so ` +
+          `there is nothing to attribute the write to. The run id is already the correct one, ` +
+          `so retrying the same call cannot succeed.`,
+        whoCanAct:
+          `${actor}, on a run started from an issue (assignment or comment wake).`,
         sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
-
+          `Do not retry this call. Keep the result somewhere durable (the task workspace), and ` +
+          `let a run started from an issue post it; a pulse run can read the board but cannot ` +
+          `write across issues.`,
       };
 
     case "issue_write_attribution_spoof_rejected":
