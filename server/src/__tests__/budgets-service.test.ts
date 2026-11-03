@@ -11,6 +11,9 @@ import {
   companies,
   costEvents,
   createDb,
+  heartbeatRuns,
+  issues,
+  nativeRunFinalizations,
   projects,
 } from "@paperclipai/db";
 import { budgetService, deliverBudgetEnforcement, hasPendingBudgetEnforcement } from "../services/budgets.ts";
@@ -48,6 +51,9 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     await db.delete(approvals);
     await db.delete(budgetPolicies);
     await db.delete(costEvents);
+    await db.delete(nativeRunFinalizations);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -119,14 +125,14 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     return event!;
   }
 
-  it.each(["no policy", "healthy policy", "warning policy", "manual company pause", "manual project pause", "orphan budget pause"])(
-    "checks %s without waiting for another accounting writer",
+  it.each(["no policy", "healthy policy", "warning policy", "manual company pause", "manual project pause", "orphan budget pause", "recovering run"])(
+    "checks %s while another accounting writer holds the company lock",
     async state => {
       const { companyId, agentId, projectId } = await createBudgetFixture();
-      if (state === "healthy policy" || state === "warning policy") {
+      if (state === "healthy policy" || state === "warning policy" || state === "recovering run") {
         const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "company", scopeId: companyId,
           windowKind: "calendar_month_utc", amount: 100 }).returning();
-        await insertCostEvent({ companyId, agentId, costCents: state === "warning policy" ? 80 : 20 });
+        if (state !== "recovering run") await insertCostEvent({ companyId, agentId, costCents: state === "warning policy" ? 80 : 20 });
         if (state === "warning policy") {
           const now = new Date();
           await db.insert(budgetIncidents).values({ companyId, policyId: policy.id, scopeType: "company", scopeId: companyId,
@@ -135,6 +141,12 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
             windowEnd: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)),
             thresholdType: "soft", amountLimit: 100, amountObserved: 80 });
         }
+      }
+      if (state === "recovering run") {
+        const [issue] = await db.insert(issues).values({ companyId, projectId, title: "Recover accounting" }).returning();
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, scopeKind: "issue", issueId: issue.id,
+          nativeIssueId: issue.id, runtimeMode: "native", status: "failed", finishedAt: new Date(), costAccountingPending: true }).returning();
+        await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId: run.id, phase: "observed" });
       }
       if (state === "manual company pause" || state === "orphan budget pause") {
         await db.update(companies).set({ status: "paused", pauseReason: state === "orphan budget pause" ? "budget" : "manual" })
@@ -156,29 +168,49 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       try {
         await Promise.race([lockAcquired, writer]);
         await reader.execute(sql`set lock_timeout = '500ms'`);
-        const block = await budgetService(reader).getInvocationBlock(companyId, agentId, { projectId });
-        if (state === "manual company pause") {
-          expect(block).toMatchObject({ scopeType: "company", scopeId: companyId,
-            reason: "Company is paused and cannot start new work." });
-        } else if (state === "manual project pause") {
-          expect(block).toMatchObject({ scopeType: "project", scopeId: projectId,
-            reason: "Project is paused and cannot start new work." });
-        } else if (state === "orphan budget pause") {
-          expect(block).toMatchObject({ scopeType: "company", scopeId: companyId,
-            reason: "Budget pause requires a policy or an explicit operator resume." });
-        } else expect(block).toBeNull();
-        if (state === "warning policy") {
-          expect(await reader.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, companyId)))
-            .toMatchObject([{ thresholdType: "soft", status: "open", resolvedAt: null }]);
-        }
-        if (state === "no policy") {
-          await expect(budgetService(reader).evaluateAdmission(companyId, agentId, { projectId }))
+        if (state === "recovering run") {
+          await expect(budgetService(reader).getInvocationBlock(companyId, agentId, { projectId }))
             .rejects.toMatchObject({ cause: { code: "55P03" } });
+        } else {
+          const block = await budgetService(reader).getInvocationBlock(companyId, agentId, { projectId });
+          if (state === "manual company pause") {
+            expect(block).toMatchObject({ scopeType: "company", scopeId: companyId,
+              reason: "Company is paused and cannot start new work." });
+          } else if (state === "manual project pause") {
+            expect(block).toMatchObject({ scopeType: "project", scopeId: projectId,
+              reason: "Project is paused and cannot start new work." });
+          } else if (state === "orphan budget pause") {
+            expect(block).toMatchObject({ scopeType: "company", scopeId: companyId,
+              reason: "Budget pause requires a policy or an explicit operator resume." });
+          } else expect(block).toBeNull();
+          if (state === "warning policy") {
+            expect(await reader.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, companyId)))
+              .toMatchObject([{ thresholdType: "soft", status: "open", resolvedAt: null }]);
+          }
+          if (state === "no policy") {
+            await expect(budgetService(reader).evaluateAdmission(companyId, agentId, { projectId }))
+              .rejects.toMatchObject({ cause: { code: "55P03" } });
+          }
         }
       } finally {
         release();
         try { await writer; }
         finally { await reader.$client.end({ timeout: 1 }); }
+      }
+      if (state === "recovering run") {
+        const cancelWorkForScope = vi.fn();
+        expect(await budgetService(db, { cancelWorkForScope }).getInvocationBlock(companyId, agentId, { projectId }))
+          .toMatchObject({ scopeType: "company", scopeId: companyId,
+            reason: "New work must wait while a native run recovers its unfinished accounting." });
+        expect(cancelWorkForScope).not.toHaveBeenCalled();
+        expect((await db.select().from(companies).where(eq(companies.id, companyId)))[0])
+          .toMatchObject({ status: "active", pauseReason: null });
+        expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0])
+          .toMatchObject({ status: "active", pauseReason: null });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+          .toMatchObject([{ status: "failed", costAccountingPending: true }]);
+        expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, companyId)))
+          .toMatchObject([{ phase: "observed", resultId: null }]);
       }
     },
   );
