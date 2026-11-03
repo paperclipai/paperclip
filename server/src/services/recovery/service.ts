@@ -975,6 +975,7 @@ export function recoveryService(
     ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
+    beforeStaleLockClear?: (issueId: string) => Promise<void>;
   },
 ) {
   const issuesSvc = issueService(db);
@@ -6486,6 +6487,9 @@ export function recoveryService(
         and pending_resume.run_id in (${issues.checkoutRunId}, ${issues.executionRunId})
         and pending_resume.phase = 'retryable_failure'
         and pending_resume.result_id is null)`;
+    const lockRunLive = sql<boolean>`exists (select 1 from ${heartbeatRuns} lock_run
+      where lock_run.id in (${issues.checkoutRunId}, ${issues.executionRunId})
+        and lock_run.status not in (${sql.join([...TERMINAL_HEARTBEAT_RUN_STATUSES].map(status => sql`${status}`), sql`, `)}))`;
     const pendingResumeRunIds = new Set(referencedRunIds.length === 0 ? [] : (await db
       .select({ runId: nativeRunFinalizations.runId })
       .from(nativeRunFinalizations)
@@ -6520,6 +6524,7 @@ export function recoveryService(
         continue;
       }
 
+      await deps.beforeStaleLockClear?.(issue.id);
       const updated = await db.transaction(async tx => {
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
         await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
@@ -6541,7 +6546,9 @@ export function recoveryService(
             issue.executionRunId
               ? eq(issues.executionRunId, issue.executionRunId)
               : isNull(issues.executionRunId),
-            // Recheck at the write: a failure can schedule a resume after the read.
+            // The reads above can be stale here. A resume claim can return a
+            // referenced run to running, and a failure can schedule a resume.
+            not(lockRunLive),
             taskClosed ? undefined : not(pendingResumeLock),
           ),
         )

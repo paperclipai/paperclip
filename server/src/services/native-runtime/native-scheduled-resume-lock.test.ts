@@ -85,6 +85,21 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await readIssue(f.issueId)).toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
   });
 
+  it("keeps the task locks when a resume claim returns the run to running before the clear", async () => {
+    const f = await seed();
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", nextAttemptAt: null })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const beforeStaleLockClear = vi.fn(async (issueId: string) => {
+      if (issueId !== f.issueId) return;
+      await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed" }).where(eq(heartbeatRuns.id, f.runId));
+    });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn(), beforeStaleLockClear }).sweepStaleIssueLocks();
+    expect(beforeStaleLockClear).toHaveBeenCalledWith(f.issueId);
+    expect(result.issueIds).not.toContain(f.issueId);
+    expect(await readIssue(f.issueId)).toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
+  });
+
   it("still clears a closed task's locks for a failed run with a scheduled resume", async () => {
     const f = await seed();
     await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));

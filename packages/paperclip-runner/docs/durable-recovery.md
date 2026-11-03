@@ -91,8 +91,9 @@ qualified agent profile (ACPX version, agent server package and version, and
 command digest). Session start verifies each artifact and the restored provider
 identity. Candidate grants and run bindings keep their own checks.
 
-Any other mismatch fails restore with the closed command-result classification
-`provider_state_incompatible`. The controller reads the classification from the
+Any other launch-profile mismatch, and a saved descriptor that names a release
+this build does not qualify, fails restore with the closed command-result
+classification `provider_state_incompatible`. The controller reads the classification from the
 authenticated result, not from the message. If the run allows a replacement
 after a failed resume, it opens a fresh provider session as before. Otherwise the
 run fails with `native_provider_state_incompatible` and is not retried. A board

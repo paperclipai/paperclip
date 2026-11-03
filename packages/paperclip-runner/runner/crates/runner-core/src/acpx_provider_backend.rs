@@ -279,6 +279,19 @@ fn only_registered_asset_text_changed(
 }
 
 impl AcpxProviderDescriptor {
+    // Whether this build qualifies the release that the descriptor names.
+    fn names_qualified_release(&self) -> bool {
+        acpx_release_profile(&self.agent).is_some_and(|expected| {
+            self.provider_version == QUALIFIED_ACPX_VERSION
+                && self.acpx_version == QUALIFIED_ACPX_VERSION
+                && self.agent_server_package == expected.agent_server_package
+                && self.agent_server_version == expected.agent_server_version
+                && self.agent_runtime_package.as_deref() == expected.agent_runtime_package
+                && self.agent_runtime_version.as_deref() == expected.agent_runtime_version
+                && self.command_digest == expected.command_digest
+        })
+    }
+
     fn validate_session(
         &self,
         context: &AcpxEventProjectionContext,
@@ -622,7 +635,16 @@ impl AcpxDurableState {
         // so its persisted descriptor legitimately carries the prior run ID
         // until run.attach rotates authority. Fresh command descriptors still
         // use validate(), which binds them to the current run.
-        self.descriptor.validate_session(context)?;
+        // A deploy that changes the agent's qualified release also leaves
+        // saved state that this build cannot restore. Keep the same check and
+        // only name its class.
+        self.descriptor.validate_session(context).map_err(|error| {
+            if self.descriptor.names_qualified_release() {
+                error
+            } else {
+                error.with_classification(PROVIDER_STATE_INCOMPATIBLE)
+            }
+        })?;
         if self.launch_profile_digest != expected_launch_profile_digest {
             return Err(DurableRunnerError::invalid(
                 "ACPX durable launch profile digest does not match runner startup",
@@ -5694,7 +5716,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unsettled_or_relocated_session_keeps_the_strict_launch_binding() {
+    fn unrestorable_saved_sessions_keep_strict_bindings_and_name_their_class() {
         for field in [
             "active_turn",
             "pending_request",
@@ -5704,6 +5726,8 @@ mod tests {
             "no_identity",
             "command_moved",
             "args_changed",
+            "agent_server_release",
+            "acpx_release",
         ] {
             let (directory, mut config, _, saved) =
                 settled_session_after_runner_upgrade("upgrade-strict");
@@ -5750,6 +5774,11 @@ mod tests {
                     profile.artifacts[0] = artifact(&moved);
                 }
                 "args_changed" => profile.args.push("--changed".into()),
+                "agent_server_release" => state.descriptor.agent_server_version = "0.0.1".into(),
+                "acpx_release" => {
+                    state.descriptor.acpx_version = "0.0.1".into();
+                    state.descriptor.provider_version = "0.0.1".into();
+                }
                 _ => unreachable!(),
             }
             config.validate().unwrap();
@@ -5758,12 +5787,12 @@ mod tests {
 
             let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
             let error = recovered.restore().unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("launch profile digest does not match runner startup"),
-                "{field}: {error}"
-            );
+            let expected = if field.ends_with("_release") {
+                "does not match a qualified immutable profile"
+            } else {
+                "launch profile digest does not match runner startup"
+            };
+            assert!(error.to_string().contains(expected), "{field}: {error}");
             assert_eq!(
                 error.classification(),
                 Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
