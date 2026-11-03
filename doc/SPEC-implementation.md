@@ -333,6 +333,14 @@ replacement semantics, secret preservation, and revision preconditions. It uses
 the existing configuration and resource APIs, retaining their authorization
 and approval gates. Agent lifecycle commands remain separate actions.
 
+`agents:read` permits redacted configuration, configured skills, instruction
+content and history reads without write authority. `agents:configure` remains
+read/write; `agents:suggest-changes` retains reads and consented changes. Own
+configuration/history reads require no peer-read grant. Target scopes, company
+boundaries and responsible-user authority still apply. Standard agents receive
+read access by default, with a one-time read-only rollout to eligible existing
+agents. See [agent permission defaults](agent-permission-defaults.md).
+
 ## 7.3 `agent_api_keys`
 
 - `id` uuid pk
