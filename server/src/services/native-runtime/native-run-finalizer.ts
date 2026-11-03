@@ -465,6 +465,7 @@ async function recordRetryableFailure(input: {
       })
       .where(eq(heartbeatRuns.id, input.run.id))
       .returning();
+    if (projectsTerminalStatus && updatedRun) await settleNativeTerminalWake(tx as unknown as Db, updatedRun);
     if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
     if (supersededByNewerRun) {
       await issueRecoveryActionService(
