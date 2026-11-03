@@ -308,6 +308,36 @@ describe("InlineEditor", () => {
     }
   });
 
+  it("releases a cancelled description debounce when switching cached tasks and keeps its stored draft", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const saveA = vi.fn().mockResolvedValue(undefined);
+    const saveB = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const renderTask = (id: string, onSave: typeof saveA) => root.render(
+      <QueryClientProvider client={client}>
+        <InlineEditor value={`Original ${id.toUpperCase()}`} multiline draftKey={`task-${id}:description`} onSave={onSave} />
+      </QueryClientProvider>,
+    );
+    try {
+      await act(async () => renderTask("a", saveA));
+      act(() => enterMultilineEdit(container));
+      act(() => {
+        const textarea = container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]')!;
+        textarea.focus();
+        setNativeTextareaValue(textarea, "A draft before navigation");
+      });
+      expect(hasPendingWrites()).toBe(true);
+      await act(async () => renderTask("b", saveB));
+      expect(hasPendingWrites()).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(saveA).not.toHaveBeenCalled();
+      expect(saveB).not.toHaveBeenCalled();
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-1:task-a:description")).toContain("A draft before navigation");
+    } finally { act(() => root.unmount()); client.clear(); localStorage.clear(); vi.useRealTimers(); }
+  });
+
   it("restores an unsaved edit without overwriting a newer server value", async () => {
     localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-2:description", JSON.stringify({ version: 1, draft: "My old edit", base: "Original" }));
     const onSave = vi.fn().mockResolvedValue(undefined);

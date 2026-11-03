@@ -134,6 +134,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     const dirty = dirtyWrites.current.get(target);
     if (dirty && dirty.version === version) { dirtyWrites.current.delete(target); dirty.release(); }
   };
+  useEffect(() => () => {
+    // A target change cancels its unused editor debounce. Admitted jobs keep
+    // their independent pending-write tracking until they settle.
+    releaseDirty(targetKey, dirtyWrites.current.get(targetKey)?.version);
+  }, [targetKey]);
   type Job = { token: symbol; dirtyVersion?: symbol; registryKey: string; resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; account: ReturnType<typeof bindAccount> | null; draft: T;
     beforeSave?: (draft: T) => Promise<void>;
     save: (draft: T) => Promise<unknown>; matchesServer?: DurableAutosaveOptions<T>["matchesServer"];

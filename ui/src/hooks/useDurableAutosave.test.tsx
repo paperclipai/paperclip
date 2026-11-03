@@ -144,6 +144,30 @@ describe("useDurableAutosave", () => {
     expect(hasPendingWrites()).toBe(false);
   });
 
+  it.each(["draft", "saving", "waiting"] as const)("releases a departed target's dirty token while preserving %s work", async mode => {
+    let finish!: () => void;
+    const save = vi.fn<() => Promise<void>>();
+    if (mode === "saving") save.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    else if (mode === "waiting") save.mockRejectedValueOnce(outage());
+    save.mockResolvedValue(undefined);
+    render({ targetKey: "task-a:description", save });
+    act(() => current.markDirty());
+    let pending: ReturnType<typeof current.run> | undefined;
+    if (mode === "saving") act(() => { pending = current.run("Admitted A draft"); });
+    if (mode === "waiting") await act(async () => { await current.run("Admitted A draft"); });
+    render({ targetKey: "task-b:description", save });
+    expect(current.status).toBe("idle");
+    expect(hasPendingWrites()).toBe(mode === "saving");
+    expect(store.getSnapshot().pendingWrites).toBe(mode === "draft" ? 0 : 1);
+    if (mode === "saving") await act(async () => { finish(); await pending; });
+    if (mode === "waiting") await act(async () => { current.resendNow(); });
+    expect(hasPendingWrites()).toBe(false);
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+    expect(current.status).toBe("idle");
+    expect(save).toHaveBeenCalledTimes(mode === "draft" ? 0 : mode === "saving" ? 1 : 2);
+    if (mode !== "draft") expect(save).toHaveBeenCalledWith("Admitted A draft");
+  });
+
   it.each(["user-1", "user-2"])("verifies a restored identity before a mounted plain autosave (%s)", async verifiedUser => {
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
     client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });

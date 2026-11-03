@@ -4504,7 +4504,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [queryClient, selectedCompanyId],
   );
 
-  const markIssueRead = useMutation({
+  const markIssueRead = useAccountBoundMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onSuccess: () => {
       if (selectedCompanyId) {
@@ -5862,7 +5862,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
 
-  const archiveFromInbox = useMutation({
+  const archiveFromInbox = useAccountBoundMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
       if (!selectedCompanyId)
