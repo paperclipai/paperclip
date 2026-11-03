@@ -70,11 +70,11 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (external) await db.execute(sql`truncate table environments restart identity cascade`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
-    await db?.$client.end();
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
     vi.unstubAllEnvs();
     if (home) await rm(home, { recursive: true, force: true });
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   beforeEach(async () => {
     persistenceBefore = new Map(persistenceKeys.map(key => [key, process.env[key]]));
     vi.restoreAllMocks();
