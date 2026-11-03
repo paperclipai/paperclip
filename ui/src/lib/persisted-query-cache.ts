@@ -40,6 +40,16 @@ function displayData(value: unknown, denied: ReadonlySet<string>): unknown {
     }));
 }
 
+function isLegacyInboxQuery(key: readonly unknown[]): boolean {
+  const suffix = key[2] === "mine-by-me" || key[2] === "touched-by-me" ? key.slice(3) : key.slice(2);
+  return key[0] === "issues" && suffix.length === 4 && suffix[0] === "compact"
+    && suffix[1] === "with-routine-executions" && suffix[2] === "live-descendant-summary" && suffix[3] === 500;
+}
+
+function queryDisplayData(key: readonly unknown[], data: unknown, denied: ReadonlySet<string>): unknown {
+  return displayData(isLegacyInboxQuery(key) && Array.isArray(data) ? data.slice(0, 100) : data, denied);
+}
+
 function browserStorage(): CacheStorage | null {
   try { return typeof window === "undefined" ? null : window.localStorage; } catch { return null; }
 }
@@ -88,6 +98,7 @@ export function persistedQueryScope(key: readonly unknown[], data: unknown, user
     return typeof companyId === "string" && companyIds.includes(companyId) ? companyId : undefined;
   }
   if (typeof second !== "string" || !companyIds.includes(second)) return undefined;
+  if (isLegacyInboxQuery(key) && Array.isArray(data)) return second;
   if (["sidebar-badges", "agents", "built-in-agents"].includes(String(root)) && key.length === 2) return second;
   if (root === "projects" && key.length <= 3) return second;
   if (root === "agent-chats" && key.length === 3 && third === userId) return second;
@@ -124,18 +135,32 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let suspended = false;
   let disposed = false;
+  let sessionEpoch = 0;
+  const sessionReads = new WeakMap<Query, { epoch: number; clear: string | null; userId: string | null; revisions: Map<string, string | null> }>();
   const visits = new Map<string, number>();
   const deniedIssues = new Set<string>();
   const clearToken = () => { try { return storage?.getItem(QUERY_CACHE_CLEARED) ?? null; } catch { return null; } };
   let observedClear = clearToken();
   const revisionKey = (userId: string) => `${REVISION_PREFIX}${encodeURIComponent(userId)}`;
   const revisionFor = (userId: string) => { try { return storage?.getItem(revisionKey(userId)) ?? null; } catch { return null; } };
+  const captureSessionRead = (query: Query) => {
+    const userId = owner ?? userIdOf(query.state.data);
+    const revisions = new Map<string, string | null>();
+    try {
+      if (storage) for (let i = 0; i < storage.length; i += 1) {
+        const key = storage.key(i);
+        if (key?.startsWith(REVISION_PREFIX)) revisions.set(key, storage.getItem(key));
+      }
+    } catch {}
+    sessionReads.set(query, { epoch: sessionEpoch, clear: clearToken(), userId, revisions });
+  };
   const safeRemove = () => { try { if (storage) removeRecords(storage); } catch {} };
   const removeUser = (userId: string | null, preserveCurrent = false) => {
     try { if (storage && userId) removeUserRecords(storage, userId, preserveCurrent ? revisionFor(userId) : undefined); } catch {}
   };
   const cancelTimer = () => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
   const clear = () => {
+    sessionEpoch += 1;
     cancelTimer();
     const previous = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));
     const token = crypto.randomUUID();
@@ -158,6 +183,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     verifyCachedSession(client);
   };
   const suspendAccount = () => {
+    sessionEpoch += 1;
     removeUser(owner, true);
     suspended = true;
     cancelTimer();
@@ -207,7 +233,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       && fresh(query.state.dataUpdatedAt) && Array.isArray(query.queryKey)
       && persistedQueryScope(query.queryKey, query.state.data, entry.userId, companyIds) === entry.companyId)
       .map(query => ({ queryKey: query.queryKey, queryHash: hashKey(query.queryKey), state: {
-        data: displayData(query.state.data, deniedIssues), dataUpdatedAt: query.state.dataUpdatedAt, dataUpdateCount: 1,
+        data: queryDisplayData(query.queryKey, query.state.data, deniedIssues), dataUpdatedAt: query.state.dataUpdatedAt, dataUpdateCount: 1,
         error: null, errorUpdateCount: 0, errorUpdatedAt: 0, fetchFailureCount: 0, fetchFailureReason: null,
         fetchMeta: null, isInvalidated: true, status: "success" as const, fetchStatus: "idle" as const,
       } }));
@@ -231,6 +257,8 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       }
     } else if (entry) safeRemove();
   } catch {}
+  const pendingSession = client.getQueryCache().find({ queryKey: queryKeys.auth.session, exact: true });
+  if (pendingSession && pendingSession.state.fetchStatus !== "idle") captureSessionRead(pendingSession);
 
   const flush = () => {
     cancelTimer();
@@ -253,7 +281,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     const state = dehydrate(client, { shouldDehydrateMutation: () => false, shouldDehydrateQuery: query => eligible(query)
       && !(query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && !issueIds.has(issueIdentity(query))) });
     const queries = state.queries.map(query => {
-      let data = displayData(query.state.data, deniedIssues);
+      let data = queryDisplayData(query.queryKey, query.state.data, deniedIssues);
       if (hashKey(query.queryKey) === hashKey(queryKeys.auth.session)) {
         const value = object(data)!;
         const user = object(value.user)!;
@@ -287,6 +315,24 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   const unsubscribe = client.getQueryCache().subscribe(event => {
     if (disposed) return;
     const sessionEvent = hashKey(event.query.queryKey) === hashKey(queryKeys.auth.session);
+    const completedRead = sessionEvent && event.type === "updated" && event.action.type === "success" && !event.action.manual
+      ? sessionReads.get(event.query) : undefined;
+    if (sessionEvent && event.type === "updated" && event.action.type === "fetch") captureSessionRead(event.query);
+    if (sessionEvent && event.type === "updated" && event.action.type === "success" && !event.action.manual) {
+      const read = completedRead;
+      sessionReads.delete(event.query);
+      // A delayed response cannot verify identity across sign-out, including
+      // before another tab's storage event has reached this event loop.
+      if (observeStorage()) return;
+      let clearedUser: string | null = null;
+      try { const id = object(JSON.parse(clearToken() ?? "null"))?.userId; clearedUser = typeof id === "string" ? id : null; } catch {}
+      const next = userIdOf(event.query.state.data);
+      if (read && (read.epoch !== sessionEpoch
+        || [read.userId, next].some(id => id && (read.revisions.get(revisionKey(id)) ?? null) !== revisionFor(id))
+        || (read.clear !== clearToken() && (!clearedUser || clearedUser === read.userId || clearedUser === userIdOf(event.query.state.data))))) {
+        suspendAccount(); return;
+      }
+    }
     if (sessionEvent && event.type === "updated" && event.action.type === "error"
       && ["auth", "forbidden"].includes(classifyError(event.action.error))) {
       clearAccountData(client);
@@ -299,14 +345,15 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       suspended = false;
     }
     if (sessionEvent && event.type === "updated" && event.action.type === "success") {
-      if (!event.action.manual) { observedClear = clearToken(); verifyCachedSession(client); }
+      if (!event.action.manual) { observedClear = completedRead ? completedRead.clear : clearToken(); verifyCachedSession(client); }
       const next = userIdOf(event.query.state.data);
       if (owner && next !== owner) {
         if (next) removeUser(owner);
         clearAccountData(client);
       }
       if (!next) { clear(); return; }
-      if (next && (!event.action.manual || next !== owner)) ownerRevision = revisionFor(next);
+      if (next && (!event.action.manual || next !== owner)) ownerRevision = completedRead
+        ? completedRead.revisions.get(revisionKey(next)) ?? null : revisionFor(next);
       owner = next;
     }
     if (event.type === "observerAdded" && event.query.queryKey[0] === "issues" && event.query.queryKey[1] === "detail") visits.set(event.query.queryHash, now());

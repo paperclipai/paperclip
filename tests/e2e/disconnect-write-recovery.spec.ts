@@ -217,7 +217,10 @@ for (const delayWorkspacePreference of [false, true]) test(delayWorkspacePrefere
     await header.locator("textarea").press("Enter");
     await expect.poll(() => failedAfterSave).toBeGreaterThan(0);
     if (delayWorkspacePreference) {
-      await expect(page.getByText("Couldn't update the task", { exact: true })).toBeVisible();
+      // Identity is still unknown: retain the unowned edit in memory until the
+      // first verified session, then prove it survives the presentation remount.
+      await expect(header.locator("textarea")).toHaveValue("Saved after session recovery");
+      expect((await json(await request.get(`/api/issues/${issue.id}`))).title).toBe(issue.title);
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve(null))));
     }
     healthy = true;

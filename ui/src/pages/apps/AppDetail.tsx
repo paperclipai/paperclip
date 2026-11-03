@@ -1,4 +1,4 @@
-import { AppReadError } from "./app-detail/AppReadError";
+import { AppNotFound, AppReadError } from "./app-detail/AppReadError";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
 import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
 import { ConnectionInstructionsSettings } from "@/features/connections/ConnectionInstructions";
@@ -86,8 +86,8 @@ export function AppDetail(props: { renderActions?: (connection: ToolConnection) 
   const connection = useQuery({ queryKey: queryKeys.tools.connection(connectionId), queryFn: () => toolsApi.getConnection(connectionId), enabled: !!connectionId });
   const view = useQueryView(connection);
   if (connection.isPending || view.kind === "reconnecting") return <p role="status">Loading connection…</p>;
-  // A real not-found falls through: StandardAppDetail renders its own copy.
-  if (view.kind === "error" && view.errorKind !== "not_found") {
+  if (view.kind === "error" && view.errorKind === "not_found") return <AppNotFound />;
+  if (view.kind === "error") {
     return <QueryErrorState size="page" error={connection.error} action="load the connection" onRetry={view.retry} retrying={view.isFetching} />;
   }
   const pluginKey = connection.data && aiConnectionRouterPluginKey(connection.data);
@@ -547,19 +547,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       </div>
     );
   }
-  if (connectionView.kind === "error" && connectionView.errorKind !== "not_found") {
+  if (connectionView.kind === "error" && connectionView.errorKind === "not_found") return <AppNotFound />;
+  if (connectionView.kind === "error") {
     return <AppReadError size="page" action="load the connection" failure={connectionView} />;
   }
-  if (!connection) {
-    return (
-      <div className="max-w-3xl p-6">
-        <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
-        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
-          Back to connectors
-        </Button>
-      </div>
-    );
-  }
+  if (!connection) return <AppNotFound />;
 
   if (isRetiredComposioConnection(connection)) {
     return <div className="max-w-4xl space-y-6 pb-12">

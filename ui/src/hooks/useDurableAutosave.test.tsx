@@ -111,6 +111,34 @@ describe("useDurableAutosave", () => {
     }
   });
 
+  it("shows waiting after restored-session verification fails without sending the edit", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    const lookup = vi.spyOn(authApi, "getSession").mockRejectedValue(new ApiError("session_lookup_failed", 500, null));
+    const save = vi.fn().mockResolvedValue(undefined);
+    try {
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="waiting-for-session" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      let saving!: ReturnType<typeof current.run>;
+      act(() => { saving = current.run("Retained edit"); });
+      await advance(750);
+      await act(async () => { expect(await saving).toEqual({ kind: "waiting" }); });
+      await advance(200);
+      expect(current.status).toBe("waiting");
+      expect(current.label).toBe("Will save when reconnected");
+      expect(save).not.toHaveBeenCalled();
+      lookup.mockResolvedValue({ user: { id: "user-1" } } as never);
+      await advance(2_000);
+      expect(save).toHaveBeenCalledExactlyOnceWith("Retained edit");
+    } finally {
+      act(() => root.unmount()); root = createRoot(container);
+      cache.dispose(); client.clear(); lookup.mockRestore();
+    }
+  });
+
   it("keeps a conflict verification read pending through an outage", async () => {
     const save = vi.fn().mockRejectedValue(conflict());
     const matchesServer = vi.fn().mockRejectedValueOnce(outage()).mockResolvedValue(true);

@@ -37,6 +37,59 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
+  it.each(["sign-out", "session-ended", "local-sign-out", "revision-only"])("rejects an older session response delivered before the %s storage event", async ended => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    const second = ended === "local-sign-out" ? first : setup(first.storage);
+    let release!: (value: ReturnType<typeof session>) => void;
+    const read = second.client.fetchQuery({ queryKey: queryKeys.auth.session, staleTime: 0,
+      queryFn: () => new Promise<ReturnType<typeof session>>(resolve => { release = resolve; }) });
+    if (ended === "revision-only") {
+      const write = first.storage.setItem.bind(first.storage);
+      vi.spyOn(first.storage, "setItem").mockImplementation((key, value) => {
+        if (key === QUERY_CACHE_CLEARED) throw new Error("Broadcast write failed");
+        write(key, value);
+      });
+    }
+    if (ended === "session-ended") await first.client.fetchQuery({ queryKey: queryKeys.auth.session, staleTime: 0, queryFn: async () => null });
+    else first.handle.clear();
+    release(session());
+    await read;
+    second.handle.flush();
+    expect(second.client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+    expect(second.client.getQueryData(queryKeys.auth.session)).toBeNull();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Saved task");
+    const cold = setup(first.storage);
+    expect(cold.client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+    await second.client.fetchQuery({ queryKey: queryKeys.auth.session, staleTime: 0, queryFn: async () => session() });
+    seed(second.client);
+    second.client.setQueryData([...queryKeys.issues.detail("task-one"), "core"], { id: "task-one", companyId: "company-one", title: "Freshly authorized task" });
+    second.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).toContain("Freshly authorized task");
+  });
+
+  it("restores a bounded first page of all legacy Inbox task queries", () => {
+    const first = setup(); seed(first.client);
+    const keys = [queryKeys.issues.list("company-one"), queryKeys.issues.listMineByMe("company-one"), queryKeys.issues.listTouchedByMe("company-one")]
+      .map(key => [...key, "compact", "with-routine-executions", "live-descendant-summary", 500]);
+    const rows = Array.from({ length: 500 }, (_, i) => ({ id: `legacy-${i}`, companyId: "company-one", title: `Legacy task ${i}`, planDocument: { body: "excluded-legacy-document" } }));
+    for (const key of keys) first.client.setQueryData(key, rows);
+    first.handle.flush();
+    const restored = setup(first.storage);
+    for (const key of keys) {
+      expect(first.client.getQueryData(key)).toHaveLength(500);
+      expect(restored.client.getQueryData(key)).toHaveLength(100);
+      expect(restored.client.getQueryData(key)).toContainEqual({ id: "legacy-0", companyId: "company-one", title: "Legacy task 0" });
+      expect(persistedQueryScope([...key, "extra"], rows, "alice", ["company-one"])).toBeUndefined();
+    }
+    expect([...first.storage.values.values()].join(" ")).not.toContain("excluded-legacy-document");
+    const recordKey = `${QUERY_CACHE_PREFIX}alice:company-one`;
+    const record = JSON.parse(first.storage.getItem(recordKey)!);
+    for (const query of record.state.queries) if (query.queryKey.includes("compact")) query.state.data = rows;
+    first.storage.setItem(recordKey, JSON.stringify(record));
+    const older = setup(first.storage);
+    for (const key of keys) expect(older.client.getQueryData(key)).toHaveLength(100);
+  });
+
   it("restores the approved shell and company reads without persisting authentication material", () => {
     const first = setup();
     seed(first.client);
