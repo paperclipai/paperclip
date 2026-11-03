@@ -7360,8 +7360,12 @@ export function issueService(db: Db) {
     });
   }
 
-  async function assertAssignableUser(companyId: string, userId: string) {
-    const membership = await db
+  async function assertAssignableUser(
+    companyId: string,
+    userId: string,
+    dbOrTx: DbReader = db,
+  ) {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -10153,7 +10157,7 @@ export function issueService(db: Db) {
       const deduplicateByTitle = allowDuplicate === false && !titleNeedsGeneration;
       issueData.title = resolvedTitle;
       const isolatedWorkspacesEnabled = (
-        await instanceSettings.getExperimental()
+        await instanceSettings.getExperimental({ db: dbOrTx })
       ).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -10164,12 +10168,12 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(db, companyId, data.assigneeAgentId, {
+        await assertAssignableAgent(dbOrTx as Db, companyId, data.assigneeAgentId, {
           kind: "work",
         });
       }
       if (data.assigneeUserId) {
-        await assertAssignableUser(companyId, data.assigneeUserId);
+        await assertAssignableUser(companyId, data.assigneeUserId, dbOrTx);
       }
       if (
         data.status === "in_progress" &&
@@ -11162,7 +11166,7 @@ export function issueService(db: Db) {
         }
       }
       const isolatedWorkspacesEnabled = (
-        await instanceSettings.getExperimental()
+        await instanceSettings.getExperimental({ db: dbOrTx })
       ).enableIsolatedWorkspaces;
       if (options.bindRuntimeSharedWorkspace) {
         const workspaceId = issueData.executionWorkspaceId ?? existing.executionWorkspaceId;
@@ -11301,6 +11305,7 @@ export function issueService(db: Db) {
         await assertAssignableUser(
           existing.companyId,
           issueData.assigneeUserId,
+          dbOrTx,
         );
       }
       let nextProjectId =
@@ -11332,8 +11337,8 @@ export function issueService(db: Db) {
           ? { ...nextExecutionWorkspaceSettings }
           : null;
       }
-      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
-      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
+      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId, dbOrTx);
+      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId, dbOrTx);
       if (
         isolatedWorkspacesEnabled &&
         issueData.executionWorkspaceSettings !== undefined

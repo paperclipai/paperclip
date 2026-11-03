@@ -3642,8 +3642,8 @@ export function issueRoutes(
     }) ?? noopTaskWatchdogService();
   const externalObjectsSvc = externalObjectService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
-    enabled: async () =>
-      (await instanceSettings.getExperimental()).enableExternalObjects === true,
+    enabled: async (dbOrTx?: any) =>
+      (await instanceSettings.getExperimental({ db: dbOrTx })).enableExternalObjects === true,
   });
   const queuedCommentQueue = createQueuedCommentQueue(db, {
     syncCommentReferences: (commentId, tx) => issueReferencesSvc.syncComment(commentId, tx),
