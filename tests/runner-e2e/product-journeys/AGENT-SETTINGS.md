@@ -19,6 +19,9 @@ does not edit the shared source agent, provider, model, accounts, or feature fla
 2. Open Instructions, select **Edit** for the entry, change the **Instruction
    file editor**, and use **Save changes**. The new procedure contains a fresh
    synthetic reference that does not occur in the task request.
+   Select the configured entry through the file tree on every open or reload,
+   expanding its parent folders. An existing `AGENTS.md` must not divert the edit
+   from a different configured entry.
    Confirm persisted bytes and the new save audit before navigating away. The
    same confirmation applies when restoring the original instructions.
 3. Reload Instructions. Require the exact saved bytes in both the browser and

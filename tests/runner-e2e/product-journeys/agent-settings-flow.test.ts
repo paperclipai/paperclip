@@ -21,9 +21,13 @@ import { runAgentSettings } from "./agent-settings-flow.js";
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
-async function fixture(nativeFailure = false, unscopedActivity = false, delayedRestore = false, original?: string) {
-  let f = settingsEvidenceFixture(undefined, original), content = f.original, rendered = content, draft = content, dirty = false, dispatched = false;
+async function fixture(nativeFailure = false, unscopedActivity = false, delayedRestore = false, original?: string, entryFile = "AGENTS.md") {
+  let f = settingsEvidenceFixture(undefined, original, entryFile), content = f.original, rendered = content, draft = content, dirty = false, dispatched = false;
   const originalContent = f.original;
+  const availablePaths = new Set(f.evidence.original!.bundle.files.map((file: any) => file.path));
+  const neighbor = "# AGENTS.md sibling must remain unchanged\n";
+  let selectedFile = "AGENTS.md";
+  const expandedDirs = new Set<string>(), selectedPaths: string[] = [], savedPaths: string[] = [];
   let pendingContent: string | undefined;
   const saves: string[] = [], owns: any[] = [], apiWrites: string[] = [], activityReads: string[] = [];
   const unrelatedActivity = Array.from({ length: 600 }, (_, index) => ({ id: `unrelated-${index}`,
@@ -33,31 +37,46 @@ async function fixture(nativeFailure = false, unscopedActivity = false, delayedR
     : dispatched ? f.evidence.afterWork! : f.evidence.saved!;
   const editor = { visible: true, value: () => draft, async inputValue() { return draft; }, async fill(value: string) { draft = value; dirty = true; } };
   const raw = { get visible() { return Boolean(rendered.trim()); }, async textContent() { return rendered; } };
-  const edit = { visible: true, async click() { draft = content; } };
+  const edit = { get visible() { return selectedFile === entryFile; }, async click() { draft = content; } };
   const save = { enabled: () => dirty, async click() {
+    expect(selectedFile).toBe(entryFile); savedPaths.push(selectedFile);
     saves.push(draft); dirty = false;
     if (delayedRestore && saves.length === 2) pendingContent = draft;
     else content = draft;
     const nonce = /reference equal to ([a-f0-9]+),/.exec(draft)?.[1];
-    if (nonce) f = settingsEvidenceFixture(nonce, originalContent);
+    if (nonce) f = settingsEvidenceFixture(nonce, originalContent, entryFile);
   } };
   const document = { visible: true, async textContent() { return f.evidence.task!.document.body; } };
   const page = { async goto() {
     if (pendingContent !== undefined) throw new Error("navigation_before_save_committed");
-    rendered = content;
-  }, async reload() { rendered = content; },
+    selectedFile = "AGENTS.md"; expandedDirs.clear(); rendered = entryFile === "AGENTS.md" ? content : neighbor;
+  }, async reload() { selectedFile = "AGENTS.md"; expandedDirs.clear(); rendered = entryFile === "AGENTS.md" ? content : neighbor; },
     getByTestId(id: string) { expect(id).toBe("instructions-raw-source"); return raw; },
     getByRole(role: string, options: { name: string }) {
-      if (role === "button" && options.name === "Edit AGENTS.md") return edit;
-      if (role === "button" && options.name === "Stop editing AGENTS.md") return { async click() {} };
+      if (role === "button" && options.name === `Edit ${entryFile}`) return edit;
+      if (role === "button" && options.name === `Stop editing ${entryFile}`) return { async click() {} };
       if (role === "button" && options.name === "Save changes") return save;
       if (role === "textbox" && options.name === "Instruction file editor") return editor;
       throw new Error("unexpected_locator");
-    }, locator(selector: string) { expect(selector).toBe("#document-settings-proof"); return document; } };
+    }, locator(selector: string) {
+      if (selector === "#document-settings-proof") return document;
+      const match = /^\[role="treeitem"\]\[data-file-tree-path=("(?:\\.|[^"\\])*")\]$/.exec(selector);
+      if (!match) throw new Error("unexpected_selector:" + selector);
+      const filePath: string = JSON.parse(match[1]!);
+      const directory = entryFile.startsWith(`${filePath}/`);
+      const parents = filePath.split("/").slice(0, -1);
+      return { get visible() { return (directory || availablePaths.has(filePath))
+        && parents.every((_, index) => expandedDirs.has(parents.slice(0, index + 1).join("/"))); },
+      async getAttribute(name: string) { expect(name).toBe("aria-expanded"); return directory ? String(expandedDirs.has(filePath)) : null; },
+      async click() {
+        if (directory) expandedDirs.add(filePath);
+        else { selectedFile = filePath; selectedPaths.push(filePath); rendered = filePath === entryFile ? content : neighbor; }
+      } };
+    } };
   const api = { origin: "https://qa.example.test", async get(route: string) {
     if (route === "/api/agents/agent") return structuredClone(current().agent);
     if (route === "/api/agents/agent/instructions-bundle") return structuredClone(current().bundle);
-    if (route === "/api/agents/agent/instructions-bundle/file?path=AGENTS.md") {
+    if (route === `/api/agents/agent/instructions-bundle/file?path=${encodeURIComponent(entryFile)}`) {
       if (pendingContent !== undefined) { content = pendingContent; pendingContent = undefined; }
       return structuredClone(current().file);
     }
@@ -94,11 +113,23 @@ async function fixture(nativeFailure = false, unscopedActivity = false, delayedR
   const session = { async own(resource: any) { owns.push(resource); } } as TargetSession;
   const evidence: JourneyEvidence = { outcome: "passed", startingState: "recipe", phases: [], checks: [], resourceDisposition: "retained", privacy: "private" };
   const directory = await mkdtemp(path.join(os.tmpdir(), "qa-settings-flow-")); directories.push(directory);
-  return { context, session, evidence, directory, saves, owns, apiWrites, activityReads, unrelatedActivity, original: f.original,
+  return { context, session, evidence, directory, saves, savedPaths, selectedPaths, availablePaths, owns, apiWrites, activityReads, unrelatedActivity, original: f.original,
     currentContent: () => content, options: { directory, deadlineAt: Date.now() + 30000 } };
 }
 
 describe("agent settings production-surface orchestration", () => {
+  it.each(["WORKFLOW.md", "team guide/qa [settings].md", "team/nested/INSTRUCTIONS.md"])(
+    "selects configured entry %s when AGENTS.md also exists and is initially selected", async entryFile => {
+      const f = await fixture(false, false, false, undefined, entryFile);
+      expect(f.availablePaths).toEqual(new Set(["AGENTS.md", entryFile]));
+      await runAgentSettings(f.context, f.session, "campaign-1", f.evidence, f.options);
+      expect(f.evidence.checks.every(row => row.passed)).toBe(true);
+      expect(f.savedPaths).toEqual([entryFile, entryFile]);
+      expect(f.selectedPaths.length).toBeGreaterThan(2); expect(new Set(f.selectedPaths)).toEqual(new Set([entryFile]));
+      expect(f.currentContent()).toBe(f.original); expect(f.apiWrites).toEqual([]);
+      const receipt = JSON.parse(await readFile(path.join(f.directory, "agent-settings-observations.json"), "utf8"));
+      expect(receipt.saveAudits.saved.path).toBe(entryFile); expect(receipt.saveAudits.restored.path).toBe(entryFile);
+    });
   it.each(["", " \n\t\n"])("reads and restores the exact empty-file editor value %j", async original => {
     const f = await fixture(false, false, false, original);
     await runAgentSettings(f.context, f.session, "campaign-1", f.evidence, f.options);

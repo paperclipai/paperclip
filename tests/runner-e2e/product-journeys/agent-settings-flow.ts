@@ -43,6 +43,16 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
   const openInstructions = async (entry: string, expectedContent: string, reload = false) => {
     await context.page.goto(`${context.api.origin}/${context.company.issuePrefix}/agents/${agent.id}/instructions`, { waitUntil: "domcontentloaded" });
     if (reload) await context.page.reload();
+    const segments = entry.split("/");
+    const treeRow = (filePath: string) => context.page.locator(`[role="treeitem"][data-file-tree-path=${JSON.stringify(filePath)}]`);
+    for (let depth = 1; depth < segments.length; depth++) {
+      const directory = treeRow(segments.slice(0, depth).join("/"));
+      await expect(directory).toBeVisible();
+      if (await directory.getAttribute("aria-expanded") !== "true") await directory.click();
+    }
+    const entryRow = treeRow(entry);
+    await expect(entryRow).toBeVisible();
+    await entryRow.click();
     const edit = context.page.getByRole("button", { name: `Edit ${entry}`, exact: true });
     await expect(edit).toBeVisible();
     if (!expectedContent.trim()) {

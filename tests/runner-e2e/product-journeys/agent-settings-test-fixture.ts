@@ -1,6 +1,6 @@
 import { instructionDigest, settingsInstructionContent, settingsDocumentKey, settingsTaskPrompt, type AgentSettingsEvidence, type AgentSettingsScope } from "./agent-settings-evidence.js";
 
-export function settingsEvidenceFixture(reference = "1a2b3c4d5e6f", original = "# Ordinary instructions\nFollow the assigned task.\n") {
+export function settingsEvidenceFixture(reference = "1a2b3c4d5e6f", original = "# Ordinary instructions\nFollow the assigned task.\n", entryFile = "AGENTS.md") {
   const scope: AgentSettingsScope = { campaignId: "campaign-1", companyId: "company", userId: "user", agentId: "agent",
     agentName: "Owned agent campaign-1", environmentId: "environment", provider: "opencode", model: "model", reference };
   const saved = settingsInstructionContent(original, scope.reference);
@@ -12,15 +12,17 @@ export function settingsEvidenceFixture(reference = "1a2b3c4d5e6f", original = "
     const hash = instructionDigest(content);
     return { agent: { id: scope.agentId, companyId: scope.companyId, name: scope.agentName, adapterType: "paperclip_runner",
       adapterConfig: { provider: scope.provider, model: scope.model } },
-    bundle: { agentId: scope.agentId, companyId: scope.companyId, entryFile: "AGENTS.md", mode: "managed", editable: true },
-    file: { path: "AGENTS.md", content, contentHash: hash, size: Buffer.byteLength(content), isEntryFile: true, editable: true,
-      revision: { id: `agent-files:${hash}`, companyId: scope.companyId, agentId: scope.agentId, entryFile: "AGENTS.md",
+    bundle: { agentId: scope.agentId, companyId: scope.companyId, entryFile, mode: "managed", editable: true,
+      files: [{ path: entryFile, isEntryFile: true, editable: true },
+        ...(entryFile !== "AGENTS.md" ? [{ path: "AGENTS.md", isEntryFile: false, editable: true }] : [])] },
+    file: { path: entryFile, content, contentHash: hash, size: Buffer.byteLength(content), isEntryFile: true, editable: true,
+      revision: { id: `agent-files:${hash}`, companyId: scope.companyId, agentId: scope.agentId, entryFile,
         contentHash: hash, byteLength: Buffer.byteLength(content), parentRevisionId: null, baseRevisionId: null, source: "api" } },
     runs, activity, renderedContent: content };
   };
   const audit = (id: string, content: string) => ({ id, companyId: scope.companyId, actorType: "user", actorId: scope.userId,
     agentId: null, runId: null, action: "agent.files_updated", entityType: "agent", entityId: scope.agentId,
-    details: { path: "AGENTS.md", contentHash: instructionDigest(content), source: "board" } });
+    details: { path: entryFile, contentHash: instructionDigest(content), source: "board" } });
   const firstSave = audit("save", saved), restore = audit("restore", original);
   const body = JSON.stringify({ reference: scope.reference, settingsSaved: true });
   const document = { id: "document", companyId: scope.companyId, issueId: "task", key: settingsDocumentKey,
