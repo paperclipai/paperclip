@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project, ProjectCodebase } from "@paperclipai/shared";
-import type { ReactNode } from "react";
+import type { Environment, Project, ProjectCodebase } from "@paperclipai/shared";
+import { act as reactAct, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectProperties } from "./ProjectProperties";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
+import { environmentsApi } from "../api/environments";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -72,6 +73,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  vi.mocked(environmentsApi.list).mockReset().mockResolvedValue([]);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -84,20 +86,22 @@ afterEach(() => {
 });
 
 /** Pass `null` for `experimentalSettings` to render with the policy unresolved. */
-function render(project: Project, experimentalSettings: Record<string, unknown> | null) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function render(project: Project, experimentalSettings: Record<string, unknown> | null, environments: Environment[] | null = [], onFieldUpdate = vi.fn()) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   if (experimentalSettings) {
     client.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
   }
+  if (environments !== null) client.setQueryData(queryKeys.environments.list("company-1"), environments);
   act(() => {
     root.render(
       <QueryClientProvider client={client}>
         <TooltipProvider>
-          <ProjectProperties project={project} onFieldUpdate={vi.fn()} getFieldSaveState={() => "idle"} onArchive={noop} />
+          <ProjectProperties project={project} onFieldUpdate={onFieldUpdate} getFieldSaveState={() => "idle"} onArchive={noop} />
         </TooltipProvider>
       </QueryClientProvider>,
     );
   });
+  return client;
 }
 
 function buttonLabels() {
@@ -162,5 +166,93 @@ describe("ProjectProperties — local folder under the managed-sandbox-only poli
 
     const pathInput = container.querySelector('input[placeholder="/absolute/path/to/workspace"]');
     expect(pathInput).toBeNull();
+  });
+});
+
+describe("ProjectProperties project environment", () => {
+  const coding: Environment = { id: "coding-env", name: "Daytona Paperclip Coding", description: null,
+    driver: "sandbox", status: "active", config: { provider: "daytona", disk: 30 }, envVars: {},
+    metadata: null, createdAt: new Date(), updatedAt: new Date() };
+
+  it("saves a project environment without enabling isolated checkouts", () => {
+    const project = makeProject(makeCodebase());
+    project.executionWorkspacePolicy = { enabled: false, sharedWorkspaceConcurrency: "serialize" };
+    const save = vi.fn();
+    render(project, { enableEnvironments: true, enableIsolatedWorkspaces: false }, [coding], save);
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Project environment"]');
+    expect(select).not.toBeNull();
+    act(() => {
+      select!.value = coding.id;
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(save).toHaveBeenCalledWith("execution_workspace_environment", { executionWorkspacePolicy: {
+      enabled: false, sharedWorkspaceConcurrency: "serialize", environmentId: coding.id,
+    } });
+  });
+
+  it("shows a saved selection and clears it to inheritance", () => {
+    const project = makeProject(makeCodebase());
+    project.executionWorkspacePolicy = { enabled: false, environmentId: coding.id };
+    const save = vi.fn();
+    render(project, { enableEnvironments: true }, [coding], save);
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Project environment"]');
+    expect(select?.value).toBe(coding.id);
+    act(() => {
+      select!.value = "";
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(save).toHaveBeenCalledWith("execution_workspace_environment", { executionWorkspacePolicy: {
+      enabled: false, environmentId: null,
+    } });
+  });
+
+  it("preserves enabled checkout defaults inherited from a storage provider", () => {
+    const project = makeProject(makeCodebase());
+    project.executionWorkspacePolicy = null;
+    project.workspaceProvider = { source: "default", pluginId: "storage", displayName: "Storage", providers: [],
+      effectivePolicy: { enabled: true, storageProviderPluginId: "storage", defaultMode: "isolated_workspace" }, error: null };
+    const save = vi.fn();
+    render(project, { enableEnvironments: true }, [coding], save);
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Project environment"]')!;
+    act(() => { select.value = coding.id; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(save).toHaveBeenCalledWith("execution_workspace_environment", { executionWorkspacePolicy: { enabled: true, environmentId: coding.id } });
+  });
+
+  it("shows an unavailable saved environment instead of displaying inheritance", () => {
+    const project = makeProject(makeCodebase());
+    project.executionWorkspacePolicy = { enabled: false, environmentId: "removed-env" };
+    render(project, { enableEnvironments: true }, [coding]);
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Project environment"]')?.value).toBe("removed-env");
+    expect(container.textContent).toContain("Unavailable environment");
+  });
+
+  it("preserves the saved selection without an unavailable warning while environments load", () => {
+    const project = makeProject(makeCodebase());
+    project.executionWorkspacePolicy = { enabled: false, environmentId: coding.id };
+    render(project, { enableEnvironments: true }, null);
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Project environment"]');
+    expect(select?.value).toBe(coding.id);
+    expect(select?.disabled).toBe(true);
+    expect(container.textContent).not.toContain("Unavailable environment");
+    expect(container.textContent).not.toContain("Choose an available environment");
+  });
+
+  it("allows clearing a saved selection when the environments request fails", async () => {
+    vi.mocked(environmentsApi.list).mockRejectedValue(new Error("Environment list unavailable"));
+    const project = makeProject(makeCodebase());
+    project.executionWorkspacePolicy = { enabled: false, environmentId: coding.id };
+    const save = vi.fn();
+    await reactAct(async () => {
+      const client = render(project, { enableEnvironments: true }, null, save);
+      await client.fetchQuery({ queryKey: queryKeys.environments.list("company-1") }).catch(() => undefined);
+      // React Query batches subscriber notification on the next task.
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Project environment"]')!;
+    expect(container.textContent).toContain("Failed to load environments.");
+    expect(select.value).toBe(coding.id);
+    expect(select.disabled).toBe(false);
+    act(() => { select.value = ""; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(save).toHaveBeenCalledWith("execution_workspace_environment", { executionWorkspacePolicy: { enabled: false, environmentId: null } });
   });
 });

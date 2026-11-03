@@ -26,6 +26,7 @@ import {
   nativeChatWorkspaceMatches,
 } from "../native-runtime/native-chat-workspace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../native-runtime/native-runner-ownership.js";
+import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
 import type { environmentService } from "../environments.js";
 import type { executionWorkspaceService } from "../execution-workspaces.js";
 import type { instanceSettingsService } from "../instance-settings.js";
@@ -40,7 +41,7 @@ type Issue = typeof issues.$inferSelect;
 /** Selects policy and reuse inputs; lease acquisition and cleanup belong to the executor. */
 export interface HeartbeatEnvironmentSelectionInput {
   run: Pick<typeof heartbeatRuns.$inferSelect,
-    "id" | "runtimeMode" | "runnerProfileJson" | "scheduledRetryReason" | "scheduledRetryAttempt">;
+    "id" | "runtimeMode" | "runnerProfileJson" | "contextSnapshot" | "scheduledRetryReason" | "scheduledRetryAttempt">;
   agent: Pick<typeof agents.$inferSelect,
     "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId">;
   task: {
@@ -57,6 +58,7 @@ export interface HeartbeatEnvironmentSelectionInput {
     responsibleUserId: string | null;
   };
   policy: {
+    taskProjectEnvironmentId?: string | null;
     trustPreset: TrustPresetResolution;
     requestedExecutionWorkspaceMode: ParsedExecutionWorkspaceMode;
     isolatedWorkspacesEnabled: boolean;
@@ -72,7 +74,7 @@ export interface HeartbeatEnvironmentSelectionInput {
     executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "getStoredById" | "validateStoredSelectionForRun"
       | "reopenClosedIsolatedExecutionWorkspaceForIssue" | "clearReopenPendingConsumptionForUnconsumedReopen">;
     environmentsSvc: Pick<ReturnType<typeof environmentService>,
-      "ensureLocalEnvironment" | "findManagedSandboxEnvironment" | "findKubernetesEnvironment" | "ensureKubernetesEnvironment" | "getById">;
+      "ensureLocalEnvironment" | "findManagedSandboxEnvironment" | "findKubernetesEnvironment" | "ensureKubernetesEnvironment" | "getById" | "getLeaseById">;
     instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "get" | "getExperimental">;
     findSharedWorkspaceHolder: ReturnType<typeof createHeartbeatRetries>["findSharedWorkspaceHolder"];
     findExecutionWorkspaceHolder: ReturnType<typeof createHeartbeatRetries>["findExecutionWorkspaceHolder"];
@@ -194,16 +196,33 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const managedSandboxEnvironment = managedSandboxOnly
     ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
     : null;
-  const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
-    lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
-      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {includeEnvironmentId: true})?.environmentId : null,
-    agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-    instanceDefaultEnvironmentId:
-      resolvedInstanceSettings.defaultEnvironmentId ?? null,
-    localDefaultEnvironmentId: localEnvironment.id,
-    managedSandboxOnly,
-    managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
-  });
+  // Restore the environment of an admitted native run from its owned lease.
+  // A newly effective project default must not redirect a surviving process.
+  const savedEnvironment = parseObject(parseObject(run.contextSnapshot).paperclipEnvironment);
+  const admittedLeaseId = persistedNativeExecutionInput
+    ? readNonEmptyString(savedEnvironment.leaseId) ?? readNativeWorkspaceSyncReference(persistedRunnerProfile.nativeWorkspaceSync)?.leaseId
+    : null;
+  const admittedLease = admittedLeaseId ? await environmentsSvc.getLeaseById(admittedLeaseId) : null;
+  if (admittedLeaseId && (!admittedLease?.environmentId || admittedLease.companyId !== agent.companyId
+      || admittedLease.heartbeatRunId !== run.id || admittedLease.issueId !== issueId
+      || admittedLease.metadata?.agentId !== agent.id
+      || (typeof savedEnvironment.id === "string" && savedEnvironment.id !== admittedLease.environmentId))) {
+    throw new ConfigurationIncompleteFailure("Cannot restore the admitted execution environment.", {
+      configurationIncomplete: { reason: "native_recovery_environment_binding_mismatch" },
+    });
+  }
+  const environmentResolution = admittedLease?.environmentId
+    ? { environmentId: admittedLease.environmentId, source: "run" as const }
+    : resolveExecutionWorkspaceEnvironmentId({
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
+          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {includeEnvironmentId: true})?.environmentId : null,
+        projectEnvironmentId: isDotRun || persistedNativeExecutionInput ? null : input.policy.taskProjectEnvironmentId,
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+        instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: localEnvironment.id,
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
+      });
   const effectiveExecutionWorkspaceMode: ReturnType<
     typeof resolveExecutionWorkspaceMode
   > = requestedExecutionWorkspaceMode;

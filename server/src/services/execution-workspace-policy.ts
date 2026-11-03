@@ -135,6 +135,8 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
     ...(defaultProjectWorkspaceId ? { defaultProjectWorkspaceId } : {}),
+    ...(typeof parsed.environmentId === "string" || parsed.environmentId === null
+      ? { environmentId: parsed.environmentId } : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
@@ -273,7 +275,9 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "run"
   | "issue"
+  | "project"
   | "agent"
   | "instance"
   | "default"
@@ -298,6 +302,8 @@ export class ManagedSandboxUnavailableError extends Error {
 export function resolveExecutionWorkspaceEnvironmentId(input: {
   /** Explicit operator-selected sandbox for a task with a low-trust boundary. */
   lowTrustIssueEnvironmentId?: string | null;
+  /** The task's project default, independent of its selected file source. */
+  projectEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
@@ -315,6 +321,9 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
   const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
     if (input.lowTrustIssueEnvironmentId) {
       return {environmentId: input.lowTrustIssueEnvironmentId, source: "issue"};
+    }
+    if (input.projectEnvironmentId) {
+      return { environmentId: input.projectEnvironmentId, source: "project" };
     }
     if (input.agentDefaultEnvironmentId) {
       return {

@@ -2663,6 +2663,7 @@ export function heartbeatService(
           freshWorkspace, hasSelectedWorkspaceSource: Boolean(selectedWorkspaceSource), taskWorkspaceIntent: taskWorkspaceIntentRow?.intent ?? null, responsibleUserId },
         policy: {
           trustPreset, requestedExecutionWorkspaceMode, isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled,
+          taskProjectEnvironmentId: parseProjectExecutionWorkspacePolicy(taskProjectContext?.executionWorkspacePolicy)?.environmentId,
           projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings,
         },
         config: { config, sourceWorkspaceConfig, issueAssigneeOverrides },

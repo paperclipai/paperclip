@@ -34,6 +34,14 @@ or instance administrator.
 
 Choose the environment in agent/project/workspace configuration, then inspect the resulting task/run and workspace.
 
+Project Configuration exposes Environment independently of isolated-checkout
+controls. The task project's selection overrides agent and instance defaults,
+including when it has no codebase or uses another project's file source.
+Explicit low-trust placement and instance execution restrictions still apply.
+Clear the project selection to inherit the agent/instance default. Inspect the
+run's selected environment and lease, then verify the provider's actual resource
+allocation; snapshot-backed Daytona sandboxes inherit their snapshot's size.
+
 ## Driving it with Playwright and the Paperclip CLI
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use an owned disposable target and a supported provider plugin. Record provider, target identity, account, and spending constraints before a live remote run.
