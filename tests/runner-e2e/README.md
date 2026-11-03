@@ -3371,3 +3371,46 @@ It uses `local_trusted` authentication and no model provider. Its result does no
 qualify browser reconnects, active-agent continuity, distinct packaged releases
 or Railway. Keep failed receipts alongside successful attempts; the private
 server logs and config files may contain credentials and are not shareable evidence.
+
+### Report a terminal catalog run from retained evidence
+
+A missing cell projection makes the normal strict aggregate fail. It must not
+silently discard authentic sibling results or turn unavailable evidence into an
+original failed evaluation. For an operator recovery, authenticate the original
+selection, terminal GitHub jobs and exact retained archive keys first. Recover
+available originals through the existing sealed-inventory reader and exporter.
+Do not run agents again or change the original grades.
+
+The aggregate owner has an explicit offline data preparation mode:
+
+```sh
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/chat-full-catalog-testops-merge.ts retained-reporting \
+  <safe-singleton-projection-root> <new-output-directory> \
+  <authenticated-original-selection.json> <retained-disposition.json> <executor-commit-sha>
+```
+
+`RetainedDisposition` in that module defines the closed input contract. It binds
+its origin to the selection, its selection digest to the exact two-space JSON
+serialization, and its terminal-job and custody observations to SHA-256 digests.
+Every missing execution needs an explicit `not_found` observation at its exact
+source-derived archive key. This input records an operator's authenticated
+observations; the offline command does not grant read or publish authority.
+Active jobs, unexplained omissions, duplicates and foreign identities fail.
+
+The command reuses the unchanged strict original exporter. It emits one frozen
+Allure bundle and `reporting-manifest.json`. The coverage count separates graded
+originals from reporting gaps. Gaps are separate DTOs with UNKNOWN original grade,
+checks, native-run count and cleanup. Their TestOps outcome is `broken`, not an
+inferred feature failure or pass. They have no fabricated duration or test steps.
+Only the flat `allure/` JSON files are transport files; the manifest stays outside
+any upload archive. Private originals, screenshots and traces stay private.
+
+Review the immutable payload and its file hashes before an authorized upload to
+the original jobrun. Persist a once-intent before transmission. After an ambiguous
+response, reconcile with manual GET requests or an independently reviewed,
+gap-aware read-only check; do not resend or regenerate UUIDs. The existing
+`verify-upload` CLI accepts strict original outcomes only. It cannot verify the
+separate BROKEN gap shape and must not be used for this recovery bundle. Final
+coverage must match all selected case IDs and preserve the separate gap count.
+This mode prepares data only. It does not upload, start jobs, reopen launches,
+change credentials, or change evaluation and evidence limits.
