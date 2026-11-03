@@ -77,21 +77,30 @@ export function websiteCreateArgv(reply: string, fixture: { company: string; pro
 export function contextGuidanceArgv(reply: string, fixture: { company: string; apiBase: string }) {
   const lines = [...reply.matchAll(/```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/g)]
     .flatMap(match => match[1]!.replace(/\\\r?\n/g, " ").split(/\r?\n/))
-    .map(line => line.trim()).filter(line => /^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+context\b/.test(line));
+    .map(line => line.trim()).filter(line => line && !line.startsWith("#"));
   let selected = false, readback = false;
   const commands: string[][] = [], bindings: Array<{ commandIndex: number; flag: string; placeholder: string; fixtureValue: string }> = [];
   for (const line of lines) {
     if (/[`;|&\n\r]|\$\(/.test(line)) return;
+    const prefix = /^(?:paperclipai|npx(?: -y)? paperclipai|pnpm (?:exec )?paperclipai)\s+/;
+    if (!prefix.test(line)) return;
     let tokens: string[];
-    try { tokens = line.match(/"(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+/g)!.map(token => token.startsWith('"') ? JSON.parse(token) as string : token.startsWith("'") ? token.slice(1, -1) : token); }
+    try { tokens = line.replace(prefix, "").match(/"(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+/g)!.map(token => token.startsWith('"') ? JSON.parse(token) as string : token.startsWith("'") ? token.slice(1, -1) : token); }
     catch { return; }
-    const original = tokens.slice(tokens.indexOf("context"));
+    const original = tokens;
+    const family = original[0];
     const command = original[1], args = original.slice(2);
-    if (command === "use") { if (args.shift()?.toLowerCase() !== "acorn") return; selected = true; }
-    else if (command === "show") readback ||= selected;
-    else if (command !== "set" && command !== "list") return;
-    let profile: string | undefined, company: string | undefined, apiBase: string | undefined, use = false;
-    const allowedFlags = command === "set" ? ["--profile", "--company-id", "--api-base", "--use", "--json"]
+    if (family === "company" || family === "auth") {
+      if (!selected || family === "company" && command !== "current" || family === "auth" && command !== "whoami"
+        || args.length > 1 || args.length === 1 && args[0] !== "--json") return;
+      if (family === "company") readback = true;
+      commands.push(original); continue;
+    }
+    if (family !== "context") return;
+    if (command === "use") { if (args.shift() !== "acorn") return; selected = true; }
+    else if (command !== "show" && command !== "set" && command !== "list") return;
+    let profile: string | undefined, company: string | undefined, apiBase: string | undefined, persona: string | undefined, use = false;
+    const allowedFlags = command === "set" ? ["--profile", "--company-id", "--api-base", "--persona", "--use", "--json"]
       : command === "show" ? ["--profile", "--json"] : command === "list" ? ["--json"] : [];
     const flags = new Set<string>();
     while (args.length) {
@@ -101,22 +110,21 @@ export function contextGuidanceArgv(reply: string, fixture: { company: string; a
       if (flag === "--json") continue;
       if (flag === "--use") { use = true; continue; }
       if (!args.length) return;
-      let value = args.shift()!;
-      const expected = flag === "--company-id" ? fixture.company : flag === "--api-base" ? fixture.apiBase : undefined;
-      if (expected && /^(?:<[A-Z_ -]+>|\$\{?[A-Z_]+\}?)$/.test(value)) {
-        const index = original.indexOf(flag) + 1;
-        bindings.push({ commandIndex: commands.length, flag, placeholder: value, fixtureValue: expected });
-        original[index] = expected; value = expected;
-      }
+      const value = args.shift()!;
       if (flag === "--profile") profile = value;
       if (flag === "--company-id") company = value;
       if (flag === "--api-base") apiBase = value;
+      if (flag === "--persona") persona = value;
     }
-    if (profile && profile.toLowerCase() !== "acorn") return;
+    if (profile !== undefined && profile !== "acorn") return;
     if (command === "set") {
-      if (profile?.toLowerCase() !== "acorn" || company !== fixture.company || apiBase !== fixture.apiBase) return;
+      // Acorn is independently configured. A genuine partial upsert may keep
+      // those values, but supplied values must match: never fix placeholders.
+      if (profile !== "acorn" || company !== undefined && company !== fixture.company
+        || apiBase !== undefined && apiBase !== fixture.apiBase || persona !== undefined && persona !== "board") return;
       selected ||= use;
     }
+    if (command === "show") readback ||= selected;
     commands.push(original);
   }
   return selected && readback ? { commands, bindings } : undefined;

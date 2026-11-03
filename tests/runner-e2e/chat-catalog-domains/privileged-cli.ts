@@ -98,7 +98,8 @@ export function gradeChooseCliContext(value: unknown) {
   c.add("supported-context-guidance", validContextGuidance(o.reply, { company: o.companyId, apiBase: o.origin }),
     "The answer supplies supported context/profile commands for the intended API and company instead of invented context flags.");
   c.add("actual-profile-selected", o.state.initialProfile === "birch" && o.state.finalProfile === "acorn"
-    && o.state.selectedCompanyId === o.companyId && o.state.selectedApiBase === o.origin,
+    && o.state.selectedCompanyId === o.companyId && o.state.selectedApiBase === o.origin
+    && o.state.selectedPersona === "board" && o.state.actualScopedCompanyId === o.companyId && o.state.contextCommandsExecuted === true,
     "Supported CLI commands select the real Acorn fixture at its actual API base.");
   c.add("other-profile-preserved", o.state.otherProfilePreserved === true && o.state.onlyOwnedContextWritten === true,
     "The other configured profile is byte-equivalent semantically, and only the explicit owned context path is used.");
@@ -112,7 +113,7 @@ const context = privilegedDefinition("cli-operations.choose-cli-context", "privi
     const operator = await prepareOwnedCli(ctx);
     const birch = await ctx.input.api.post<Entity>("/api/companies", { name: `Birch CLI fixture ${ctx.input.nonce}` });
     for (const [name, companyId] of [["acorn", ctx.input.fixtures.company.id], ["birch", birch.id]])
-      await runOwnedCli(ctx, ["context", "set", "--profile", name!, "--api-base", ctx.input.api.baseURL, "--company-id", companyId!, "--use", "--json"]);
+      await runOwnedCli(ctx, ["context", "set", "--profile", name!, "--api-base", ctx.input.api.baseURL, "--company-id", companyId!, "--persona", "board", "--use", "--json"]);
     const before = JSON.parse(await runOwnedCli(ctx, ["context", "show", "--json"]));
     return { ...operator, initialProfile: before.currentProfile, otherProfile: before.profiles.birch };
   },
@@ -125,10 +126,13 @@ const context = privilegedDefinition("cli-operations.choose-cli-context", "privi
     for (const argv of returned.commands) await runOwnedCli(ctx, argv);
     state.returnedCommandHashes = returned.commands.map(argv => createHash("sha256").update(JSON.stringify(argv)).digest("hex"));
     state.unresolvedContextBindings = returned.bindings;
+    state.contextCommandsExecuted = true;
     const selected = JSON.parse(await runOwnedCli(ctx, ["context", "show", "--json"]));
+    const scopedCompany = JSON.parse(await runOwnedCli(ctx, ["company", "current", "--json"]));
     const identity = JSON.parse(await runOwnedCli(ctx, ["auth", "whoami", "--json"]));
     state.finalProfile = selected.currentProfile; state.selectedCompanyId = selected.profile.companyId;
     state.selectedApiBase = selected.profile.apiBase;
+    state.selectedPersona = selected.profile.persona; state.actualScopedCompanyId = scopedCompany.id;
     state.otherProfilePreserved = JSON.stringify(selected.profiles.birch) === JSON.stringify(state.otherProfile);
     state.onlyOwnedContextWritten = selected.contextPath === `${state.operatorDirectory}/context.json`;
     state.operatorUserId = identity.userId; state.identityIncludesSelectedCompany = identity.companyIds?.includes(ctx.input.fixtures.company.id) === true;
@@ -136,6 +140,8 @@ const context = privilegedDefinition("cli-operations.choose-cli-context", "privi
   }, grade: gradeChooseCliContext,
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
-context.sourceFiles = [...context.sourceFiles, "chat-catalog-domains/privileged-cli-support.ts", "../../cli/src/index.ts"];
+context.sourceFiles = [...context.sourceFiles, "chat-catalog-domains/privileged-cli-support.ts", "../../cli/src/index.ts",
+  "../../cli/src/commands/client/context.ts", "../../cli/src/commands/client/company.ts", "../../cli/src/commands/client/auth.ts", "../../cli/src/client/context.ts"];
+context.oracleVersion = "paperclip.chat-catalog.cli-context.v2";
 context.cleanup = cleanupOwnedCli;
 export const privilegedCliCases: ChatCatalogCase[] = [create, context];

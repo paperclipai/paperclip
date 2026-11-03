@@ -27,7 +27,7 @@ describe("returned CLI command admission", () => {
     expect(validContextGuidance(valid.replace("acorn", "birch"), target)).toBe(false);
     expect(validContextGuidance(command("paperclipai context use acorn"), target)).toBe(false);
     expect(validContextGuidance(command('export PAPERCLIP_COMPANY_ID="owned-company"\nnpx paperclipai board setup\necho "$PAPERCLIP_COMPANY_ID"'), target)).toBe(false);
-    expect(validContextGuidance(command("paperclipai context set --profile acorn --api-base <API_BASE> --company-id <COMPANY_ID> --use\npaperclipai context show"), target)).toBe(true);
+    expect(validContextGuidance(command("paperclipai context set --profile acorn --api-base <API_BASE> --company-id <COMPANY_ID> --use\npaperclipai context show"), target)).toBe(false);
   });
 });
 const base = { scenarioId: "cli", origin: target.apiBase, companyId: target.company, leadId: "lead", state: {}, projects: [], goals: [],
@@ -51,6 +51,7 @@ describe("CLI public-state oracles", () => {
   it("requires selected identity/company and preserves the other operator profile", () => {
     const o = { ...base, tasks: [], reply: command("paperclipai context use acorn\npaperclipai context show --json"),
       state: { initialProfile: "birch", finalProfile: "acorn", selectedCompanyId: target.company, selectedApiBase: target.apiBase,
+        selectedPersona: "board", actualScopedCompanyId: target.company, contextCommandsExecuted: true,
         otherProfilePreserved: true, onlyOwnedContextWritten: true, operatorUserId: "synthetic-person", identityIncludesSelectedCompany: true } };
     expect(gradeChooseCliContext(o).passed).toBe(true);
     for (const delta of [{ otherProfilePreserved: false }, { selectedCompanyId: "foreign" }, { identityIncludesSelectedCompany: false }, { onlyOwnedContextWritten: false }])
