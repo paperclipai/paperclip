@@ -398,6 +398,9 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       await page.getByRole("button", { name: "New Task", exact: true }).last().click();
       const dialog = page.getByRole("dialog");
       await dialog.getByRole("textbox", { name: "editable markdown" }).fill(prompt(nonce, markerCode, workload.prelude));
+      await dialog.getByRole("button", { name: "Select assignee", exact: true }).click();
+      await page.getByRole("listbox", { name: "Assignees", exact: true }).getByRole("option")
+        .filter({ has: page.getByText(caseAgents[0].name, { exact: true }) }).click();
       await expect(dialog.getByRole("button", { name: "Select assignee" })).toContainText(caseAgents[0].name);
       await dialog.getByRole("button", { name: "Create task", exact: true }).click();
       let issue: any;
