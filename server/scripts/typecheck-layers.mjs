@@ -34,7 +34,7 @@ import { runTsc } from "../../scripts/run-tsc.mjs";
 const IMPORT_SPECIFIER = /(?:from\s+|import\s*\(\s*|import\s+)["'](\.[^"']+)["']/g;
 const OUTPUT_DIRECTORY = path.join("node_modules", ".cache", "paperclip-typecheck");
 
-const isTestFile = (file) => /\.test\.tsx?$/.test(file) || file.split("/").includes("__tests__");
+export const isTestFile = (file) => /\.test\.tsx?$/.test(file) || file.split("/").includes("__tests__");
 // tsconfig.json excludes this tree. A test reaches its helpers through imports.
 const isExcludedFromProgram = (file) => file.startsWith("src/__tests__/");
 

@@ -1201,6 +1201,14 @@ Name a project to check only that project. `pnpm test:e2e:runner:typecheck` and
 available to the task is limited, add `--low-memory`, or set
 `PAPERCLIP_TYPECHECK_LOW_MEMORY=1` for the pnpm commands.
 
+The command fails if a project loads server source, because that is what makes
+these programs large. It does not limit memory. CI runs it with
+`--reuse-declarations` straight after the server typecheck, so it does not build
+the declarations again. Do not use that option when the declarations can be stale.
+
+Add each new test project that imports server source to `PROJECTS` in
+`scripts/typecheck-test-projects.mjs`.
+
 Keep the project references out of each project's `tsconfig.json`. Vitest reads
 that file, and it fails when a referenced config does not exist yet. The
 `tsconfig.json` files remain single programs for editors, and
