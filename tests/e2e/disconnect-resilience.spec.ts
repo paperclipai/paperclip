@@ -20,7 +20,7 @@ async function outage(page: Page) {
   const until = Date.now() + 20_000;
   let failures = 0;
   await page.route("**/api/**", async route => {
-    if (Date.now() >= until) return route.continue();
+    if (Date.now() >= until) return route.fallback();
     failures += 1;
     await route.fulfill({ status: 503, json: { error: "tenant_app_unavailable" } });
   });
