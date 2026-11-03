@@ -34,7 +34,8 @@ describe.skipIf(!requested)('actual managed fixture preflight (no browser, coold
         const pair = generateKeyPairSync('ed25519');
         const jwk = { ...pair.publicKey.export({ format: 'jwk' }), kid: 'managed-preflight', alg: 'EdDSA', use: 'sig' };
         const configuration = managedSleepConfiguration(origin, true);
-        const server = await startMaintenanceServer(databaseUrl!, managedSleepServerOptions(configuration, JSON.stringify({ keys: [jwk] }), s3Origin, broker));
+        const server = await startMaintenanceServer(databaseUrl!, { ...managedSleepServerOptions(configuration, JSON.stringify({ keys: [jwk] }), s3Origin, broker),
+          captureIdleWork: process.env.PAPERCLIP_SLEEP_MANAGED_PREFLIGHT_DIAGNOSTICS === '1' });
         const fixture = createDb(databaseUrl!, { maxConnections: 1 });
         const control = (action: string, idleCapabilities?: unknown) => {
           const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url'), now = Math.floor(Date.now() / 1000);

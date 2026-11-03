@@ -1,3 +1,4 @@
+import type { IdleWorkCaptureSnapshot } from './idle-work-capture.js';
 import { fork } from "node:child_process";
 import type { Server as HttpServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -44,6 +45,7 @@ export async function withMaintenanceProvider<T>(provider: HttpServer, run: (ori
 
 type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number;
   managed?: { isCloudManaged: boolean; deploymentMode: string; storageProvider: string; apiActivityActive: boolean };
+  workCapture?: IdleWorkCaptureSnapshot;
   announcement?: { intercepted: boolean; requests: string[]; unmatched: string[]; boundary: string } };
 
 export interface MaintenanceConfiguration {
@@ -62,10 +64,12 @@ export interface MaintenanceServerOptions {
   cloud?: { jwks: string; s3Origin: string; standby: boolean };
   configuration?: MaintenanceConfiguration;
   controlJwks?: string;
+  captureIdleWork?: boolean;
   tenantActor?: { userId: string; email: string; name: string };
 }
 export async function startMaintenanceServer(databaseUrl: string, options: MaintenanceServerOptions = {}) {
   const configuration = options.configuration;
+  if (options.captureIdleWork && options.clock) throw new Error("Passive setup diagnostics require the real clock");
   if (options.tenantActor && (!options.cloud || !configuration?.managedInstance || configuration.deploymentMode !== 'authenticated' || configuration.storageProvider !== 's3')) {
     throw new Error('Managed tenant fixture requires the supported authenticated S3 profile');
   }
@@ -123,10 +127,17 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       telemetry: { enabled: Boolean(configuration?.telemetryOrigin) }, updates: { checkEnabled: false },
     }), { mode: 0o600 });
     await new Promise<void>(resolve => reservation.close(() => resolve()));
+    const captureStartedAt = options.captureIdleWork ? Date.now() : undefined;
+    const captureSources = options.captureIdleWork ? new Map<number, string[]>() : undefined;
+    let settledDiagnosticId = 0;
     const child = fork(fileURLToPath(new URL("./server-child.ts", import.meta.url)), [], {
       cwd: fileURLToPath(new URL("../../../../..", import.meta.url)),
-      execArgv: [...(configuration?.announcements ? ['--experimental-test-module-mocks'] : []), "--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
+      execArgv: [...((configuration?.announcements || options.captureIdleWork) ? ['--experimental-test-module-mocks'] : []), "--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
       env: {
+        ...(captureStartedAt === undefined ? {} : {
+          PAPERCLIP_MAINTENANCE_IDLE_WORK_CAPTURE: '1',
+          PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW: `${new Date(captureStartedAt).toISOString()}/${new Date(captureStartedAt + 60_000).toISOString()}`,
+        }),
         PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
         PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
         PAPERCLIP_RUNNER_STATE_DIR: path.join(directory, "durable-sessions"),
@@ -191,8 +202,14 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       const id = ++requestId;
       const result = new Promise<T>((resolve, reject) => requests.set(id, { resolve, reject }));
       child.send({ id, command, ...payload });
-      try { return await withDeadline(result, 30_000, () => `Maintenance child ${command} timed out: ${output.slice(-8_000)}`); }
-      finally { requests.delete(id); }
+      try {
+        const value = await withDeadline(result, 30_000, () => `Maintenance child ${command} timed out: ${output.slice(-8_000)}`);
+        if (captureSources) {
+          const capture = (value as { workCapture?: IdleWorkCaptureSnapshot }).workCapture;
+          for (const source of capture?.newSources ?? []) captureSources.set(source.id, source.callers);
+        }
+        return value;
+      } finally { requests.delete(id); }
     }
     stopChild = async () => {
       try {
@@ -256,16 +273,33 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       freeze: () => request<Snapshot>("freeze"),
       get output() { return output; },
       async settled(quietMs = 500, deferredStartupHolds = 0) {
+        const diagnostic = options.captureIdleWork ? (await import('./idle-work-capture.js')).createSettledWorkSamples(
+          () => [...captureSources!].map(([id, callers]) => ({ id, callers }))) : undefined;
+        const diagnosticId = diagnostic ? ++settledDiagnosticId : undefined;
+        let failure: { error: unknown } | undefined;
         let previous = -1, quietSince = Date.now();
-        for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+        try {
+          for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+            const snapshot = await request<Snapshot>("snapshot");
+            diagnostic?.sample(snapshot, proxy.queries.length, proxy.pending);
+            if (proxy.errors.length) throw new AggregateError(proxy.errors, "PostgreSQL observer failed");
+            if (snapshot.idle.active !== deferredStartupHolds || proxy.pending !== 0 || proxy.queries.length !== previous) quietSince = Date.now();
+            previous = proxy.queries.length;
+            if (snapshot.idle.active === deferredStartupHolds && proxy.pending === 0 && Date.now() - quietSince >= quietMs) {
+              diagnostic?.assertComplete(); return snapshot;
+            }
+            await delay(25);
+          }
           const snapshot = await request<Snapshot>("snapshot");
-          if (proxy.errors.length) throw new AggregateError(proxy.errors, "PostgreSQL observer failed");
-          if (snapshot.idle.active !== deferredStartupHolds || proxy.pending !== 0 || proxy.queries.length !== previous) quietSince = Date.now();
-          previous = proxy.queries.length;
-          if (snapshot.idle.active === deferredStartupHolds && proxy.pending === 0 && Date.now() - quietSince >= quietMs) return snapshot;
-          await delay(25);
+          diagnostic?.sample(snapshot, proxy.queries.length, proxy.pending);
+          throw new Error(`Maintenance did not settle: ${JSON.stringify({ queries: proxy.queries.length, pending: proxy.pending, snapshot })}\n${output.slice(-12_000)}`);
+        } catch (error) { failure = { error }; throw error; }
+        finally {
+          if (diagnostic) {
+            try { await writeFile(path.join(directory, `idle-work-settled-samples-${diagnosticId}.json`), JSON.stringify(diagnostic.report(), null, 2)); }
+            catch (error) { if (failure) throw new AggregateError([failure.error, error], 'Original settling and passive evidence failed'); throw error; }
+          }
         }
-        throw new Error(`Maintenance did not settle: ${JSON.stringify({ queries: proxy.queries.length, pending: proxy.pending, snapshot: await request("snapshot") })}\n${output.slice(-12_000)}`);
       },
     };
   } catch (error) {
