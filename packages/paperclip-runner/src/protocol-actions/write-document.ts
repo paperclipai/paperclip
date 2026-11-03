@@ -1,3 +1,5 @@
+import { taskDocumentKeySchema } from "./task-document-key-schema.js";
+
 /** Canonical definition and documentation for `write_document`. */
 export const writeDocumentAction = {
   "id": "write_document",
@@ -90,12 +92,7 @@ export const writeDocumentAction = {
             "minLength": 1,
             "maxLength": 240
           },
-          "key": {
-            "type": "string",
-            "description": "Stable issue-document key.",
-            "minLength": 1,
-            "maxLength": 120
-          },
+          "key": taskDocumentKeySchema,
           "title": {
             "type": "string",
             "description": "Document title.",
@@ -210,10 +207,7 @@ export const writeDocumentAction = {
       "inputSchema": {
         "type": "object",
         "properties": {
-          "key": {
-            "type": "string",
-            "minLength": 1
-          },
+          "key": taskDocumentKeySchema,
           "title": {
             "type": "string",
             "minLength": 1
