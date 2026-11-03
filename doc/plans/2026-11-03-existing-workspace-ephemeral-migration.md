@@ -45,3 +45,27 @@ yet make the whole tenant eligible for enrollment.
   bindings, archived sources, overlap/writer races, and unavailable sources.
 - Unrelated tenants, production services, and agent task execution remain outside
   the migration's mutation scope.
+
+## Legacy recovery storage transition
+
+The migration owner must distinguish file location from recovery completion.
+An offline import can preserve a terminal failed run's local workspace without
+claiming that its remote files were recovered. The snapshot and migration
+receipt bind the original run and sync descriptor; the failed run, provider
+allocation, recovery action, and unresolved state stay recorded.
+
+After publication, the native sync owner must reject copyback to the old local
+folder. Explicit recovery still validates the exact provider allocation and
+stop evidence, then preserves remote files as an immutable recovery attachment
+instead of merging into retired local authority. New remote allocations attach
+those verified recovery copies through the existing attachment owner. Missing
+or ambiguous remote sources remain unresolved; migration never authorizes
+replaying the old agent turn or destroying its allocation.
+
+Publication requires the offline deployment fence, terminal unowned runs,
+unchanged descriptors and task bindings, verified local snapshot bytes, and a
+single transaction publishing the migration receipt and remote authority.
+Controller leases, in-flight recovery, active writers, and uncertain workspace
+operations remain blockers. Tests must prove migration leaves failure state
+intact, rejects stale copyback even if the old folder exists, and preserves
+recovery source validation and company boundaries.

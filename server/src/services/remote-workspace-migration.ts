@@ -17,7 +17,9 @@ import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-rete
 import { materializeTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, validateTaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
 import { inspectArchivedGitMigrationSource, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
-import { prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
+import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { isLegacyWorkspaceTaskRelated, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
+import { offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -46,7 +48,8 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   const marker = object(workspace.metadata?.remoteWorkspaceMigration);
   const allowedOperation = input.operationId ?? (marker.schema === SCHEMA && typeof marker.operationId === "string" ? marker.operationId : undefined);
   const reasons: string[] = [];
-  if (authority) return { workspace, reasons, authority, marker, source: authority.source, issueBinding: null, retainedDirectory: null, archivedGitSource: null };
+  if (authority) return { workspace, reasons, authority, marker, source: authority.source, issueBinding: null, retainedDirectory: null, archivedGitSource: null, legacyRecoverySources: [] as LegacyWorkspaceRecoverySource[] };
+  if (input.writersStopped) reasons.push(...await offlineWorkspaceMigrationBlockers(db));
   if (!["local_fs", "git_worktree"].includes(workspace.providerType)) reasons.push("workspace_provider_unsupported");
   if (!["active", "idle", "in_review", "archived"].includes(workspace.status)) reasons.push("workspace_not_active");
   if (!workspace.sourceIssueId) reasons.push("task_binding_required");
@@ -96,11 +99,25 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       or ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId' = ${workspace.id})`,
   )).limit(1);
   if (run) reasons.push("active_execution");
-  const [unexported] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, workspace.companyId),
+  const unexported = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
+    issueId: heartbeatRuns.nativeIssueId, controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+    reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, workspace.companyId),
     sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId' = ${workspace.id}`,
     sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'`,
-  )).limit(1);
-  if (unexported) reasons.push("remote_copyback_unresolved");
+  ));
+  const legacyRecoverySources: LegacyWorkspaceRecoverySource[] = [];
+  for (const run of unexported.sort((a, b) => a.id.localeCompare(b.id))) {
+    const reference = readNativeWorkspaceSyncReference(run.reference);
+    const [owner] = await db.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner })
+      .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, workspace.companyId), eq(nativeRunFinalizations.runId, run.id)));
+    if (!input.writersStopped || !reference || run.runtimeMode !== "native" || !run.issueId
+      || !await isLegacyWorkspaceTaskRelated(db, { companyId: workspace.companyId, issueId: run.issueId, sourceIssueId: workspace.sourceIssueId })
+      || !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status)
+      || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()
+      || !owner || owner.leaseOwner || !["committed", "terminal_failure"].includes(owner.phase)) reasons.push("remote_copyback_unresolved");
+    else legacyRecoverySources.push({ runId: run.id, issueId: run.issueId, reference });
+  }
   const [finalization] = workspace.sourceIssueId ? await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, workspace.companyId), eq(nativeRunFinalizations.issueId, workspace.sourceIssueId),
     sql`${nativeRunFinalizations.phase} not in ('committed', 'terminal_failure')`,
@@ -129,11 +146,14 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     ) : undefined),
   )).limit(1);
   if (service) reasons.push("workspace_runtime_service_unsettled");
-  const [recovery] = workspace.sourceIssueId ? await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, workspace.companyId), eq(issueRecoveryActions.sourceIssueId, workspace.sourceIssueId),
+  const recoveryIssueIds = [...new Set([workspace.sourceIssueId, ...legacyRecoverySources.map(source => source.issueId)].filter((id): id is string => Boolean(id)))];
+  const recoveries = recoveryIssueIds.length ? await db.select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, workspace.companyId), inArray(issueRecoveryActions.sourceIssueId, recoveryIssueIds),
     inArray(issueRecoveryActions.status, ["active", "escalated"]),
-  )).limit(1) : [];
-  if (recovery) reasons.push("workspace_recovery_unresolved");
+  )) : [];
+  if (recoveries.some(recovery => !input.writersStopped
+    || !legacyRecoverySources.some(source => source.runId === recovery.evidence?.runId)
+    || (recovery.evidence?.systemRecovery as { state?: unknown } | undefined)?.state === "running")) reasons.push("workspace_recovery_unresolved");
   const repositories = await db.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.companyId, workspace.companyId),
     eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id)));
   if (repositories.some(repository => repository.state !== "ready")) reasons.push("repository_preparation_unresolved");
@@ -141,7 +161,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     ref: archivedGitSource?.commit ?? workspace.baseRef, branchName: workspace.branchName } : { kind: "empty" };
   if (repositories.length) source.repositories = repositories.map(repository => ({ id: repository.id, relativePath: repository.relativePath,
     repoUrl: repository.repoUrl, ref: repository.requestedRef, ...(repository.pinnedCommit ? { pinnedCommit: repository.pinnedCommit } : {}) }));
-  return { workspace, reasons: [...new Set(reasons)], authority, marker, source, issueBinding: issue?.executionWorkspaceId ?? null, retainedDirectory, archivedGitSource };
+  return { workspace, reasons: [...new Set(reasons)], authority, marker, source, issueBinding: issue?.executionWorkspaceId ?? null, retainedDirectory, archivedGitSource, legacyRecoverySources };
 }
 
 export async function inventoryRemoteWorkspaceMigration(db: Db, input: { companyId: string; workspaceId: string; writersStopped?: boolean }) {
@@ -164,7 +184,7 @@ export async function migrateRemoteWorkspace(input: {
       if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
       if (workspace.sourceIssueId) await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, workspace.companyId), eq(issues.id, workspace.sourceIssueId))).for("update");
       const current = await inspect(tx as unknown as Db, input);
-      if (current.authority) return { workspace, authority: current.authority, operation: null, source: current.source, sourceFingerprint: "", issueBinding: current.issueBinding, retainedDirectory: null, archivedGitSource: null };
+      if (current.authority) return { workspace, authority: current.authority, operation: null, source: current.source, sourceFingerprint: "", issueBinding: current.issueBinding, retainedDirectory: null, archivedGitSource: null, legacyRecoverySources: [] as LegacyWorkspaceRecoverySource[] };
       if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);
       const source = remoteWorkspaceSourceSchema.parse(input.source ?? current.source);
       const sourceFingerprint = fingerprint(workspace);
@@ -181,12 +201,14 @@ export async function migrateRemoteWorkspace(input: {
         if (issueBinding !== current.issueBinding) throw new Error("remote_workspace_migration_source_changed");
         if (Boolean(operation.metadata?.retainedDirectory) !== Boolean(current.retainedDirectory)) throw new Error("remote_workspace_migration_source_changed");
         if (canonical(operation.metadata?.archivedGitSource ?? null) !== canonical(gitSourceProof(current.archivedGitSource))) throw new Error("remote_workspace_migration_source_changed");
-        return { workspace, authority: null, operation, source, sourceFingerprint, issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource };
+        if (canonical(operation.metadata?.legacyRecoverySources ?? []) !== canonical(current.legacyRecoverySources)) throw new Error("remote_workspace_migration_source_changed");
+        return { workspace, authority: null, operation, source, sourceFingerprint, issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource, legacyRecoverySources: current.legacyRecoverySources };
       }
       const [operation] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
         issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
         metadata: { schema: SCHEMA, sourceFingerprint, source, sourceIssueBinding: current.issueBinding,
           nestedWorkspaceScope: { version: 1, state: "pending" },
+          ...(current.legacyRecoverySources.length ? { legacyRecoverySources: current.legacyRecoverySources } : {}),
           ...(current.archivedGitSource ? { archivedGitSource: gitSourceProof(current.archivedGitSource) } : {}),
           ...(current.retainedDirectory ? { retainedDirectory: { restorePointId: current.retainedDirectory.restorePoint.id,
             generation: current.retainedDirectory.generation, digest: current.retainedDirectory.restorePoint.digest } } : {}) } }).returning();
@@ -194,7 +216,7 @@ export async function migrateRemoteWorkspace(input: {
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspaceMigration: {
         schema: SCHEMA, operationId: operation!.id, state: "running", sourceFingerprint, source,
       } }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id));
-      return { workspace, authority: null, operation: operation!, source, sourceFingerprint, issueBinding: current.issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource };
+      return { workspace, authority: null, operation: operation!, source, sourceFingerprint, issueBinding: current.issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource, legacyRecoverySources: current.legacyRecoverySources };
     });
     if (reserved.authority) return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: true, replayed: true };
     let operation = reserved.operation!;
@@ -245,6 +267,8 @@ export async function migrateRemoteWorkspace(input: {
       input.signal?.throwIfAborted();
       await lock.execute(sql`select 1`);
       const publication = await input.db.transaction(async tx => {
+        for (const source of reserved.legacyRecoverySources) await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, source.runId))).for("update");
         const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
         if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
         const existing = readRemoteWorkspaceAuthority(workspace.metadata);
@@ -268,9 +292,15 @@ export async function migrateRemoteWorkspace(input: {
           if (!saved || !["committed", "superseded"].includes(saved.status) || saved.manifestDigest !== child.manifestDigest
             || saved.sourceOperationId !== child.operationId) throw new Error("nested_workspace_snapshot_changed");
         }
+        if (canonical(validation.legacyRecoverySources) !== canonical(reserved.legacyRecoverySources)) throw new Error("remote_workspace_migration_source_changed");
         const authority: RemoteWorkspaceAuthority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: ref.id,
           source: reserved.source, location: null, writerRunId: null, dirty: false };
         const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: authority }; delete metadata.remoteWorkspaceMigration;
+        if (reserved.legacyRecoverySources.length) {
+          metadata.legacyWorkspaceRecoveryMigration = { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION, operationId: operation.id };
+          const prior = Array.isArray(metadata.remoteWorkspaceRecoverySourceRunIds) ? metadata.remoteWorkspaceRecoverySourceRunIds : [];
+          metadata.remoteWorkspaceRecoverySourceRunIds = [...new Set([...prior, ...reserved.legacyRecoverySources.map(source => source.runId)])];
+        }
         await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
         await tx.update(executionWorkspaceSnapshots).set({ status: "committed", deleteAfter: null,
           metadata: { ...uploaded.metadata, ...(nested.length ? { importedWorkspaceChildren: nested } : {}) },

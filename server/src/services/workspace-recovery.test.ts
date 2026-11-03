@@ -33,6 +33,7 @@ import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspac
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { getStorageService } from "../storage/index.js";
+import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries, historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
 import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
@@ -193,6 +194,43 @@ describe("automatic retained workspace recovery", () => {
   }
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+
+  it.each([false, true])("preserves an old sandbox after storage migration without writing its old host (removed=%s)", async removeHost => {
+    const f = await seed();
+    // The fixture's command runner supports native copyback; the provider
+    // snapshot boundary separately needs its real-file syncOut capability.
+    targets.get(f.lease.id)!.runner!.syncIn = async operations => {
+      for (const operation of operations) for (const file of operation.files)
+        await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
+      return { filesTransferred: 2, bytesTransferred: 0, operations: [] };
+    };
+    targets.get(f.lease.id)!.runner!.syncOut = async operations => {
+      for (const operation of operations) for (const file of operation.files)
+        await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
+      return { filesTransferred: 2, bytesTransferred: 0, operations: [] };
+    };
+    await db.insert(executionWorkspaces).values({ id: f.issueId, companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Existing files", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.host });
+    await db.update(issues).set({ executionWorkspaceId: f.issueId }).where(eq(issues.id, f.issueId));
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    try {
+      await migrateRemoteWorkspace({ db, storage: getStorageService(), companyId: f.companyId,
+        workspaceId: f.issueId, apply: true, writersStopped: true });
+      if (removeHost) await rm(f.host, { recursive: true });
+      await requestWorkspaceRecovery({ ...f, idempotencyKey: randomUUID(), actorId: "board" });
+      await recoverRetainedWorkspace(f.input);
+      expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+      expect(await readFile(path.join(f.host, "saved.txt")).catch(() => null)).toBeNull();
+      expect(await run(f.runId)).toMatchObject({ status: "failed", runnerProfileJson: { nativeWorkspaceSync: { state: "prepared" } } });
+      const restored = path.join(root, randomUUID()); await mkdir(restored);
+      const copies = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+        sourceRunIds: [f.runId], cwd: restored });
+      expect(copies).toHaveLength(1);
+      expect(await readFile(path.join(copies[0]!.path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    } finally { vi.unstubAllEnvs(); }
+  }, 30_000);
 
   function boardRecoveryApp() {
     const app = express();
