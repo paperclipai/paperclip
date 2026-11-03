@@ -52,6 +52,9 @@ Slack user, workspace, and manager app. Another company member must authorize th
 own account, even for the same workspace. Access and rotating refresh tokens are
 user-scoped vault entries. Refreshes serialize across connections, persist the new
 refresh token, and require fresh authorization after an ambiguous exchange.
+Managed provisioning resolves the submitted grant from the Slack manager-grant
+registry. Both provisioning and revocation check its company and current user;
+these IDs are separate from tool-connection grants.
 
 Revoking a grant requests provider revocation, removes its local credentials, invalidates pending manager
 authorization, and prevents future provisioning with it. The local activity records whether provider revocation succeeded. Provider errors never restore local access. It does not uninstall
