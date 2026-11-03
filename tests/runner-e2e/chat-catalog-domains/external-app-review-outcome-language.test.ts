@@ -23,6 +23,7 @@ it.each([
   "You declined. The draft was saved (in this chat) for your review.",
   "You declined. Nothing was saved, except a draft in this chat for your review.",
   "You declined. In this chat, nothing was saved, except a draft for your review.",
+  "You declined. Nothing was saved, except a draft saved locally for your review.",
   "Nothing was changed. You declined; you can approve a future request.",
   "You declined. If you would like the draft saved locally for your review applied, approve a new request.",
 ])("accepts a truthful declined outcome: %s", reply => {
@@ -72,19 +73,31 @@ it("still requires an actual rejection statement", () => {
 });
 
 const negations = ["No changes were saved", "Nothing was added or saved", "I applied no changes"];
-const exceptionScopes = [
-  { object: "a draft in this chat for your review", accepted: true },
-  { object: "a draft in the notes app for your review", accepted: false },
-  { object: "a draft for your review", accepted: false },
+const exceptionForms = [
+  { form: "direct", local: "a draft in this chat for your review", external: "a draft in the notes app for your review", unknown: "a draft for your review" },
+  { form: "participle", local: "a draft saved locally for your review", external: "a draft saved in the notes app for your review", unknown: "a draft saved for your review" },
+  { form: "relative", local: "a draft I have saved in this chat for your review", external: "a draft I have saved in the notes app for your review", unknown: "a draft I have saved for your review" },
+  { form: "auxiliary", local: "a draft that was written in this response for your review", external: "a draft that was written in the notes app for your review", unknown: "a draft that was written for your review" },
 ];
+const exceptionScopes = exceptionForms.flatMap(form => (["local", "external", "unknown"] as const).map(scope => ({ form: form.form, object: form[scope], accepted: scope === "local" })));
 it.each(negations.flatMap(negation => exceptionScopes.map(scope => ({ negation, ...scope }))))(
-  "scopes $negation to the actual exception: $object", ({ negation, object, accepted }) => {
+  "scopes $negation to the $form exception: $object", ({ negation, object, accepted }) => {
     expect(reviewOutcomeReply(`You declined. ${negation}, except ${object}.`, "rejected")).toBe(accepted);
   },
 );
-it.each(negations)("does not stop scanning after the local exception to %s", negation => {
-  expect(reviewOutcomeReply(`You declined. ${negation}, except a draft in this chat for your review. I already applied the update in the notes app.`, "rejected")).toBe(false);
-});
+it.each(negations.flatMap(negation => exceptionForms.map(form => ({ negation, object: form.local }))))(
+  "does not stop scanning after $negation except $object", ({ negation, object }) => {
+    expect(reviewOutcomeReply(`You declined. ${negation}, except ${object}. I already applied the update in the notes app.`, "rejected")).toBe(false);
+  },
+);
 it("rejects a local-looking exception that also names an external saved destination", () => {
   expect(reviewOutcomeReply("You declined. Nothing was saved, except a draft in this chat for your review in the notes app.", "rejected")).toBe(false);
+});
+
+it.each([
+  "You declined. Nothing was saved, except a draft saved locally for your review in the notes app.",
+  "You declined. Nothing was saved, except a draft that I have saved in the notes app for your review.",
+  "You declined. Nothing was saved, except a draft I already applied in the notes app for your review.",
+])("rejects a mixed or nested external exception: %s", reply => {
+  expect(reviewOutcomeReply(reply, "rejected")).toBe(false);
 });

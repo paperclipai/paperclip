@@ -16,20 +16,37 @@ function reviewProposalLocation(before: string, after: string, prior: string) {
   return { external, local: localPrefix || localSuffix };
 }
 
+const proposalSubjectGrammar = "(?:proposal|draft)s?(?:\\s+(?:that|which))?\\s+(?:(?:i|we)\\s+)?(?:(?:was|were|is|are|have|has|had|been|already|just|locally)\\s+)*";
+const proposalSubject = new RegExp(`\\b${proposalSubjectGrammar}$`, "i");
+const boundedProposalSubject = new RegExp(`^\\s+(?:(?:a|the|your|our)\\s+)?${proposalSubjectGrammar}$`, "i");
+const authorshipVerb = /^(?:saved|written|wrote)$/i;
+
+function reviewProposalObject(object: string, prior: string, outerBefore: string) {
+  const location = reviewProposalLocation(outerBefore, object, prior);
+  if (proposalObjectSuffix.test(object)) return { recognized: true, ...location };
+  for (const match of object.matchAll(completion)) {
+    const before = object.slice(0, match.index!), after = object.slice(match.index! + match[0].length);
+    if (authorshipVerb.test(match[0]) && boundedProposalSubject.test(before) && reviewSuffix.test(after)) {
+      const described = reviewProposalLocation(before, after, prior);
+      return { recognized: true, external: location.external || described.external, local: location.local || described.local };
+    }
+  }
+  return { recognized: false, ...location };
+}
+
 function localProposalAuthorship(before: string, verb: string, after: string, prior: string) {
   const location = reviewProposalLocation(before, after, prior);
-  if (location.external || !/^(?:saved|written|wrote)$/i.test(verb)) return false;
-  if (/^saved$/i.test(verb) && !location.local) return false;
-  const proposalSubject = /\b(?:proposal|draft)s?(?:\s+(?:that|which))?\s+(?:(?:i|we)\s+)?(?:(?:was|were|is|are|have|has|had|been|already|just|locally)\s+)*$/i.test(before);
-  return (proposalSubject && reviewSuffix.test(after)) || proposalObjectSuffix.test(after);
+  if (location.external || !authorshipVerb.test(verb)) return false;
+  const object = reviewProposalObject(after, prior, before);
+  if (/^saved$/i.test(verb) && !location.local && !(object.recognized && object.local && !object.external)) return false;
+  return (proposalSubject.test(before) && reviewSuffix.test(after)) || (object.recognized && !object.external);
 }
 
 function localReviewException(before: string, after: string, prior: string) {
   const exception = /\bexcept\b/i.exec(after);
   if (!exception) return false;
-  const object = after.slice(exception.index + exception[0].length);
-  const location = reviewProposalLocation(before, object, prior);
-  return !location.external && location.local && proposalObjectSuffix.test(object);
+  const object = reviewProposalObject(after.slice(exception.index + exception[0].length), prior, before);
+  return object.recognized && !object.external && object.local;
 }
 
 function claimsExternalCompletion(reply: string) {
