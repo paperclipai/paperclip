@@ -919,17 +919,28 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await preserveRemoteWorkspacePreparationFailure(db, prepared.lease)).toBeNull();
   }, 60_000);
 
-  it("records and retries export cleanup after a lost reply without another upload", async () => {
+  it.each([
+    ["a lost reply", "remote_workspace_export_cleanup_failed"],
+    ["a timeout", "remote_workspace_operation_timed_out: cleanup (configured timeout 10000ms)"],
+    ["an untrusted error", "remote_workspace_export_cleanup_failed"],
+  ] as const)("records and retries export cleanup after %s without another upload", async (failure, diagnostic) => {
     const reserved = await reserve({ kind: "empty" }), first = await target("cleanup-sandbox");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
     await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "keep working files\n");
     const sandbox = first as Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
     const execute = sandbox.runner!.execute.bind(sandbox.runner!);
-    let lost = false;
+    let lost = false, cleanupAttempts = 0;
     sandbox.runner!.execute = async input => {
       const result = await execute(input);
-      if (!lost && input.args?.[1]?.includes("remote_workspace_export_cleanup_failed") && result.exitCode === 0) {
-        lost = true; throw new Error("lost cleanup reply");
+      if (input.args?.[1]?.includes("remote_workspace_export_cleanup_failed") && result.exitCode === 0) {
+        cleanupAttempts++;
+        if (lost) return result;
+        lost = true;
+        if (failure === "a timeout") return { ...result, timedOut: true,
+          stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "SYNTHETIC_PRIVATE_STDERR" };
+        throw new Error(failure === "an untrusted error"
+          ? "remote_workspace_operation_timed_out: cleanup (configured timeout 10000ms)\nSYNTHETIC_PRIVATE_STDERR"
+          : "lost cleanup reply");
       }
       return result;
     };
@@ -940,11 +951,13 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const [before] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, ids.run),
       eq(workspaceOperations.phase, "remote_workspace_snapshot"), eq(workspaceOperations.status, "succeeded"),
       eq(workspaceOperations.id, (await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, saved.snapshotId)))[0]!.sourceOperationId)));
-    expect(before?.metadata?.exportCleanup).toMatchObject({ state: "pending", lastError: "remote_workspace_export_cleanup_failed" });
+    expect(before?.metadata?.exportCleanup).toMatchObject({ state: "pending", lastError: diagnostic });
+    expect(cleanupAttempts).toBe(1);
     expect(await saveRemoteWorkspace(input)).toMatchObject({ snapshotId: saved.snapshotId, generation: saved.generation });
     expect(upload).toHaveBeenCalledOnce();
     const [after] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, before!.id));
     expect(after?.metadata?.exportCleanup).toMatchObject({ state: "cleaned", lastError: null });
+    expect(cleanupAttempts).toBe(2);
     expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("keep working files\n");
   }, 60_000);
 
