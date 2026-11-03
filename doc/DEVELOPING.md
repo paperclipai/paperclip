@@ -355,9 +355,15 @@ supported reruns still use them.
 
 General server shards run at most two test files at a time in separate Vitest
 forks. Each file retains its own home, config and process state, and its test
-cases run serially. An explicit `PAPERCLIP_TEST_DATABASE_URL` keeps those shards
-serial because the database is shared. Unsharded local tests, route/authz lanes,
-and native Runner lanes retain their existing concurrency. Sharded chat jobs run
+cases run serially. An explicit `PAPERCLIP_*_TEST_DATABASE_URL`, including
+`PAPERCLIP_TEST_DATABASE_URL`, keeps those shards serial because the database
+is shared. Native Runner suites also use two isolated file workers. Their long
+lease, preparation, disk-loss and checkpoint tests have separate files so real
+observation windows can overlap. Issue recovery suites split by producer and
+recovery behavior for the same reason. Unsharded local tests and route/authz
+lanes retain their existing file concurrency. Maintenance server cases overlap
+two owned server/database fixtures within their file; an explicit shared
+maintenance database keeps them serial. Sharded chat jobs run
 two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
@@ -1052,8 +1058,55 @@ For normal issue work, start with the smallest targeted check that proves the ch
 
 #### Embedded Postgres template cache
 
+To run the suite with one owned PostgreSQL server and a separate disposable
+database for each fixture, use:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts -- pnpm exec vitest run --project @paperclipai/db
+```
+
+The command starts an embedded server, prepares a migrated database template,
+passes it to the child command, and waits for server shutdown before returning.
+It preserves the child command's exit status. On cancellation it stops and waits
+for the test process group before shutting down PostgreSQL. Database, server,
+and CLI fixtures all use the common implementation. Tests of embedded startup itself continue to
+start dedicated clusters.
+
+To reuse a disposable server that you already manage, set
+`PAPERCLIP_TEST_POSTGRES_ADMIN_URL` to its administrative PostgreSQL URL. The role
+must be able to create databases. Each fixture creates a random database and
+closes only its clients before dropping it. It never stops the external server.
+`DATABASE_URL` does not select this test path. The optional
+`PAPERCLIP_TEST_POSTGRES_TEMPLATE` can name an existing migrated database with
+the form `paperclip_test_template_<hex>`; `0` disables template reuse.
+
+On a supported platform, PostgreSQL startup failures fail test collection.
+Resource exhaustion, unavailable configured servers, and broken native binaries
+do not make integration tests skip. A genuinely unsupported platform or CPU can
+still skip embedded PostgreSQL coverage. Startup retries apply only to port
+collisions. Teardown waits for process exit, requests fast shutdown first, and
+uses immediate PostgreSQL shutdown if needed. A failed stop fails the hook and
+retains its data directory. Worker termination also requests owned server
+shutdown. A forced `SIGKILL` can bypass these handlers; the separate host cleanup
+job remains the backstop for stale macOS semaphore sets.
+Database and CLI hooks use the same 30-second deadline as server hooks. This
+allows the ten-second shutdown protocol and client/database cleanup to finish
+before the test runner ends a worker. A shutdown timeout still fails the hook.
+Template publication uses `pg_ctl` to request clean fast shutdown on every
+supported platform and allows thirty seconds for it. A template is never
+published after immediate shutdown or a crash. Cancelling the shared-server
+command also waits for its owned cluster-directory cleanup after the test
+processes and PostgreSQL exit. Direct worker termination stops PostgreSQL but
+retains its disposable files for inspection; the synchronous exit guard cannot
+await directory removal.
+Stopped cluster directories are removed asynchronously, and cleanup awaits their
+removal. Large suites can leave many relation files; deleting them must not block
+the worker's event loop. The idle-sleep suite uses the existing 90-second fixture
+budget for its final directory cleanup after hundreds of table truncations.
+
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
-get their own embedded Postgres cluster. The first such suite on a host builds
+without an administrative URL get their own embedded Postgres cluster. The first such suite on a host builds
 one fully migrated cluster and publishes its data directory under
 `$TMPDIR/paperclip-embedded-postgres-templates-<uid>/<key>`. Every later suite
 copies that template and starts Postgres on the copy instead of running
@@ -1628,6 +1681,115 @@ These are prerequisites for shared storage and secrets. They do not establish
 that the whole web server is disposable or that all execution and recovery paths
 survive web-server replacement. Run-log/trace storage and producer retention are
 separate changes.
+
+### Experimental native remote workspace storage
+
+`experimental.remoteWorkspaceStorageEnabled` is a managed feature, on by default
+for Cloud and self-hosted instances. New Paperclip Runner sandbox workspaces
+enroll automatically when durable storage is configured and the fresh source is
+supported. Existing host workspaces and configured local folders retain their
+legacy behavior until explicitly imported; the default does not convert them.
+The local, SSH, and plugin environment drivers, legacy adapters, and Dot keep
+their existing paths.
+An explicit stored `false` disables new enrollment, and a managed setting takes
+precedence over the stored choice. Enrolled workspaces retain remote authority
+when enrollment is disabled; losing a storage prerequisite fails their admission
+instead of falling back to a controller checkout.
+
+After enrollment, roll back only to binaries that understand the same remote
+workspace authority and saved-version format. Older local-only binaries are
+unsupported rollback targets.
+
+This mode requires an external PostgreSQL `DATABASE_URL`, configured S3 storage,
+and the same encryption master key on every replacement server. The managed
+profile requires `PAPERCLIP_SECRETS_MASTER_KEY` as described above. Self-hosted
+instances may instead preserve their existing configured
+`PAPERCLIP_SECRETS_MASTER_KEY_FILE` across replacements. An embedded database,
+local-disk object storage, or a newly generated replacement key cannot provide
+this durability contract. New workspaces continue through the legacy path when
+these prerequisites are absent. Validate S3 put/read/delete and database access
+with the deployment credentials before enrollment.
+Snapshot expiry also needs `s3:ListBucketVersions` on the bucket and
+`s3:DeleteObjectVersion` on the snapshot object prefix. S3-compatible endpoints
+must support version listing. Retention verifies that every version and delete
+marker is gone. Denied permissions and object locks keep a retry obligation.
+
+The sandbox holds current working files. PostgreSQL records its location,
+writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.
+S3 multipart uploads stream up to four parts concurrently. One producer reads
+the source in order, and bounded stream buffers preserve backpressure. Failed
+uploads cancel and settle their active requests before multipart cleanup.
+Snapshot publication still requires full object hash and size verification.
+Preparation creates a saved baseline, and native finalization saves the stopped
+writer's files before releasing its persistence obligation. Replacing a
+webserver reconnects to the recorded allocation without copying files back to
+a controller checkout. Saved versions restore in a new sandbox without the old
+host, sandbox, or Git remote. Files changed since the last save still depend on
+the live sandbox: losing that allocation can lose those edits. There is no
+periodic workspace backup in this release.
+
+Files reads use the current committed saved version when remote authority is
+clean and has no active writer, even while its old allocation remains recorded.
+The saved loader verifies the company, workspace, snapshot, and archive before
+reading. Dirty or writer-owned authority uses the live allocation and cannot
+substitute an older save if that allocation is unavailable. A saved read permits
+cleanup to clear its recorded allocation while the epoch, snapshot, source,
+clean state, and absent writer stay identical. A new or reintroduced allocation
+still invalidates that read. Live reads retain the full allocation fence, and
+private saved-file copies are removed after use.
+Embedders that omit the optional saved-file loader keep valid live reads. They
+still report unavailability when neither a live location nor a loader exists.
+
+Existing local task workspaces require an explicit import. Run from a source
+checkout with the deployment's database, S3, and key configuration loaded:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --dry-run
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --apply
+```
+
+Dry-run is the default and reports eligibility and blocking reasons without
+importing. Apply retains the source folder, uploads an encrypted snapshot,
+independently restores it for verification, rechecks source/writer state, and
+atomically activates remote authority. Active execution, unresolved operations
+or recovery, unsafe paths, and explicitly concurrent shared writers block
+import. An interrupted apply retains its journal and admission hold; retry the
+same command to reconcile it before starting another writer.
+
+Supported sources include empty task folders, repository URLs, and managed
+mutable repositories from the same project. Configured local folders use the
+legacy path until imported. V1 rejects read-only cross-project referenced folders
+and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
+and runtime commands are also rejected before any local directory access; run
+those commands through an agent task. One writer owns each logical
+workspace; separate workspaces can run concurrently. The Files panel identifies
+**Live workspace** and **Saved copy** with its save time. An unavailable dirty
+allocation is not silently replaced with an older saved copy.
+
+A child or follow-up task can use a remote workspace inherited through its
+persisted task binding, including an isolated workspace or operator branch.
+Reservation checks current task/run access and all retained workspace sources.
+The original `sourceIssueId` remains provenance; it does not prevent authorized
+bound tasks from continuing saved work. Explicitly selected roots follow the
+same binding contract and the filesystem access boundary below. Task-assignment
+grants are not filesystem permissions. The single-writer fence still applies.
+If reservation finds a current running writer, the bound task uses the existing
+workspace wait and scheduled retry path, including for isolated workspaces and
+operator branches. Reservation does not acquire another allocation or change
+the writer's saved files. A stale writer or a stopped writer with unfinished
+saves still requires reconciliation; contention retries cannot clear that fence.
+The wait retains the run's admitted assignment role so reassignment during
+preparation cannot resume the former assignee through the guest-run path.
+
+Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
+for storage, import, retention, and lifecycle regression checks. These checks do
+not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
+the existing persistent volume until the other instance data paths and deploy
+handoff are separately qualified. See the
+[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
+and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 
@@ -2529,6 +2691,16 @@ connections, including provider-native tools. Company permissions, approval
 gates, and workspace isolation still apply. Explicit restrictive modes remain
 restrictive; omitted settings use full auto.
 
+Assigned app tools can use `paperclip_search_assigned_tools` and
+`paperclip_call_assigned_tool` instead of direct tool definitions. Search with
+`{"query":"github"}` and call an exact returned tool name. Omitted, empty or
+whitespace-only `schemaTool` values perform normal discovery, including when
+`schemaOffset` is zero. To read a large schema, set `schemaTool` to the exact
+`inputSchemaRef` from discovery and follow `nextSchemaOffset`. A positive
+`schemaOffset` requires a nonblank reference. Unknown or revoked references
+return guidance to search again; discovery still checks current grants and work
+modes against the session's pinned catalog.
+
 Test questions, saved plan revisions, approval before task handoff, status
 lookups, and `/new` preserving chat history. Hiring additionally requires the
 operator-controlled [runner API tools](runner-api-tools.md) rollout; enabling
@@ -2846,8 +3018,22 @@ identity mismatches.
 Native task-session publication is part of the terminal checkpoint transaction,
 not resource cleanup. `native-task-session-publication.ts` owns its accepted-result,
 owner, task-epoch and reset checks; heartbeat supplies prepared session metadata.
+The goal projection also advances its source epoch when a fresh native session
+holds the task's current execution lock and assignee. The predecessor must be
+terminal, and its saved goal must be absent or complete. This lets the accepted
+checkpoint publish the fresh session as the next continuation baseline. A
+different session without current task authority, an unfinished or unreadable
+goal, a reset conversation, and delayed predecessor events retain their fences.
 The goal-less regression in `native-session-resumption.test.ts` holds provider
 cleanup open and then exercises a normal follow-up and an explicit session reset.
+Its fresh-session case keeps the prior task-session row, opens one new provider
+session, and verifies that the following ordinary comment resumes that session.
+The opt-in `native-session-epoch.live.test.ts` runs the same path with an existing
+Codex login and a built native Runner. It uses warm mode, makes three model calls,
+checks exact file contents and provider-thread reuse, and removes its temporary
+credential copy and workspace. Run it with
+`PAPERCLIP_LIVE_SESSION_EPOCH=true pnpm exec vitest run server/src/services/native-runtime/native-session-epoch.live.test.ts`.
+`PAPERCLIP_LIVE_EVIDENCE_PATH` can select a JSON evidence file outside the fixture.
 Control-port tests also cover terminal snapshots before accepted results and
 result-replay contention with the status writer's coordinator-first lock order.
 Remote adoption tests must invoke actual external-state preparation. Inspecting
@@ -3611,29 +3797,54 @@ cleanup validation still inspect current Git state; neither uses a display resul
 to authorize removal.
 
 The terminal-workspace reaper uses the database work coordinator. Startup scans
-recover existing workspace rows in bounded pages. Issue status and tree changes,
-workspace lifecycle writes, and pull-request work-product writes signal work on
+recover existing workspace rows in bounded pages. The first readiness sweep
+defers the new remote delivery-proof checks while preserving candidate deadlines;
+later scheduled work performs them. GitHub latency does not block readiness
+through this path. Issue status and tree changes,
+workspace lifecycle writes, finalization receipts, and pull-request work-product writes signal work on
 their transaction before writing. The coordinator wakes after the outer
 transaction settles and holds idle admission while writes or cleanup are active.
 Empty and nonterminal-only lanes have no recurring timer or query. Terminal trees
 schedule their actual cooldown deadline; unresolved delivery or cleanup eligibility
 is checked again after five minutes. Providers that explicitly declare
-`supportsMergeAncestry: false` are inspected for automatic cleanup only when a
-matching merged PR can provide delivery evidence. With no matching PR work
-product, the unchanged workspace has no delivery-inspection deadline; existing
-work-product notifications and startup recovery reconsider it. Open or unknown
-remote PRs and unfinished cleanup retain their retries. Missing declarations keep
-the previous ancestry-inspection behavior. Nonterminal trees, cooldowns, and active runs
-are checked before Git. The worker shares Git readiness across compatible rows
-that point at one directory within a bounded page. Company, branch, base ref,
-and runtime ownership must match. Each row keeps its own task and delivery
-assessment, which reuses the task tree read by the early gate. Unchanged terminal
-candidates also back off for five minutes during unrelated commit wakes. Scoped
-task/workspace hints invalidate
-affected candidates; changed tree or workspace revisions invalidate them too.
-Deadline selection reuses task trees read by those pages and performs no separate
-full-inventory query. Commits during a paged rotation request another bounded
-rotation so changes behind its cursor are recovered.
+`supportsMergeAncestry: false` use the latest successful finalization receipt as a
+candidate HEAD. Core checks GitHub before inspecting storage: the exact HEAD must
+be an ancestor of the intended destination tip, or an associated merged PR must
+have that exact final HEAD and destination, with its integration commit still
+reachable from the destination. Recorded PR work products are optional lookup
+hints. This supports squash merges without equating the squash commit with the
+original workspace commit.
+
+Preparation captures the resolved destination branch when the provider supports
+it. Cleanup never silently adopts a changed project source or today's default
+branch for an ambiguous old workspace. Missing receipts or destinations park the
+workspace; finalization, workspace, issue, provider and work-product changes and
+startup reconsider it. A known commit awaiting delivery, or an unavailable remote
+lookup, keeps a five-minute remote-only retry. GitHub merges have no guaranteed
+local ingress for this lane, so this concrete unresolved delivery obligation can
+keep the worker scheduled until delivery is proved. There is no new polling loop.
+Background GitHub delivery checks use the source project's explicit GitHub
+authorization, with the same consent checks as provider inspection and removal.
+The stored source must still match the workspace repository. Each proof, including
+the final removal check, revalidates the selected grant, project access and trust.
+Public sources use anonymous access; missing or revoked private-source consent
+retains storage without falling back to another identity. No task identity is borrowed.
+
+Only positive delivery evidence triggers a fresh storage inspection. The actual
+HEAD and branch must match the receipt. Cleanup revalidates delivery after its
+last inspection before recording removal intent. A provider can opt into
+`recoveryPullRequestVersion: 1` to receive one specific PR number and original
+HEAD for recovery checks. A merged PR alone does not prove that the original
+commit remains recoverable after source-branch deletion. The provider must
+independently prove recovery of that exact commit and reject any local data.
+Missing capability declarations preserve existing provider protocols.
+Nonterminal trees, cooldowns, and active runs are checked before Git. The worker
+shares readiness across compatible rows within a bounded page. Each row retains
+its own task and delivery assessment. Scoped task/workspace hints invalidate
+backoff; changed tree or workspace revisions invalidate it too. Deadline selection
+reuses task trees read by those pages without a separate full-inventory query.
+Commits during a paged rotation request another bounded rotation so changes behind
+its cursor are recovered.
 The backoff retains at most 256 candidates and only applies to the background
 worker. Final cleanup still checks the current task tree,
 delivery evidence, ownership, lifecycle generation, and Git state under the
@@ -3836,6 +4047,11 @@ before any subsequent upload. An interrupted account-bound request stays pending
 under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
+
+New-task staged file bytes are stored in IndexedDB for the account and company.
+Writes merge the selected files with the current saved list in one read/write
+transaction. Removal and successful creation delete only the files that the
+mounted draft removed. Other open tabs keep their saved files across reloads.
 
 Successful pending-record writes have the same readable size range as browser
 storage. In particular, a large task description cannot silently drop its
@@ -4095,6 +4311,23 @@ remain local. See [run evidence storage](run-evidence-storage.md) for required p
 capabilities, stable keys, operating limits, automatic history migration and qualification.
 Do not remove a web volume until its complete retained evidence inventory and
 the independent disposable-server requirements are satisfied.
+
+## Volume-free execution admission
+
+With `PAPERCLIP_EPHEMERAL_SERVER=true`, workspace preparation requires Paperclip
+Runner and remote workspace storage. A fresh run still has its initial `legacy`
+label at this phase; that label is not the selected execution mode. The runtime
+selector checks the resolved native warm lifecycle before admission and rejects
+legacy or per-turn execution. External conversation providers keep their existing
+exemption because they own no task filesystem. Source resolution checks this
+contract again before a configured host folder can fall back to local storage.
+
+A replacement controller reconstructs an active remote agent-directory cache
+from the registered sandbox, including unsaved files. The remote directory,
+lease and save baseline remain unchanged; current canonical files are never
+uploaded over the retained execution. Remote collection and cleanup serialize
+through Postgres across controller homes. A missing remote collector retains a
+pending save instead of treating an empty local cache as the agent's files.
 
 ## Cloud startup configuration
 

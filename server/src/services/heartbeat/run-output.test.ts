@@ -46,6 +46,7 @@ function createMemoryProvider() {
 // way the run row would carry it into a later attempt.
 function createRunRowDb(row: Partial<Run>) {
   return {
+    async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> { return write(this as unknown as Db); },
     update: () => ({
       set: (values: Partial<Run>) => ({
         where: async () => {
@@ -155,11 +156,11 @@ describe("heartbeat run output log recovery", () => {
 });
 
 describe("object-backed diagnostic recording", () => {
-  it("applies identity redaction to a native key-bearing event before S3 admission", async () => {
+  it.each(["legacy", "native"])("applies identity redaction before S3 admission when output begins in %s mode", async (runtimeMode) => {
     const privateKeyPem = generateKeyPairSync("ed25519")
       .privateKey.export({ type: "pkcs8", format: "pem" })
       .toString();
-    const row = { ...newRunRow, runtimeMode: "native" } as Run;
+    const row = { ...newRunRow, runtimeMode } as Run;
     const db = createRunRowDb(row) as Db & { select: () => unknown };
     db.select = (() => ({
       from: () => ({ where: () => ({ orderBy: () => ({ limit: async () => [] }) }) }),
@@ -215,6 +216,7 @@ describe("object-backed diagnostic recording", () => {
     const row = { ...newRunRow };
     const writes: Array<Partial<Run>> = [];
     const db = {
+      async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> { return write(this as unknown as Db); },
       update: () => ({
         set: (values: Partial<Run>) => ({
           where: async () => {

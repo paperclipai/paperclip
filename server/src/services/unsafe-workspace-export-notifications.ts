@@ -5,6 +5,9 @@ export type UnsafeWorkspaceExportScope = { companyId: string; issueId?: string }
 export async function notifyUnsafeWorkspaceExportRecovery(transaction: object, scope: UnsafeWorkspaceExportScope) {
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.unsafeWorkspaceExportRecovery,
     JSON.stringify({ companyId: scope.companyId, issueId: scope.issueId }));
+  // Recovery settlement can release a retained remote workspace snapshot.
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.remoteWorkspaceSnapshots,
+    scope.issueId ? `issue:${scope.issueId}` : `company:${scope.companyId}`);
 }
 
 export async function notifyUnsafeWorkspaceExportRunChange(transaction: object, run: {

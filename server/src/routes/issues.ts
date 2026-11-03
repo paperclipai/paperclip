@@ -8382,6 +8382,7 @@ export function issueRoutes(
       title: row.title,
       identifier: row.identifier,
       status: row.status as IssueSummary["status"],
+      displayStatus: row.displayStatus,
       updatedAt: row.updatedAt,
       externalConversationState: row.externalConversationState,
     }));
@@ -8551,10 +8552,10 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
-    if (sortField !== undefined && sortField !== "updated" && sortField !== "id") {
+    if (sortField !== undefined && sortField !== "updated" && sortField !== "created" && sortField !== "id") {
       res
         .status(400)
-        .json({ error: "sortField must be 'updated' or 'id' when provided" });
+        .json({ error: "sortField must be 'updated', 'created', or 'id' when provided" });
       return;
     }
     if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
@@ -8622,6 +8623,7 @@ export function issueRoutes(
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
+      displayStatus: req.query.displayStatus as string | string[] | undefined,
       assigneeAgentId,
       participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
@@ -8660,7 +8662,7 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
-      sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
+      sortField: sortField === "updated" || sortField === "created" || sortField === "id" ? sortField : undefined,
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
@@ -8872,6 +8874,7 @@ export function issueRoutes(
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
+      displayStatus: req.query.displayStatus as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: countUuidFilters.participantAgentId,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
@@ -10199,6 +10202,7 @@ export function issueRoutes(
         }
 
         if (sourceStatusChanged) {
+          await assertNativeRunKeepsOwnExecutionLock(req, lockedIssue, sourceIssueStatus);
           const safeHandBack =
             outcome === "restored" &&
             sourceIssueStatus === "todo" &&
@@ -13877,11 +13881,12 @@ export function issueRoutes(
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
     issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    requestedStatus: unknown = req.body.status,
   ) {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
-    if (req.body.status === undefined || req.body.status === issue.status) return;
+    if (requestedStatus === undefined || requestedStatus === issue.status) return;
     if (isConversation(issue)) return;
     const keepsAssignment =
       (req.body.assigneeAgentId === undefined || req.body.assigneeAgentId === issue.assigneeAgentId) &&
@@ -13902,7 +13907,7 @@ export function issueRoutes(
       "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
         "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
-      { code: "native_run_status_reported_by_finish", requestedStatus: req.body.status },
+      { code: "native_run_status_reported_by_finish", requestedStatus },
     );
   }
 
@@ -14709,16 +14714,28 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForTerminalization = goalStopAction
+        const runToStopForTerminalization = goalStopAction ||
+          (req.actor.type === "board" && existing.executionRunId)
           ? await resolveActiveIssueRun(existing)
           : null;
-        if (goalStopAction && runToStopForTerminalization) {
+        // Closing a native task revokes its tool binding. Retire the board's
+        // active executor before releasing that binding, even without a goal.
+        const mustStopNativeRun = req.actor.type === "board" &&
+          runToStopForTerminalization?.runtimeMode === "native";
+        if (runToStopForTerminalization && (goalStopAction || mustStopNativeRun)) {
           const cancelled = await heartbeat.cancelRun(
             runToStopForTerminalization.id,
             "Cancelled before issue terminalization",
             {
               errorCode: "issue_terminalized",
-              resultJson: { terminalizationStopConfirmed: true, issueMutationStopId },
+              resultJson: {
+                terminalizationStopConfirmed: true,
+                issueMutationStopId,
+                ...(actor.actorType === "user" ? {
+                  cancelledByActorType: "user",
+                  cancelledByUserId: actor.actorId,
+                } : {}),
+              },
               eventMessage: "run cancelled before issue terminalization",
               eventPayload: {
                 issueId: existing.id,

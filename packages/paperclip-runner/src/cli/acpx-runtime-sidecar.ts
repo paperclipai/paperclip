@@ -2,6 +2,8 @@
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
+import { acpxProviderFailure, acpxTerminalResult } from "../drivers/acpx/provider-failure.js";
+import { providerFailureFromError } from "../drivers/provider-failure.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
@@ -251,6 +253,8 @@ async function receiveLine(line: string): Promise<void> {
       ),
       message: safeMessage(normalized),
       retryable: normalizedRecord.retryable === true,
+      ...(request.command === "session.open" && initializedAgent
+        ? { providerFailure: providerFailureFromError(error) ?? acpxProviderFailure(error, initializedAgent, "startup", process.env) ?? undefined } : {}),
     });
   }
 }
@@ -712,7 +716,7 @@ async function pumpTurn(
       // not replace the provider's authoritative completed/cancelled result.
       diagnostic("acpx_terminal_usage_unavailable", safeMessage(error));
     }
-    terminal = boundedSidecarValue(result);
+    terminal = openParams ? acpxTerminalResult(result, openParams.agent, process.env) : boundedSidecarValue(result);
   } catch (error) {
     terminal = {
       status: "failed",
@@ -720,6 +724,7 @@ async function pumpTurn(
         ...(error instanceof AcpxApprovalRequiredError || error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}),
         message: safeMessage(error),
         retryable: false,
+        ...(openParams ? { providerFailure: acpxProviderFailure(error, openParams.agent, "turn", process.env) ?? undefined } : {}),
       },
     };
   } finally {

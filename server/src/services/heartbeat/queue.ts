@@ -1,9 +1,10 @@
-import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
-import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -874,6 +875,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
         await notifyExternalAgentSettlement(tx, { companyId: current.companyId, runId: current.id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: current.companyId, runId: current.id });
+        await notifyExecutionRunWork(tx, { companyId: current.companyId, agentId: current.agentId, runId: current.id });
         await notifyUnsafeWorkspaceExportRunChange(tx, current);
         [terminal] = await tx
           .update(heartbeatRuns)
@@ -1000,6 +1002,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
           await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, run);
           const [row] = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
             errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
@@ -1365,7 +1368,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                   await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
                   await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
-          await notifyUnsafeWorkspaceExportRunChange(tx, run);
+                  await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
+                  await notifyUnsafeWorkspaceExportRunChange(tx, run);
                   const [cancelled] = await tx
                     .update(heartbeatRuns)
                     .set({
@@ -1490,7 +1494,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                 await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
                 await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
-          await notifyUnsafeWorkspaceExportRunChange(tx, run);
+                await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
+                await notifyUnsafeWorkspaceExportRunChange(tx, run);
                 const [cancelled] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -2283,6 +2288,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       commentId: wakeCommentId,
       agentId,
     });
+    const hasIndependentConversationWakeCause = () => Boolean(
+      wakeCommentId || opts.taskRetryRequestId ||
+      hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
+      reason === CHAT_COMPLETION_WAKE_REASON,
+    );
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.
     // Overwrite caller-supplied nested context rather than trusting it.
@@ -2301,7 +2311,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId ?? ""}`,
       ));
       const retry = readTaskRetryIntent(receipt?.payload);
-      if (!receipt || retry?.generationId !== receipt.id || retry.canonicalIntentId ||
+      if (!receipt || retry?.generationId !== receipt.id || retry.canonicalIntentId || retry.queuedChatRequestId ||
           retry.actorId !== receipt.requestedByActorId) return null;
       const chatRetry = retry.chatActionId && durableRequest?.id === retry.chatActionId &&
         durableRequest.failedRunRetry?.failedRunId === retry.sourceRunId;
@@ -2336,7 +2346,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
-        if (!wakeCommentId && !opts.taskRetryRequestId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot) && reason !== CHAT_COMPLETION_WAKE_REASON) return null;
+        if (isWaitingConversation(conversation) && !hasIndependentConversationWakeCause()) return null;
       }
     }
     if (agent.adapterType === "paperclip_runner") {
@@ -2520,6 +2530,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // retain distinct durable receipts even when the same gate blocks them.
     const coalesceExecutionWait =
       opts.requestedByActorType === "system" &&
+      opts.allowRunCoalescing !== false &&
       !receiptRequest &&
       !wakeCommentId &&
       queuedCommentIdsFromRunContext(enrichedContextSnapshot).length === 0 &&
@@ -3341,6 +3352,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
+            return { kind: "skipped" as const };
+          }
+
+          // Completion can settle the conversation while admission is outside
+          // the issue lock. Recheck the current state before persisting a wake.
+          if (isWaitingConversation(issue) && !hasIndependentConversationWakeCause()) {
             return { kind: "skipped" as const };
           }
 
@@ -4510,7 +4527,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issue.id)),
                 )).then(rows => rows[0] ?? null)
               : null;
-          const canCoalesceComments = !isConversation(issue) && opts.allowRunCoalescing !== false;
+          // External input owns an exact authorized source batch. Board input
+          // must retain its separate receipt, including during normal resume.
+          const canCoalesceComments = !durableRequest && !isConversation(issue) && opts.allowRunCoalescing !== false;
           // A resumed receipt already passed admission under this issue lock.
           // Consume it with its successor even when chat keeps other messages
           // in separate turns, or finalization will deliver it a second time.

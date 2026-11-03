@@ -1,5 +1,5 @@
-import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";

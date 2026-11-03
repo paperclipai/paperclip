@@ -125,6 +125,108 @@ async function openAttachmentChooser(page: Page, composer: Locator) {
   return chooser;
 }
 
+test("new-task images survive reload, retain bytes, and clear after creation", async ({ page, request }) => {
+  const fixture = await setup(page, request, false);
+  await page.getByRole("button", { name: "New Task", exact: true }).first().click();
+  const dialog = page.getByRole("dialog", { name: "New task", exact: true });
+  const editor = dialog.getByRole("textbox", { name: "editable markdown", exact: true });
+  await editor.fill("Keep the caption and image after reload.");
+  const chooser = await openAttachmentChooser(page, dialog);
+  await chooser.setFiles(files[1]!);
+  await expect(dialog.getByRole("img", { name: "board-fresh.png", exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("paperclip:issue-draft-files", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<number>((resolve, reject) => {
+        const tx = db.transaction("files", "readonly");
+        const request = tx.objectStore("files").getAll();
+        tx.oncomplete = () => resolve(request.result.flat().length);
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  })).toBe(1);
+  await expect.poll(() => page.evaluate(() => Object.entries(localStorage)
+    .some(([key, value]) => key.startsWith("paperclip:issue-draft:") && value.includes("Keep the caption")))).toBe(true);
+  await page.reload();
+  await page.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await expect(editor).toContainText("Keep the caption and image after reload.");
+  await expect(dialog.getByRole("img", { name: "board-fresh.png", exact: true })).toBeVisible();
+  const upload = page.waitForResponse((response) => response.request().method() === "POST"
+    && /\/issues\/[^/]+\/attachments$/.test(new URL(response.url()).pathname));
+  await dialog.getByRole("button", { name: "Create task", exact: true }).click();
+  const attachment = await body<Attachment>(await upload);
+  const content = await request.get(attachment.contentPath);
+  expect(content.ok()).toBe(true);
+  expect(await content.body()).toEqual(files[1]!.buffer);
+  await expect(dialog).toBeHidden();
+  await page.reload();
+  await page.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await expect(dialog.getByRole("img")).toHaveCount(0);
+});
+
+test("an older image draft retains the rich editor", async ({ page, request }) => {
+  const fixture = await setup(page, request, false);
+  const attachment = await body<Attachment>(await request.post(`/api/companies/${fixture.company.id}/issues/${fixture.issue.id}/attachments`, {
+    multipart: { file: { name: files[1]!.name, mimeType: files[1]!.mimeType, buffer: files[1]!.buffer } },
+  }));
+  await page.addInitScript(({ issueId, imagePath }) => {
+    localStorage.setItem(`paperclip:issue-comment-draft:${issueId}`, `Keep this older caption.\n\n![Older image](${imagePath})`);
+  }, { issueId: fixture.issue.id, imagePath: attachment.contentPath });
+  await page.reload();
+  await expect(fixture.editor).toBeVisible();
+  await expect(fixture.editor).toContainText("Keep this older caption.");
+  await expect(fixture.composer.getByRole("img", { name: "Older image", exact: true })).toBeVisible();
+  await expect(fixture.composer.locator("textarea")).toHaveCount(0);
+});
+
+test("two open tabs retain their staged images when either tab saves or creates a task", async ({ page, request, context }) => {
+  await setup(page, request, false);
+  const second = await context.newPage();
+  await second.goto(page.url());
+  const dialogs = [page, second].map((tab) => tab.getByRole("dialog", { name: "New task", exact: true }));
+  for (const [index, tab] of [page, second].entries()) {
+    await tab.getByRole("button", { name: "New Task", exact: true }).first().click();
+    await dialogs[index]!.getByRole("textbox", { name: "editable markdown", exact: true }).fill(`Keep tab ${index + 1}'s image.`);
+    await expect(dialogs[index]!.getByRole("button", { name: "Create task", exact: true })).toBeEnabled();
+  }
+  const savedNames = () => page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("paperclip:issue-draft-files", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<string[]>((resolve, reject) => {
+        const tx = db.transaction("files", "readonly");
+        const request = tx.objectStore("files").getAll();
+        tx.oncomplete = () => resolve(request.result.flat().map((item: { file: File }) => item.file.name).sort());
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  });
+  for (const [index, tab] of [page, second].entries()) {
+    const chooser = await openAttachmentChooser(tab, dialogs[index]!);
+    await chooser.setFiles({ ...files[1]!, name: `tab-${index + 1}.png` });
+    await expect(dialogs[index]!.getByRole("img", { name: `tab-${index + 1}.png`, exact: true })).toBeVisible();
+    await expect.poll(savedNames).toEqual(index === 0 ? ["tab-1.png"] : ["tab-1.png", "tab-2.png"]);
+  }
+  await dialogs[0]!.getByRole("button", { name: "Create task", exact: true }).click();
+  await expect(dialogs[0]!).toBeHidden();
+  await expect.poll(savedNames).toEqual(["tab-2.png"]);
+  await second.reload();
+  await second.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await expect(dialogs[1]!.getByRole("img", { name: "tab-2.png", exact: true })).toBeVisible();
+  await dialogs[1]!.getByRole("textbox", { name: "editable markdown", exact: true }).fill("Create the remaining tab's image.");
+  await dialogs[1]!.getByRole("button", { name: "Create task", exact: true }).click();
+  await expect(dialogs[1]!).toBeHidden();
+  await expect.poll(savedNames).toEqual([]);
+  await second.close();
+});
+
 async function upload(
   page: Page,
   fixture: Awaited<ReturnType<typeof setup>>,
@@ -410,7 +512,7 @@ for (const classic of [false, true])
     try {
       await expect(
         fixture.composer.getByText(
-          classic ? "Uploading to task" : "Uploading…",
+          classic ? "Uploading to task" : "Uploading board-fresh.png…",
           { exact: true },
         ),
       ).toBeVisible();

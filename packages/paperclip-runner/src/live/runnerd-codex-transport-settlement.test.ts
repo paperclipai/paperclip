@@ -732,6 +732,8 @@ it.each([
               command.result?.result?.message?.includes("no rollout found"),
           ),
         ).toBe(true);
+        expect(failed.commands.find((command: { type: string }) => command.type === "turn.stop")?.result?.result?.providerFailure)
+          .toMatchObject({ provider: "openai", phase: "startup", category: "unknown", message: "no rollout found for thread id" });
         expect(await readFile(fakeState)).toEqual(originalProviderHome);
         expect(
           await Promise.all(files.map((file) => readFile(join(original, file)))),

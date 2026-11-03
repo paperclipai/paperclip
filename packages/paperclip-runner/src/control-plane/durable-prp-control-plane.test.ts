@@ -33,6 +33,7 @@ import {
   decodeDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   inspectStagedRunAttachment,
+  inspectRetainedRunInstructions,
   inspectStagedRunAttachmentHeader,
   type DurablePrpCheckpoint,
   durableRecoveryInternals,
@@ -54,6 +55,33 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("recovers only the matching run's admitted instructions from a valid checkpoint", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-retained-instructions-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const digest = "b".repeat(64);
+  const expected = { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, runtimeContextDigest: digest };
+  const template = { provider: { instructions: "Exact admitted instructions.\n", runtimeContext: { aggregateDigest: digest } } };
+  try {
+    core.persistRunAttachTemplate(template);
+    expect(inspectRetainedRunInstructions(core.store.state, expected)).toBe(template.provider.instructions);
+    for (const field of ["runId", "normalizedSessionId", "runtimeContextDigest"] as const) {
+      expect(inspectRetainedRunInstructions(core.store.state, { ...expected, [field]: "foreign" })).toBeNull();
+    }
+    expect(inspectRetainedRunInstructions({ ...core.store.state, commands: null }, expected)).toBeNull();
+    expect(inspectRetainedRunInstructions({ ...core.store.state, runAttachTemplate: { provider: { ...template.provider, instructions: "" } } }, expected)).toBeNull();
+    const target = { ...identity, runId: "00000000-0000-4000-8000-000000000002", turnId: "next-turn", itemId: "next-item" };
+    const targetTemplate = { provider: { instructions: "Target instructions", runtimeContext: { aggregateDigest: "c".repeat(64) } } };
+    core.stageRunAttachment(target, targetTemplate);
+    const targetExpected = { ...expected, runId: target.runId, runtimeContextDigest: "c".repeat(64) };
+    expect(inspectRetainedRunInstructions(core.store.state, targetExpected)).toBe("Target instructions");
+    expect(inspectRetainedRunInstructions(core.store.state, { ...targetExpected, runtimeContextDigest: digest })).toBeNull();
+    expect(inspectRetainedRunInstructions(core.store.state, expected)).toBe(template.provider.instructions);
+    const corrupted = structuredClone(core.store.state);
+    corrupted.stagedRunAttachment!.templateDigest = `sha256:${"f".repeat(64)}`;
+    expect(inspectRetainedRunInstructions(corrupted, targetExpected)).toBeNull();
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
 
 it("persists an undispatched source-to-target attachment before bootstrap and preserves it after cache loss", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-staged-attachment-"));
@@ -507,6 +535,80 @@ it("rebuilds a queued checkpoint after the preceding write fails", async () => {
     expect(snapshots).toHaveLength(2);
   } finally {
     reject?.(new Error("cleanup"));
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["get_task_context", "paperclip_finish", "paperclip_block"].flatMap(operationId =>
+  [false, true].map(callbacksConfigured => ({ operationId, callbacksConfigured })),
+))(
+  "retains unseen $operationId input without dispatch or reply (callbacks: $callbacksConfigured)",
+  async ({ operationId, callbacksConfigured }) => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-cleanup-semantic-intake-"));
+    const dispatch = vi.fn(async () => ({ result: "must not dispatch" }));
+    const recover = vi.fn(async () => ({ result: "must not recover" }));
+    // Keep intake, checkpointing, and cancellation on the actual authenticated
+    // Core. Retention must suppress even accidentally configured callbacks.
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+      semanticInputMode: "retain_only",
+      ...(callbacksConfigured ? { onSemanticToolInput: dispatch, recoverSemanticToolInput: recover } : {}),
+    });
+    let client: AuthenticatedClient | null = null;
+    try {
+      await core.start();
+      client = await authenticate(core, core.issueBootstrapTicket());
+      expect(client).not.toBeNull();
+      const event = semanticInputEvent();
+      const payload = (event.payload as Record<string, unknown>).payload as Record<string, unknown>;
+      (payload.semantic_tool as Record<string, unknown>).operationId = operationId;
+      sendSecure(client!, event);
+      expect(await receiveSecure(client!)).toMatchObject({
+        kind: "ack", payload: { ackedSourceSeq: 1 },
+      });
+      expect(core.store.state.committedEvents).toHaveLength(1);
+      expect(core.store.state.committedEvents[0]).toMatchObject({
+        eventType: "semantic_tool.input",
+        envelope: { payload: { payload: { semantic_tool: { operationId } } } },
+      });
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      expect(core.store.state.commands).toEqual([]);
+      await core.recoverPendingSemanticInputs();
+      await core.flushCheckpoint();
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      expect(core.store.state.commands).toEqual([]);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(recover).not.toHaveBeenCalled();
+      core.queueCommand("turn.stop", { reason: "cleanup" }, "cleanup-stop", true);
+      // The next real wire frame must be cancellation, never a synthetic tool
+      // reply or a provider-start command that could resume execution.
+      expect(await receiveSecure(client!)).toMatchObject({
+        kind: "command", payload: { commandId: "cleanup-stop", type: "turn.stop" },
+      });
+      expect(core.store.state.commands.map(command => command.type)).toEqual(["turn.stop"]);
+    } finally {
+      client?.socket.destroy();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it("rejects unseen semantic input without a dispatcher in the default execution mode", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-missing-semantic-dispatch-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    client = await authenticate(core, core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    sendSecure(client!, semanticInputEvent());
+    expect(await receiveSecure(client!)).toBeNull();
+    expect(core.store.state.committedEvents).toEqual([]);
+    expect(core.store.state.commands).toEqual([]);
+  } finally {
+    client?.socket.destroy();
     await core.stop();
     rmSync(root, { recursive: true, force: true });
   }
@@ -1496,6 +1598,41 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
   expect(launches[0]!.environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(launches[0]!.environment.NODE_OPTIONS).toBeUndefined();
   expect(launches[0]!.environment.PAPERCLIP_OPENCODE_COMMAND).toBeUndefined();
+});
+
+it.each([undefined, {}, {
+  CURSOR_API_KEY: "explicit-cloud-key",
+  PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH: "/private/cloud/config.json",
+  PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT: "/private/cloud/artifacts",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH: "/private/cloud/mcp.sock",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN: "explicit-cloud-relay",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_URL: "https://relay.example.test/mcp/native-runs/run",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT: "2000000000000",
+  PAPERCLIP_CURSOR_CLOUD_UNRELATED: "must-not-cross",
+}])("forwards only explicitly supplied Cloud launch bindings at the runner boundary (%j)", (environment: NodeJS.ProcessEnv | undefined) => {
+  const names = [
+    "CURSOR_API_KEY", "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH", "PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH", "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_URL", "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
+  ] as const;
+  for (const name of names) vi.stubEnv(name, "ambient-must-not-cross");
+  const launches: RunnerProcessLaunchSpec[] = [];
+  try {
+    spawnRunner({
+      connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+      stateDirectory: "/tmp/paperclip-runner-test", identity, ticket: "bootstrap-ticket",
+      maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+      runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest, environment,
+      processLauncher: spec => {
+        launches.push(spec);
+        return { child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+          completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }) };
+      },
+    });
+    expect(launches).toHaveLength(1);
+    for (const name of names) expect(launches[0]!.environment[name]).toBe(environment?.[name]);
+    expect(launches[0]!.environment.PAPERCLIP_CURSOR_CLOUD_UNRELATED).toBeUndefined();
+  } finally { vi.unstubAllEnvs(); }
 });
 
 it("preserves only bounded GitHub credential projection at the runner spawn boundary", () => {
@@ -2956,7 +3093,7 @@ describe("DurablePrpControlPlane", () => {
     },
   );
 
-  it("latches an authenticated semantic integrity fault without ACK or dispatch and still permits suspension", async () => {
+  it.each(["dispatch", "retain_only"] as const)("latches an authenticated semantic integrity fault without ACK or dispatch and still permits suspension (%s)", async semanticInputMode => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-integrity-"));
     const onProtocolIntegrityError = vi.fn();
     const onCommittedEvent = vi.fn(async () => undefined);
@@ -2966,6 +3103,7 @@ describe("DurablePrpControlPlane", () => {
       identity,
       expectedRunnerVersion,
       expectedRunnerDigest,
+      semanticInputMode,
       onProtocolIntegrityError,
       onCommittedEvent,
       onSemanticToolInput,

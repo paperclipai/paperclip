@@ -575,14 +575,17 @@ describe("hired agents sharing a subscription", () => {
     const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     try { await worker.process(agentId); } finally { await worker.stop(); }
   }
-  it("keeps a credential-lock timeout on automatic retry without blocking the task or starting a provider", async () => {
+  it("starts a hired agent without acquiring an AI connection execution lock", async () => {
     const f = await fixture("openai", "subscription");
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, runner: "legacy", reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, runner: "legacy", reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     // Only an operator may set host execution paths after the agent is hired.
     await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
     await finishSetup(agent.id);
-    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Wait for credential rotation", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
-    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, resultJson: {} }));
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Use the account concurrently", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
+    const execute = vi.fn(async () => {
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issue.id));
+      return { exitCode: 0, signal: null, timedOut: false, resultJson: {} };
+    });
     registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
     const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
       .mockRejectedValueOnce(Object.assign(new Error("quota refresh holds company lock"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }));
@@ -590,27 +593,17 @@ describe("hired agents sharing a subscription", () => {
     try {
       const run = await heartbeat.invoke(agent.id, "assignment", { issueId: issue.id, wakeReason: "issue_assigned", responsibleUserId: f.userId }, "system");
       expect(run).not.toBeNull();
-      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
       await heartbeat.drainActiveRunExecutions();
-      const cancelled = await heartbeat.getRun(run!.id);
-      expect(cancelled).toMatchObject({ errorCode: "ai_connection_busy", resultJson: {
-        executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false },
-        cancellation: {
-          source: "control_plane", expected: true, initiator: { type: "system" },
-          reason: "Waiting for shared AI credentials",
-          recordedAt: cancelled!.finishedAt!.toISOString(),
-        },
-      } });
+      const completed = await heartbeat.getRun(run!.id);
+      expect(completed?.errorCode).toBeNull();
       await waitForPendingRunFailureReports();
       expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
-      const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
-      expect(retries).toHaveLength(1);
-      expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy" });
-      expect(retries[0].resultJson?.cancellation).toBeUndefined();
-      const [savedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
-      expect(savedIssue.status).not.toBe("blocked");
-      expect(savedIssue.executionRunId).toBe(retries[0].id);
-      expect(execute).not.toHaveBeenCalled();
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.retryOfRunId, run!.id), eq(heartbeatRuns.scheduledRetryReason, "ai_connection_busy"),
+      ))).toEqual([]);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(lock).not.toHaveBeenCalled();
       expect(await aiConnectionService(db).list(f.companyId, f.userId)).toEqual([expect.objectContaining({ status: "connected" })]);
     } finally {
       lock.mockRestore();

@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork, notifyTaskRetrySettlement } from "../deferred-execution-notifications.js";
 import { notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
@@ -1923,6 +1924,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           // Receipt existence proves the earlier wait, not current authority.
           // Retire only this unadmitted wake; an admitted run keeps its history.
           await db.transaction(async tx => {
+            await notifyStrandedAgentStatus(tx, { companyId: claimed.companyId, agentId: receipt.agentId });
             await notifyChatInboundWakeNotices(tx, {
               companyId: claimed.companyId, issueId: String(claimed.payload.issueId),
             });

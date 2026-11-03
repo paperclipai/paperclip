@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AgentIcon } from "@/components/AgentIconPicker";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 
 export interface AgentChatPickerProps {
@@ -15,11 +15,13 @@ export interface AgentChatPickerProps {
   onRetry?: () => void;
   existingChatAgentIds?: readonly string[];
   renderAgentIcon?: (agent: Agent) => ReactNode;
+  trigger?: ReactNode;
 }
 
-export function AgentChatPicker({ open, onOpenChange, ...props }: AgentChatPickerProps) {
+export function AgentChatPicker({ open, onOpenChange, trigger, ...props }: AgentChatPickerProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
       <DialogContent aria-describedby={undefined} className="gap-0 overflow-hidden p-0 sm:max-w-md">
         <div className="px-4 pt-4 pb-3">
           <DialogTitle>Chat with an agent</DialogTitle>
@@ -95,7 +97,7 @@ function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, 
                 disabled={openingId !== null}
                 className="gap-3 px-3 py-3"
               >
-                {renderAgentIcon ? renderAgentIcon(agent) : <AgentIcon icon={agent.icon} className="size-4 shrink-0" />}
+                {renderAgentIcon ? renderAgentIcon(agent) : <AgentAvatar agent={agent} size={32} />}
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate font-medium">{agent.name}</span>
                   <span className="truncate text-xs text-muted-foreground">{agent.title ?? agent.role}</span>

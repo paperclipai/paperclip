@@ -1358,6 +1358,7 @@ export function secretService(db: Db | DbTransaction) {
     secretId: string,
     version: number | "latest",
     options?: SecretResolutionOptions,
+    readOnlyEnvironmentInspection = false,
   ): Promise<RuntimeSecretResolution> {
     const bindingContext = options?.bindingContext;
     const accessContext = options?.accessContext ?? bindingContext;
@@ -1406,7 +1407,7 @@ export function secretService(db: Db | DbTransaction) {
           version: resolvedVersion,
         },
       });
-      await Promise.all([
+      if (!readOnlyEnvironmentInspection) await Promise.all([
         db
           .update(companySecrets)
           .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
@@ -1442,7 +1443,7 @@ export function secretService(db: Db | DbTransaction) {
       };
     } catch (err) {
       const errorCode = secretResolutionErrorCode(err);
-      await recordAccessEvent({
+      if (!readOnlyEnvironmentInspection) await recordAccessEvent({
         companyId,
         secretId: secret.id,
         userSecretDefinitionId: secret.userSecretDefinitionId ?? null,
@@ -1476,6 +1477,23 @@ export function secretService(db: Db | DbTransaction) {
       ? contextOrOptions
       : { bindingContext: contextOrOptions, accessContext: contextOrOptions };
     return (await resolveSecretValueInternal(companyId, secretId, version, options)).value;
+  }
+
+  // Cloud consumes and audits the signed inspection permit before the tenant
+  // opens its read-only transaction. Keep the ordinary environment binding and
+  // version checks, without attempting tenant audit writes inside that transaction.
+  async function resolveSecretValueForReadOnlyEnvironmentInspection(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    context: { environmentId: string; configPath: string; issueId?: string | null; heartbeatRunId?: string | null },
+  ): Promise<string> {
+    if (!context.environmentId || !context.configPath) throw unprocessable("Environment secret binding required");
+    return (await resolveSecretValueInternal(companyId, secretId, version, {
+      bindingContext: { consumerType: "environment", consumerId: context.environmentId,
+        actorType: "system", actorId: null, configPath: context.configPath,
+        issueId: context.issueId ?? null, heartbeatRunId: context.heartbeatRunId ?? null },
+    }, true)).value;
   }
 
   async function resolveSecretValueForEphemeralAccess(
@@ -4618,6 +4636,7 @@ export function secretService(db: Db | DbTransaction) {
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,
     resolveSecretValueForEphemeralAccess,
+    resolveSecretValueForReadOnlyEnvironmentInspection,
     resolveSecretValueForSandboxCleanup,
     resolveSecretValueForDeviceLoginCheck,
 

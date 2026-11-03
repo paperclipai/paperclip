@@ -410,3 +410,24 @@ describe("GitHub task message guidance", () => {
     }
   });
 });
+
+
+describe("GitHub finding category contract", () => {
+  const policy = { ...defaultGitHubReviewPolicy(), findingCategories: ["custom-reliability"] };
+  it("exposes custom categories in both trusted review prompts", () => {
+    const prompts = [
+      githubReviewConfigurationPrompt(policy, 1),
+      githubManualMessagePrompt({ event: "mention", policy, repository: "test/repo", thread: "thread", sender: context.sender, message: "Review" }),
+    ];
+    for (const prompt of prompts) expect(prompt).toContain(JSON.stringify(policy.findingCategories));
+  });
+  it("preserves custom categories and gives actionable rejection feedback", () => {
+    const value = assessment();
+    value.findings = [{ key: "one", path: "src/a.ts", line: 1, side: "RIGHT", severity: "warning", category: "custom-reliability", body: "A concrete finding" }];
+    expect(validateGitHubReviewAssessment(value, context.headSha, policy).findings).toEqual(value.findings);
+    value.findings[0].category = "invented";
+    expect(() => validateGitHubReviewAssessment(value, context.headSha, policy)).toThrow('Accepted finding categories: ["custom-reliability"]');
+    expect(() => validateGitHubReviewAssessment(value, context.headSha, { ...policy, findingCategories: [] })).toThrow("Accepted finding categories: []");
+    expect(validateGitHubReviewAssessment(assessment(), context.headSha, { ...policy, findingCategories: [] }).findings).toEqual([]);
+  });
+});

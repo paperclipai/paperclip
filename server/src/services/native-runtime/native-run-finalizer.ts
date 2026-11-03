@@ -921,15 +921,17 @@ async function recoverCommittedNativeChatResponseInScope(
         && run.contextSnapshot?.issueId === issue.id
         && typeof run.contextSnapshot.conversationSessionGeneration === "number"
         && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
+      // A deferred ordinary-task review still needs its recorded final reply.
+      // Publishing that reply must not resolve the interaction or the task.
       if (
         (!conversation || currentConversation) &&
         run.status === "succeeded" &&
         record(run.contextSnapshot).skipIssueComment !== true &&
         !isExternalChatPresentationContext(run.contextSnapshot) &&
-        result.reportedWorkDisposition === "done" &&
         terminal.runTerminalState === "succeeded" &&
         terminal.turnTerminalState === "completed" &&
-        terminal.reportedWorkDisposition === "done" &&
+        ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
+          (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
@@ -1389,7 +1391,7 @@ export async function finalizeNativeRun(input: {
         (!planWait || nativeSha256(planWait.result) !== nativeSha256(result))) {
       throw new Error("native_plan_wait_authority_lost");
     }
-    const { providerFailure, turnFailure } = await readPersistedNativeFailureEvidence(
+    const { providerFailure, turnFailure, providerExplanation } = await readPersistedNativeFailureEvidence(
       input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState,
     );
     const ownsProviderFailureDecision =
@@ -1580,6 +1582,7 @@ export async function finalizeNativeRun(input: {
       );
       const clearExecutionFailure = input.projectRunStatus && finalizationPhase === "committed" && terminalState === "succeeded";
       const finalizationMetadata = {
+        ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
         ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
         ...(turnFailure ? { nativeTurnFailure: turnFailure } : {}),
         finalizationPhase,

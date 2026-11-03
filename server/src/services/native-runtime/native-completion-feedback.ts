@@ -17,7 +17,6 @@ import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   approvals,
   agents,
-  companies,
   heartbeatRuns,
   completionContracts,
   issueApprovals,
@@ -40,10 +39,7 @@ function record(value: unknown): Record<string, unknown> {
 /** Reconstruct links from current task state, never from provider-supplied URLs. */
 async function savedDocumentLinks(db: Db, run: typeof heartbeatRuns.$inferSelect, issue: typeof issues.$inferSelect) {
   const saved = await publishedTaskDocuments(db, { companyId: run.companyId, issueId: issue.id });
-  if (!saved.length) return [];
-  const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, run.companyId));
-  if (!company) return [];
-  return saved.map(document => `[Saved document](/${encodeURIComponent(company.issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}#document-${encodeURIComponent(document.key)})`);
+  return saved.map(document => `[Saved document](${document.href})`);
 }
 
 /** Read current constraints before accepting the report, not a premature status commit. */

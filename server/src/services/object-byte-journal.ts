@@ -53,6 +53,14 @@ export class ObjectJournalConflictError extends Error {
     super("The output journal is owned by another writer");
   }
 }
+export class ObjectJournalSourcePrefixProofUnavailableError extends Error {
+  constructor(readonly writer: ObjectJournalWriter) {
+    super("The committed log prefix has no available source proof");
+  }
+}
+class ObjectJournalSourcePrefixProofInvalidError extends Error {
+  constructor() { super("object_journal_source_prefix_proof_invalid"); }
+}
 export function isObjectPreconditionFailure(error: unknown) {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
   return e?.name === "PreconditionFailed" || e?.$metadata?.httpStatusCode === 412;
@@ -291,6 +299,69 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       throw new Error("object_journal_invalid_head");
     }
     return { head: value, etag: result.etag };
+  }
+  function sourcePrefixProof(snapshot: ObjectJournalHead) {
+    // Leave strict head v1 unchanged for older readers/rollback. Ownership and
+    // close/claim state may change without changing this immutable byte prefix.
+    const fingerprint = sha256(Buffer.from(JSON.stringify({
+      end: snapshot.end, sequence: snapshot.sequence, sourceCursor: snapshot.sourceCursor,
+      root: snapshot.root, roots: snapshot.roots ?? null,
+    })));
+    return {
+      // Existing scoped object cleanup also removes these unreferenced metadata objects.
+      key: `${objectPrefix}source-prefix-proof-v1-${fingerprint}`,
+      bytes: Buffer.from(JSON.stringify({ schema: "paperclip.run-log.source-prefix-proof.v1", fingerprint })),
+    };
+  }
+  async function hasVerifiedSourcePrefix(snapshot: ObjectJournalHead, signal?: AbortSignal) {
+    const proof = sourcePrefixProof(snapshot);
+    let stored: Awaited<ReturnType<typeof getBytes>>;
+    try { stored = await getBytes(proof.key, 4096, signal); }
+    catch (error) { if (isMissing(error)) return false; throw error; }
+    if (!stored.bytes.equals(proof.bytes)) throw new ObjectJournalSourcePrefixProofInvalidError();
+    return true;
+  }
+  async function recordVerifiedSourcePrefix(writer: ObjectJournalWriter, sourceCursor: number, signal?: AbortSignal) {
+    const callerSignal = signal;
+    signal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000);
+    signal.throwIfAborted();
+    if (!Number.isSafeInteger(sourceCursor) || sourceCursor < writer.head.sourceCursor)
+      throw new Error("object_journal_invalid_source_prefix_cursor");
+    const current = await head(signal);
+    if (!current || current.etag !== writer.etag || current.head.closed || current.head.deleted)
+      throw new ObjectJournalConflictError();
+    // One-time verification can repair legacy max-cursor metadata, never payload bytes.
+    if (sourceCursor !== writer.head.sourceCursor)
+      writer = await publish({ ...writer.head, sourceCursor }, writer.etag, signal);
+    const proof = sourcePrefixProof(writer.head);
+    try {
+      await retryObjectOperation(() => putConditional({
+        objectKey: proof.key, body: proof.bytes, contentLength: proof.bytes.length,
+        contentType: "application/json", ifNoneMatch: "*", signal,
+      }), signal);
+    } catch (error) {
+      callerSignal?.throwIfAborted();
+      if (error instanceof ObjectJournalConflictError) throw error;
+      // A lost reply or an already published identical immutable proof is safe.
+      try {
+        if (await hasVerifiedSourcePrefix(writer.head, signal)) return writer;
+      } catch (readError) {
+        callerSignal?.throwIfAborted();
+        if (readError instanceof ObjectJournalSourcePrefixProofInvalidError ||
+          readError instanceof ObjectJournalConflictError) throw readError;
+        if (signal.aborted || isRetryable(readError))
+          throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+        throw readError;
+      }
+      // Only this immutable proof publication is optional. The ownership read
+      // and any cursor/head CAS above retain their fatal failure boundary.
+      if (signal.aborted || isRetryable(error))
+        throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+      throw error;
+    }
+    return writer;
   }
   async function publish(value: ObjectJournalHead, etag: string | null, signal?: AbortSignal) {
     value = headSchema.parse(value);
@@ -569,6 +640,6 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       continuationToken = page.continuationToken;
     } while (continuationToken);
   }
-  return { head, claim, append, close, readRange, remove };
+  return { head, claim, append, close, readRange, remove, hasVerifiedSourcePrefix, recordVerifiedSourcePrefix };
 }
 export type ObjectByteJournal = ReturnType<typeof createObjectByteJournal>;
