@@ -1,4 +1,5 @@
 import { createObservedReader } from "./observation-read.js";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, type Page } from "@playwright/test";
@@ -44,8 +45,10 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     const project = await api.post<Row>(`/api/companies/${company.id}/projects`, { name: projectName, status: "planned" });
     await session.own({ kind: "project", name: projectName, id: project.id, journeyId });
     const key = "scheduled-summary", marker = `scheduled-${campaignId}`;
+    const expectedBody = `${marker}\nSchedule check complete.`;
     const prompt = `Prepare the scheduled status check. Save a task document with key ${key} and title Scheduled check. `
-      + `Its body must contain exactly these two lines: ${marker} followed by Schedule check complete. `
+      + "Copy exactly the two lines inside this block, including the final period. Do not include the fences in the document body.\n"
+      + `\`\`\`text\n${expectedBody}\n\`\`\`\n`
       + "Then finish the task. Do not create other tasks or agents.";
     await routineUiStep("open_composer", async () => {
       await page.goto(`${api.origin}/${company.issuePrefix}/routines`, { waitUntil: "domcontentloaded" });
@@ -135,11 +138,30 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       const completedAt = performance.now();
       const document = await readObserved<Row>(`${taskRoute}/documents/${key}`);
       const revision = await readObserved<Row>(`${taskRoute}/documents/${key}/revisions/${document.latestRevisionId}`);
-      const expectedBody = `${marker}\nSchedule check complete.`;
-      check("routine-result-attributed", document.companyId === company.id && document.issueId === task.id
-        && document.body?.trim() === expectedBody && document.createdByAgentId === agent.id && document.createdByUserId === null
-        && revision.documentId === document.id && revision.body?.trim() === expectedBody && revision.createdByAgentId === agent.id
-        && revision.createdByRunId === state.taskRuns[0]!.id);
+      const matches = { documentCompany: document.companyId === company.id, documentIssue: document.issueId === task.id,
+        documentExactBody: document.body?.trim() === expectedBody, documentAuthor: document.createdByAgentId === agent.id,
+        documentUserNull: document.createdByUserId === null, revisionDocument: revision.documentId === document.id,
+        revisionExactBody: revision.body?.trim() === expectedBody, revisionAuthor: revision.createdByAgentId === agent.id,
+        revisionRun: revision.createdByRunId === state.taskRuns[0]!.id };
+      const bodyReceipt = (body: unknown) => typeof body === "string" ? { byteSize: Buffer.byteLength(body),
+        sha256: createHash("sha256").update(body).digest("hex"), trimmedSha256: createHash("sha256").update(body.trim()).digest("hex") } : null;
+      // A failed grade must retain its attribution inputs without the prompt or output body.
+      await mkdir(options.directory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(options.directory, "scheduled-routine-result.json"), JSON.stringify({
+        schema: "paperclip.product-journey.routine-result/v1", matches, expectedBody: bodyReceipt(expectedBody),
+        documentBody: bodyReceipt(document.body), revisionBody: bodyReceipt(revision.body),
+        document: { id: document.id, companyId: document.companyId, issueId: document.issueId,
+          latestRevisionId: document.latestRevisionId, createdByAgentId: document.createdByAgentId,
+          createdByUserId: document.createdByUserId, createdAt: document.createdAt, updatedAt: document.updatedAt },
+        revision: { id: revision.id, documentId: revision.documentId, createdByAgentId: revision.createdByAgentId,
+          createdByRunId: revision.createdByRunId, createdAt: revision.createdAt },
+        run: { id: state.taskRuns[0]!.id, status: state.taskRuns[0]!.status, nativePhase: state.taskRuns[0]!.nativePhase,
+          agentId: state.taskRuns[0]!.agentId, companyId: state.taskRuns[0]!.companyId,
+          environmentId: state.taskRuns[0]!.contextSnapshot?.paperclipEnvironment?.id,
+          provider: state.taskRuns[0]!.runnerProfileJson?.nativeExecutionInput?.provider?.kind,
+          model: state.taskRuns[0]!.runnerProfileJson?.nativeExecutionInput?.provider?.model },
+      }, null, 2), { mode: 0o600 });
+      check("routine-result-attributed", Object.values(matches).every(Boolean));
       if (typeof state.currentIssue.identifier !== "string" || !state.currentIssue.identifier) throw new JourneyError("failed", "routine_task_identifier_missing");
       await routineUiStep("open_history", async () => {
         await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/runs`, { waitUntil: "domcontentloaded" });
