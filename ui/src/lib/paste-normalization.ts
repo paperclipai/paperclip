@@ -6,7 +6,7 @@ import { normalizeMarkdown } from "./normalize-markdown";
 function isPastedLinkTarget(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || /\s/.test(trimmed)) return false;
-  if (/^(?:mailto|tel|sms):\S/i.test(trimmed) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return true;
+  if (/^(?:mailto|tel|sms):\S/i.test(trimmed) || /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(trimmed)) return true;
   const candidate = /^www\./i.test(trimmed) ? `https://${trimmed}`
     : trimmed.startsWith("//") ? `https:${trimmed}` : trimmed;
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) return false;

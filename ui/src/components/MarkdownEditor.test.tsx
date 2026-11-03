@@ -514,7 +514,7 @@ describe("MarkdownEditor", () => {
     };
   }
 
-  it.each(['{"status":"ready","items":[1,2]}', "replacement words", "first line\nsecond line", "/workspace/report.json", "reports/status.md", "#document-report", "v1.2.3", "https://", "www."])(
+  it.each(['{"status":"ready","items":[1,2]}', '{"email":"user@example.test"}', "replacement words", "first line\nsecond line", "/workspace/report.json", "reports/status.md", "#document-report", "v1.2.3", "https://", "www."])(
     "replaces selected text through the real paste command for %j", async replacement => {
       const harness = await createSelectedTextPasteHarness();
       try { expect(harness.paste(replacement)).toEqual({ text: replacement, links: [] }); }
@@ -522,7 +522,7 @@ describe("MarkdownEditor", () => {
     },
   );
 
-  it.each(["https://example.test/report?q=1#section", "http://example.test", "//cdn.example.test/image.png", "www.example.test", "mailto:user@example.test", "user@example.test"])(
+  it.each(["https://example.test/report?q=1#section", "http://example.test", "//cdn.example.test/image.png", "www.example.test", "mailto:user@example.test", "user@example.test", "user+updates@sub.example.test"])(
     "keeps selected-text URL paste as an intentional link (%s)", async url => {
       const harness = await createSelectedTextPasteHarness();
       try { expect(harness.paste(url)).toEqual({ text: '{"status":"pending"}', links: [url] }); }
