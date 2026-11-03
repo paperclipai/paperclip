@@ -32,6 +32,10 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
   let checkpoint: Row = { fixture };
   let primaryFailure: unknown;
   try {
+    const settings = await read.get<Row | undefined>("/api/instance/settings/experimental");
+    const betaSkillsEnabled = settings?.enableBetaSkills === true;
+    checkpoint = { ...checkpoint, betaSkillsEnabled };
+    if (!betaSkillsEnabled) throw new JourneyError("unsupported", "saved_skill_beta_skills_required");
     const companyRoute = `/api/companies/${context.company.id}`;
     await session.own({ kind: "skill", name: fixture.name, journeyId: id });
     const createdSkill = await context.api.post<Row>(`${companyRoute}/skills`, {

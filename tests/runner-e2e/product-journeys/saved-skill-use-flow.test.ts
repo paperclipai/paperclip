@@ -46,6 +46,7 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
       throw new Error(`Unexpected mutation ${route}`);
     }),
     get: vi.fn(async (route: string) => {
+      if (route === "/api/instance/settings/experimental") return change("settings", { enableBetaSkills: true });
       if (route === "/api/companies/company/skills/skill") return change(reloaded ? "retained-skill" : "skill", structuredClone(skill));
       if (route === "/api/companies/company/skills/skill/versions/version") return {
         id: "version", companyId: "company", companySkillId: "skill", fileInventory: [{ path: "SKILL.md", content: fixture.markdown }],
@@ -114,6 +115,24 @@ describe("saved skill journey orchestration", () => {
     expect(f.evidence.checks.every(check => check.passed)).toBe(true);
     const receipt = JSON.parse(await readFile(path.join(f.directory, "saved-skill-use-checks.json"), "utf8"));
     expect(receipt.receipts).toEqual([{ runId: "run", executionId: "load", seq: 2 }]);
+  });
+  it.each([
+    ["missing", {}], ["disabled", { enableBetaSkills: false }],
+    ["malformed", { enableBetaSkills: "true" }], ["absent response", undefined],
+  ])("rejects %s Beta skills before any resource intent, mutation or task dispatch", async (_label, settings) => {
+    const f = await setup((kind, row) => kind === "settings" ? settings : row);
+    await expect(f.run()).rejects.toMatchObject({ outcome: "unsupported", code: "saved_skill_beta_skills_required" });
+    expect(f.api.get.mock.calls.map(([route]) => route)).toEqual(["/api/instance/settings/experimental"]);
+    expect(f.api.post).not.toHaveBeenCalled();
+    expect(f.own).not.toHaveBeenCalled();
+    expect(createTaskThroughUi).not.toHaveBeenCalled();
+    expect(f.evidence.checks).toEqual([]);
+  });
+  it("observes enabled Beta skills before fixture ownership and creation", async () => {
+    const f = await setup(); await f.run();
+    expect(f.api.get.mock.calls[0]?.[0]).toBe("/api/instance/settings/experimental");
+    expect(f.api.get.mock.invocationCallOrder[0]).toBeLessThan(f.own.mock.invocationCallOrder[0]!);
+    expect(f.api.get.mock.invocationCallOrder[0]).toBeLessThan(f.api.post.mock.invocationCallOrder[0]!);
   });
   it.each([null, { presentationDecision: { commentAction: "none" } }])(
     "qualifies authoritative committed finalization with optional resultJson %j", async resultJson => {

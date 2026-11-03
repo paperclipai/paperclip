@@ -5,6 +5,14 @@ uses one native work run on the target provider's campaign-owned agent. It does
 not enroll itself in a daily plan. Local calibration and catalog discovery are
 separate from a real staging pass.
 
+The target must already have the Beta skills experimental setting enabled
+(`enableBetaSkills: true`). Skill-write access alone does not permit version
+pins. Discovery and preparation preview expose this as `requiredSettings`.
+Before journaling or creating any skill or task, the flow reads the current
+setting through `GET /api/instance/settings/experimental`. A missing, disabled
+or malformed setting returns `unsupported` with `saved_skill_beta_skills_required`.
+The journey never enables the setting or changes the shared target baseline.
+
 The fixture creates one synthetic company skill through the public skill API.
 The journal name, API name and Markdown frontmatter name equal its slug. Each
 contains the exact campaign ID, including its hyphens. Recovery can therefore
