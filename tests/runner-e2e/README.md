@@ -3291,3 +3291,15 @@ The shared report navigation links the dated, immutable catalog snapshot.
 Deploying this generator does not rewrite existing published history HTML.
 Activating the link on an existing page requires a separately reviewed,
 conditional navigation-only update. The metadata command publishes nothing.
+
+### Work timeline narrative calibration
+
+`activity.work-timeline` keeps its original human query, three native runs and
+720000 ms attempt bound. Its v2 oracle accepts command exit-code wording and
+incidental summary mentions without using the first worker-name match as proof
+of a handoff. It requires an ordered failed command and pause, a recorded human
+reassignment to the different repair worker, and that worker's verified repair.
+Command, filename, digest, task/run, audit, link, privacy and read-only checks
+remain independent. The deterministic owner/verifier and production timeline
+route regressions do not qualify the actual model journey. Historical failures
+retain their original grades; a missing human handoff narrative still fails.
