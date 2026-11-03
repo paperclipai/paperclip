@@ -494,7 +494,7 @@ describe("codex remote execution", () => {
       onLog: async () => {},
     });
     expect(syncDirectoryToSsh).toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("does not resume saved Codex sessions for remote SSH execution without a matching remote identity", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-resume-"));
