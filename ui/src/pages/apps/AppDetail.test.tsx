@@ -49,6 +49,7 @@ const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "permissions
 const mockSearchParams = vi.hoisted(() => ({ value: new URLSearchParams() }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
+const popupAssignMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -353,6 +354,9 @@ describe("AppDetail", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    popupAssignMock.mockReset();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
+
     sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1507,7 +1511,7 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
   });
 
   it("reconnects an OAuth warning through the connection's existing personal identity", async () => {
@@ -1529,7 +1533,7 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { asCurrentUser: true });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
   });
 
   it("does not offer a personal reconnect to someone other than its fixed owner", async () => {
@@ -1684,7 +1688,7 @@ describe("AppDetail", () => {
       subjectUserId: "user-1",
       returnTo: "/apps/conn-1/permissions",
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
   });
 
   it("keeps personal managed authorization in the tenant until the provider is ready", async () => {
@@ -1710,7 +1714,7 @@ describe("AppDetail", () => {
       body: JSON.stringify({ session }),
     }));
     await vi.waitFor(() => {
-      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      expect(popupAssignMock).toHaveBeenCalledWith(
         "https://provider.example.test/authorize?state=personal",
       );
     });

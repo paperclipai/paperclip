@@ -929,7 +929,7 @@ Standard. Artifact type filters also support Compact for dense standalone uses. 
 patterns. Tabs contains only Playground, Standard and Compact. Playground
 compares the two sizes with local fixture state; narrow width remains a control.
 
-Accepted toolbar foundation for Design Proposals and the opt-in sandbox:
+Accepted toolbar foundation for all production inline collection and audit toolbars:
 
 - Use the shared `ToolbarSearch` and 44px control height, with one token-driven
   border, radius and horizontal padding across Tasks, Decisions, Skills and
@@ -954,6 +954,22 @@ Further consolidation proposals, pending visual review:
 - Use canonical Standard or Compact filled tabs for the compared label strips.
   Keep panel-switching tab semantics separate from exclusive collection
   filters. Closable document tabs retain their additional behavior.
+
+### Collection empty states and roster selection
+
+Projects uses the large artifact stack with a white Paperclip mark on a dark grey
+image front. The empty-state action is “Create project”. Artwork, message and
+primary action have 20px gaps (`gap-5`). Hovering or keyboard-focusing the action
+fans the same artwork as hovering the graphic. Artifacts uses that stack for
+Tasks and the corresponding single full-size artifact for each other type filter.
+
+Agent lists give chat and status their own vertically centered cells. Chat has a
+screen-reader-only column label and a MessageCircleCheck icon action. Hover and
+focus highlight the entire row; the identity link has no separate background.
+Bulk actions portal to a fixed card centered in the viewport, 48px above the
+bottom safe area, with the shared border and a soft shadow. The card retains its
+contents during the quintic rise/drop transition; reduced motion removes travel.
+Selection never inserts space above the roster.
 
 ### Segmented controller comparison
 

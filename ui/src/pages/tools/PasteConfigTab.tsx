@@ -14,8 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
-import { navigateTopLevel } from "@/lib/browserNavigation";
-import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useNavigate } from "@/lib/router";
 import {
   OAuthConnectStateScreen,
@@ -113,6 +112,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
 
+  const authorization = useAuthorizationWindow();
   const importMutation = useMutation({
     mutationFn: (mcpJson: string) => toolsApi.importMcpJson(companyId, { mcpJson }),
     onSuccess: (result) => {
@@ -128,13 +128,9 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     handoff?: ToolOAuthStartResult["handoff"],
   ) => {
     try {
-      const target = await prepareOAuthNavigation({ authorizationUrl, handoff });
-      if (target.kind === "reauthentication" && handoff) {
-        savePendingCloudHandoff(handoff.session);
-      }
-      setAuthorizationHost(target.host);
-      setOAuthPhase(target.kind === "authorization" ? "redirecting" : "starting");
-      navigateTopLevel(target.url);
+      await authorization.open({ authorizationUrl, handoff });
+      setAuthorizationHost(new URL(authorizationUrl, window.location.origin).host);
+      setOAuthPhase("redirecting");
     } catch (error) {
       setOAuthPhase("error");
       setOAuthError(error instanceof Error ? error.message : "Paperclip couldn’t start secure sign-in. Try again.");
@@ -145,6 +141,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
     onSuccess: (start) => void openAuthorizationPage(start.authorizationUrl, start.handoff),
     onError: (error) => {
+      authorization.cancel();
       setOAuthPhase("error");
       setOAuthError(
         error instanceof Error
@@ -171,6 +168,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         setAuthorizationHost(null);
         setOAuthError(null);
         if (result.auth.manualClientRequired) {
+          authorization.cancel();
           setOAuthPhase("error");
           setOAuthError(
             "This server requires OAuth client details from its provider settings. Continue in setup to add them.",
@@ -186,12 +184,14 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         }
         return;
       }
+      authorization.cancel();
       const defaults: Record<string, boolean> = {};
       for (const action of result.actions.readOnly) defaults[action.catalogEntryId] = true;
       for (const action of result.actions.canMakeChanges) defaults[action.catalogEntryId] = true;
       setEnabled(defaults);
       setActivatedName(null);
     },
+    onError: () => authorization.cancel(),
   });
 
   const finishMutation = useMutation({
@@ -230,7 +230,8 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       : typeof connectResult.connection.transportConfig?.url === "string"
         ? connectResult.connection.transportConfig.url
         : "";
-    return (
+    return (<>
+      {authorization.fallback}
       <OAuthConnectStateScreen
         identity={{
           name: connectResult.application.name,
@@ -240,6 +241,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         error={oauthError}
         authorizationHost={authorizationHost}
         onRetry={() => {
+          authorization.reserve();
           setOAuthError(null);
           setAuthorizationHost(null);
           setOAuthPhase("starting");
@@ -248,7 +250,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         onBack={() => navigate(`/apps/${connectResult.connectionId}/permissions`)}
         onCancel={() => navigate("/apps")}
       />
-    );
+    </>);
   }
 
   return (
@@ -332,7 +334,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
                   }
                   checking={connectMutation.isPending && connectMutation.variables?.name === draft.name}
                   canCheck={Boolean(url) && missingFields.length === 0}
-                  onCheck={url ? () => connectMutation.mutate(draft) : undefined}
+                  onCheck={url ? () => { authorization.reserve(); connectMutation.mutate(draft); } : undefined}
                 />
               );
             })}

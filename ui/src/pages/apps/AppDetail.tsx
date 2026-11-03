@@ -35,8 +35,7 @@ import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
-import { navigateTopLevel } from "@/lib/browserNavigation";
-import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -345,15 +344,12 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       }),
   });
 
+  const authorization = useAuthorizationWindow();
   const startOAuth = useMutation({
     mutationFn: (input?: { asAgentId?: string }) => toolsApi.startOAuth(connectionId, input),
     onSuccess: async (start) => {
       try {
-        const target = await prepareOAuthNavigation(start);
-        if (target.kind === "reauthentication" && start.handoff) {
-          savePendingCloudHandoff(start.handoff.session);
-        }
-        navigateTopLevel(target.url);
+        await authorization.open(start);
       } catch (error) {
         pushToast({
           title: "Couldn't start sign-in",
@@ -362,12 +358,14 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
         });
       }
     },
-    onError: (error) =>
+    onError: (error) => {
+      authorization.cancel();
       pushToast({
         title: "Couldn't start sign-in",
         body: error instanceof Error ? error.message : "Please try again.",
         tone: "error",
-      }),
+      });
+    },
   });
 
   const invalidateGrants = () => {
@@ -391,11 +389,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     },
     onSuccess: async ({ url, handoff }) => {
       try {
-        const target = await prepareOAuthNavigation({ authorizationUrl: url, handoff });
-        if (target.kind === "reauthentication" && handoff) {
-          savePendingCloudHandoff(handoff.session);
-        }
-        navigateTopLevel(target.url);
+        await authorization.open({ authorizationUrl: url, handoff });
       } catch (error) {
         pushToast({
           title: "Couldn't start sign-in",
@@ -404,12 +398,14 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
         });
       }
     },
-    onError: (error) =>
+    onError: (error) => {
+      authorization.cancel();
       pushToast({
         title: "Couldn't start sign-in",
         body: error instanceof Error ? error.message : "Please try again.",
         tone: "error",
-      }),
+      });
+    },
   });
 
   // A denied or conflicting audience save keeps the dialog open with the
@@ -578,6 +574,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
 
   return (
     <div className="max-w-4xl space-y-10 pb-12">
+      {authorization.fallback}
       <AppDetailHeader
         appName={appName}
         connection={connection}
@@ -683,9 +680,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                   setAudienceOpenGrantId(null);
                   setAudienceError(null);
                 }}
-                onConnectAsMe={() => onReconnect ? onReconnect(connection) : startPersonalAuth.mutate()}
-                onConnectOrganization={() => onReconnect ? onReconnect(connection) : startOAuth.mutate()}
-                onConnectAgent={(agentId) => startOAuth.mutate({ asAgentId: agentId })}
+                onConnectAsMe={() => { if (onReconnect) onReconnect(connection); else { authorization.reserve(); startPersonalAuth.mutate(); } }}
+                onConnectOrganization={() => { if (onReconnect) onReconnect(connection); else { authorization.reserve(); startOAuth.mutate(); } }}
+                onConnectAgent={(agentId) => { authorization.reserve(); startOAuth.mutate({ asAgentId: agentId }); }}
                 onRefreshAccess={() => refreshGitHubAccess.mutate()}
                 refreshAccessPending={refreshGitHubAccess.isPending}
                 onReplaceAudience={(grant, memberUserIds) =>

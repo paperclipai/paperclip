@@ -11,6 +11,7 @@ import { ProjectTile } from "../components/ProjectTile";
 import { StatusBadge } from "../components/StatusBadge";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
+import { ArtifactEmptyGraphic } from "@/components/artifacts/v1/ArtifactEmptyGraphic";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate, formatNumber, formatProjectBudget, projectUrl } from "../lib/utils";
@@ -133,8 +134,10 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
+          graphic={<ArtifactEmptyGraphic stack />}
           message="No projects yet."
-          action="Add Project"
+          action="Create project"
+          hideActionIcon
           onAction={openNewProject}
         />
       )}

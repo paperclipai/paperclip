@@ -1,3 +1,4 @@
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -162,16 +163,17 @@ export function Connections() {
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
   });
+  const authorization = useAuthorizationWindow();
   const startConnectorEnrollment = useMutation({
     mutationFn: () => toolsApi.startCloudConnectorEnrollment(selectedCompanyId!, selectedCompany?.name),
-    onSuccess: (status) => {
-      if (status.verificationUrl) window.location.assign(status.verificationUrl);
+    onSuccess: async (status) => {
+      if (status.verificationUrl) await authorization.open(status.verificationUrl);
+      else authorization.cancel();
     },
-    onError: (error) => pushToast({
-      title: "Couldn’t reach Paperclip Cloud",
-      body: error instanceof Error ? error.message : "Try again in a moment.",
-      tone: "error",
-    }),
+    onError: (error) => {
+      authorization.cancel();
+      pushToast({ title: "Couldn’t reach Paperclip Cloud", body: error instanceof Error ? error.message : "Try again in a moment.", tone: "error" });
+    },
   });
 
   const deleteConnection = useMutation({
@@ -311,14 +313,16 @@ export function Connections() {
 
   return (
     <div className="max-w-5xl space-y-5">
+      {authorization.fallback}
       {!connectorEnrollmentQuery.isLoading ? (
         <CloudConnectorEnrollmentBanner
           status={connectorEnrollmentQuery.data}
           unavailable={connectorEnrollmentQuery.isError}
           busy={startConnectorEnrollment.isPending}
           onEnable={() => {
+            authorization.reserve();
             const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
-            if (verificationUrl) window.location.assign(verificationUrl);
+            if (verificationUrl) void authorization.open(verificationUrl).catch(error => pushToast({ title: "Couldn’t open sign-in", body: error.message, tone: "error" }));
             else startConnectorEnrollment.mutate();
           }}
         />

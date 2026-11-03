@@ -1,3 +1,4 @@
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useEffect, useRef, useState, type ComponentProps } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
@@ -8,7 +9,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SetupWizardFooter } from "@/components/SetupWizard";
 import type { OwnSlackAppSetup } from "./OwnSlackAppSetup";
-import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { sanitizedSetupErrorMessage } from "../chat-setup-error";
 
 export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, onBusy, onSaveExit, autoStart = false, reconnect = false }: ComponentProps<typeof OwnSlackAppSetup> & { autoStart?: boolean; reconnect?: boolean }) {
@@ -26,23 +26,24 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
   const needsAuthorization = !grantId || registration?.errorCode === "slack_manager_reauthorize" || Boolean(grantId && !workspaces.some(workspace => workspace.grantId === grantId));
   const uncertain = registration?.status === "uncertain";
   const creating = registration?.status === "creating";
+  const authorizationWindow = useAuthorizationWindow();
   async function run(action: () => Promise<void>) {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true); onBusy(true); setError(null);
     try { await action(); }
-    catch (failure) { setError(sanitizedSetupErrorMessage(failure, {})); await Promise.allSettled([choices.refetch(), chatEndpointsApi.get(endpoint.id).then(onSaved)]); }
+    catch (failure) { authorizationWindow.cancel(); setError(sanitizedSetupErrorMessage(failure, {})); await Promise.allSettled([choices.refetch(), chatEndpointsApi.get(endpoint.id).then(onSaved)]); }
     finally { inFlight.current = false; setBusy(false); onBusy(false); }
   }
   async function authorize() {
+    authorizationWindow.reserve();
     const authorization = await chatEndpointsApi.authorizeSlackManager(endpoint.id);
-    const target = await prepareOAuthNavigation(authorization);
-    if (target.kind === "reauthentication" && authorization.handoff) savePendingCloudHandoff(authorization.handoff.session);
-    window.location.assign(target.url);
+    await authorizationWindow.open(authorization);
   }
   async function connect() {
     if (needsAuthorization || !grantId) {
       await authorize(); return;
     }
+    authorizationWindow.reserve();
     if (!started) await saveDetails();
     if (confirmed || registration?.status === "failed") requestId.current = crypto.randomUUID();
     const input = { requestId: requestId.current, grantId, ...(reconnect ? { reconnect: true } : {}), ...(confirmed ? { confirmedNoAppCreated: true } : {}) };
@@ -50,7 +51,8 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
     const result = await chatEndpointsApi.provisionManagedSlack(endpoint.id, input);
     await choices.refetch();
     onSaved(await chatEndpointsApi.get(endpoint.id));
-    if (result.authorization) window.location.assign(result.authorization.authorizationUrl);
+    if (result.authorization) await authorizationWindow.open(result.authorization);
+    else authorizationWindow.cancel();
   }
   const autoStarted = useRef(false);
   useEffect(() => {
@@ -68,6 +70,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
     : slackRegistrationErrorMessage(code);
   const message = error ?? (endpoint.setup?.slackManagerError ? setupError(endpoint.setup.slackManagerError) : null) ?? (choices.isError ? "Couldn't load your Slack workspaces. Try again." : registration?.errorCode ? setupError(registration.errorCode) : null);
   return <div className="space-y-5">
+    {authorizationWindow.fallback}
     {message && <p role="alert" className="text-sm text-destructive">{message}</p>}
     {busy || choices.isPending || creating ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{busy ? needsAuthorization ? "Opening Slack…" : "Connecting your agent…" : creating ? "Setting up your Slack app…" : "Loading Slack…"}</p>
       : !choices.data?.managedAvailable ? <p className="text-sm">Managed Slack setup is unavailable. Try again later.</p>

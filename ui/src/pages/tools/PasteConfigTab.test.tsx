@@ -16,6 +16,7 @@ const toolsApiMock = vi.hoisted(() => ({
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
+const popupAssignMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: toolsApiMock }));
 vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: navigateTopLevelMock }));
 // The tab uses `useNavigate` from the app router (PAP-11088 draft hand-off),
@@ -175,6 +176,9 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    popupAssignMock.mockReset();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
+
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -217,6 +221,9 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    popupAssignMock.mockReset();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
+
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -405,7 +412,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       credentialValues: {},
     });
     expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(popupAssignMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=redacted",
     );
     expect(container.textContent).toContain("Unverified server");
@@ -437,7 +444,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       body: JSON.stringify({ session }),
     }));
     await vi.waitFor(() => {
-      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      expect(popupAssignMock).toHaveBeenCalledWith(
         "https://provider.example.test/authorize?state=imported",
       );
     });
@@ -473,7 +480,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(popupAssignMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=retry-redacted",
     );
   });
