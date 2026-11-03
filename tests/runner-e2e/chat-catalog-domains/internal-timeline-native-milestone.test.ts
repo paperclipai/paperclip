@@ -87,6 +87,8 @@ it.each([
   "Today (UTC): The human reassigned the task to Riley. Morgan's verification failed and work paused. Riley repaired the label and the check passed.",
   "Today (UTC): Morgan's verification failed and work paused. The human reassigned the task to Morgan, and Riley repaired the label and the check passed.",
   "Today (UTC): Morgan's verification failed and work paused. Jordan reassigned the task to Riley. Riley repaired the label and the check passed.",
+  "Today (UTC): Morgan's verification failed and work paused. Jordan the human reassigned the task to Riley. Riley repaired the label and the check passed.",
+  "Today (UTC): Morgan's verification failed and work paused. Another person reassigned the task to Riley. Riley repaired the label and the check passed.",
   "Today (UTC): Morgan's native run failed and work paused. The human reassigned the task to Riley. Riley repaired the label and the check passed.",
 ])("rejects missing, wrong or unordered consequential actors: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
