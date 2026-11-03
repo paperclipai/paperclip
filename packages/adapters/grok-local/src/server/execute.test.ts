@@ -657,6 +657,32 @@ describe("grok_local execute", () => {
     expect(await pathExists(promptPath)).toBe(false);
   });
 
+  it("removes the prompt directory when the prompt write fails", async () => {
+    const createdDirs: string[] = [];
+    const originalMkdtemp = fs.mkdtemp.bind(fs);
+    const originalWriteFile = fs.writeFile.bind(fs);
+    const mkdtempSpy = vi.spyOn(fs, "mkdtemp").mockImplementation(async (prefix, options) => {
+      const dir = await originalMkdtemp(prefix, options);
+      if (String(prefix).includes("paperclip-grok-prompt-")) createdDirs.push(String(dir));
+      return dir;
+    });
+    const writeFileSpy = vi.spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+      if (String(file).endsWith("prompt.md")) throw new Error("ENOSPC: no space left on device");
+      return originalWriteFile(file, data, options);
+    });
+
+    try {
+      await expect(execute(await makeCtx("run-prompt-write-failure", await makeTempRoot()))).rejects.toThrow("ENOSPC");
+    } finally {
+      mkdtempSpy.mockRestore();
+      writeFileSpy.mockRestore();
+    }
+
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(createdDirs).toHaveLength(1);
+    expect(await pathExists(createdDirs[0]!)).toBe(false);
+  });
+
   it("passes an explicitly configured permissionMode through to the CLI", async () => {
     let seenArgs: string[] = [];
     runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {

@@ -579,11 +579,14 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const writePromptFile = async (prompt: string) => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-grok-prompt-"));
       const filePath = path.join(dir, "prompt.md");
-      await fs.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
-      return {
-        filePath,
-        remove: () => fs.rm(dir, { recursive: true, force: true }),
-      };
+      const remove = () => fs.rm(dir, { recursive: true, force: true });
+      try {
+        await fs.writeFile(filePath, prompt, { encoding: "utf8", mode: 0o600 });
+      } catch (error) {
+        await remove().catch(() => undefined);
+        throw error;
+      }
+      return { filePath, remove };
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
