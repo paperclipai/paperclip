@@ -1284,6 +1284,22 @@ can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching
 session and health; reconnects and visibility recovery retain full reconciliation.
 
+### Authenticated board startup
+
+`GET /api/auth/get-session` can include an optional `boardBootstrap` for the same
+authenticated session or Cloud tenant actor. It contains accessible company
+snapshots and the existing current-board-access projection. Directory visibility
+through instance admin alone does not add accessible companies. The ordinary
+session schema stays compatible with clients that ignore this projection.
+
+The browser seeds account-keyed navigation and board-access queries from this
+response, avoiding two serial startup reads. Normal company/access readers still
+own invalidation and refresh. A new successful session snapshot replaces older
+cached membership/access for a returning account once; later ordinary reads and
+mutations can update those queries. Missing, malformed, or failed optional bootstrap
+falls back to those readers; a failed session does not become an anonymous cache
+entry. Local trusted startup keeps its existing synthetic `local-board` principal.
+
 ### Run history authorization reads
 
 Run history reuses the authorization service's batch read API for distinct task
