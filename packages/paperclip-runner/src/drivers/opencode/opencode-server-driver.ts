@@ -3371,11 +3371,19 @@ export function parseOpenCodeCustomProviders(
       if (Object.keys(retained).length > 0) options.headers = retained;
       else delete options.headers;
     }
-    // Only providers with their own endpoint are supported. Anything else
-    // overrides a built-in provider, which cannot be fronted by a proxy and
-    // would have to carry its credential in the agent-readable config.
+    // An entry without its own endpoint overrides a built-in provider. It cannot
+    // be fronted by a proxy, so a credential declared here would have to sit in
+    // the agent-readable config: reject that entry. A credential-free override
+    // only adds settings (models, limits), so it is kept as written.
     if (!baseUrl) {
-      warnings.push(`PAPERCLIP_OPENCODE_PROVIDERS: provider "${providerId}" has no baseURL; only providers with an explicit endpoint are supported. The entry was ignored.`);
+      if (rawKey) {
+        warnings.push(`PAPERCLIP_OPENCODE_PROVIDERS: provider "${providerId}" declares an API key without baseURL; the override was ignored. Add baseURL to use a custom credential.`);
+        continue;
+      }
+      delete options.apiKey;
+      if (Object.keys(options).length > 0) sanitized.options = options;
+      else delete sanitized.options;
+      providers[providerId] = sanitized;
       continue;
     }
     delete options.apiKey;

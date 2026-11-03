@@ -155,4 +155,21 @@ describe("codexCustomProviderToml", () => {
     expect(toml).not.toContain("gateway-key");
     expect(toml).toContain('X-Route = "eu"');
   });
+
+  it("keeps a credential-free override but skips one that names a key", () => {
+    const kept = codexCustomProviderToml({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        providers: { openrouter: { name: "OpenRouter overrides" } },
+      }),
+    });
+    expect(kept).toContain("[model_providers.openrouter]");
+
+    const skipped = codexCustomProviderToml({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        providers: { openrouter: { env_key: "OPENROUTER_API_KEY" } },
+      }),
+      OPENROUTER_API_KEY: "router-key",
+    });
+    expect(skipped).toBe("");
+  });
 });

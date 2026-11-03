@@ -173,18 +173,20 @@ describe("parseOpenCodeCustomProviders", () => {
     ]);
   });
 
-  it("ignores an entry without an endpoint", () => {
+  it("keeps a credential-free override of a built-in provider", () => {
     const parsed = parseOpenCodeCustomProviders({
       PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
-        openai: { models: { "gpt-x": { name: "X" } } },
+        openrouter: { models: { "vendor/model": { name: "Model", limit: { output: 4096 } } } },
       }),
     });
 
-    // Overriding a built-in provider would need a credential in the config, so
-    // only providers with their own endpoint are accepted.
-    expect(parsed.providers).toEqual({});
+    // No endpoint and no credential: the entry only adds model settings, and the
+    // runner already supplies the OpenRouter route.
+    expect(parsed.providers.openrouter).toEqual({
+      models: { "vendor/model": { name: "Model", limit: { output: 4096 } } },
+    });
     expect(parsed.credentials).toEqual([]);
-    expect(parsed.warnings[0]).toContain("has no baseURL");
+    expect(parsed.warnings).toEqual([]);
   });
 
   it("rejects an override that declares a key without an endpoint", () => {
@@ -200,6 +202,6 @@ describe("parseOpenCodeCustomProviders", () => {
     expect(parsed.providers).toEqual({});
     expect(parsed.credentials).toEqual([]);
     expect(parsed.warnings).toHaveLength(1);
-    expect(parsed.warnings[0]).toContain("has no baseURL");
+    expect(parsed.warnings[0]).toContain("without baseURL");
   });
 });

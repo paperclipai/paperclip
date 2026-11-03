@@ -333,10 +333,10 @@ export function codexCustomProviders(
     if (isRecord(entry) && providerId.trim().length > 0) {
       const resolved = resolveProviderFields(entry, environment);
       if (!resolved) continue;
-      // Only providers with their own endpoint are supported. An entry without
-      // one overrides a built-in provider, which this projection cannot front
-      // with a proxy; skip it instead of writing a bare override.
-      if (typeof resolved.base_url !== "string" || resolved.base_url.trim().length === 0) continue;
+      // An entry without its own endpoint overrides a built-in provider and
+      // cannot be proxied. Keep it only when it carries no credential.
+      const declaredBaseUrl = typeof resolved.base_url === "string" ? resolved.base_url.trim() : "";
+      if (!declaredBaseUrl && typeof resolved.env_key === "string") continue;
       // Codex reads a provider credential from the variable named by `env_key`.
       // Only one variable survives the sanitized child environment, so every
       // custom provider points at it and the run supplies the value.
