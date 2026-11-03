@@ -726,6 +726,29 @@ actual shell discovery, successful durable activity recording, and denial of unr
 Runner state, descriptor writes and ambient secrets. The normal suite covers
 bounded framing, concurrent publishers, fixed-path cleanup and attachment fencing.
 
+Codex receives write access to Runner's private activity-channel directory, with
+the lock file explicitly read-only. The FIFO itself must not be a writable
+filesystem root: Codex adds protected metadata children to writable roots, which
+cannot exist beneath a FIFO. The helper and discovery descriptor remain read-only;
+the activity grant does not expose Runner state or change workspace/network policy.
+
+To check restrictive Plan mode without credentials or a model call, run the
+actual channel/policy producer against the pinned Linux Codex sandbox:
+
+```sh
+CODEX_NOTIFICATION_SANDBOX_COMMAND=/absolute/path/to/pinned/codex \
+CODEX_NOTIFICATION_SANDBOX_RESOURCES=/absolute/path/to/pinned/executable/resources \
+cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib \
+  read_only_codex_opens_with_runtime_activity -- --ignored
+```
+
+This checks instruction reads, FIFO writes, and denial of workspace writes,
+unrelated Runner-state reads, descriptor writes, and lock writes/removal. An
+isolated non-Linux host can instead set `CODEX_NOTIFICATION_FIXTURE_EXPORT` to a
+JSON file and omit `CODEX_NOTIFICATION_SANDBOX_COMMAND`; that only exports a
+synthetic producer fixture for a separately controlled Linux sandbox. Exporting
+the fixture does not execute or verify the sandbox.
+
 ## Direct live protocol qualification
 
 The canonical direct live protocol suite lives in the separate
