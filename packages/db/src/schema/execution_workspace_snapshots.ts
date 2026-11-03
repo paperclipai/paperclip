@@ -1,4 +1,5 @@
 import { bigint, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /** Durable object ledger deliberately survives deletion of its source records. */
 export const executionWorkspaceSnapshots = pgTable("execution_workspace_snapshots", {
@@ -27,4 +28,7 @@ export const executionWorkspaceSnapshots = pgTable("execution_workspace_snapshot
   generationUniqueIdx: uniqueIndex("execution_workspace_snapshots_generation_uniq").on(table.companyId, table.executionWorkspaceId, table.generation),
   workspaceIdx: index("execution_workspace_snapshots_workspace_idx").on(table.companyId, table.executionWorkspaceId),
   cleanupIdx: index("execution_workspace_snapshots_cleanup_idx").on(table.status, table.deleteAfter),
+  importedChildrenIdx: index("execution_workspace_snapshots_imported_children_idx")
+    .using("gin", sql`(${table.metadata}->'importedWorkspaceChildren') jsonb_path_ops`)
+    .where(sql`${table.metadata} ? 'importedWorkspaceChildren'`),
 }));
