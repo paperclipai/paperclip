@@ -1600,8 +1600,9 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
-After a plugin session passes provider recovery and durable run admission, its
-local suspension receipt is removed. The running session then owns authority;
+After a remote sandbox session passes provider recovery and durable run admission,
+its local suspension receipt is removed. This applies to built-in sandbox runners
+and plugin tasks. The running session then owns authority;
 the old receipt must not conflict with a later warm run's journal identity.
 Failed admission retains the receipt. Normal suspension writes a new receipt.
 

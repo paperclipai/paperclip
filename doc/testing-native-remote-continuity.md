@@ -19,6 +19,10 @@ same Runner and provider history through another healthy follow-up. This is a
 controlled cache fault, not a reconstruction of a historical incident.
 Each recovery case includes another healthy turn after the recovered turn and
 asserts that it does not start another runner or provider process.
+The `warm-suspended` case suspends the first turn, resumes it in a new controller,
+then keeps that controller warm for the third turn. It must retire the first
+turn's local suspension receipt so the third turn can reuse the resumed Runner
+and provider history without a second process or repeated turn.
 The same-server case also starts preparation lease renewal during recovery and
 holds instruction collection open past a renewal tick after coordinator release.
 The executor must acquire renewal before preparation releases its reference, then
