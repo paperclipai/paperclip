@@ -197,7 +197,8 @@
           "properties": {
             "code": { "type": "string", "minLength": 1, "maxLength": 160 },
             "message": { "type": "string", "maxLength": 8192 },
-            "retryable": { "type": "boolean" }
+            "retryable": { "type": "boolean" },
+            "providerFailure": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-failure.schema.json" }
           },
           "additionalProperties": false
         }

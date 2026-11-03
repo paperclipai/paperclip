@@ -10,6 +10,13 @@ import { notifyEnvironmentCleanup, writeEnvironmentCleanup } from "./environment
 
 export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSelect;
 
+export function recoverableTaskCreation(operation: Pick<SandboxCreationOperation, "metadata">): boolean {
+  const metadata = operation.metadata;
+  return metadata.runnerTaskLease === true && metadata.creationOperationVersion === 1 &&
+    typeof metadata.runnerTaskCreationContextId === "string" && metadata.runnerTaskCreationContextId.length > 0 &&
+    metadata.providerMetadata !== null && typeof metadata.providerMetadata === "object" && !Array.isArray(metadata.providerMetadata);
+}
+
 type CreationOwner = {
   companyId: string;
   environmentId: string;
@@ -70,8 +77,22 @@ export async function createOwnedSandbox(
     return { providerLeaseId: existing.providerLeaseId, expiresAt: existing.expiresAt?.toISOString(),
       metadata: { ...existing.metadata, creationOperationId: operation.id } };
   }
-  const lease = await create({ id, runId });
-  return { ...lease, metadata: { ...lease.metadata, creationOperationId: id } };
+  try {
+    const lease = await create({ id, runId });
+    return { ...lease, metadata: { ...lease.metadata, creationOperationId: id } };
+  } catch (error) {
+    if (recoverableTaskCreation(operation)) {
+      try {
+        await writeEnvironmentCleanup(db, tx => tx.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(), updatedAt: new Date() })
+          .where(and(eq(sandboxCreationOperations.id, id), recoverableSandboxCreationCondition())),
+        { companyId: operation.companyId, runId: operation.runId });
+      } catch {
+        logger.warn({ errorKind: "task_creation_recovery_wakeup_failed", operationId: id, companyId: operation.companyId },
+          "Task creation recovery retains its saved deadline");
+      }
+    }
+    throw error;
+  }
 }
 
 /** Keep an already returned resource identity even when task attachment fails.
@@ -129,6 +150,7 @@ export async function queueSandboxCreationCleanup(db: Db, input: {
 
 export async function recoverSandboxCreations(db: Db,
   inspect: (operation: SandboxCreationOperation) => Promise<PluginEnvironmentLeaseObservation | null>,
+  onTaskRecovered?: (operation: SandboxCreationOperation) => void | Promise<void>,
 ): Promise<void> {
   const due = await db.select().from(sandboxCreationOperations).where(and(
     recoverableSandboxCreationCondition(), lte(sandboxCreationOperations.nextAttemptAt, new Date()),
@@ -139,10 +161,25 @@ export async function recoverSandboxCreations(db: Db,
           typeof candidate.metadata.creationProviderLeaseId === "string") {
         await queueSandboxCreationCleanup(db, { id: candidate.id, companyId: candidate.companyId,
           environmentId: candidate.originalEnvironmentId, providerLeaseId: candidate.metadata.creationProviderLeaseId });
+        if (recoverableTaskCreation(candidate)) await onTaskRecovered?.(candidate);
         continue;
       }
       const [existingCompany] = await db.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).limit(1);
       const observation = existingCompany ? await inspect(candidate) : null;
+      if (existingCompany && recoverableTaskCreation(candidate) && observation?.creationLease) {
+        const lease = observation.creationLease;
+        if (typeof lease.providerLeaseId !== "string" || lease.providerLeaseId.length === 0 || lease.providerLeaseId !== observation.providerLeaseId ||
+            !lease.metadata || typeof lease.metadata !== "object" || Array.isArray(lease.metadata)) {
+          throw new Error("Task creation recovery returned foreign ownership");
+        }
+        const identity = { id: candidate.id, companyId: candidate.companyId, environmentId: candidate.originalEnvironmentId,
+          providerLeaseId: lease.providerLeaseId, providerMetadata: lease.metadata };
+        await recordSandboxCreationResource(db, identity);
+        await queueSandboxCreationCleanup(db, identity);
+        await onTaskRecovered?.(candidate);
+        continue;
+      }
+      if (existingCompany && recoverableTaskCreation(candidate)) throw new Error("Task creation identity is not available yet");
       const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
         schema: "paperclip/environment-creation-cleanup/v1", cleanup: observation.creationCleanup,
       } }) : null;

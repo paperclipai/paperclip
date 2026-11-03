@@ -82,13 +82,13 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Install isolated qualification tools
-        run: npm install --prefix "$RUNNER_TEMP/ci-tools" --no-audit --no-fund turbo@2.11.10
+        run: npm install --prefix "$RUNNER_TEMP/ci-tools" --no-audit --no-fund turbo@2.11.10 pnpm@9.15.4
       - name: Prove planning and required checks
         run: node --test .github/scripts/tests/ci-plan.test.mjs .github/scripts/tests/ci-routing.test.mjs
       - name: Prove real cache reuse and invalidation
         env:
           PAPERCLIP_CI_TEST_TURBO: ${{ runner.temp }}/ci-tools/node_modules/.bin/turbo
-        run: node --test scripts/ci/cache.integration.test.mjs
+        run: PATH="$RUNNER_TEMP/ci-tools/node_modules/.bin:$PATH" node --test scripts/ci/cache.integration.test.mjs
       - name: Check the real repository task graph
         env:
           CI_TURBO_BIN: ${{ runner.temp }}/ci-tools/node_modules/.bin/turbo

@@ -37,6 +37,7 @@ import {
 import { environmentService } from "./environments.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import type { Company } from "@paperclipai/shared";
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -117,6 +118,8 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     name: companies.name,
     description: companies.description,
     status: companies.status,
+    pauseReason: companies.pauseReason,
+    pausedAt: companies.pausedAt,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
@@ -133,9 +136,11 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     updatedAt: companies.updatedAt,
   };
 
-  function enrichCompany<T extends { logoAssetId: string | null }>(company: T) {
+  function enrichCompany<T extends { logoAssetId: string | null; status: string; pauseReason: string | null }>(company: T) {
     return {
       ...company,
+      status: company.status as Company["status"],
+      pauseReason: company.pauseReason as Company["pauseReason"],
       logoUrl: company.logoAssetId ? `/api/assets/${company.logoAssetId}/content` : null,
     };
   }

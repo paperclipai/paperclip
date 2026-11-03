@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -15,8 +15,15 @@ const MODEL = "openrouter/deepseek/deepseek-v4-flash-0731";
 type RpcFrame = { id?: string | number; method?: string; result?: unknown; error?: unknown };
 
 async function startProxy(root: string, proxy: string, executable: string, runtime: string) {
-  const fd = process.platform === "linux" ? openSync(executable, "r") : undefined;
-  const child = spawn(process.execPath, [proxy, "--paperclip-trusted-opencode-executable", fd === undefined ? executable : "/proc/self/fd/3"], {
+  const launchRoot = join(root, `.paperclip-verified-executable-${randomUUID().replaceAll("-", "")}`);
+  await mkdir(launchRoot, { mode: 0o700 });
+  await chmod(launchRoot, 0o700);
+  const snapshot = join(launchRoot, "launch");
+  await copyFile(executable, snapshot);
+  await chmod(snapshot, 0o500);
+  expect(await readFile(snapshot)).toEqual(await readFile(executable));
+  const fd = process.platform === "linux" ? openSync(snapshot, "r") : undefined;
+  const child = spawn(process.execPath, [proxy, "--paperclip-trusted-opencode-executable", fd === undefined ? snapshot : "/proc/self/fd/3"], {
     // Keep an enclosing Paperclip run's launch bindings out of this fixture.
     env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PAPERCLIP_"))),
       PAPERCLIP_OPENCODE_RUNTIME_DIR: runtime, OPENROUTER_API_KEY: "fixture-key",
@@ -55,10 +62,7 @@ async function startProxy(root: string, proxy: string, executable: string, runti
 
 it("resumes a session whose OpenCode message history exceeds runnerd's frame limit", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-proxy-thread-read-"));
-  const launchRoot = join(root, `.paperclip-verified-executable-${randomUUID().replaceAll("-", "")}`);
-  await mkdir(launchRoot, { mode: 0o700 });
-  await chmod(launchRoot, 0o700);
-  const executable = join(launchRoot, "launch");
+  const executable = join(root, "fixture-launch");
   const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
   execFileSync("cc", ["-x", "c", "-o", executable, "-"], { input: `#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(fixture)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
   if (process.platform === "darwin") {

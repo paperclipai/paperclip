@@ -565,6 +565,34 @@ describe("NativeExecutionInputV2 planning", () => {
       planningContext: null,
     })).toMatchObject({ task: { workMode: "planning" }, executionMode: "default" });
   });
+
+  const cloudContext = {
+    prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest: "0".repeat(64), manifestDigest: "0".repeat(64), rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 1 } },
+    skills: [], mcp: { assignmentSetId: "none", digest: "0".repeat(64), bindingId: null },
+  } as const;
+  const cloudPlanning = {
+    ...planning, schema: "paperclip.native-execution-input.v5",
+    provider: { kind: "cursor_cloud", model: "explicit-cloud-model", cursorCloud: { schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/fixture" }] } },
+    session: { ...planning.session, driverKind: "cursor_cloud_api" },
+    runtimeContext: { ...cloudContext, aggregateDigest: canonicalNativeRuntimeContextDigest(cloudContext) },
+  } as const;
+
+  it("preserves Cursor Cloud semantic planning and its pinned revision in the model envelope", () => {
+    const parsed = parseNativeExecutionInput(cloudPlanning);
+    expect(parsed).toMatchObject({ provider: { kind: "cursor_cloud" }, task: { workMode: "planning" }, executionMode: "plan", planningContext: planning.planningContext });
+    expect(buildNativeModelEnvelope(parsed)).toMatchObject({ executionMode: "plan", task: { workMode: "planning" }, planningContext: planning.planningContext });
+    expect(parseNativeExecutionInput(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
+  });
+
+  it.each([
+    ["missing context", { planningContext: null }, "planningContext is required"],
+    ["standard task", { task: { ...cloudPlanning.task, workMode: "standard" } }, "requires planning work mode"],
+    ["default with context", { executionMode: "default" }, "only valid in plan execution mode"],
+    ["warm session", { session: { ...cloudPlanning.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 1000 } } }, "Cursor Cloud requires"],
+  ])("keeps Cursor Cloud planning validation closed for %s", (_name, change, error) => {
+    expect(() => parseNativeExecutionInput({ ...cloudPlanning, ...change })).toThrow(error as string);
+  });
 });
 
 describe.each(["ask", "skill_test"])("NativeExecutionInputV2 %s mode", (workMode) => {

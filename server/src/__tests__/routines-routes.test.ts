@@ -650,6 +650,7 @@ describe("routine routes", () => {
     }, {
       agentId: null,
       userId: "board-user",
+      runId: null,
     });
   });
 

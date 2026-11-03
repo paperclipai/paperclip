@@ -1,5 +1,57 @@
 # Paid runner full-stack E2E
 
+The explicit-only `cursor-cloud` suite uses a local controller and hosted Cursor
+Cloud work. Its four required cells check a downloaded registered artifact,
+question/answer continuation on the same Cloud agent, UI Stop of an
+independently observed active Cloud run, and semantic Plan revision/approval.
+It is experimental and unqualified until all four real cells pass.
+Model acknowledgement and provider dollar cost remain
+unavailable; catalog discovery and support tests are not live acceptance.
+
+Configure `PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_MODEL` with an exact account model,
+`PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO` with an owned disposable HTTPS repository,
+optional `PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF`, and `CURSOR_API_KEY`.
+Set `PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT` to a dedicated free loopback port and
+point an HTTPS tunnel at **that port only**. After approving unpriced provider
+spend for these disposable tests, set
+`PAPERCLIP_CURSOR_CLOUD_ALLOW_UNPRICED_QUALIFICATION=1`. Missing opt-in blocks
+before credential loading or fixture creation. Each fresh Cursor Cloud fixture
+sets and reads back only its company and agent monthly billed-cost policies:
+1,000 cents, active hard stops, and `unpricedUsagePolicy: allow`. A failed or
+mismatched readback blocks task dispatch. The verified policy receipt is retained
+in `fixtures.json`. These limits still stop known billed costs; they do not cap
+unpriced usage. Provider cost remains unavailable, never inferred as zero.
+Set `PAPERCLIP_PUBLIC_URL` to the
+tunnel's origin. The E2E wrapper exposes only POST `/mcp/native-runs/:runId`
+through this listener; it rejects the UI and `/api/` paths. Public ingress is
+checked before fixtures or provider work. Never tunnel the local operator app.
+
+Discover with `pnpm test:e2e:runner -- --list --suite cursor-cloud`. The smallest
+paid cell is `pnpm test:e2e:runner -- --id cursor-cloud.runner-cursor-cloud.local.task-artifact`.
+Select `cloud-followup`, `active-run-stop`, or `plan-revise-accept` explicitly for
+the other cells. The Plan cell reuses the production planning flow: publish a
+two-step Plan, request and review a three-step revision, then approve that exact
+revision in the browser before completion. Its three expected runs use
+Paperclip planning authority with Cursor's default harness; it does not exercise
+Cursor's native Plan API or native plan-decision callbacks.
+Draft and revision share one owned Cloud session. Approval must carry the exact
+revised interaction's fresh-session receipt and start a new owned Agent/session;
+all three turns require distinct Cloud runs. The follow-up cell keeps its
+separate same-Agent/session continuity requirement.
+The complete bounded checkpoint is `pnpm test:e2e:runner -- --suite cursor-cloud`.
+Each cell permits one attempt. Missing prerequisites setup-block before provider
+work. Teardown cancels observed active runs and deletes only agents named by
+run-owned persisted notices.
+After each owned Agent deletion, cleanup polls only its exact GET for up to
+30 seconds to confirm 404, including after an ambiguous deletion reply. It does
+not repeat DELETE; authorization failures, unknown read failures and continued
+presence still fail cleanup. Earlier cleanup failures keep their original grades.
+The Stop proof includes a 15-second quiet window
+over native run status, published artifact absence, and local non-continuation;
+it does not inspect the entire remote filesystem. Attempts remain private because
+ordinary run snapshots can contain native session identifiers. Use the existing
+local report generator; the public history publisher refuses this suite.
+
 The [chat scenario catalog](chat-scenarios/README.md) plans conversational
 coverage across the product using human requests, assumed context and expected
 outcomes. It shares feature-map capability IDs and belongs to this Product E2E
@@ -3371,3 +3423,46 @@ It uses `local_trusted` authentication and no model provider. Its result does no
 qualify browser reconnects, active-agent continuity, distinct packaged releases
 or Railway. Keep failed receipts alongside successful attempts; the private
 server logs and config files may contain credentials and are not shareable evidence.
+
+### Report a terminal catalog run from retained evidence
+
+A missing cell projection makes the normal strict aggregate fail. It must not
+silently discard authentic sibling results or turn unavailable evidence into an
+original failed evaluation. For an operator recovery, authenticate the original
+selection, terminal GitHub jobs and exact retained archive keys first. Recover
+available originals through the existing sealed-inventory reader and exporter.
+Do not run agents again or change the original grades.
+
+The aggregate owner has an explicit offline data preparation mode:
+
+```sh
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/chat-full-catalog-testops-merge.ts retained-reporting \
+  <safe-singleton-projection-root> <new-output-directory> \
+  <authenticated-original-selection.json> <retained-disposition.json> <executor-commit-sha>
+```
+
+`RetainedDisposition` in that module defines the closed input contract. It binds
+its origin to the selection, its selection digest to the exact two-space JSON
+serialization, and its terminal-job and custody observations to SHA-256 digests.
+Every missing execution needs an explicit `not_found` observation at its exact
+source-derived archive key. This input records an operator's authenticated
+observations; the offline command does not grant read or publish authority.
+Active jobs, unexplained omissions, duplicates and foreign identities fail.
+
+The command reuses the unchanged strict original exporter. It emits one frozen
+Allure bundle and `reporting-manifest.json`. The coverage count separates graded
+originals from reporting gaps. Gaps are separate DTOs with UNKNOWN original grade,
+checks, native-run count and cleanup. Their TestOps outcome is `broken`, not an
+inferred feature failure or pass. They have no fabricated duration or test steps.
+Only the flat `allure/` JSON files are transport files; the manifest stays outside
+any upload archive. Private originals, screenshots and traces stay private.
+
+Review the immutable payload and its file hashes before an authorized upload to
+the original jobrun. Persist a once-intent before transmission. After an ambiguous
+response, reconcile with manual GET requests or an independently reviewed,
+gap-aware read-only check; do not resend or regenerate UUIDs. The existing
+`verify-upload` CLI accepts strict original outcomes only. It cannot verify the
+separate BROKEN gap shape and must not be used for this recovery bundle. Final
+coverage must match all selected case IDs and preserve the separate gap count.
+This mode prepares data only. It does not upload, start jobs, reopen launches,
+change credentials, or change evaluation and evidence limits.
