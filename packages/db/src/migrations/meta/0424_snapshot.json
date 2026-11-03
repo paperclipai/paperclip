@@ -1,5 +1,5 @@
 {
-  "id": "2b072fcd-d22c-401b-bf40-eccff6ec0443",
+  "id": "cb093c1d-3e54-4ab2-8009-9c243097224c",
   "prevId": "fe0b877c-d63e-46d9-8798-c7729fd13eb7",
   "version": "7",
   "dialect": "postgresql",
@@ -5847,12 +5847,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "origin_run_id": {
-          "name": "origin_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "status": {
           "name": "status",
           "type": "text",
@@ -5900,21 +5894,6 @@
         }
       },
       "indexes": {
-        "approvals_origin_run_idx": {
-          "name": "approvals_origin_run_idx",
-          "columns": [
-            {
-              "expression": "origin_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "approvals_pending_retention_idx": {
           "name": "approvals_pending_retention_idx",
           "columns": [
@@ -5990,19 +5969,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "approvals_origin_run_id_heartbeat_runs_id_fk": {
-          "name": "approvals_origin_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "origin_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -50511,6 +50477,12 @@
         "trigger_payload": {
           "name": "trigger_payload",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_run_id": {
+          "name": "created_by_run_id",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

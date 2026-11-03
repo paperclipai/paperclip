@@ -62,6 +62,7 @@ import {
 } from "../native-runtime/native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "../native-runtime/native-review-dispatch.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
+import { preserveTaskRemoteWorkspaceWriter } from "../native-runtime/native-failed-workspace-recovery.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import {
   slackMentionAllowsRunStart,
@@ -2281,6 +2282,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       triggerDetail,
       payload,
     });
+    const hasIndependentConversationWakeCause = () => Boolean(
+      wakeCommentId || opts.taskRetryRequestId ||
+      hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
+      reason === CHAT_COMPLETION_WAKE_REASON,
+    );
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.
     // Overwrite caller-supplied nested context rather than trusting it.
@@ -2334,7 +2340,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
-        if (!wakeCommentId && !opts.taskRetryRequestId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot) && reason !== CHAT_COMPLETION_WAKE_REASON) return null;
+        if (isWaitingConversation(conversation) && !hasIndependentConversationWakeCause()) return null;
       }
     }
     if (agent.adapterType === "paperclip_runner") {
@@ -3224,6 +3230,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "skipped" as const };
           }
 
+          // Completion can settle the conversation while admission is outside
+          // the issue lock. Recheck the current state before persisting a wake.
+          if (isWaitingConversation(issue) && !hasIndependentConversationWakeCause()) {
+            return { kind: "skipped" as const };
+          }
+
           if (taskRetryActorId) {
             await assertTaskRetryConversationAllowed(tx as unknown as Db, issue, taskRetryActorId);
             if (await retireSupersededTaskRetry(tx as unknown as Db, {
@@ -3475,6 +3487,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               )).limit(1)
             : [];
           const verifiedConversationReset = Boolean(resetComment && isConversationReset(resetComment.body));
+          if (wakeCommentId && opts.requestedByActorType === "user")
+            await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, issue.companyId, issue.id);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null },
