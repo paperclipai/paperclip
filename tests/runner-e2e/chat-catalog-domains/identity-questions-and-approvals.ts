@@ -3,7 +3,7 @@ import { expect } from "@playwright/test";
 import { createIssueThreadInteractionSchema } from "../../../packages/shared/src/validators/issue.js";
 import { pollUntil } from "../api.js";
 import { checks, project, entity, hasLink, putDocument } from "./internal-support.js";
-import { identityDefinition, identityObservation, observeIdentity, openStandingChat, readAgentResource, waitForReply, type Interaction } from "./identity-support.js";
+import { identityDefinition, identityObservation, observeIdentity, openStandingChat, readAgentResource, waitForReply, remainingIdentityObservationBudget, type Interaction } from "./identity-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 const audiencePeople = new WeakMap<ChatCatalogContext, Awaited<ReturnType<typeof createAuthenticatedPerson>>>();
@@ -158,7 +158,9 @@ export const questionIdentityCases = [
     authentication: "human-session",
     sourceFiles: ["chat-catalog-domains/identity-questions-and-approvals.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"],
     async act(ctx, state) {
-      await waitForReply(ctx);
+      remainingIdentityObservationBudget(ctx);
+      await waitForReply(ctx, ctx.observationDeadlineAt);
+      remainingIdentityObservationBudget(ctx);
       const response = await ctx.input.page.context().request.post(`${ctx.input.api.baseURL}/api/issues/${ctx.issue()!.id}/interactions/${entity(state, "original").id}/accept`,
         { data: {}, headers: { Origin: ctx.input.api.baseURL } }); state.humanAcceptStatus = response.status();
     },
