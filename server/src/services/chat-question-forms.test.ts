@@ -99,6 +99,57 @@ function interaction(
 }
 
 describe("chat question forms", () => {
+  it("preserves context, complete help and editable starting text in a native form", () => {
+    const current = interaction();
+    current.summary = "General checks passed; one detail is needed.";
+    current.payload.questionSet!.description = "The answer determines the migration test.";
+    current.payload.questionSet!.questions[1]!.initialText = "Editable draft";
+    current.payload.questions[1]!.helpText = "Explain the expected behavior. ".repeat(12);
+    const draft = createChatQuestionFormDraft(current)!;
+    const payload = parseChatQuestionFormSubmitTokenPayload(chatQuestionFormActionRecords(draft, {
+      companyId: current.companyId, endpointId: "endpoint", conversationId: "conversation", publicationId: "publication",
+    })[1]!.payload)!;
+    const modal = buildChatQuestionFormModal(current, draft.submitActionId, payload)!;
+    const shown = JSON.stringify(modal);
+    expect(shown).toContain(current.summary);
+    expect(shown).toContain(current.payload.questionSet!.description);
+    expect(shown).toContain(current.payload.questions[1]!.helpText!.trim());
+    expect(modal.children.find(child => child.type === "text_input")).toMatchObject({ initialValue: "Editable draft" });
+  });
+
+  it.each([13, 100])("opens a native select for all %i choices", count => {
+    const current = interaction();
+    current.payload.questions = [{ ...current.payload.questions[0]!, options: Array.from({ length: count }, (_, index) => ({ id: `choice-${index}`, label: `Choice ${index}` })) }];
+    current.payload.questionSet!.questions = [{ ...current.payload.questionSet!.questions[0]!, options: current.payload.questions[0]!.options.map(({ id, label }) => ({ id, label })) }];
+    expect(createChatQuestionFormDraft(current)?.fields[0]).toMatchObject({ kind: "single_select", options: expect.any(Array) });
+  });
+
+  it("makes the original conversation audience explicit before a Slack modal answer", () => {
+    const current = interaction();
+    const draft = createChatQuestionFormDraft(current, { nativeProvider: "slack" })!;
+    const payload = parseChatQuestionFormSubmitTokenPayload(chatQuestionFormActionRecords(draft, {
+      companyId: current.companyId, endpointId: "endpoint", conversationId: "conversation", publicationId: "publication",
+    })[1]!.payload)!;
+    const modal = buildChatQuestionFormModal(current, draft.submitActionId, payload)!;
+    expect(modal.children[0]).toMatchObject({ type: "text", content: "Your answers will be shared in this Slack conversation." });
+  });
+
+  it.each([100, 101, 128])("keeps all %i custom-choice options reachable", count => {
+    const current = interaction();
+    const options = Array.from({ length: count }, (_, index) => ({ id: `choice-${index}`, label: `Choice ${index}` }));
+    current.payload.questions = [{ ...current.payload.questions[0]!, allowOther: true, options: [...options, { id: "other", label: "Other", freeText: true }] }];
+    current.payload.questionSet!.questions = [{ ...current.payload.questionSet!.questions[0]!, options, customAnswer: { enabled: true } }];
+    const draft = createChatQuestionFormDraft(current, { nativeProvider: "slack" });
+    if (count <= 100) expect(draft?.fields[0]).toMatchObject({ kind: "text" });
+    else expect(draft).toBeNull();
+  });
+
+  it("keeps an oversized editable starting value in the complete Paperclip form", () => {
+    const current = interaction();
+    current.payload.questionSet!.questions[1]!.initialText = "a".repeat(3001);
+    expect(createChatQuestionFormDraft(current)).toBeNull();
+  });
+
   it("keeps Discord's 4000-character contract explicit without changing legacy provider limits", () => {
     const current = interaction();
     current.payload.questionSet!.questions[1]!.textValidation = {
@@ -157,7 +208,7 @@ describe("chat question forms", () => {
           ),
         },
       ];
-      expect(createChatQuestionFormDraft(current)).toBeNull();
+      expect(createChatQuestionFormDraft(current)?.fields).toHaveLength(1);
       const draft = createChatQuestionFormDraft(current, {
         nativeProvider: "discord",
       });
@@ -350,6 +401,12 @@ describe("chat question forms", () => {
     },
   );
 
+  it("keeps a credential-bearing starting draft in Paperclip instead of exposing it to a chat modal", () => {
+    const current = interaction();
+    current.payload.questionSet!.questions[1]!.initialText = "xoxb-123456789012345678901234567890";
+    expect(createChatQuestionFormDraft(current)).toBeNull();
+  });
+
   it("issues opaque open, submit, field, and option tokens as durable action rows", () => {
     const now = new Date("2026-09-05T12:00:00.000Z");
     const draft = createChatQuestionFormDraft(interaction(), { now });
@@ -422,6 +479,7 @@ describe("chat question forms", () => {
             { label: "Production", value: expect.stringMatching(/^pcfo:/) },
           ],
         },
+        { type: "text", content: "Describe the user-facing change" },
         {
           type: "text_input",
           id: draft.fields[1]?.fieldId,
@@ -455,6 +513,7 @@ describe("chat question forms", () => {
             { title: "Production", value: expect.stringMatching(/^pcfo:/) },
           ],
         },
+        { type: "TextBlock", text: "Describe the user-facing change" },
         {
           type: "Input.Text",
           id: draft.fields[1]?.fieldId,

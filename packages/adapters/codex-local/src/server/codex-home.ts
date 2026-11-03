@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { buildCodexAuthInboundProvision, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME } from "./codex-auth-merge-scripts.js";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
 
@@ -26,6 +29,43 @@ export const CODEX_SYNC_ALLOWLIST = [
   ...SYMLINKED_SHARED_FILES,
   "skills",
 ] as const;
+
+/** Refresh only managed entries; remote conversation files never leave their home.
+ * The staging lease and provider retirement precede this provisioning command. */
+export function buildCodexHomeRefreshProvision(options: { mergeAuth: boolean }): SandboxManagedRuntimeAssetProvision {
+  const auth = options.mergeAuth ? buildCodexAuthInboundProvision() : undefined;
+  return {
+    stageFiles: auth?.stageFiles,
+    postUploadCommand: ({ assetDir, assetTarPath, runtimeRootDir }) => {
+      const prepare = options.mergeAuth
+        ? `if [ -f "$home/auth.json" ]; then cp "$home/auth.json" "$incoming/auth.json"; fi
+sh "$runtime_root/${CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME}" "$incoming" "$asset_tar"`
+        : 'tar -xf "$asset_tar" -C "$incoming"\nrm -f "$asset_tar"';
+      // Paths arrive confined by the runtime staging layer. Only fixed managed
+      // names are replaced; sessions, archived sessions and native indexes stay.
+      const script = `set -eu
+umask 077
+home=$1
+asset_tar=$2
+runtime_root=$3
+mkdir -p "$home"
+chmod 700 "$home"
+incoming=$(mktemp -d "$home/.paperclip-home-refresh.XXXXXX")
+trap 'rm -rf -- "$incoming"' EXIT
+trap 'exit 1' HUP INT TERM
+${prepare}
+for name in ${CODEX_SYNC_ALLOWLIST.map(shellQuote).join(" ")}; do
+  if [ -e "$incoming/$name" ] || [ -L "$incoming/$name" ]; then
+    if [ -d "$home/$name" ] || [ -L "$home/$name" ]; then rm -rf -- "$home/$name"; fi
+    mv -f -- "$incoming/$name" "$home/$name"
+  else
+    rm -rf -- "$home/$name"
+  fi
+done`;
+      return `sh -c ${shellQuote(script)} -- ${shellQuote(assetDir)} ${shellQuote(assetTarPath)} ${shellQuote(runtimeRootDir)}`;
+    },
+  };
+}
 
 export type ManagedCodexMcpGateway = {
   name: string;
@@ -362,6 +402,7 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
 }
 
 export interface StageCodexHomeForSyncOptions {
+  additionalFiles?: readonly string[];
   /** Run id, used only to make the staged temp-dir name traceable in logs. */
   runId?: string;
 }
@@ -583,6 +624,13 @@ export async function stageCodexHomeForSync(
     path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
   );
   try {
+    for (const filename of options.additionalFiles ?? []) {
+      if (!/^paperclip-observability-[A-Za-z0-9_-]+\.config\.toml$/.test(filename)) throw new Error("Invalid managed observability profile");
+      const source = path.join(effectiveCodexHome, filename);
+      const stat = await fs.lstat(source);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error("Managed observability profile must be an owned private regular file");
+      await fs.writeFile(path.join(stagedHome, filename), await fs.readFile(source), { mode: 0o600, flag: "wx" });
+    }
     for (const entry of CODEX_SYNC_ALLOWLIST) {
       await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
     }

@@ -30,6 +30,8 @@
       "enum": [
         "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.backpressure", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
         "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
+        "auth.credentials.updated",
+        "runtime.activity.recorded",
         "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic",
         "plan.updated",
         "tool.execution.started", "tool.execution.progressed", "tool.execution.completed",
@@ -69,6 +71,7 @@
     "debug": { "type": "object", "additionalProperties": true }
   },
   "allOf": [
+    { "if": { "properties": { "eventType": { "const": "auth.credentials.updated" } } }, "then": { "properties": { "sourceKind": { "const": "runner" }, "priority": { "const": 0 }, "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/auth-credentials.schema.json" } } } },
     { "if": { "properties": { "eventType": { "const": "plan.updated" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/plan" } } } },
     { "if": { "properties": { "eventType": { "enum": ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/toolExecution" } } } },
     { "if": { "properties": { "eventType": { "enum": ["research.started", "research.progressed", "research.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/research" } } } },
@@ -184,6 +187,47 @@
       "then": {
         "properties": {
           "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/result.schema.json" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       }
     }

@@ -47,10 +47,18 @@ incomplete assessments require action. To block merging, separately require this
 check from the dedicated App in GitHub branch protection or a ruleset. A new head
 commit needs its own check. Report-only mode publishes a neutral conclusion, which
 GitHub can accept for a required check; it does not enforce a score requirement.
+This includes incomplete assessments and failed runs: their checks remain neutral
+and explain the failure without presenting a passing assessment.
 A passing score does not formally approve a PR. **Approvals and change requests**
 contains those optional agent permissions. Scheduling filters, ignored files,
 and inline-comment options have separate disclosures. The header shows the App
 identity, copyable mention, avatar download, and GitHub branding settings.
+
+Published review summaries use the GitHub bot's display name in their heading.
+The check name remains **Paperclip Review**. Multiple bots can review the same
+PR through separate GitHub Apps: each keeps its own task, summary, findings, and
+check. Check updates match both the App ID and the endpoint/PR/commit identity.
+Repository branch rules decide separately which App's check is required to merge.
 
 ## Self-hosted setup
 
@@ -170,6 +178,24 @@ It retains GitHub's destructive classification. Read tools include
 Provider references: [MCP toolset configuration](https://github.com/github/github-mcp-server/blob/main/docs/server-configuration.md)
 and [workflow dispatch permissions](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
 
+GitHub response reconciliation reads run status and request identity without
+loading prompts, runtime profiles, results, or log excerpts. Request ownership
+checks still use current company, agent, task, and accepted message provenance.
+The run context projection retains `issueId`, `taskId`, `wakeCommentId`, and
+`wakeCommentIds`; larger runtime data stays in its owning reads.
+
+## Webhook delivery recovery
+
+The Cloud connector authenticates the outer event batch before it processes
+individual encrypted App deliveries. If an inner delivery cannot be decrypted
+or fails its route binding check, the instance reports a failed delivery and
+leaves it unacknowledged in Cloud. A local warning includes the authenticated
+delivery ID and a fixed failure reason, without event contents or raw errors.
+Other valid events in the batch can still finish and acknowledge independently.
+Failed ciphertext never reaches the
+GitHub webhook handler. The broker retains failed deliveries for retry under
+its normal lease and retention policy; this does not recover a lost old key.
+
 ## Webhooks
 
 For the shared GitHub account connector, Paperclip Cloud verifies
@@ -207,8 +233,18 @@ claims. It does not exchange codes, track App or installation identity, store
 GitHub secrets, or interpret bot events. It forwards original webhook bytes,
 provider headers, and signature in an envelope sealed to the stack before
 writing the inbox. The stack decrypts and authenticates those bytes through its
-existing durable ingress. Only that local check can verify a connection or
-admit work. Shared-App account connectors keep the behavior described above.
+existing durable ingress. Cloud-managed Apps are excluded from the direct-tenant
+callback recovery scanner and its callback-mismatch warning; the Cloud inbox owns
+relay delivery retries. Only that local check can verify a connection or
+admit work. After a repair, a fresh authenticated event for the bound installation
+can verify webhook delivery even when the relay deduplicates a redelivered old ping.
+This also applies while the connection needs attention: the signed event verifies
+delivery without retaining its content, admitting work, or changing repository
+access, even when its repository is disabled or unavailable. Verification returns
+the connection to the provider-setup step; later installation events cannot
+activate it. The manager must still complete reconnect and activation before new
+review requests can run.
+Shared-App account connectors keep the behavior described above.
 
 Unverified gateway traffic has request, byte, pending-queue, retention and wake
 limits. Its transport deduplication includes the body and signature, so a forged
@@ -223,12 +259,21 @@ recovery of the existing App instead of a second creation. Direct webhook and
 manual existing-App recovery remain available. Connecting does not prove that
 an agent runtime can execute a review.
 
-### One editable response per request
+### One main response per pull request
 
-After accepting authorized GitHub work, Paperclip posts **Working on this…**
-before starting the agent. Issue and PR discussion comments use the same GitHub
-comment API; inline-review conversations receive an inline reply. Description
-mentions and automatic tasks also receive a working comment. No new eyes
+A pull request task can retain both its main discussion and inline finding
+threads. Bot tool discovery lists each endpoint/catalog tool once across those
+threads. Publishing an inline finding therefore does not duplicate the tool
+catalog on the task's next run. Both conversation mappings remain available for
+authorized follow-up replies.
+
+The main PR conversation shares one App-owned comment across pushes, mentions,
+and repeat reviews. A new request updates that comment to **Review queued…**;
+agent progress and the final assessment update the same comment. Its identity
+survives restarts and reconnects. Existing request comments can be adopted without
+creating another main comment. Issue conversations and inline-review threads
+retain one editable response per request. Description mentions and automatic
+tasks also receive an acknowledgement. No new eyes
 reaction is added; cleanup still handles receipts created by older versions.
 
 The agent's `update_comment` tool edits the current request's working comment.
@@ -251,7 +296,11 @@ App-owned markers recover uncertain creation without posting duplicates.
 Deleted or no-longer-owned comments are not recreated or edited. Coalesced runs
 settle a deleted earlier working comment without blocking the current response,
 review findings, or check publication. Failed runs
-update the same comment when no final reply is confirmed or unresolved. A run
+update the same comment when no final reply is confirmed or unresolved. Maintenance
+also reconciles acknowledged requests when recovery stops before a publication
+is staged. Requests saved on a blocked task report that work is paused and stay
+open for resumed progress or stopped-run cleanup. An older
+run cannot replace a newer run's response. A run
 that ends without a final reply clears a remaining working state honestly.
 Repository restrictions, person authorization and governed tool checks remain
 in effect for edits. Existing disabled or quarantined tools stay disabled.
@@ -266,16 +315,49 @@ Private images use the exact unchanged source's authenticated GitHub rendering;
 repository/thread identity and body hashes remain bound across restarts. Signed
 image URLs and credentials are never added to durable attachment descriptors.
 
-A manual message naming another connected GitHub bot in the same company does
-not wake this bot through its thread subscription. Paperclip filters that
+A manual message beginning with another recipient's @mention does not wake this
+bot through its thread subscription, including Apps outside Paperclip such as
+`@greptile review`. Mentions of other connected GitHub bots are also filtered
+elsewhere in the body. Paperclip filters that
 delivery before creating task work or adding an acknowledgement. Explicitly
 mentioning both bots allows both to receive the request, subject to their normal
 authorization and repository checks.
 
-Unaddressed follow-ups, human mentions and unknown handles retain the existing
-subscription behavior. The routing rule does not change automatic issue or PR
+Unaddressed follow-ups and incidental human or unknown mentions retain the existing
+subscription behavior. Explicitly mentioning this bot admits a request even when
+another recipient is named. The routing rule does not change automatic issue or PR
 event policies. Archived bots and identities from other companies or providers
 are excluded from the routing lookup.
+
+## Retrying a saved request
+
+A normal task Retry can continue a newer saved GitHub message after an earlier
+attempt failed. Execution revalidates the exact admitted successor, its current
+linked principal and repository access, and the durable continuation receipt;
+it does not repeat the admission that already consumed the recovery hold.
+A failed native predecessor still requires its committed failed result and
+exact executor termination proof. Successful results and uncertain delivery do
+not grant a replay. A certified failed-chat Retry retains the exact accepted
+message identity when its predecessor stopped before identity initialization,
+so a published review can expose its authorized passive response wait.
+If an inherited task-resume attempt already recorded a result, ordinary Retry
+explains that exact replay is unavailable and directs the user to send a new
+message to continue from saved work. That new turn still passes normal current
+requester, access and executor-containment checks.
+
+If that successor failed at Retry authorization before runtime or provider
+startup, the next normal Retry follows its canonical source receipt. The exact
+system diagnostic, settlement events, empty execution evidence and absence of
+allocated resources establish that narrow recovery path. A generic setup
+failure or a claimed `providerWorkStarted: false` does not establish it.
+
+The canonical task Retry also recognizes an isolated-directory binding failure
+at the workspace preparation boundary before allocation. Its structured reason
+and task binding, trusted failed settlement, dispatch-only profile and absence
+of execution resources must all agree. Other workspace validation failures do
+not inherit this permission. Current request authorization still runs at both
+admission and execution; a failed unadmitted Retry intent does not replace the
+saved request or prevent a later deliberate Retry.
 
 ## Run projection
 

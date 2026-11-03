@@ -30,6 +30,7 @@ fn tool_set() -> AuthorizedToolSet {
 
 fn config(mode: &str) -> AcpxProviderSessionConfig {
     AcpxProviderSessionConfig {
+        candidate_admission: None,
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],
@@ -47,6 +48,9 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         permission_mode: AcpxPermissionMode::ApproveReads,
         mode: None,
         pi_thinking_level: None,
+        claude_effort: None,
+        grok_effort: None,
+        grok_disable_web_search: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -70,6 +74,9 @@ fn expected_identity() -> AcpxProviderSessionIdentity {
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
         mode: None,
         pi_thinking_level: None,
+        claude_effort: None,
+        grok_effort: None,
+        grok_disable_web_search: None,
         provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }

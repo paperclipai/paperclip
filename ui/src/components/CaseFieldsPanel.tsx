@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -230,6 +230,121 @@ export function CaseFieldValue({
   }
 
   return <span className="text-sm">{String(value)}</span>;
+}
+
+type CaseFieldRow = {
+  id: string;
+  path: string;
+  value: unknown;
+};
+
+function flattenCaseFields(fields: Record<string, unknown>): CaseFieldRow[] {
+  const rows: CaseFieldRow[] = [];
+  const visit = (value: unknown, path: string, segments: (string | number)[]) => {
+    if (isPlainObject(value)) {
+      const entries = Object.entries(value);
+      if (entries.length > 0) {
+        entries.forEach(([key, child]) => visit(child, `${path}.${key}`, [...segments, key]));
+        return;
+      }
+    } else if (Array.isArray(value) && value.some((item) => typeof item === "object" && item !== null)) {
+      // A single record reads naturally as items.quantity. Keep indices for
+      // multiple records or mixed arrays so separate entries stay identifiable.
+      if (value.length === 1 && isPlainObject(value[0])) {
+        visit(value[0], path, [...segments, 0]);
+      } else {
+        value.forEach((child, index) => visit(child, `${path}[${index}]`, [...segments, index]));
+      }
+      return;
+    }
+    // Structural identity stays distinct even if literal keys contain dots or
+    // brackets that happen to look like another field's displayed path.
+    rows.push({ id: JSON.stringify(segments), path, value });
+  };
+
+  Object.entries(fields).forEach(([key, value]) => visit(value, key, [key]));
+  return rows;
+}
+
+function TableStringValue({
+  value,
+  fieldKey,
+  quoted = false,
+}: {
+  value: string;
+  fieldKey: string;
+  quoted?: boolean;
+}) {
+  const caseHref = useCaseHref();
+  const trimmed = value.trim();
+  const text = quoted ? JSON.stringify(value).slice(1, -1) : value;
+  const linkClass = "text-primary underline-offset-2 hover:underline";
+  let content: ReactNode = text;
+  if (URL_RE.test(trimmed)) {
+    content = <a href={trimmed} target="_blank" rel="noreferrer" className={linkClass}>{text}</a>;
+  } else if (CASE_ID_RE.test(trimmed)) {
+    content = <Link to={caseHref(trimmed)} className={linkClass}>{text}</Link>;
+  } else if (ISSUE_ID_RE.test(trimmed)) {
+    content = <Link to={`/issues/${trimmed}`} className={linkClass}>{text}</Link>;
+  } else if (isIssueIdentifierField(fieldKey)) {
+    // Keep prose around task references rather than replacing the entire value
+    // with only the identifiers extracted from it.
+    const identifiers = new Set(extractIssueIdentifiers(value, fieldKey));
+    content = text.split(/(\b[A-Z][A-Z0-9]*-\d+\b)/g).map((part, index) => (
+      identifiers.has(part)
+        ? <Link key={index} to={`/issues/${part}`} className={linkClass}>{part}</Link>
+        : part
+    ));
+  }
+  if (quoted) return <>{'"'}{content}{'"'}</>;
+  return value === "" ? '""' : content;
+}
+
+function TableFieldValue({ value, fieldKey }: { value: unknown; fieldKey: string }) {
+  if (value === null || value === undefined) return <EmptyValue />;
+  if (typeof value === "string") return <TableStringValue value={value} fieldKey={fieldKey} />;
+  if (Array.isArray(value)) {
+    return (
+      <>
+        {"["}
+        {value.map((item, index) => (
+          <Fragment key={index}>
+            {index > 0 ? "," : null}
+            {typeof item === "string"
+              ? <TableStringValue value={item} fieldKey={fieldKey} quoted />
+              : JSON.stringify(item)}
+          </Fragment>
+        ))}
+        {"]"}
+      </>
+    );
+  }
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/** Compact read-only field rows for case detail, including nested JSON paths. */
+export function CaseFieldsTable({ fields }: { fields: Record<string, unknown> }) {
+  const rows = flattenCaseFields(fields);
+  if (rows.length === 0) {
+    return <p className="text-sm text-muted-foreground">No fields set</p>;
+  }
+  return (
+    <table aria-label="Case fields" className="w-full table-fixed border-collapse font-mono text-xs leading-5">
+      <tbody>
+        {rows.map(({ id, path, value }) => (
+          <tr key={id} className="even:bg-muted/50">
+            <th scope="row" className="w-1/3 break-all px-2 py-1 text-left align-top font-normal text-muted-foreground md:w-1/4">
+              {path}
+            </th>
+            <td className="break-all whitespace-pre-wrap px-2 py-1 align-top">
+              <TableFieldValue value={value} fieldKey={path} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 }
 
 export function CaseFieldsPanel({ fields }: { fields: Record<string, unknown> }) {

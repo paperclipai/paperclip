@@ -7,7 +7,7 @@
 // creates the runtime), the synchronous plan, and Amendment B — no run-scoped
 // contribution or bridge token escapes into the ledger or the reuse payload.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createSandboxRunSite,
   type ManagedHomeSeamResult,
@@ -288,6 +288,21 @@ describe("sandbox run site", () => {
       spawnCwd: "/host/workspace",
       tracingEnabled: true,
     });
+  });
+
+  it("replaces staged exporter configuration without changing the resumed conversation key", async () => {
+    const dispose = vi.fn(async () => {});
+    const cachedRuntime = makeStagedRuntime("old-exporter");
+    const stagedRuntimes = new Map<string, StagedRuntimeStoreEntry>([["paperclip:c:a:t:fp", {
+      stagedRuntime: cachedRuntime, envDelta: { CODEX_HOME: "/remote/old-home" },
+      teardown: null, dispose, lastUsedAt: 500, observabilityCompatibilityKey: "old-revision",
+    }]]);
+    const { site, env } = makeSite({ stagedRuntimes, isCompatibleResume: true, observabilityCompatibilityKey: "new-revision" });
+    await site.placeWorkspace(makeContext("paperclip:c:a:t:fp"));
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(site.staged?.reused).toBe(false);
+    expect(site.staged?.stagedRuntime).not.toBe(cachedRuntime);
+    expect(env.CODEX_HOME).not.toBe("/remote/old-home");
   });
 
   it("test_bridge_contribution_is_not_retained_by_site_ledger_or_reuse_payload", async () => {

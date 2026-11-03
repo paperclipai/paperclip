@@ -38,7 +38,8 @@ function isCompleteIssueSnapshot(value: unknown): value is Issue {
   if (typeof value !== "object" || value === null) return false;
   const issue = value as Partial<Issue>;
   return (
-    isNonEmptyString(issue.id)
+    issue.listProjection === undefined
+    && isNonEmptyString(issue.id)
     && isNonEmptyString(issue.companyId)
     && typeof issue.title === "string"
     && typeof issue.status === "string"
@@ -84,6 +85,9 @@ export function getCachedIssueDetail(
 
   const cachedEntries = queryClient.getQueriesData<Issue>({ queryKey: ISSUE_DETAIL_QUERY_PREFIX });
   return cachedEntries
+    // Core reads share invalidation/mutation updates with detail, but cannot
+    // stand in for its related data or suppress the enrichment request.
+    .filter(([key]) => key.length === ISSUE_DETAIL_QUERY_PREFIX.length + 1)
     .map(([, cachedIssue]) => cachedIssue)
     .find((cachedIssue): cachedIssue is Issue =>
       isCompleteIssueSnapshot(cachedIssue) && matchesIssueRef(cachedIssue, refs)
@@ -112,12 +116,35 @@ export function seedIssueDetailCache(
   return merged;
 }
 
+/** Seed saved projections without replacing lists already read or refreshed. */
+export function seedIssueDetailProjections(
+  queryClient: QueryClient,
+  issue: Issue,
+  issueRef?: string | null,
+) {
+  const planKey = [...queryKeys.issues.documents(issue.id), "plan"];
+  if (issue.planDocument !== undefined && queryClient.getQueryData(planKey) === undefined) {
+    queryClient.setQueryData(planKey, issue.planDocument);
+  }
+  if (issue.workProducts !== undefined) {
+    for (const ref of collectIssueRefs(issueRef, issue)) {
+      const key = queryKeys.issues.workProducts(ref);
+      // The stored request can already be pending when core arrives. Its
+      // background refresh should not hold the first saved cards behind a gate.
+      if (queryClient.getQueryData(key) === undefined) {
+        queryClient.setQueryData(key, issue.workProducts);
+      }
+    }
+  }
+}
+
 export async function fetchIssueDetail(
   queryClient: QueryClient,
   issueRef: string,
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
   const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
+  seedIssueDetailProjections(queryClient, issue, issueRef);
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 

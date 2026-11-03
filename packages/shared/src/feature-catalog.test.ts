@@ -30,6 +30,12 @@ function schemaBooleanFlagKeys(): string[] {
 }
 
 describe("INSTANCE_FEATURE_CATALOG", () => {
+  it("keeps Notebook a managed rollout disabled for Cloud and self-hosted instances", () => {
+    expect(INSTANCE_FEATURE_CATALOG.enablePaperclipNotebook).toMatchObject({
+      tier: "managed", cloudDefault: false, selfHostedDefault: false,
+    });
+    expect(buildFeatureCatalogArtifact("2026.1020.0").features.enablePaperclipNotebook).toEqual({ tier: "managed" });
+  });
   it("covers exactly the boolean flag keys of the experimental settings schema", () => {
     expect([...INSTANCE_FEATURE_KEYS]).toEqual(schemaBooleanFlagKeys());
   });

@@ -289,18 +289,20 @@ describe("Codex app-server Codex driver", () => {
         workingDirectory: WORKSPACE,
       }),
     ).rejects.toThrow("cannot overlap host CODEX_HOME");
-    await expect(
-      makeDriver([], {
-        environment: {
-          HOME: `${WORKSPACE}/host-home`,
-          CODEX_HOME: "/isolated/codex",
-        },
-      }).openSession({
-        runId: "run-host-home",
-        normalizedSessionId: "normalized-host-home",
-        workingDirectory: WORKSPACE,
-      }),
-    ).rejects.toThrow("cannot contain the host HOME");
+    for (const hostHome of [WORKSPACE, `${WORKSPACE}/host-home`]) {
+      await expect(
+        makeDriver([], {
+          environment: {
+            HOME: hostHome,
+            CODEX_HOME: "/isolated/codex",
+          },
+        }).openSession({
+          runId: "run-host-home",
+          normalizedSessionId: "normalized-host-home",
+          workingDirectory: WORKSPACE,
+        }),
+      ).rejects.toThrow("cannot contain the host HOME");
+    }
     await expect(
       makeDriver([]).openSession({
         runId: "run-root",
@@ -614,15 +616,16 @@ describe("Codex app-server Codex driver", () => {
 
     // Both denials a real app-server sends: the method is absent, and the
     // build has the feature switched off.
-    for (const denial of [
-      new CodexRpcError(
-        '{"code":-32601,"message":"method not found"}',
-        CODEX_METHOD_NOT_FOUND,
-      ),
-      new CodexRpcError(
-        '{"code":-32600,"message":"goals feature is disabled"}',
-        CODEX_INVALID_REQUEST,
-      ),
+    for (const { denial, availability } of [
+      { denial: new CodexRpcError(
+        '{"code":-32601,"message":"method not found"}', CODEX_METHOD_NOT_FOUND,
+      ), availability: "unsupported" },
+      { denial: new CodexRpcError(
+        '{"code":-32600,"message":"goals feature is disabled"}', CODEX_INVALID_REQUEST,
+      ), availability: "policy_disabled" },
+      { denial: new CodexRpcError(
+        '{"code":-32004,"message":"goals feature is disabled by policy"}', -32_004,
+      ), availability: "policy_disabled" },
     ]) {
       const unsupportedTransport = new FakeCodexTransport();
       unsupportedTransport.rejectMethods.set("thread/goal/get", denial);
@@ -635,6 +638,11 @@ describe("Codex app-server Codex driver", () => {
       expect((await unsupportedDriver.descriptor()).capabilities).toMatchObject(
         { goals: false },
       );
+      const unsupportedEvents = unsupported.events()[Symbol.asyncIterator]();
+      await unsupportedEvents.next();
+      await expect(unsupportedEvents.next()).resolves.toMatchObject({
+        value: { eventType: "session.capabilities.updated", payload: { sessionGoals: { availability } } },
+      });
       await expect(
         unsupported.goal?.({ action: "get" }),
       ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
@@ -679,6 +687,191 @@ describe("Codex app-server Codex driver", () => {
       ).toHaveLength(2);
       await session.close({ reason: "fixture complete" });
     }
+  });
+
+  it.each([false, true])("requires trusted continuation metadata before omitting task context (%s)", async (continuation) => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], {
+      skillInputs: [{ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" }],
+    }).openSession({ runId: "run-delta", normalizedSessionId: "session-delta", workingDirectory: WORKSPACE });
+    const text = JSON.stringify({ schema: "paperclip.native-continuation.v1", events: '{"messages":[{"body":"Go ahead"}]}', completion: { revision: "2", criterionIds: ["comment"] } });
+    await session.startTurn({ message: { role: "user", text }, ...(continuation ? { continuation: true as const } : {}) });
+    const params = transport.calls.find((call) => call.method === "turn/start")!.params;
+    if (continuation) {
+      expect(params.input).toEqual([{ type: "text", text, text_elements: [] }]);
+      expect(JSON.stringify(params.input)).not.toContain("constraints");
+      expect(JSON.stringify(params.input)).not.toContain("first-task");
+    } else {
+      expect(JSON.stringify(params.input)).toContain("constraints");
+      expect(params.input).toContainEqual({ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" });
+    }
+    await session.close({ reason: "test complete" });
+  });
+
+  it("sends the selected reasoning effort with the Codex turn", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], { model: "gpt-6-astra", reasoningEffort: "ultra" }).openSession({
+      runId: "run-effort",
+      normalizedSessionId: "session-effort",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Continue" } });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ effort: "ultra" });
+    await session.close({ reason: "test complete" });
+  });
+
+  it("uses negotiated ACP controls through the Codex transport facade", async () => {
+    let controls = { steering: false, queuedFollowUp: false };
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ ...controls }) });
+    const session = await makeDriver([transport], {
+      driverIdentity: { kind: "acpx_runtime", displayName: "Pi ACP", version: "test" },
+      capabilities: { steering: false },
+    }).openSession({ runId: "run-pi", normalizedSessionId: "session-pi", workingDirectory: WORKSPACE });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, message: { role: "user", text: "Change" } })).rejects.toThrow("not negotiated");
+      controls = { steering: true, queuedFollowUp: true };
+      expect(session.turnControlCapabilities?.()).toEqual(controls);
+      const input = { turnId, correlationId: "queued-1", mode: "follow_up" as const, message: { role: "user" as const, text: "Then validate" } };
+      await session.steer?.(input);
+      expect(transport.calls.find(call => call.method === "turn/steer")?.params).toMatchObject({ expectedTurnId: turnId, mode: "follow_up", correlationId: "queued-1" });
+      await expect(session.steer?.(input)).rejects.toThrow("already acknowledged");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(1);
+    } finally { await session.close({ reason: "verified" }); }
+  });
+
+  it("keeps native follow-up disabled for the Codex app-server driver", async () => {
+    const transport = Object.assign(new FakeCodexTransport(), { turnControlCapabilities: () => ({ steering: true, queuedFollowUp: true }) });
+    const session = await makeDriver([transport]).openSession({ runId: "run-codex", normalizedSessionId: "session-codex", workingDirectory: WORKSPACE });
+    try {
+      expect(session.turnControlCapabilities?.()).toEqual({ steering: true, queuedFollowUp: false });
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+      await expect(session.steer?.({ turnId, mode: "follow_up", message: { role: "user", text: "Queue" } })).rejects.toThrow("not negotiated");
+      expect(transport.calls.filter(call => call.method === "turn/steer")).toHaveLength(0);
+    } finally { await session.close({ reason: "verified" }); }
+  });
+
+  it("preserves an inactive goal status while editing its objective", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-goal-inactive-edit",
+      normalizedSessionId: "normalized-goal-inactive-edit",
+      workingDirectory: WORKSPACE,
+    });
+
+    await session.goal?.({
+      action: "set",
+      objective: "Updated while paused",
+      status: "paused",
+    });
+
+    expect(
+      transport.calls.filter(({ method }) => method === "thread/goal/set"),
+    ).toContainEqual({
+      method: "thread/goal/set",
+      params: {
+        threadId: "thread-1",
+        objective: "Updated while paused",
+        status: "paused",
+      },
+    });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("rolls back only a definitely rejected idle goal autostart", async () => {
+    const definiteTransport = new FakeCodexTransport();
+    const definiteSession = await makeDriver([definiteTransport]).openSession({
+      runId: "run-goal-autostart-definite-rejection",
+      normalizedSessionId: "normalized-goal-autostart-definite-rejection",
+      workingDirectory: WORKSPACE,
+    });
+    definiteTransport.rejectMethods.set(
+      "thread/goal/set",
+      new CodexRpcError('{"code":-32603,"message":"internal error"}', -32_603),
+    );
+    await expect(
+      definiteSession.goal?.({
+        action: "set",
+        objective: "Rejected before a turn starts",
+      }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    definiteTransport.rejectMethods.delete("thread/goal/set");
+    await expect(
+      definiteSession.startTurn({
+        message: { role: "user", text: "A normal turn may still start." },
+      }),
+    ).resolves.toMatchObject({ turnId: "turn-1" });
+    await definiteSession.close({ reason: "fixture complete" });
+
+    const ambiguousTransport = new FakeCodexTransport();
+    const ambiguousSession = await makeDriver([ambiguousTransport]).openSession({
+      runId: "run-goal-autostart-ambiguous",
+      normalizedSessionId: "normalized-goal-autostart-ambiguous",
+      workingDirectory: WORKSPACE,
+    });
+    ambiguousTransport.rejectMethods.set(
+      "thread/goal/set",
+      new Error("codex app-server transport closed"),
+    );
+    await expect(
+      ambiguousSession.goal?.({
+        action: "set",
+        objective: "The provider may have started this goal",
+      }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    ambiguousTransport.rejectMethods.delete("thread/goal/set");
+    await expect(
+      ambiguousSession.startTurn({
+        message: { role: "user", text: "Do not create competing work." },
+      }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    await ambiguousSession.close({ reason: "fixture complete" });
+  });
+
+  it("preserves a provider-neutral goal action subset through the Codex transport facade", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = makeDriver([transport], {
+      goalCapability: {
+        actions: ["set", "clear"],
+        autonomousUpdates: true,
+        persistentAcrossResume: true,
+        maxObjectiveChars: 4_000,
+        tokenBudgetControl: false,
+        usageReporting: true,
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-goals-action-subset",
+      normalizedSessionId: "normalized-goals-action-subset",
+      workingDirectory: WORKSPACE,
+    });
+    const events = session.events()[Symbol.asyncIterator]();
+    await events.next();
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        eventType: "session.capabilities.updated",
+        payload: {
+          sessionGoals: {
+            availability: "available",
+            actions: ["set", "clear"],
+            tokenBudgetControl: false,
+          },
+        },
+      },
+    });
+
+    await expect(
+      session.goal?.({ action: "pause" }),
+    ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    expect(
+      transport.calls.filter(({ method }) => method === "thread/goal/set"),
+    ).toHaveLength(0);
+    await expect(
+      session.goal?.({ action: "set", objective: "Finish the task" }),
+    ).resolves.toMatchObject({ objective: "Finish the task" });
+    await expect(session.goal?.({ action: "clear" })).resolves.toBeNull();
+    await session.close({ reason: "fixture complete" });
   });
 
 });

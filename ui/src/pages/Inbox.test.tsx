@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { CoordinatorPresentation } from "../components/coordinator/CoordinatorPresentation";
+import { queryKeys } from "../lib/queryKeys";
 import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -17,9 +19,12 @@ const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
   navigate: vi.fn(),
 }));
+const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" as string | null }));
 
 const externalObjectMocks = vi.hoisted(() => ({
   summaries: new Map(),
+  error: null as Error | null,
+  retry: vi.fn(),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -32,6 +37,7 @@ const apiMocks = vi.hoisted(() => ({
   issuesList: vi.fn(),
   issuesCount: vi.fn(),
   issueLabels: vi.fn(),
+  retryTask: vi.fn(),
   archiveFromInbox: vi.fn(),
   unarchiveFromInbox: vi.fn(),
   agentsList: vi.fn(),
@@ -74,6 +80,7 @@ vi.mock("../api/issues", () => ({
     listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
+    retryTask: apiMocks.retryTask,
     markRead: vi.fn(),
     markUnread: vi.fn(),
     archiveFromInbox: apiMocks.archiveFromInbox,
@@ -101,7 +108,7 @@ vi.mock("../api/projects", () => ({
 }));
 
 vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1" }),
+  useCompany: () => companyState,
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
@@ -134,7 +141,9 @@ vi.mock("../hooks/useIssueExternalObjects", () => ({
   useIssueExternalObjectSummaries: () => ({
     summaries: externalObjectMocks.summaries,
     isLoading: false,
-    isReady: true,
+    isReady: !externalObjectMocks.error,
+    error: externalObjectMocks.error,
+    refetch: externalObjectMocks.retry,
   }),
 }));
 
@@ -148,8 +157,8 @@ import {
 } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({ children, className, to, ...props }: ComponentProps<"a"> & { to?: string }) => (
+    <a className={className} href={to} {...props}>{children}</a>
   ),
   useLocation: () => routerMock.location,
   useNavigate: () => routerMock.navigate,
@@ -336,8 +345,11 @@ function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
 }
 
 function resetInboxApiMocks() {
+  companyState.selectedCompanyId = "company-1";
   for (const mock of Object.values(apiMocks)) mock.mockReset();
   externalObjectMocks.summaries.clear();
+  externalObjectMocks.error = null;
+  externalObjectMocks.retry.mockReset();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -357,6 +369,7 @@ function resetInboxApiMocks() {
   apiMocks.issuesList.mockResolvedValue([]);
   apiMocks.issuesCount.mockResolvedValue({ count: 0 });
   apiMocks.issueLabels.mockResolvedValue([]);
+  apiMocks.retryTask.mockReset().mockResolvedValue({ accepted: true, requestId: "retry-intent", presentation: null });
   apiMocks.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.unarchiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.agentsList.mockResolvedValue([]);
@@ -414,8 +427,8 @@ describe("Inbox toolbar", () => {
         await vi.waitFor(() => {
           expect(apiMocks.heartbeatRunsList).toHaveBeenCalled();
           expect(queryClient.isFetching()).toBe(0);
-          for (const id of visible) expect(container.querySelector(`a[to$="/runs/${id}"]`)).not.toBeNull();
-          for (const id of hidden) expect(container.querySelector(`a[to$="/runs/${id}"]`)).toBeNull();
+          for (const id of visible) expect(container.querySelector(`a[href$="/runs/${id}"]`)).not.toBeNull();
+          for (const id of hidden) expect(container.querySelector(`a[href$="/runs/${id}"]`)).toBeNull();
         });
       } finally {
         act(() => root.unmount());
@@ -897,6 +910,341 @@ describe("Inbox toolbar", () => {
     });
   });
 
+  it("waits for the task index before revealing faster failed-run rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    let release: (rows: Issue[]) => void = () => undefined;
+    apiMocks.issuesList.mockImplementation((_company, filters) => filters.projection === "index"
+      ? new Promise<Issue[]>((resolve) => { release = resolve; }) : Promise.resolve([]));
+    apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(apiMocks.heartbeatRunsList).toHaveBeenCalled());
+    expect(container.querySelector('[aria-label="Loading tasks"]')).not.toBeNull();
+    expect(container.querySelector('[data-inbox-item]')).toBeNull();
+    await act(async () => release([createIssue({ title: "Delayed task index row" })]));
+    await vi.waitFor(() => expect(container.textContent).toContain("Delayed task index row"));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it.each([true, false])("can select a company after a cold inbox mount (Streamlined UI=%s)", async streamlined => {
+    companyState.selectedCompanyId = null;
+    const settings = { enableStreamlinedUi: streamlined, enableIsolatedWorkspaces: false };
+    apiMocks.experimentalSettings.mockResolvedValue(settings);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, settings);
+    const root = createRoot(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+    await act(render);
+    await vi.waitFor(() => expect(container.textContent).toContain(streamlined ? "Select an organization" : "Select a company"));
+    companyState.selectedCompanyId = "company-1";
+    apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Cold company task" })]);
+    await act(render);
+    await vi.waitFor(() => expect(container.textContent).toContain("Cold company task"));
+    act(() => root.unmount());
+  });
+
+  it("loads only missing parent metadata before revealing Mine", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }), JSON.stringify({
+      version: 1, companyId: "company-1", collectionKey: "inbox", columns: ["parent"], viewState: {},
+    }));
+    const loadedParent = createIssue({ id: "loaded-parent", title: "Loaded parent", listProjection: "index" });
+    const missingParent = createIssue({ id: "missing-parent", title: "Missing parent", identifier: "PAP-2000", listProjection: "index" });
+    const rows = [loadedParent,
+      createIssue({ id: "child-a", parentId: loadedParent.id, title: "First child", listProjection: "index" }),
+      createIssue({ id: "child-b", parentId: missingParent.id, title: "Second child", listProjection: "index" }),
+    ];
+    let releaseParent!: (rows: Issue[]) => void;
+    const pendingParent = new Promise<Issue[]>(resolve => { releaseParent = resolve; });
+    apiMocks.issuesList.mockImplementation((_company, filters) => {
+      if (!filters.ids) return Promise.resolve(rows);
+      if (filters.ids.includes(missingParent.id)) return pendingParent;
+      return Promise.resolve(rows.filter(row => filters.ids.includes(row.id)));
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(apiMocks.issuesList.mock.calls.some(([, filters]) => filters.ids?.includes(missingParent.id))).toBe(true));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(0);
+      expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        ids: [missingParent.id], projection: "index",
+      }), expect.anything());
+      await act(() => releaseParent([missingParent]));
+      await vi.waitFor(() => expect(container.textContent).toContain("Second child"));
+      // Rich visible-row reads still happen after reveal, but never include a
+      // context-only parent or precede the structural metadata response.
+      expect(apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.ids?.includes(missingParent.id))).toHaveLength(1);
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(3);
+      expect(container.querySelector(`[title="${missingParent.title}"]`)?.textContent).toBe(missingParent.identifier);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("discards old parent context when a refreshed index supplies the parent", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:nesting", "false");
+    localStorage.setItem(taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }), JSON.stringify({
+      version: 1, companyId: "company-1", collectionKey: "inbox", columns: ["parent"], viewState: {},
+    }));
+    const parent = createIssue({ id: "parent", title: "Old parent caption", identifier: "PAP-2000", listProjection: "index" });
+    const child = createIssue({ id: "child", parentId: parent.id, title: "Readable child", listProjection: "index" });
+    let source = [child];
+    apiMocks.issuesList.mockImplementation((_company, filters) => !filters.ids
+      ? Promise.resolve(source) : Promise.resolve(filters.ids.includes(parent.id) ? [parent] : [child]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.querySelector(`[title="${parent.title}"]`)?.textContent).toBe(parent.identifier));
+      source = [{ ...parent, title: "Fresh indexed caption", identifier: "PAP-2001" }, child];
+      await act(() => { client.setQueriesData({ predicate: query => query.queryKey.includes("live-descendant-summary") }, source); });
+      await vi.waitFor(() => expect(container.querySelector('[title="Fresh indexed caption"]')?.textContent).toBe("PAP-2001"));
+      expect(container.querySelector(`[title="${parent.title}"]`)).toBeNull();
+      expect(apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.projection === "index" && filters.ids?.includes(parent.id))).toHaveLength(1);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it.each([true, false])("waits for failure context even when its parent is already indexed=%s", async (indexed) => {
+    routerMock.location.pathname = "/inbox/mine";
+    const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
+    const child = createIssue({ id: "child", parentId: parent.id, title: "Readable child", listProjection: "index" });
+    const failure = createFailedRun({ issueId: parent.id, responsibleUserId: "local-board" });
+    apiMocks.heartbeatRunsList.mockResolvedValue([failure]);
+    let releaseFailure!: (rows: Issue[]) => void;
+    const pendingFailure = new Promise<Issue[]>(resolve => { releaseFailure = resolve; });
+    apiMocks.issuesList.mockImplementation((_company, filters) => !filters.ids
+      ? Promise.resolve(indexed ? [parent, child] : [child])
+      : filters.ids.includes(parent.id) ? pendingFailure : Promise.resolve([child]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        ids: [parent.id], projection: "rows",
+      }), expect.anything()));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(0);
+      expect(apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.ids && filters.projection === "index")).toHaveLength(0);
+      await act(() => releaseFailure([{ ...parent, interruption: {
+        intentId: "saved-input", responsibility: "system", state: "resolved", nextRetryAt: null,
+        canRetry: false, userAction: null, sourceRunIds: [failure.id], observedRunId: failure.id,
+      } }]));
+      await vi.waitFor(() => expect(container.textContent).toContain(child.title));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(indexed ? 2 : 1);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("upgrades cached parent metadata when the same task becomes a failure context", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
+    const child = createIssue({ id: "child", parentId: parent.id, title: "Readable child", listProjection: "index" });
+    const failure = createFailedRun({ issueId: parent.id, responsibleUserId: "local-board" });
+    const resolved = { ...parent, listProjection: "rows" as const, interruption: {
+      intentId: "saved-input", responsibility: "system" as const, state: "resolved" as const,
+      nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: [failure.id], observedRunId: failure.id,
+    } };
+    let releaseFailure!: (rows: Issue[]) => void;
+    const pendingFailure = new Promise<Issue[]>(resolve => { releaseFailure = resolve; });
+    apiMocks.issuesList.mockImplementation((_company, filters) => {
+      if (!filters.ids) return Promise.resolve([child]);
+      if (filters.ids.includes(parent.id)) return filters.projection === "rows" ? pendingFailure : Promise.resolve([parent]);
+      return Promise.resolve([child]);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain(child.title));
+      // The union of context IDs is unchanged when this parent becomes a failed
+      // task. It must still fetch interruption state instead of reusing index.
+      await act(() => { client.setQueriesData({ queryKey: queryKeys.heartbeats("company-1") }, [failure]); });
+      await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        ids: [parent.id], projection: "rows",
+      }), expect.anything()));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(1);
+      await act(() => releaseFailure([resolved]));
+      await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+      expect(container.textContent).toContain(child.title);
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(1);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("reveals an empty view after leaving a Mine view with parent context", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
+    const child = createIssue({ id: "child", parentId: parent.id, title: "Mine child", listProjection: "index" });
+    apiMocks.issuesList.mockImplementation((_company, filters) => Promise.resolve(filters.ids
+      ? [parent] : filters.inboxArchivedByUserId ? [child] : []));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox tab="mine" /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain(child.title));
+      routerMock.location.pathname = "/inbox/recent";
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox tab="recent" /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("No recent inbox items."));
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("waits for rich failure state when heartbeat data arrives after parent captions", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const parent = createIssue({ id: "parent", title: "Parent metadata", listProjection: "index" });
+    const child = createIssue({ id: "child", parentId: parent.id, title: "Mine child", listProjection: "index" });
+    const failure = createFailedRun({ issueId: parent.id, responsibleUserId: "local-board" });
+    let releaseRuns!: (rows: HeartbeatRun[]) => void;
+    apiMocks.heartbeatRunsList.mockImplementation(() => new Promise(resolve => { releaseRuns = resolve; }));
+    let releaseFailure!: (rows: Issue[]) => void;
+    const pendingFailure = new Promise<Issue[]>(resolve => { releaseFailure = resolve; });
+    apiMocks.issuesList.mockImplementation((_company, filters) => !filters.ids ? Promise.resolve([child])
+      : filters.projection === "index" ? Promise.resolve([parent]) : filters.ids.includes(parent.id) ? pendingFailure : Promise.resolve([child]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(client.isFetching()).toBe(1));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(0);
+      await act(() => releaseRuns([failure]));
+      await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        ids: [parent.id], projection: "rows",
+      }), expect.anything()));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(0);
+      await act(() => releaseFailure([{ ...parent, interruption: {
+        intentId: "saved-input", responsibility: "system", state: "resolved", nextRetryAt: null,
+        canRetry: false, userAction: null, sourceRunIds: [failure.id], observedRunId: failure.id,
+      } }]));
+      await vi.waitFor(() => expect(container.textContent).toContain(child.title));
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(1);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("keeps known missing-task failures visible while new failure context is pending", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const child = createIssue({ title: "Readable task", listProjection: "index" });
+    const first = createFailedRun({ id: "failure-a", issueId: "missing-a", agentId: "agent-a", responsibleUserId: "local-board" });
+    const second = createFailedRun({ id: "failure-b", issueId: "missing-b", agentId: "agent-b", responsibleUserId: "local-board" });
+    apiMocks.heartbeatRunsList.mockResolvedValue([first]);
+    let releaseFailures!: (rows: Issue[]) => void;
+    const pendingFailures = new Promise<Issue[]>(resolve => { releaseFailures = resolve; });
+    apiMocks.issuesList.mockImplementation((_company, filters) => !filters.ids ? Promise.resolve([child])
+      : filters.ids.includes(second.issueId) ? pendingFailures : Promise.resolve([]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.querySelector('a[href="/issues/missing-a"]')).not.toBeNull());
+      const node = container.querySelector('a[href="/issues/missing-a"]');
+      await act(() => { client.setQueriesData({ queryKey: queryKeys.heartbeats("company-1") }, [first, second]); });
+      await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        ids: [first.issueId, second.issueId], projection: "rows",
+      }), expect.anything()));
+      expect(container.querySelector('a[href="/issues/missing-a"]')).toBe(node);
+      expect(container.querySelector('a[href="/issues/missing-b"]')).toBeNull();
+      expect(container.textContent).toContain(child.title);
+      await act(() => releaseFailures([]));
+      await vi.waitFor(() => expect(container.querySelector('a[href="/issues/missing-b"]')).not.toBeNull());
+      expect(container.querySelectorAll("[data-inbox-item]")).toHaveLength(3);
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("keeps more than 25 description-only matches in Mine with archive actions", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const rows = Array.from({ length: 30 }, (_, index) => createIssue({ id: `source-${index}`, title: `Source task ${index}`, identifier: `PAP-${index}`, listProjection: "index" }));
+    apiMocks.issuesList.mockImplementation((_company, filters) => Promise.resolve(filters.q && !filters.ids ? [] : rows));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(container.querySelectorAll('[data-inbox-item]')).toHaveLength(30));
+    await act(() => {
+      const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "only-in-description");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({ q: "only-in-description", ids: expect.arrayContaining(rows.map((row) => row.id)), projection: "index", limit: 100 }), expect.anything()));
+    await vi.waitFor(() => expect(container.querySelectorAll('[data-inbox-item]')).toHaveLength(30));
+    expect(container.querySelectorAll('button[aria-label="Archive"]')).toHaveLength(30);
+    expect(container.textContent).not.toContain("Other matching tasks");
+    act(() => root.unmount());
+  });
+
+  it("keeps rows readable and offers retry when optional details fail", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    let failDetails = true;
+    apiMocks.issuesList.mockImplementation((_company, filters) => filters.projection === "rows" && failDetails
+      ? Promise.reject(new Error("Details unavailable")) : Promise.resolve([createIssue({ title: "Readable task" })]));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Some task details couldn’t load."));
+    expect(container.textContent).toContain("Readable task");
+    failDetails = false;
+    await act(() => Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === "Retry details")!.click());
+    await vi.waitFor(() => expect(document.body.textContent).not.toContain("Some task details couldn’t load."));
+    expect(container.textContent).toContain("Readable task");
+    act(() => root.unmount());
+  });
+
+  it("refreshes diagnostics when a visible index row changes without changing its ID", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const row = createIssue({ title: "Live task", listProjection: "index" });
+    apiMocks.issuesList.mockResolvedValue([row]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    const detailsReads = () => apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.projection === "rows").length;
+    await vi.waitFor(() => expect(detailsReads()).toBe(1));
+    const updated = { ...row, updatedAt: new Date(new Date(row.updatedAt).getTime() + 1000) };
+    apiMocks.issuesList.mockResolvedValue([updated]);
+    await act(() => {
+      queryClient.setQueriesData({ predicate: (query) => query.queryKey.includes("index") }, [updated]);
+    });
+    await vi.waitFor(() => expect(detailsReads()).toBe(2));
+    expect(container.textContent).toContain("Live task");
+    act(() => root.unmount());
+  });
+
+  it.each(["approvalsList", "joinRequestsList", "heartbeatRunsList"] as const)(
+    "keeps available tasks visible when %s fails and during retry", async (source) => {
+      routerMock.location.pathname = "/inbox/mine";
+      apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Available task" })]);
+      apiMocks[source].mockRejectedValue(new Error("Optional source unavailable"));
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Available task"));
+      expect(document.body.textContent).toContain("Some inbox items couldn’t load.");
+      let resolveRetry: (rows: []) => void = () => undefined;
+      apiMocks[source].mockImplementation(() => new Promise((resolve) => { resolveRetry = resolve; }));
+      await act(() => Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === "Retry missing items")!.click());
+      await vi.waitFor(() => expect(apiMocks[source]).toHaveBeenCalledTimes(2));
+      expect(container.textContent).toContain("Available task");
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+      await act(() => resolveRetry([]));
+      await vi.waitFor(() => expect(document.body.textContent).not.toContain("Some inbox items couldn’t load."));
+      act(() => root.unmount());
+    },
+  );
+
+  it("shows an error and retry instead of an endless skeleton when a required external status filter fails", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }), JSON.stringify({
+      version: 1, companyId: "company-1", collectionKey: "inbox", columns: [],
+      viewState: { issueFilters: { externalObjectStatuses: ["failed"] } },
+    }));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    apiMocks.issuesList.mockResolvedValue([createIssue()]);
+    externalObjectMocks.error = new Error("External statuses unavailable");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(container.textContent).toContain("External statuses unavailable"));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    await act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === "Retry")!.click());
+    expect(externalObjectMocks.retry).toHaveBeenCalledOnce();
+    act(() => root.unmount());
+  });
+
   it("requests live descendant summaries for issue rows", async () => {
     routerMock.location.pathname = "/inbox/mine";
 
@@ -913,20 +1261,11 @@ describe("Inbox toolbar", () => {
       );
     });
 
-    await vi.waitFor(() => {
-      expect(apiMocks.issuesList).toHaveBeenCalledTimes(3);
-    });
-
-    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.includeLiveDescendantSummary)).toEqual([
-      true,
-      true,
-      true,
-    ]);
-    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
-      500,
-      500,
-      500,
-    ]);
+    await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledTimes(1));
+    expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      touchedByUserId: "me", inboxArchivedByUserId: "me", projection: "index",
+      includeLiveDescendantSummary: true, limit: 100, sortField: "updated", sortDir: "desc",
+    }));
 
     act(() => {
       root.unmount();
@@ -1396,6 +1735,20 @@ describe("FailedRunInboxRow", () => {
     container.remove();
   });
 
+  it("uses task presentation instead of infrastructure errors and keeps Retry in the task", () => {
+    const root = createRoot(container);
+    const issue = createIssue({ interruption: { intentId: "saved-input", responsibility: "system", state: "failed",
+      nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: ["run-1"], observedRunId: "run-1" } });
+    act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id, error: "Internal process identity missing" })}
+      issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
+      onDismiss={() => {}} onRetry={() => {}} isRetrying={false} />));
+    expect(container.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");
+    expect(container.textContent).not.toContain("Internal process identity missing");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(`/issues/${issue.id}`);
+    expect(container.textContent).toContain("Retry");
+    act(() => root.unmount());
+  });
+
   it("suppresses accent hover styling when selected", () => {
     const root = createRoot(container);
     const run = createFailedRun();
@@ -1605,5 +1958,29 @@ describe("InboxGroupHeader", () => {
     act(() => {
       root.unmount();
     });
+  });
+});
+
+
+describe("Coordinator Inbox collection reads", () => {
+  it.each([true, false])("keeps optimized reads with Coordinator and Streamlined=%s", async (streamlined) => {
+    resetInboxApiMocks(); localStorage.clear();
+    routerMock.location.pathname = "/inbox/mine";
+    const settings = { enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined };
+    apiMocks.experimentalSettings.mockResolvedValue(settings);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    client.setQueryData(queryKeys.instance.experimentalSettings, settings);
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorPresentation.Provider value={true}><Inbox /></CoordinatorPresentation.Provider></QueryClientProvider>));
+      await vi.waitFor(() => expect(apiMocks.heartbeatRunsList).toHaveBeenCalled());
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+      const sources = apiMocks.issuesList.mock.calls.filter(call => call[1]?.projection !== "rows").map(call => call[1]);
+      expect(sources).toHaveLength(1);
+      expect(sources.every(source => source.projection === "index")).toBe(true);
+      expect(apiMocks.dashboardSummary).toHaveBeenCalledTimes(0);
+      expect(apiMocks.heartbeatRunsList.mock.calls[0]?.[3]?.latestFailuresOnly === true).toBe(true);
+    } finally { await act(async () => root.unmount()); client.clear(); container.remove(); }
   });
 });

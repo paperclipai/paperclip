@@ -13,6 +13,8 @@ function statusLabel(status: string): string {
 
 interface StatusIconProps {
   status: string;
+  /** Server-derived presentation; mutations still use the canonical status. */
+  displayStatus?: string | null;
   externalConversationState?: "active" | "waiting" | null;
   blockerAttention?: IssueBlockerAttention | null;
   onChange?: (status: string) => void;
@@ -66,6 +68,12 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
   return "Blocked";
 }
 
+/** Shared accessible/tooltip copy, including waiting and covered-blocker states. */
+export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null, presentationStatus?: string | null): string {
+  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status === "in_progress" && presentationStatus === "monitoring" ? "monitoring" : status;
+  return status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(displayStatus);
+}
+
 /**
  * Task/issue status indicator — renders the unified, color-blind-safe
  * {@link StatusGlyph} (one distinct shape per status). With `onChange` it also
@@ -78,11 +86,11 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
-  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
+  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status === "in_progress" && presentationStatus === "monitoring" ? "monitoring" : status;
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
-  const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(displayStatus);
+  const ariaLabel = getStatusIconLabel(status, externalConversationState, blockerAttention, presentationStatus);
   const glyphStatus = isCoveredBlocked ? "in_queue" : displayStatus;
 
   const glyphIcon = (

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalService } from "../services/approvals.ts";
-import { companies } from "@paperclipai/db";
+import { approvals, companies, issueApprovals } from "@paperclipai/db";
 
 vi.mock("../services/budgets.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/budgets.js")>(),
@@ -50,24 +50,26 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
   const pendingSelectResults = [...selectResults];
   let inTransaction = false;
   const selectWhere = vi.fn(async () => (inTransaction ? pendingSelectResults.shift() : pendingSelectResults[0]) ?? []);
-  const from = vi.fn((table) => table === companies
+  const from = vi.fn((table) => table === issueApprovals
+    ? { where: async () => [] }
+    : table === companies
     ? { where: () => ({ for: async () => [{ id: "company-1" }] }) }
     : { where: selectWhere });
-  const select = vi.fn(() => ({ from }));
+  const select = vi.fn((fields?: { id?: unknown }) => fields?.id === approvals.id
+    ? { from: () => ({ where: () => ({ for: async () => [{ id: "approval-1" }] }) }) }
+    : { from });
 
   const returning = vi.fn(async () => updateResults);
   const updateWhere = vi.fn(() => ({ returning }));
   const set = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set }));
 
-  return {
-    db: { select, update, transaction: vi.fn(async (callback: (db: unknown) => Promise<unknown>) => {
-      inTransaction = true;
-      try { return await callback({ select, update }); } finally { inTransaction = false; }
-    }) },
-    selectWhere,
-    returning,
-  };
+  const db = { select, update, transaction: vi.fn(async (callback: (db: unknown) => Promise<unknown>) => {
+    const outerTransaction = inTransaction;
+    inTransaction = true;
+    try { return await callback(db); } finally { inTransaction = outerTransaction; }
+  }) };
+  return { db, selectWhere, returning };
 }
 
 describe("approvalService resolution idempotency", () => {
@@ -141,6 +143,7 @@ describe("approvalService resolution idempotency", () => {
       requestedByUserId,
       payload: {
         name: "New Agent",
+        adapterType: "codex_local",
         adapterConfig: {
           env: {
             API_KEY: {
@@ -161,9 +164,10 @@ describe("approvalService resolution idempotency", () => {
     expect(mockAgentService.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
+        adapterType: "codex_local",
         adapterConfig: approved.payload.adapterConfig,
       }),
-      { createdByUserId: expectedCreator, responsibleUserId: requestedByUserId },
+      { runnerResolved: true, createdByUserId: expectedCreator, responsibleUserId: requestedByUserId },
     );
   });
 });

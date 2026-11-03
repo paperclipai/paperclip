@@ -51,6 +51,15 @@ describe("errorHandler", () => {
     telemetryMocks.trackErrorHandlerCrash.mockReset();
   });
 
+  it("passes only authenticated run identity to Sentry for a run-related server error", () => {
+    const req = makeReq();
+    req.actor = { type: "agent", runId: "run", companyId: "company", agentId: "agent" };
+    const error = new Error("run request failed");
+    errorHandler(error, req, makeRes(), vi.fn());
+    expect(captureExceptionMock).toHaveBeenCalledWith(error, { runId: "run", companyId: "company", agentId: "agent" });
+    expect(JSON.stringify(captureExceptionMock.mock.calls)).not.toContain('"a":1');
+  });
+
   it("attaches the original Error to res.err for 500s", () => {
     const req = makeReq();
     const res = makeRes() as any;
@@ -81,6 +90,67 @@ describe("errorHandler", () => {
     expect(res.json).not.toHaveBeenCalled();
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
+  });
+
+  function endedPoolQueryError() {
+    // Drizzle wraps the driver error; postgres.js uses CONNECTION_ENDED for a
+    // query issued after this process called `sql.end()`.
+    const driverError = Object.assign(new Error("write CONNECTION_ENDED db.example:5432"), {
+      code: "CONNECTION_ENDED",
+    });
+    return new Error('Failed query: select "id" from "issues"', { cause: driverError });
+  }
+
+  it("answers 503 without reporting a query that outlived the database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: { paperclipDatabaseClosing: true } } } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(endedPoolQueryError(), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith({ error: "Server is shutting down" });
+    expect(res.err).toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
+  });
+
+  it("only ends the response when headers were already sent during database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: { paperclipDatabaseClosing: true } } } as unknown as Request;
+    const res = { ...makeRes(), end: vi.fn(), headersSent: true } as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(endedPoolQueryError(), req, res, next);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.end).toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it("still reports an ended-pool query error outside database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: {} } } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = endedPoolQueryError();
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(captureExceptionMock).toHaveBeenCalledWith(err);
+  });
+
+  it("still reports other connection failures during database shutdown", () => {
+    const req = { ...makeReq(), app: { locals: { paperclipDatabaseClosing: true } } } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new Error("Failed query", {
+      cause: Object.assign(new Error("write CONNECTION_CLOSED"), { code: "CONNECTION_CLOSED" }),
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(captureExceptionMock).toHaveBeenCalledWith(err);
   });
 
   it("exposes raw 500 messages for trusted Cloud tenant imports", () => {
@@ -151,12 +221,16 @@ describe("errorHandler", () => {
     expect(telemetryMocks.trackErrorHandlerCrash).toHaveBeenCalledTimes(2);
   });
 
-  it("sanitizes chat setup errors before logs and crash reporting", () => {
+  it.each([
+    { name: "chat setup", method: "POST", path: "/api/chat-endpoints/endpoint-1/setup", body: { credentials: { botToken: "setup-error-token-canary" } } },
+    { name: "observability API keys", method: "PUT", path: "/api/companies/company/observability", body: { credentials: { mode: "replace", apiKey: "setup-error-token-canary" } } },
+    { name: "arbitrary OTLP headers", method: "PUT", path: "/api/companies/company/observability", body: { credentials: { mode: "replace", headers: [{ name: "x-custom", value: "setup-error-token-canary" }] } } },
+  ])("sanitizes $name errors before logs and crash reporting", ({ method, path, body }) => {
     const req = {
       ...makeReq(),
-      method: "POST",
-      originalUrl: "/api/chat-endpoints/endpoint-1/setup",
-      body: { credentials: { botToken: "setup-error-token-canary" } },
+      method,
+      originalUrl: path,
+      body,
     } as unknown as Request;
     const res = makeRes() as any;
     const next = vi.fn() as unknown as NextFunction;

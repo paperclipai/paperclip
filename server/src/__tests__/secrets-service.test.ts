@@ -184,6 +184,46 @@ describeEmbeddedPostgres("secretService", () => {
     rmSync(secretsTmpDir, { recursive: true, force: true });
   });
 
+  function awsVaultInput(): Parameters<ReturnType<typeof secretService>["createProviderConfig"]>[1] {
+    return {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    };
+  }
+
+  function preparedAwsVersion(externalRef: string, versionId: string, valueSha256: string, fingerprintSha256: string): Awaited<ReturnType<typeof awsSecretsManagerProvider.createSecret>> {
+    return {
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId,
+        source: "managed",
+      },
+      valueSha256,
+      fingerprintSha256,
+      externalRef,
+      providerVersionRef: versionId,
+    };
+  }
+
+  function managedAwsVersionRow(secretId: string, externalRef: string): typeof companySecretVersions.$inferInsert {
+    return {
+      secretId,
+      version: 1,
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      providerVersionRef: "aws-version-1",
+      status: "current",
+    };
+  }
+
   async function seedCompany(name = "Acme") {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -925,52 +965,62 @@ describeEmbeddedPostgres("secretService", () => {
     // provider is `local_encrypted`.
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret",
-      providerVersionRef: "aws-version-1",
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    const createSecretSpy = vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret", "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
+
+    const originalProviderWrite = createSecretSpy.getMockImplementation()!;
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalProviderWrite,
+      () => svc.create(companyId, {
+        name: `aws-baseline-${randomUUID()}`,
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        value: "baseline-runtime-secret",
+      }),
+    );
 
     const events: string[] = [];
+    const cleanupEntered = deferred<void>();
+    const providerEntered = deferred<void>();
+    createSecretSpy.mockImplementationOnce(async (input) => {
+      events.push("aws-provider-enter");
+      providerEntered.resolve();
+      return originalProviderWrite(input);
+    });
     let releaseCleanup!: () => void;
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
       events.push("cleanup-enter");
+      cleanupEntered.resolve();
       await cleanupGate;
       events.push("cleanup-exit");
     });
-    // Give the cleanup a chance to acquire the lock before the AWS create
-    // starts racing for the same lock.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const createCall = svc.create(companyId, {
-      name: `aws-secret-${randomUUID()}`,
-      provider: "aws_secrets_manager",
-      providerConfigId: awsVault.id,
-      value: "runtime-secret",
-    });
-    // The AWS create must stay queued behind the held lock, the same way a
-    // `local_encrypted` create does.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["cleanup-enter"]);
-
-    releaseCleanup();
-    await cleanupCall;
-    const created = await createCall;
-    expect(events).toEqual(["cleanup-enter", "cleanup-exit"]);
+    let createCall: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      await awaitEntryOrOperationFailure(cleanupEntered.promise, cleanupCall, "cleanupCall");
+      createCall = svc.create(companyId, {
+        name: `aws-secret-${randomUUID()}`,
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        value: "runtime-secret",
+      });
+      void createCall.catch(() => {});
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, providerEntered.promise);
+      expect(events).toEqual(["cleanup-enter"]);
+      expect(createSecretSpy).toHaveBeenCalledTimes(ENTRY_DETECTION_BASELINE_SAMPLE_COUNT);
+    } finally {
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, createCall]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    const created = await createCall!;
+    expect(events).toEqual(["cleanup-enter", "cleanup-exit", "aws-provider-enter"]);
     expect(created.status).toBe("active");
   });
 
@@ -980,35 +1030,9 @@ describeEmbeddedPostgres("secretService", () => {
     // `local_encrypted` rotate.
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
-      providerVersionRef: "aws-version-1",
-    });
-    vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
-        versionId: "aws-version-2",
-        source: "managed",
-      },
-      valueSha256: "value-sha-2",
-      fingerprintSha256: "fingerprint-sha-2",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
-      providerVersionRef: "aws-version-2",
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate", "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
+    const createVersionSpy = vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate", "aws-version-2", "value-sha-2", "fingerprint-sha-2"));
     const existing = await svc.create(companyId, {
       name: `aws-secret-rotate-${randomUUID()}`,
       provider: "aws_secrets_manager",
@@ -1016,25 +1040,55 @@ describeEmbeddedPostgres("secretService", () => {
       value: "runtime-secret",
     });
 
+    const baselineSecret = await svc.create(companyId, {
+      name: `aws-baseline-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      value: "baseline-runtime-secret",
+    });
+    const originalProviderWrite = createVersionSpy.getMockImplementation()!;
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createVersionSpy,
+      originalProviderWrite,
+      () => svc.rotate(baselineSecret.id, { value: "baseline-rotated-runtime-secret" }),
+    );
+
     const events: string[] = [];
+    const cleanupEntered = deferred<void>();
+    const providerEntered = deferred<void>();
+    createVersionSpy.mockImplementationOnce(async (input) => {
+      events.push("aws-provider-enter");
+      providerEntered.resolve();
+      return originalProviderWrite(input);
+    });
     let releaseCleanup!: () => void;
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
       events.push("cleanup-enter");
+      cleanupEntered.resolve();
       await cleanupGate;
       events.push("cleanup-exit");
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const rotateCall = svc.rotate(existing.id, { value: "rotated-runtime-secret" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["cleanup-enter"]);
-
-    releaseCleanup();
-    await cleanupCall;
-    const rotated = await rotateCall;
-    expect(events).toEqual(["cleanup-enter", "cleanup-exit"]);
+    let rotateCall: ReturnType<typeof svc.rotate> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      await awaitEntryOrOperationFailure(cleanupEntered.promise, cleanupCall, "cleanupCall");
+      rotateCall = svc.rotate(existing.id, { value: "rotated-runtime-secret" });
+      void rotateCall.catch(() => {});
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, providerEntered.promise);
+      expect(events).toEqual(["cleanup-enter"]);
+      expect(createVersionSpy).toHaveBeenCalledTimes(ENTRY_DETECTION_BASELINE_SAMPLE_COUNT);
+    } finally {
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, rotateCall]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    const rotated = await rotateCall!;
+    expect(events).toEqual(["cleanup-enter", "cleanup-exit", "aws-provider-enter"]);
     expect(rotated.latestVersion).toBe(2);
   });
 
@@ -2008,11 +2062,7 @@ describeEmbeddedPostgres("secretService", () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const definition = await svc.createUserSecretDefinition(companyId, {
       key: "github_token",
       name: "GitHub token",
@@ -2070,11 +2120,7 @@ describeEmbeddedPostgres("secretService", () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const definition = await svc.createUserSecretDefinition(companyId, {
       key: "github_token",
       name: "GitHub token",
@@ -2083,18 +2129,7 @@ describeEmbeddedPostgres("secretService", () => {
     });
     const externalRef =
       "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user/github-token";
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: externalRef,
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef,
-      providerVersionRef: "aws-version-1",
-    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion(externalRef, "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
     vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
     vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
     vi.spyOn(db, "delete").mockImplementationOnce(() => {
@@ -2164,11 +2199,7 @@ describeEmbeddedPostgres("secretService", () => {
     await seedCompanyMember(companyId, "user-1", "owner");
     await seedCompanyMember(companyId, "user-2", "member");
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const definition = await svc.createUserSecretDefinition(companyId, {
       key: "github_token",
       name: "GitHub token",
@@ -2180,18 +2211,7 @@ describeEmbeddedPostgres("secretService", () => {
       nextVersion += 1;
       const externalRef =
         `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/${input.context.secretKey}`;
-      return {
-        material: {
-          scheme: "aws_secrets_manager_v1",
-          secretId: externalRef,
-          versionId: `aws-version-${nextVersion}`,
-          source: "managed",
-        },
-        valueSha256: `value-sha-${nextVersion}`,
-        fingerprintSha256: `fingerprint-sha-${nextVersion}`,
-        externalRef,
-        providerVersionRef: `aws-version-${nextVersion}`,
-      };
+      return preparedAwsVersion(externalRef, `aws-version-${nextVersion}`, `value-sha-${nextVersion}`, `fingerprint-sha-${nextVersion}`);
     });
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
     const userOneSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
@@ -2245,29 +2265,14 @@ describeEmbeddedPostgres("secretService", () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const definition = await svc.createUserSecretDefinition(companyId, {
       key: "github_token",
       name: "GitHub token",
       provider: "aws_secrets_manager",
       providerConfigId: awsVault.id,
     });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user-secret",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user-secret",
-      providerVersionRef: "aws-version-1",
-    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user-secret", "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
     const userSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
       definitionId: definition.id,
@@ -2622,11 +2627,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("stores external references without requiring or persisting secret values", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
 
     const secret = await svc.create(companyId, {
       name: `external-${randomUUID()}`,
@@ -2727,11 +2728,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("removes provider vault config locally without deleting remote AWS secrets", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const vault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const vault = await svc.createProviderConfig(companyId, awsVaultInput());
     const secret = await svc.create(companyId, {
       name: `external-${randomUUID()}`,
       provider: "aws_secrets_manager",
@@ -2782,11 +2779,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("rejects bindings and env refs to soft-deleted external reference secrets", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const deleted = await svc.create(companyId, {
       name: "Deleted external",
       key: "deleted-external",
@@ -2816,11 +2809,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("rejects updates to already soft-deleted external reference secrets", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const deleted = await svc.create(companyId, {
       name: "Deleted patch target",
       key: "deleted-patch-target",
@@ -2839,11 +2828,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("allows re-importing a remote secret after the prior external reference is soft-deleted", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const externalRef =
       "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/reimportable";
     const deleted = await svc.create(companyId, {
@@ -2892,11 +2877,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("ignores soft-deleted name and key conflicts during remote import", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const deleted = await svc.create(companyId, {
       name: "Deleted external",
       key: "deleted-external",
@@ -2992,30 +2973,8 @@ describeEmbeddedPostgres("secretService", () => {
       },
     });
 
-    const createSpy = vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
-      providerVersionRef: "aws-version-1",
-    });
-    const createVersionSpy = vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
-        versionId: "aws-version-2",
-        source: "managed",
-      },
-      valueSha256: "value-sha-2",
-      fingerprintSha256: "fingerprint-sha-2",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
-      providerVersionRef: "aws-version-2",
-    });
+    const createSpy = vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key", "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
+    const createVersionSpy = vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key", "aws-version-2", "value-sha-2", "fingerprint-sha-2"));
     const resolveSpy = vi.spyOn(awsSecretsManagerProvider, "resolveVersion").mockResolvedValue("resolved-secret");
 
     const secret = await svc.create(companyId, {
@@ -3048,25 +3007,8 @@ describeEmbeddedPostgres("secretService", () => {
   it("cleans up managed provider secrets when create persistence fails", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
-    const prepared = {
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-rollback",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-rollback",
-      providerVersionRef: "aws-version-1",
-    };
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    const prepared = preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-rollback", "aws-version-1", "value-sha-1", "fingerprint-sha-1");
     vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
     vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db insert failed"));
@@ -3103,25 +3045,8 @@ describeEmbeddedPostgres("secretService", () => {
   it("keeps a local cleanup handle when create rollback cleanup fails", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
-    const prepared = {
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-cleanup-handle",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-cleanup-handle",
-      providerVersionRef: "aws-version-1",
-    };
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    const prepared = preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-cleanup-handle", "aws-version-1", "value-sha-1", "fingerprint-sha-1");
     vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
     vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValue(
       new Error("cleanup failed"),
@@ -3171,25 +3096,8 @@ describeEmbeddedPostgres("secretService", () => {
   it("reports managed secret persistence rollback failures when local cleanup cannot remove the reserved row", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
-    const prepared = {
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-local-cleanup",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-local-cleanup",
-      providerVersionRef: "aws-version-1",
-    };
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    const prepared = preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-local-cleanup", "aws-version-1", "value-sha-1", "fingerprint-sha-1");
     vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
     vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
     vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
@@ -3227,25 +3135,8 @@ describeEmbeddedPostgres("secretService", () => {
   it("archives managed provider versions when rotate persistence fails", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-rollback",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-rollback",
-      providerVersionRef: "aws-version-1",
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-rollback", "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
     const secret = await svc.create(companyId, {
       name: "Rotate Rollback",
       key: "rotate-rollback",
@@ -3253,20 +3144,7 @@ describeEmbeddedPostgres("secretService", () => {
       providerConfigId: awsVault.id,
       value: "runtime-secret",
     });
-    const prepared = {
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-rollback",
-        versionId: "aws-version-2",
-        source: "managed",
-      },
-      valueSha256: "value-sha-2",
-      fingerprintSha256: "fingerprint-sha-2",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-rollback",
-      providerVersionRef: "aws-version-2",
-    };
+    const prepared = preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-rollback", "aws-version-2", "value-sha-2", "fingerprint-sha-2");
     vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(prepared);
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
     vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
@@ -3292,25 +3170,8 @@ describeEmbeddedPostgres("secretService", () => {
   it("keeps a disabled version cleanup handle when rotate rollback cleanup fails", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-cleanup-handle",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-cleanup-handle",
-      providerVersionRef: "aws-version-1",
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-cleanup-handle", "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
     const secret = await svc.create(companyId, {
       name: "Rotate Cleanup Handle",
       key: "rotate-cleanup-handle",
@@ -3318,20 +3179,7 @@ describeEmbeddedPostgres("secretService", () => {
       providerConfigId: awsVault.id,
       value: "runtime-secret",
     });
-    const prepared = {
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-cleanup-handle",
-        versionId: "aws-version-2",
-        source: "managed",
-      },
-      valueSha256: "value-sha-2",
-      fingerprintSha256: "fingerprint-sha-2",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-cleanup-handle",
-      providerVersionRef: "aws-version-2",
-    };
+    const prepared = preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-cleanup-handle", "aws-version-2", "value-sha-2", "fingerprint-sha-2");
     vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(prepared);
     vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValue(
       new Error("cleanup failed"),
@@ -3372,20 +3220,7 @@ describeEmbeddedPostgres("secretService", () => {
       displayName: "AWS secondary",
       config: { region: "us-west-2", namespace: "prod-usw2" },
     });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/vault-reassign",
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/vault-reassign",
-      providerVersionRef: "aws-version-1",
-    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(preparedAwsVersion("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/vault-reassign", "aws-version-1", "value-sha-1", "fingerprint-sha-1"));
     const secret = await svc.create(companyId, {
       name: "Vault Reassign",
       key: "vault-reassign",
@@ -3426,11 +3261,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("previews AWS remote import candidates with duplicate and collision enrichment", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const duplicate = await svc.create(companyId, {
       name: "Existing duplicate",
       provider: "aws_secrets_manager",
@@ -3504,11 +3335,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("sanitizes AWS remote import preview provider errors before crossing the service boundary", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const rawProviderMessage =
       "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets";
 
@@ -3542,11 +3369,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("sanitizes AWS managed secret create failures and removes the reserved row", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const rawProviderMessage =
       "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:CreateSecret on arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1";
 
@@ -3586,6 +3409,9 @@ describeEmbeddedPostgres("secretService", () => {
         requiredCapability: "secretsmanager:CreateSecret",
       },
     });
+    expect((thrown as HttpError).details?.actionableMessage).toContain(
+      "Ensure the Paperclip server runtime can resolve valid AWS credentials",
+    );
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
@@ -3600,11 +3426,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("reports rollback failures when AWS managed secret create cleanup cannot remove the reserved row", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
 
     vi.spyOn(awsSecretsManagerProvider, "createSecret").mockRejectedValueOnce(
       new SecretProviderClientError({
@@ -3777,11 +3599,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("writes external reference rotations through the provider when a value is given", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/neon-admin";
     const secret = await svc.create(companyId, {
       name: `external-${randomUUID()}`,
@@ -3832,11 +3650,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("restores the provider current version when external value rotation persistence fails", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/rollback";
     const secret = await svc.create(companyId, {
       name: "External rollback",
@@ -3885,11 +3699,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("rejects external value rotations that also retarget or pin versions", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const secret = await svc.create(companyId, {
       name: `external-${randomUUID()}`,
       provider: "aws_secrets_manager",
@@ -3927,11 +3737,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const duplicate = await svc.create(companyId, {
       name: "Existing duplicate",
       provider: "aws_secrets_manager",
@@ -4000,11 +3806,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("sanitizes AWS remote import row provider errors", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const rawProviderMessage =
       "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:DescribeSecret on arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai";
     vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret").mockRejectedValueOnce(
@@ -4047,11 +3849,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("rejects Paperclip-managed AWS namespace refs during preview and import commit", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
 
     vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
       secrets: [
@@ -4112,11 +3910,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("skips duplicate AWS remote imports for the same provider vault and canonical ref", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
 
     const first = await svc.importRemoteSecrets(companyId, {
       providerConfigId: awsVault.id,
@@ -4200,11 +3994,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("rejects generic update retargeting for external reference secrets", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const awsVault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS production",
-      config: { region: "us-east-1", namespace: "prod-use1" },
-    });
+    const awsVault = await svc.createProviderConfig(companyId, awsVaultInput());
     const secret = await svc.create(companyId, {
       name: `external-${randomUUID()}`,
       provider: "aws_secrets_manager",
@@ -4263,20 +4053,7 @@ describeEmbeddedPostgres("secretService", () => {
       .returning()
       .then((rows) => rows[0]);
 
-    await db.insert(companySecretVersions).values({
-      secretId: secret.id,
-      version: 1,
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: externalRef,
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      providerVersionRef: "aws-version-1",
-      status: "current",
-    });
+    await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
 
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
 
@@ -4329,20 +4106,7 @@ describeEmbeddedPostgres("secretService", () => {
       .returning()
       .then((rows) => rows[0]);
 
-    await db.insert(companySecretVersions).values({
-      secretId: secret.id,
-      version: 1,
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: externalRef,
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      providerVersionRef: "aws-version-1",
-      status: "current",
-    });
+    await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
     vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValueOnce(
       new Error("provider delete failed"),
     );
@@ -4386,20 +4150,7 @@ describeEmbeddedPostgres("secretService", () => {
       status: "deleted",
       deletedAt: new Date(),
     });
-    await db.insert(companySecretVersions).values({
-      secretId,
-      version: 1,
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: externalRef,
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      providerVersionRef: "aws-version-1",
-      status: "current",
-    });
+    await db.insert(companySecretVersions).values(managedAwsVersionRow(secretId, externalRef));
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValueOnce(
       new SecretProviderClientError({
         code: "not_found",
@@ -4449,20 +4200,7 @@ describeEmbeddedPostgres("secretService", () => {
       .returning()
       .then((rows) => rows[0]);
 
-    await db.insert(companySecretVersions).values({
-      secretId: secret.id,
-      version: 1,
-      material: {
-        scheme: "aws_secrets_manager_v1",
-        secretId: externalRef,
-        versionId: "aws-version-1",
-        source: "managed",
-      },
-      valueSha256: "value-sha-1",
-      fingerprintSha256: "fingerprint-sha-1",
-      providerVersionRef: "aws-version-1",
-      status: "current",
-    });
+    await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
     await svc.disableProviderConfig(vault.id);
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
 

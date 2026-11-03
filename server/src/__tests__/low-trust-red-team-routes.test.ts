@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import express from "express";
@@ -55,12 +56,13 @@ import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_LOW_TRUST_TEST_DATABASE_URL");
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+const describeEmbeddedPostgres = externalTestDatabaseUrl || embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
 
-if (!embeddedPostgresSupport.supported) {
+if (!externalTestDatabaseUrl && !embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres low-trust route tests on this host: ${
       embeddedPostgresSupport.reason ?? "unsupported environment"
@@ -436,6 +438,8 @@ async function seedLowTrustFixture(db: Db) {
       defaultResponsibleUserId: "board-user",
     })
     .returning();
+  await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+  await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
   const [allowedProject] = await db
     .insert(projects)
     .values({
@@ -883,10 +887,10 @@ describeEmbeddedPostgres(
     }
 
     beforeAll(async () => {
-      tempDb = await startEmbeddedPostgresTestDatabase(
+      if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase(
         "paperclip-low-trust-red-team-routes-",
       );
-      db = createDb(tempDb.connectionString);
+      db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
     }, 20_000);
 
     afterEach(async () => {
@@ -925,13 +929,12 @@ describeEmbeddedPostgres(
     });
 
     afterAll(async () => {
+      await db?.$client.end({ timeout: 1 });
       await tempDb?.cleanup();
     });
 
     it("allows the human-requested run through HTTP while rejecting attribution-only authority", async () => {
       const fixture = await seedLowTrustFixture(db);
-      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
       // The fixture already occupies the agent's sole execution slot. Let the
       // real board route enqueue work, then bind its queued run for HTTP checks.
       await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
@@ -977,21 +980,24 @@ describeEmbeddedPostgres(
       const handoff = await request(directedAgent).patch(`/api/issues/${created.body.id}`)
         .send({ status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user", comment: "Ready for human review" });
       expect(handoff.status, JSON.stringify(handoff.body)).toBe(200);
-      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, directRun.id));
-      expect(stopped).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
+      expect(handoff.body).toMatchObject({ status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user" });
+      const [outgoing] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, directRun.id));
+      expect(outgoing).toMatchObject({ status: "running", errorCode: null });
+      const lateEdit = await request(directedAgent).patch(`/api/issues/${created.body.id}`)
+        .send({ description: "Late outgoing edit" });
+      expect([403, 404]).toContain(lateEdit.status);
       const returned = await request(board).patch(`/api/issues/${created.body.id}`)
         .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id, assigneeUserId: null });
       expect(returned.status, JSON.stringify(returned.body)).toBe(200);
-      // Reassignment back does not revive the cancelled run's human request.
-      const staleRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
-      expect([403, 404]).toContain(staleRead.status);
+      const [humanRequest] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+      expect(humanRequest.status).toBe("cancelled");
+      const reassignedRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect(reassignedRead.status, JSON.stringify(reassignedRead.body)).toBe(200);
 
     });
 
     it("retains a board backlog assignment and rejects plugin-attributed wakes with forged board payloads", async () => {
       const fixture = await seedLowTrustFixture(db);
-      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
       await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
         .where(eq(agents.id, fixture.agents.lowTrust.id));
       const board = createApp(db, boardActor(fixture));

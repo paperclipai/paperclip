@@ -1,11 +1,7 @@
-import { and, inArray } from "drizzle-orm";
+import { orphanLoginLeases } from "./login-cleanup-state.js";
 import type { Db } from "@paperclipai/db";
-import { adapterAuthSessions } from "@paperclipai/db";
 import {
-  ADAPTER_AUTH_ACTIVE_STATUSES,
-  DISPLAYED_CODE_ADAPTER_TYPES,
   decodePendingTerminal,
-  LOGIN_LEASE_SESSION_TAG_KEY,
   observeSandboxDelete,
   terminalCleanupWrite,
   type AdapterAuthReaperStore,
@@ -15,11 +11,6 @@ import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { environmentService } from "./environments.js";
 
 // The restart-safe cleanup backstop for adapter login sessions.
-//
-// The in-process five-minute timer in the login-session service stays the
-// primary control. This reaper is the backstop. It runs on server startup and on
-// a fixed interval, so sandbox cleanup survives a server restart and a delete
-// failure. The reaper sweeps three sets:
 //
 //  1. The expired non-terminal sessions. It deletes the login sandbox and marks
 //     the session `timed_out`.
@@ -308,35 +299,8 @@ export function createProductionLoginSessionReaperRuntime(
       return { outcome: "deleted" };
     },
     async listTaggedLeases() {
-      // The candidate environments are those with a login session that still
-      // owns a lease. An orphan session row keeps its environment, so this set
-      // covers every orphan lease.
-      const environmentRows = await deps.db
-        .selectDistinct({ environmentId: adapterAuthSessions.environmentId })
-        .from(adapterAuthSessions)
-        .where(
-          and(
-            // The shared table also holds the setup-token rows. Filter by the
-            // closed set of displayed-code adapter types, so the orphan sweep
-            // reads only displayed-code rows.
-            inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
-            inArray(adapterAuthSessions.status, [
-              ...ADAPTER_AUTH_ACTIVE_STATUSES,
-              "cleanup_pending",
-            ]),
-          ),
-        );
-      const tagged: TaggedLease[] = [];
-      for (const { environmentId } of environmentRows) {
-        const leases = await environmentsSvc.listLeases(environmentId, { status: "active" });
-        for (const lease of leases) {
-          const sessionId = lease.metadata?.[LOGIN_LEASE_SESSION_TAG_KEY];
-          if (typeof sessionId === "string" && lease.providerLeaseId) {
-            tagged.push({ environmentId, providerLeaseId: lease.providerLeaseId, sessionId });
-          }
-        }
-      }
-      return tagged;
+      const rows = await orphanLoginLeases(deps.db);
+      return rows.map(row => ({ environmentId: row.environmentId!, providerLeaseId: row.providerLeaseId!, sessionId: row.sessionId }));
     },
   };
 }

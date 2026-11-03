@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,8 +15,7 @@ describe("per-turn OpenCode reasoning", () => {
   });
   it("selects reasoning independently on successive turns and sends instructions once", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-turn-reasoning-"));
-    const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
-    await chmod(fixture, 0o755);
+    const fixture = join(root, "fake-opencode-server.mjs");
     const submitted: Array<{ variant?: string; system?: string; parts: Array<{ text: string }> }> = [];
     const instructions = "Unique shared agent instructions. Keep the requested scope.";
     const driver = new OpenCodeServerDriver({
@@ -34,6 +33,8 @@ describe("per-turn OpenCode reasoning", () => {
     });
     let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
     try {
+      await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), fixture);
+      await chmod(fixture, 0o755);
       session = await driver.openSession({ runId: "turn-reasoning", normalizedSessionId: "reasoning", workingDirectory: root });
       await expect(session.startTurn({ message: { role: "user", text: "invalid" }, reasoningMode: "bad" as never })).rejects.toThrow("turn.reasoningMode");
       expect(submitted).toHaveLength(0);
@@ -56,8 +57,8 @@ describe("per-turn OpenCode reasoning", () => {
       });
       expect(config.provider.openrouter.models["deepseek/deepseek-v4-flash-0731"].options).toBeUndefined();
     } finally {
-      await session?.close();
-      await rm(root, { recursive: true, force: true });
+      try { await session?.close(); }
+      finally { await rm(root, { recursive: true, force: true }); }
     }
   });
 });

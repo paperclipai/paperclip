@@ -170,6 +170,16 @@ describe("project env routes", () => {
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
   });
 
+  it('requires workspace-write authority to attach a repository despite project read access', async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockAccessService.decide.mockImplementation(async (input) => ({ allowed: input.action !== 'project:write_workspace',
+      action: input.action, reason: 'deny_no_grant', explanation: 'Workspace write permission required.' }));
+    const app = await createApp();
+    await request(app).post('/api/projects/project-1/workspaces').send({ name: 'Repository', repoUrl: 'https://github.com/acme/skills' }).expect(403);
+    await request(app).put('/api/projects/project-1/repositories').send({ repositoryIds: ['42'] }).expect(403);
+    expect(mockProjectService.createWorkspace).not.toHaveBeenCalled();
+  });
+
   it("normalizes env bindings on create and logs only env keys", async () => {
     const normalizedEnv = {
       API_KEY: {

@@ -35,3 +35,25 @@ export async function withCopilotSmokeResources(installation, callback, dependen
     }
   }
 }
+
+/** Confirm this smoke-owned provider exits, even when it ignores SIGTERM. */
+export async function stopCopilotSmokeChild(child, { terminateTimeoutMs = 5_000, killTimeoutMs = 5_000 } = {}) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit");
+  child.stdin?.end();
+  child.kill("SIGTERM");
+  try { await boundedExit(exited, terminateTimeoutMs); }
+  catch (error) {
+    if (child.exitCode !== null || child.signalCode !== null) throw error;
+    child.kill("SIGKILL");
+    await boundedExit(exited, killTimeoutMs);
+  }
+}
+async function boundedExit(exited, timeoutMs) {
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Copilot smoke cleanup was not confirmed")), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}

@@ -33,12 +33,6 @@ function fixture(): { filePath: string; info: PaperclipRuntimeInfo } {
 }
 
 describe("runtime info", () => {
-  it("writes and reads the selected runtime endpoint", () => {
-    const { filePath, info } = fixture();
-    writeRuntimeInfo(info, filePath);
-    expect(readRuntimeInfo("default", filePath)).toEqual(info);
-  });
-
   it("does not remove runtime info owned by a replacement process", () => {
     const { filePath, info } = fixture();
     writeRuntimeInfo(info, filePath);

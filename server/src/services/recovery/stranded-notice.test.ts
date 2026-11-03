@@ -60,6 +60,29 @@ describe("stranded recovery notice seeds", () => {
     expect(disabled.body).toContain("an operator disabled it");
   });
 
+  it("explains unsupported concurrent shared workspace placement instead of missing secrets", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported" });
+    expect(seed.title).toBe("Shared workspace unavailable");
+    expect(seed.body).toContain("cannot place concurrent agents in one physical shared folder");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("isolated task workspace");
+  });
+
+  it("explains a quiet holder that still owns the shared workspace", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported", holderStale: true });
+    expect(seed.title).toBe("Shared workspace still held");
+    expect(seed.body).toContain("no output for more than an hour");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("stop it if it is stuck");
+  });
+
+  it("offers retry without a workspace repair checklist", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "workspace_source_restricted" });
+    expect(seed.title).toBe("Task couldn’t start");
+    expect(seed.body).toBe("The task couldn’t start.");
+    expect(seed.nextAction).toBe("Retry the task.");
+  });
+
   it("keeps the secret-binding copy for other configuration gaps", () => {
     expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
       "secret/env bindings",

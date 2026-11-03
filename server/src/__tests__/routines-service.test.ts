@@ -1,3 +1,6 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -36,7 +39,8 @@ import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
 import { secretService } from "../services/secrets.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ROUTINES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 const originalPaperclipApiUrlEnv = process.env.PAPERCLIP_API_URL;
@@ -53,8 +57,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   beforeAll(async () => {
     process.env.PAPERCLIP_API_URL = "http://localhost:3100";
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -213,6 +217,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
+
+  it("notifies scheduled routine work after trigger transactions settle", async () => {
+    const f = await seedFixture();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.routineSchedules, event => { events.push(event); });
+    try {
+      const created = await f.svc.createTrigger(f.routine.id,
+        { kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }, {});
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await f.svc.updateTrigger(created.trigger.id, { cronExpression: "30 * * * *" }, {});
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await f.svc.deleteTrigger(created.trigger.id, {});
+      expect(events).toEqual(["intent", "settled"]);
+    } finally { unsubscribe(); }
+  });
+
+  it("notifies monitor work when an issue deadline is created and changed", async () => {
+    const f = await seedFixture();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.issueMonitors, event => { events.push(event); });
+    const next = new Date(Date.now() + 600_000);
+    try {
+      const issue = await f.issueSvc.create(f.companyId, {
+        title: "Scheduled check", status: "in_progress", assigneeAgentId: f.agentId,
+        executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: next.toISOString() } },
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await f.issueSvc.update(issue.id, { monitorNextCheckAt: new Date(next.getTime() + 60_000) });
+      expect(events).toEqual(["intent", "settled"]);
+    } finally { unsubscribe(); }
+  });
 
   async function armWorktreeExecution(cutoff: Date, instanceId = "worktree-routines-test") {
     await db.insert(instanceSettings).values({
@@ -1297,7 +1335,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ]);
   });
 
-  it("records the manual board runner on fresh routine issues so they appear in that user's inbox", async () => {
+  it("retains manual runner attribution without adding fresh routine issues to Mine", async () => {
     const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
 
@@ -1326,7 +1364,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
     });
-    expect(inboxIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+    expect(inboxIssues.map((issue) => issue.id)).not.toContain(run.linkedIssueId);
   });
 
   it("uses the routine revision responsible-user snapshot for automatic runs", async () => {
@@ -1448,7 +1486,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
-  it("touches a coalesced routine issue for the manual runner's inbox", async () => {
+  it("preserves the archive and Mine membership when a manual run coalesces", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
     const previousRunId = randomUUID();
@@ -1506,29 +1544,20 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBe(previousIssue.id);
     await expect(
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
-    ).resolves.toHaveLength(0);
+    ).resolves.toHaveLength(1);
     await expect(
       db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        companyId,
-        actorType: "user",
-        actorId: userId,
-        action: "issue.inbox_touched",
-        entityType: "issue",
-        entityId: previousIssue.id,
-      }),
-    ]);
+    ).resolves.toEqual([]);
 
     const inboxIssues = await issueSvc.list(companyId, {
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
     });
-    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+    expect(inboxIssues.map((issue) => issue.id)).not.toContain(previousIssue.id);
   });
 
-  it("touches a skipped active routine issue for the manual runner's inbox", async () => {
+  it("preserves the archive and Mine membership when a manual run is skipped", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
     const previousRunId = randomUUID();
@@ -1592,26 +1621,17 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBe(previousIssue.id);
     await expect(
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
-    ).resolves.toHaveLength(0);
+    ).resolves.toHaveLength(1);
     await expect(
       db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        companyId,
-        actorType: "user",
-        actorId: userId,
-        action: "issue.inbox_touched",
-        entityType: "issue",
-        entityId: previousIssue.id,
-      }),
-    ]);
+    ).resolves.toEqual([]);
 
     const inboxIssues = await issueSvc.list(companyId, {
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
     });
-    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+    expect(inboxIssues.map((issue) => issue.id)).not.toContain(previousIssue.id);
   });
 
   it("does not coalesce live routine runs with different resolved variables", async () => {
@@ -2149,7 +2169,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
     });
 
-    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.decisionTargets, event => { events.push(event); });
+    const run = await svc.runRoutine(routine.id, { source: "manual" }).finally(unsubscribe);
+    expect(events).toEqual([]);
 
     expect(run.status).toBe("failed");
     expect(run.failureReason).toContain("queue unavailable");
@@ -2390,6 +2413,177 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     } finally {
       getSecretProviderSpy.mockRestore();
     }
+  });
+
+  async function sentryFailureFixture(setupPending = false, runtimeEnv?: Record<string, string | undefined>) {
+    const fixture = await seedFixture({ runtimeEnv });
+    await fixture.svc.update(fixture.routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const created = await fixture.svc.createTrigger(fixture.routine.id, { kind: "webhook", signingMode: "bearer", setupPending }, {});
+    const [sourceTask] = await db.insert(issues).values({
+      companyId: fixture.companyId, projectId: fixture.projectId, title: "Failed source task", status: "blocked",
+    }).returning();
+    const [sourceRun] = await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId, agentId: fixture.agentId, nativeIssueId: sourceTask!.id, status: "failed",
+    }).returning();
+    const delivery = (taskId = sourceTask!.id, runId = sourceRun!.id) => ({
+      sentryRunFailure: true,
+      authorizationHeader: `Bearer ${created.secretMaterial!.webhookSecret}`,
+      payload: { action: "triggered", data: { event: { event_id: "a".repeat(32), tags: [
+        ["event_kind", "run_failure"], ["task_id", taskId], ["run_id", runId], ["error_code", "task_attempt_failed"],
+      ] } } },
+    });
+    return { ...fixture, ...created, sourceTask: sourceTask!, sourceRun: sourceRun!, delivery };
+  }
+
+  it("ignores Sentry failures of a task generated by the receiving routine before creating work", async () => {
+    const f = await sentryFailureFixture();
+    await db.update(issues).set({ originKind: "routine_execution", originId: f.routine.id }).where(eq(issues.id, f.sourceTask.id));
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).resolves.toMatchObject({
+      status: "ignored", routineStarted: false,
+    });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+  });
+
+  it("deduplicates Sentry events by the source run and retains only trusted repair context", async () => {
+    const f = await sentryFailureFixture();
+    const first = f.delivery();
+    Object.assign(first.payload, { variables: { task_identifier: "untrusted", instructions: "untrusted" }, extra: "do not persist" });
+    const a = await f.svc.firePublicTrigger(f.trigger.publicId!, first);
+    const second = f.delivery();
+    second.payload.data.event.event_id = "b".repeat(32);
+    second.payload.data.event.tags[1]![1] = ` ${f.sourceTask.id.toUpperCase()} `;
+    second.payload.data.event.tags[2]![1] = ` ${f.sourceRun.id.toUpperCase()} `;
+    const b = await f.svc.firePublicTrigger(f.trigger.publicId!, second);
+    expect(a.id).toBe(b.id);
+    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(1);
+    const [run] = await f.svc.listRuns(f.routine.id);
+    expect(run!.triggerPayload).toMatchObject({ source: "sentry_run_failure", taskId: f.sourceTask.id, runId: f.sourceRun.id });
+    expect(JSON.stringify(run!.triggerPayload)).not.toContain("untrusted");
+    expect(JSON.stringify(run!.triggerPayload)).not.toContain("do not persist");
+  });
+
+  it.each(["child", "standalone", "legacy"] as const)("ignores a Sentry failure with %s creation provenance from this routine", async (kind) => {
+    const f = await sentryFailureFixture();
+    const [root] = await db.insert(issues).values({ companyId: f.companyId, title: "Repair task",
+      originKind: "routine_execution", originId: f.routine.id, status: "blocked" }).returning();
+    const [creator] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: root!.id, status: "failed" }).returning();
+    await db.update(issues).set(kind === "child" ? { parentId: root!.id }
+      : kind === "standalone" ? { originRunId: creator!.id }
+        : { createdByAgentId: f.agentId }).where(eq(issues.id, f.sourceTask.id));
+    if (kind === "legacy") await db.insert(activityLog).values({ companyId: f.companyId, actorType: "agent", actorId: f.agentId,
+      action: "issue.created", entityType: "issue", entityId: f.sourceTask.id, runId: creator!.id });
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).resolves.toMatchObject({ status: "ignored" });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+  });
+
+  it.each(["unknown_run", "mismatched_task", "not_failure", "private", "private_project", "succeeded"] as const)("does not create a repair for a Sentry event with %s", async (kind) => {
+    const f = await sentryFailureFixture();
+    const delivery = f.delivery(kind === "mismatched_task" ? randomUUID() : undefined,
+      kind === "unknown_run" ? randomUUID() : undefined);
+    if (kind === "not_failure") delivery.payload.data.event.tags[0]![1] = "other";
+    if (kind === "private") await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.sourceTask.id));
+    if (kind === "private_project") await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, f.projectId));
+    if (kind === "succeeded") await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.sourceRun.id));
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, delivery)).resolves.toMatchObject({ status: "ignored" });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+  });
+
+  it("deduplicates concurrent Sentry deliveries across two triggers and still admits a distinct failed run", async () => {
+    const f = await sentryFailureFixture();
+    const second = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "bearer" }, {});
+    const results = await Promise.all([
+      f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery()),
+      f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(), authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` }),
+    ]);
+    expect(results[0].id).toBe(results[1].id);
+    const [anotherRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.sourceTask.id, status: "failed" }).returning();
+    await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery(f.sourceTask.id, anotherRun!.id));
+    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(2);
+    await f.svc.deleteTrigger(f.trigger.id, {});
+    await f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(),
+      authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` });
+    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(2);
+  });
+
+  it.each(["routine_execution", "plugin:fixture:operation"])("ignores tasks from a different Sentry repair routine with %s origin", async (originKind) => {
+    const f = await sentryFailureFixture();
+    const original = await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery());
+    const [repair] = await db.select().from(issues).where(eq(issues.id, original.linkedIssueId!));
+    await db.update(issues).set({ originKind, originId: originKind === "routine_execution" ? f.routine.id : "plugin-instance" })
+      .where(eq(issues.id, repair!.id));
+    const [failure] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: repair!.id, status: "failed" }).returning();
+    const other = await f.svc.create(f.companyId, { title: "Other repair routine", projectId: f.projectId,
+      assigneeAgentId: f.agentId, concurrencyPolicy: "always_enqueue" }, {});
+    const trigger = await f.svc.createTrigger(other.id, { kind: "webhook", signingMode: "bearer" }, {});
+    await expect(f.svc.firePublicTrigger(trigger.trigger.publicId!, { ...f.delivery(repair!.id, failure!.id),
+      authorizationHeader: `Bearer ${trigger.secretMaterial!.webhookSecret}` })).resolves.toMatchObject({ status: "ignored" });
+    expect(await f.svc.listRuns(other.id)).toEqual([]);
+  });
+
+  it("accepts independent plugin-operation tasks whose origin is a routine run", async () => {
+    const f = await sentryFailureFixture();
+    const other = await f.svc.create(f.companyId, { title: "Plugin routine", projectId: f.projectId, assigneeAgentId: f.agentId }, {});
+    const [origin] = await db.insert(routineRuns).values({ companyId: f.companyId, routineId: other.id,
+      source: "manual", status: "issue_created", linkedIssueId: f.sourceTask.id }).returning();
+    await db.update(issues).set({ originKind: "plugin:fixture:operation", originId: "plugin-instance",
+      originRunId: origin!.id }).where(eq(issues.id, f.sourceTask.id));
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).resolves.toMatchObject({ status: "issue_created" });
+  });
+
+  it("deduplicates suppressed Sentry receipts across triggers", async () => {
+    const f = await sentryFailureFixture(false, { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-sentry-test" });
+    const second = await f.svc.createTrigger(f.routine.id, { kind: "webhook", signingMode: "bearer" }, {});
+    const a = await f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery());
+    const b = await f.svc.firePublicTrigger(second.trigger.publicId!, { ...f.delivery(),
+      authorizationHeader: `Bearer ${second.secretMaterial!.webhookSecret}` });
+    expect(a).toMatchObject({ status: "skipped", failureReason: "worktree_execution_cutoff" });
+    expect(b.id).toBe(a.id);
+    expect(await f.svc.listRuns(f.routine.id)).toHaveLength(1);
+    expect(f.wakeups).toEqual([]);
+  });
+
+  it.each(["none", "app_webhook"] as const)("requires explicit bearer mode on Sentry intake instead of %s", async (signingMode) => {
+    const f = await sentryFailureFixture();
+    await f.svc.updateTrigger(f.trigger.id, { signingMode }, {});
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery())).rejects.toMatchObject({ status: 401 });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+  });
+
+  it.each([false, true])("never promotes a Sentry setup receipt into work after activation (generic ingress: %s)", async (genericIngress) => {
+    const f = await sentryFailureFixture(true);
+    const delivery = { ...f.delivery(), idempotencyKey: "sentry-connection-test" };
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, { ...delivery, sentryRunFailure: !genericIngress }))
+      .resolves.toMatchObject({ status: "test_received" });
+    await f.svc.updateTrigger(f.trigger.id, { setupPending: false }, {});
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, delivery)).resolves.toMatchObject({ status: "test_received" });
+    if (!genericIngress) await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery()))
+      .resolves.toMatchObject({ status: "test_received" });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+    const [another] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.sourceTask.id, status: "failed" }).returning();
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery(f.sourceTask.id, another!.id)))
+      .resolves.toMatchObject({ status: "issue_created" });
+  });
+
+  it.each(["pairs", "objects", "dictionary"])("accepts Sentry %s tags and rejects a different company", async (format) => {
+    const f = await sentryFailureFixture();
+    const delivery = f.delivery();
+    const tags = [...delivery.payload.data.event.tags, ["company_id", f.companyId]];
+    const event = (pairs: string[][]) => ({ ...delivery.payload, data: { event: { ...delivery.payload.data.event,
+      tags: format === "objects" ? pairs.map(([key, value]) => ({ key, value })) : format === "dictionary" ? Object.fromEntries(pairs) : pairs,
+    } } });
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, { ...delivery,
+      payload: event([...tags.slice(0, -1), ["company_id", randomUUID()]]) })).resolves.toMatchObject({ status: "ignored" });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, { ...delivery, payload: event(tags) }))
+      .resolves.toMatchObject({ status: "issue_created" });
   });
 
   async function firefliesFixture(setupPending = false, signingMode: "app_webhook" | "fireflies_hmac" = "fireflies_hmac") {

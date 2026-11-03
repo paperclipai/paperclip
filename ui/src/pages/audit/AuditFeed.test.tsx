@@ -34,6 +34,7 @@ vi.mock("@/context/ToastContext", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
+  useCaseHref: () => (...segments: string[]) => `/CAS/${["cases", ...segments].join("/")}`,
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
     <a href={to} {...props}>
       {children}
@@ -115,6 +116,11 @@ describe("AuditFeed", () => {
       onModeChange?: (mode: "all" | "agents") => void;
       actionDomain?: string;
       onActionDomainChange?: (actionDomain: string) => void;
+      entityType?: string;
+      onEntityTypeChange?: (entityType: string) => void;
+      entityId?: string;
+      onEntityIdChange?: (entityId: string) => void;
+      onClearFilters?: () => void;
     } = {},
   ) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -131,6 +137,11 @@ describe("AuditFeed", () => {
             onModeChange={props.onModeChange}
             actionDomain={props.actionDomain}
             onActionDomainChange={props.onActionDomainChange}
+            entityType={props.entityType}
+            onEntityTypeChange={props.onEntityTypeChange}
+            entityId={props.entityId}
+            onEntityIdChange={props.onEntityIdChange}
+            onClearFilters={props.onClearFilters}
           />
         </QueryClientProvider>,
       );
@@ -233,6 +244,65 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("tested get repository on");
     expect(container.querySelector('a[href="/apps/conn-1/permissions"]')).toBeTruthy();
     expect(container.textContent).toContain("tool_gateway.call_completed");
+  });
+
+  it("shows case history with case links and the acting agent's avatar", async () => {
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({
+        action: "case.fields_changed", entityType: "case", entityId: "case-1",
+        entity: { case: { id: "case-1", identifier: "CAS-C1", title: "Morning coffee" }, issue: null, comment: null, document: null },
+      })],
+      nextCursor: null, accessTier: "full",
+    });
+    await render({ lockedEntity: { type: "case", id: "case-1" } });
+    expect(listAgentActionsMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ entityType: "case", entityId: "case-1" }));
+    expect(container.textContent).toContain("updated details on");
+    const caseLinks = container.querySelectorAll('a[href="/CAS/cases/CAS-C1"]');
+    expect(caseLinks).toHaveLength(2);
+    expect(caseLinks[0]?.textContent).toBe("CAS-C1 · Morning coffee");
+    const avatar = container.querySelector('[data-slot="agent-avatar"]');
+    expect(avatar?.querySelector("img")).toBeTruthy();
+    expect(avatar?.classList.contains("size-5")).toBe(true);
+  });
+
+  it("keeps the Cases filter in the query for an ordinary company reader", async () => {
+    listAgentActionsMock.mockResolvedValue({ items: [], nextCursor: null, accessTier: "basic" });
+    await render({ entityType: "case" });
+    expect(listAgentActionsMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ entityType: "case" }));
+    expect(container.textContent).toContain("Case");
+    expect(container.textContent).toContain("No actions match these filters");
+  });
+
+  it("applies a human case identifier from the Case search field", async () => {
+    const onEntityIdChange = vi.fn();
+    await render({ entityType: "case", entityId: "", onEntityIdChange });
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Case ID or identifier"]');
+    expect(input).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "CAS-C1");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onEntityIdChange).toHaveBeenCalledWith("CAS-C1");
+  });
+
+  it("clears a scoped case with one atomic URL reset instead of competing setters", async () => {
+    const onClearFilters = vi.fn();
+    const onActionDomainChange = vi.fn();
+    const onEntityTypeChange = vi.fn();
+    const onEntityIdChange = vi.fn();
+    await render({
+      actionDomain: "case.", entityType: "case", entityId: "case-1",
+      lockedEntity: { type: "case", id: "case-1" },
+      onClearFilters, onActionDomainChange, onEntityTypeChange, onEntityIdChange,
+    });
+    await clickButton("Clear filters");
+    expect(onClearFilters).toHaveBeenCalledTimes(1);
+    expect(onActionDomainChange).not.toHaveBeenCalled();
+    expect(onEntityTypeChange).not.toHaveBeenCalled();
+    expect(onEntityIdChange).not.toHaveBeenCalled();
   });
 
   it("shows the permission-denied upsell when the feed 403s", async () => {

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, type SQL } from "drizzle-orm";
+import type { UpdateEnvironment } from "@paperclipai/shared";
+import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
 import {
   activityLog,
   agents,
@@ -9,6 +11,7 @@ import {
   companySecretBindings,
   companySecrets,
   createDb,
+  closeRegisteredClients,
   environmentCustomImageSetupSessions,
   environmentLeases,
   environments,
@@ -24,7 +27,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+if (externalTestDatabaseUrl && !new URL(externalTestDatabaseUrl).pathname.endsWith("_test")) {
+  throw new Error("Environment service tests require an isolated database ending in _test");
+}
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -39,9 +46,14 @@ describeEmbeddedPostgres("environmentService leases", () => {
   let svc!: ReturnType<typeof environmentService>;
 
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("environment-service");
-    stopDb = started.stop;
-    db = createDb(started.connectionString);
+    if (externalTestDatabaseUrl) {
+      db = createDb(externalTestDatabaseUrl);
+      stopDb = () => closeRegisteredClients(externalTestDatabaseUrl);
+    } else {
+      const started = await startEmbeddedPostgresTestDatabase("environment-service");
+      stopDb = started.stop;
+      db = createDb(started.connectionString);
+    }
     svc = environmentService(db);
   });
 
@@ -129,6 +141,85 @@ describeEmbeddedPostgres("environmentService leases", () => {
     });
     return companyId;
   }
+
+  it("clears user metadata to null when no private platform proof exists", async () => {
+    const created = await svc.create({ name: "User metadata clear", driver: "sandbox", config: { provider: "daytona" }, metadata: { userNote: "remove" } });
+    expect((await svc.update(created.id, { metadata: null }))?.metadata).toBeNull();
+  });
+
+  it.each(["clear", "replace", "unrelated", "status", "config", "driver"] as const)(
+    "handles %s saves atomically after a concurrent platform probe record", async operation => {
+      const companyId = await seedCompany();
+      const config = { provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}` };
+      const staleProof = { v: 1, marker: "old" };
+      const freshProof = { v: 1, marker: "new" };
+      const created = await svc.create({ name: "Concurrent metadata", driver: "sandbox", config,
+        metadata: { userNote: "old", _paperclipManagedArchiveToken: "old-archive-token",
+          [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: staleProof } } });
+      const patches: Record<typeof operation, UpdateEnvironment> = {
+        clear: { metadata: null },
+        replace: { metadata: { userNote: "replacement", [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: staleProof } } },
+        unrelated: { description: "unrelated save" },
+        status: { status: "active" },
+        config: { config: { ...config, image: `registry.example.test/runtime@sha256:${"b".repeat(64)}` } },
+        driver: { driver: "ssh", config: { host: "fixture.example.test", username: "fixture" } },
+      };
+      const delayedWriteDb = {
+        update(table: typeof environments) {
+          const prepared = db.update(table);
+          return {
+            set(values: Parameters<typeof prepared.set>[0]) {
+              const statement = prepared.set(values);
+              return {
+                where(condition: SQL) {
+                  const pending = statement.where(condition);
+                  return {
+                    async returning() {
+                      expect(await svc.recordSandboxPlatformProbe({
+                        environmentId: created.id, companyId, config, proof: freshProof,
+                      })).toBe(true);
+                      return pending.returning();
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+      const saved = await svc.update(created.id, patches[operation], { db: delayedWriteDb as never });
+      if (operation === "config" || operation === "driver") {
+        expect(saved?.metadata).not.toHaveProperty(SANDBOX_PLATFORM_PROBE_METADATA_KEY);
+      } else {
+        expect(saved?.metadata?.[SANDBOX_PLATFORM_PROBE_METADATA_KEY]).toEqual({ [companyId]: freshProof });
+      }
+      if (operation === "clear") expect(saved?.metadata).toEqual({ [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: freshProof } });
+      else expect(saved?.metadata?.userNote).toBe(operation === "replace" ? "replacement" : "old");
+      if (operation !== "unrelated") expect(saved?.metadata).not.toHaveProperty("_paperclipManagedArchiveToken");
+    },
+  );
+
+  it.each(["expired", "retained"] as const)("keeps cleanup completion fenced and atomic for %s leases", async status => {
+    const { companyId, environmentId, runId } = await seedEnvironment();
+    const attemptId = randomUUID();
+    const lease = await svc.acquireLease({ companyId, environmentId, heartbeatRunId: runId,
+      provider: "fake", leasePolicy: "reuse_by_environment" });
+    await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+      metadata: { pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
+        pendingCleanupLeaseExpiresAtMs: Date.now() + 60_000, userNote: "preserve" },
+    }).where(eq(environmentLeases.id, lease.id));
+    expect(await svc.releaseLease(lease.id, status, { expectedPendingCleanupAttemptId: randomUUID(),
+      cleanupStatus: "success" })).toBeNull();
+    expect(await svc.getLeaseById(lease.id)).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed",
+      metadata: { pendingCleanupInFlight: true, pendingCleanupAttemptId: attemptId } });
+    expect(await svc.releaseLease(lease.id, "pending_cleanup", { expectedPendingCleanupAttemptId: attemptId,
+      cleanupStatus: "failed" })).toMatchObject({ metadata: { pendingCleanupInFlight: true } });
+    expect(await svc.releaseLease(lease.id, status, { expectedPendingCleanupAttemptId: attemptId,
+      cleanupStatus: "success" })).toMatchObject({ status, cleanupStatus: "success", metadata: {
+      pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
+      userNote: "preserve",
+    } });
+  });
 
   it("acquires and releases a lease for a run", async () => {
     const { companyId, environmentId, runId } = await seedEnvironment();

@@ -59,7 +59,7 @@ export async function applySlackReceiptReaction(
     !/^[CDG][A-Z0-9]+$/.test(parts[1] ?? "") ||
     parts.length < 2 ||
     parts.length > 3 ||
-    (parts[2] !== undefined && !/^\d{1,12}\.\d{1,6}$/.test(parts[2])) ||
+    (parts[2] !== undefined && parts[2] !== "" && !/^\d{1,12}\.\d{1,6}$/.test(parts[2])) ||
     !/^\d{1,12}\.\d{1,6}$/.test(input.messageId) ||
     !["add", "remove"].includes(input.operation) ||
     input.reaction !== "eyes" ||

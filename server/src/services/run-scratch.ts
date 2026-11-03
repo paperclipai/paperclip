@@ -126,6 +126,8 @@ export async function cleanupHeartbeatRunScratch(input: {
   scratch: HeartbeatRunScratch;
   processGroupId?: number | null;
   isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
+  /** Persist recovery evidence after ownership/liveness checks, before removal. */
+  beforeRemove?: () => Promise<void>;
 }): Promise<HeartbeatRunScratchCleanupResult> {
   const tmpRoot = path.resolve(os.tmpdir());
   const dir = path.resolve(input.scratch.dir);
@@ -152,6 +154,7 @@ export async function cleanupHeartbeatRunScratch(input: {
     return { removed: false, dir, reason: "process_group_alive" };
   }
 
+  await input.beforeRemove?.();
   await fs.rm(dir, { recursive: true, force: true });
   return { removed: true, dir };
 }

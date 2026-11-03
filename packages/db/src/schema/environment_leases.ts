@@ -1,4 +1,5 @@
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -36,6 +37,10 @@ export const environmentLeases = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    retainedRecoveryAdoptionIdx: index("environment_leases_retained_recovery_adoption_idx")
+      .on(table.heartbeatRunId).concurrently().where(sql`${table.leasePolicy} = 'retain_on_failure'
+        and ${table.heartbeatRunId} is not null
+        and not (coalesce(${table.metadata}, '{}'::jsonb) ? 'systemRecoveryAdoption')`),
     companyEnvironmentStatusIdx: index("environment_leases_company_environment_status_idx").on(
       table.companyId,
       table.environmentId,

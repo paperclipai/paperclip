@@ -116,8 +116,13 @@ export async function buildNativeSessionHandoff(input: {
         cutoff ? and(lte(heartbeatRuns.createdAt, cutoff.createdAt), lte(heartbeatRunEvents.createdAt, cutoff.createdAt)) : undefined,
       )).orderBy(desc(heartbeatRunEvents.createdAt), desc(heartbeatRunEvents.id)).limit(5),
     db.select({ id: documents.id, key: issueDocuments.key, revisionId: documents.latestRevisionId,
-      body: excerpt(sql`${documents.latestBody}`),
-      truncated: sql<boolean>`length(${documents.latestBody}) > ${ENTRY_MAX_CHARS}`, sourceTrust: documents.sourceTrust,
+      // Workflow instructions have one on-demand document source. Never copy
+      // their body into fresh-history packets as another prompt instruction.
+      body: sql<string>`case when ${issueDocuments.key} = 'workflow'
+        then ${'Read this task\'s workflow instructions with read_document using key "workflow" before choosing the next phase.'}
+        else ${excerpt(sql`${documents.latestBody}`)} end`,
+      truncated: sql<boolean>`case when ${issueDocuments.key} = 'workflow' then false
+        else length(${documents.latestBody}) > ${ENTRY_MAX_CHARS} end`, sourceTrust: documents.sourceTrust,
     }).from(issueDocuments).innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, companyId)))
       .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), lte(documents.updatedAt, input.before), afterBoundary(issueDocuments.createdAt),
         cutoff ? lte(documents.updatedAt, cutoff.createdAt) : undefined))
@@ -153,7 +158,9 @@ export async function buildNativeSessionHandoff(input: {
     const sourceTrust = historicalTrust(row.runId, executionPolicy);
     entries.push({ ...sanitizeQuarantinedCommentForHigherTrust({ ...entry, sourceTrust }), kind: "agent_reply" });
   }
-  savedDocuments.slice(0, 3).forEach(row => entries.push({ ...redactQuarantinedBodyForHigherTrust(row), kind: "document" }));
+  savedDocuments.slice(0, 3).forEach(row => entries.push({ ...redactQuarantinedBodyForHigherTrust(row), kind: "document",
+    ...(row.key === "workflow" ? { readPath: `/api/issues/${issueId}/documents/workflow` } : {}),
+  }));
   for (const row of runSummaries.slice(0, 2)) {
     if (!row.body) continue;
     const { executionPolicy, ...entry } = row;

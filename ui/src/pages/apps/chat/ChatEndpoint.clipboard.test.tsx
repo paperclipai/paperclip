@@ -488,6 +488,8 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelectorAll('aside nav button')).toHaveLength(4);
     expect(container.querySelector('h1')?.textContent).toBe("Success");
     expect(container.textContent).toContain("You can now talk to Maya in Slack");
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
     expect(container.querySelector('[aria-label="Maya avatar"]')).not.toBeNull();
     expect(container.querySelector('main')?.textContent ?? container.textContent).not.toContain("Save & exit");
     expect(container.textContent).not.toContain("Copy message");
@@ -503,23 +505,31 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelector('aside button[aria-current="step"]')?.textContent).toBe("4Send a message");
   });
 
-  it("keeps a terminated agent’s saved avatar available in settings", async () => {
+  it("keeps settings focused on channel access and the test-message action", async () => {
     mocks.tab = "settings";
-    mocks.listAgents.mockResolvedValue([]);
-    mocks.getAgent.mockResolvedValue({ id: "agent-a", name: "Maya", status: "terminated", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "orchid-peach" } });
-    await render("slack", true);
-    expect(container.querySelector('a[download]')?.getAttribute("href")).toBe("/api/agent-avatars/cap-v1/orchid-peach/rest.png?size=512&scale=1&background=paperclip-dark");
-    expect(mocks.getAgent).toHaveBeenCalledWith("agent-a", "company-a");
-  });
-
-  it("keeps avatar download available in connector settings", async () => {
-    mocks.tab = "settings";
-    await render("slack", true);
-    const section = container.querySelector('section[aria-label="Slack avatar"]')!;
-    expect(section.textContent).toContain("Download avatar");
-    expect(section.querySelector('a[download]')?.getAttribute("href")).toContain("/cherry-pop/rest.png?size=512&scale=1");
-    expect(section.querySelector("details")?.open).toBe(false);
-    expect(mocks.getAgent).toHaveBeenCalledWith("agent-a", "company-a");
+    const endpoint = await render("slack", true);
+    expect(container.textContent).toContain("Send me a test message");
+    expect(container.textContent).toContain("Open Slack configuration");
+    expect([...container.querySelectorAll("a")].some(link => link.textContent?.trim() === "Open Slack")).toBe(false);
+    flushSync(() => client.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), {
+      ...endpoint, status: "active", providerAccountId: "workspace-a",
+      setup: { ...endpoint.setup, step: "complete", slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", dmChannelId: "DTEST" } },
+    }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, { user: { id: "other-user" } }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, null));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
+    expect(container.textContent).not.toContain("Message in a channel");
+    expect(container.textContent).not.toContain("Agent avatar");
+    expect(container.textContent).not.toContain("Manage action permissions");
+    expect(container.querySelector('a[download]')).toBeNull();
   });
 
   it("discovers a newly invited, enabled Slack channel while settings stays open", async () => {
@@ -670,8 +680,12 @@ describe("chat setup and identity-link clipboard actions", () => {
   it("keeps manual existing-App recovery write-only without generating or copying credentials", async () => {
     await render("github");
     await click("I already have an App");
-    expect(container.querySelector('input[type="password"]')).not.toBeNull();
-    expect(container.querySelector("textarea")?.value).toBe("");
+    const privateKey = container.querySelector<HTMLInputElement>("#github-private-key");
+    const webhookSecret = container.querySelector<HTMLInputElement>("#github-webhook-secret");
+    expect(privateKey?.type).toBe("password");
+    expect(privateKey?.value).toBe("");
+    expect(webhookSecret?.type).toBe("password");
+    expect(webhookSecret?.value).toBe("");
     expect(container.textContent).not.toContain("Copy webhook secret");
     expect(container.textContent).not.toContain("Generate webhook secret");
     expect(mocks.generateSetupSecret).not.toHaveBeenCalled();

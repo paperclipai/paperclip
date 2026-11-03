@@ -6,15 +6,21 @@ import {
   rm,
   writeFile,
   copyFile,
+  lstat,
 } from "node:fs/promises";
 import path from "node:path";
+import type { RunnerE2EResult } from "./types.js";
+import { assertRunnerE2EResultsPath } from "./results-root.js";
 import {
   assertSecretFree,
   findSecretLeak,
   findSecretLeakInJsonValues,
   redactText,
   sanitizeJson,
+  normalizedSecrets,
 } from "./redaction.js";
+
+import { assertPrivateCellDirectories, cellTraceAsset, readPrivateCellTraceAsset, type PrivateCellEvidenceOwner } from "./manual-private-report-assets.js";
 
 const TEXT_EXTENSIONS = new Set([
   ".json",
@@ -57,13 +63,19 @@ const REQUIRED_PASS_FILES = [
   path.join("snapshots", "api-state.json"),
 ] as const;
 
+export function isStandardEvidenceFile(relative: string) {
+  const extension = path.extname(relative).toLowerCase();
+  return isStandardEvidencePath(relative) && (TEXT_EXTENSIONS.has(extension) || BINARY_EXTENSIONS.has(extension)
+    || extension === ".zip");
+}
+
 export interface EvidencePackageResult {
   files: string[];
   leaks: Array<{ file: string; reason: string }>;
   missing: string[];
 }
 
-async function walk(root: string, relative = ""): Promise<string[]> {
+async function walk(root: string, relative = "", privateStandardOnly = false): Promise<string[]> {
   const directory = path.join(root, relative);
   const entries = await readdir(directory, { withFileTypes: true }).catch(
     () => [],
@@ -71,13 +83,16 @@ async function walk(root: string, relative = ""): Promise<string[]> {
   const files: string[] = [];
   for (const entry of entries) {
     const next = path.join(relative, entry.name);
-    if (entry.isDirectory()) files.push(...(await walk(root, next)));
+    // Installed preparation may leave a large, deliberately excluded staging
+    // tree. Never enumerate it for private standard-evidence packaging.
+    if (privateStandardOnly && !relative && !isStandardEvidencePath(entry.isDirectory() ? path.join(next, "placeholder") : next)) continue;
+    if (entry.isDirectory()) files.push(...(await walk(root, next, privateStandardOnly)));
     else if (entry.isFile()) files.push(next);
   }
   return files;
 }
 
-function isAllowed(relative: string) {
+export function isStandardEvidencePath(relative: string) {
   const segments = relative.split(path.sep);
   if (segments.length === 1)
     return (
@@ -136,17 +151,39 @@ export async function packageEvidence(input: {
   uploadDir: string;
   secrets: readonly string[];
   expectPassScreenshot: boolean;
+  privateCell?: { owner: PrivateCellEvidenceOwner; layout: "original" | "final-wrapper" };
 }): Promise<EvidencePackageResult> {
+  if (input.privateCell && !["original", "final-wrapper"].includes(input.privateCell.layout)) throw new Error("Invalid private cell packaging layout");
+  if (input.privateCell) await assertPrivateCellDirectories(input.privateCell.owner, input.privateDir, input.uploadDir);
   await rm(input.uploadDir, { recursive: true, force: true });
   await mkdir(input.uploadDir, { recursive: true });
   const files: string[] = [];
   const leaks: EvidencePackageResult["leaks"] = [];
-  const available = await walk(input.privateDir);
+  const available = await walk(input.privateDir, "", Boolean(input.privateCell));
+  const standard = available.filter(isStandardEvidencePath);
 
-  for (const relative of available.filter(isAllowed)) {
+  if (input.privateCell && standard.length > 4096) throw new Error("Private cell evidence exceeds entry allowance");
+  const privateSecrets = input.privateCell ? normalizedSecrets(input.secrets).flatMap(value => [value, encodeURIComponent(value), Buffer.from(value).toString("base64"), Buffer.from(value).toString("base64url")]) : [];
+  let privateBytes = 0;
+  for (const relative of standard) {
     const source = path.join(input.privateDir, relative);
     const extension = path.extname(relative).toLowerCase();
     const destination = path.join(input.uploadDir, relative);
+    if (input.privateCell) {
+      assertSecretFree(relative, privateSecrets, "private cell evidence path");
+      const metadata = await lstat(source);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 256 * 1024 * 1024 - privateBytes)
+        throw new Error("Private cell evidence exceeds byte allowance");
+      privateBytes += metadata.size;
+      if (!Number.isSafeInteger(privateBytes)) throw new Error("Invalid private cell evidence byte accounting");
+      const asset = cellTraceAsset(relative, input.privateCell.owner, input.privateCell.layout);
+      if (asset.reserved) {
+        const bytes = await readPrivateCellTraceAsset({ ...input.privateCell, relative, file: source, remaining: metadata.size, secrets: input.secrets });
+        await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+        await writeFile(destination, bytes!, { mode: 0o600 }); files.push(relative); continue;
+      }
+      if (!isStandardEvidenceFile(relative)) throw new Error("Unsupported private cell evidence carrier");
+    }
     await mkdir(path.dirname(destination), { recursive: true });
     if (ACTIVE_CONTENT_EXTENSIONS.has(extension)) {
       // SVG can execute script when opened directly from an artifact. Keep the
@@ -235,4 +272,34 @@ export async function packageEvidence(input: {
   );
   files.push("evidence-manifest.json");
   return { files, leaks, missing };
+}
+
+export async function publishRunnerE2EAttemptEvidence(input: {
+  result: RunnerE2EResult;
+  privateDir: string;
+  uploadDir: string;
+  resultsRoot: string;
+  secrets: readonly string[];
+}): Promise<RunnerE2EResult> {
+  let result = input.result;
+  const resultPath = path.join(input.privateDir, "result.json");
+  const writeResult = () => writeFile(resultPath,
+    `${JSON.stringify(sanitizeJson(result, input.secrets), null, 2)}\n`, "utf8");
+  await assertRunnerE2EResultsPath(input.resultsRoot, input.uploadDir);
+  await writeResult();
+  const evidence = await packageEvidence({ ...input, expectPassScreenshot: result.status === "passed" });
+  if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
+    result = {
+      ...result,
+      status: "failed",
+      failureClass: evidence.leaks.length > 0 ? "secret_leak" : "permanent_infrastructure",
+      error: evidence.leaks.length > 0
+        ? `Secret leak rejected from evidence: ${evidence.leaks.map(leak => leak.file).join(", ")}`
+        : `Required evidence missing: ${evidence.missing.join(", ")}`,
+    };
+    await writeResult();
+    await assertRunnerE2EResultsPath(input.resultsRoot, input.uploadDir);
+    await packageEvidence({ ...input, expectPassScreenshot: false });
+  }
+  return result;
 }

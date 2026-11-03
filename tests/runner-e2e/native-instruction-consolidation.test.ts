@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { runnerSuites, buildRunnerMatrix } from "./catalog.js";
 import { gradeNativeDefault, NATIVE_MASTER_DEFAULT_SHA256 } from "./native-completion-defaults.js";
@@ -67,15 +68,17 @@ describe("native instruction comparison admission", () => {
   });
   it("accepts each complete source variant and rejects a mixed variant", () => {
     const files = Object.keys(NATIVE_INSTRUCTION_VARIANTS.baseline);
-    const baseline = new Map(files.map(file => [file, execFileSync("git", ["show", `${NATIVE_INSTRUCTION_BASE_SHA}:${file}`])]));
+    const sources = JSON.parse(gunzipSync(readFileSync(new URL("./fixtures/native-instruction-sources.json.gz", import.meta.url))).toString()) as
+      Record<string, { sourceSha: string; files: Record<string, string> }>;
+    expect(sources.baseline!.sourceSha).toBe(NATIVE_INSTRUCTION_BASE_SHA);
+    expect(sources.opencodeFeedbackResponses!.sourceSha).toBe("a386a599983519eb1d399f8b770bfccdb2a74762");
+    for (const source of Object.values(sources)) expect(Object.keys(source.files).sort()).toEqual([...files].sort());
+    const baseline = new Map(files.map(file => [file, Buffer.from(sources.baseline!.files[file]!)]));
     expect(nativeInstructionVariant(file => baseline.get(file)!)).toBe("baseline");
-    // This historical admission intentionally rejects later production changes.
-    // Exercise the retained qualified tree rather than requiring HEAD to remain
-    // one of this completed comparison's frozen variants forever.
-    const candidate = new Map(files.map(file => [file, execFileSync("git", ["show", `16ef1a5744b23bb043a8b286e6288921da1de98f:${file}`])]));
+    const candidate = new Map(files.map(file => [file, Buffer.from(sources.opencodeFeedbackResponses!.files[file]!)]));
     const currentVariant = nativeInstructionVariant(file => candidate.get(file)!);
-    expect(["baseline", "candidate", "corrected", "feedback", "opencodeFeedback", "opencodeFeedbackSettlement", "opencodeFeedbackResponses"]).toContain(currentVariant);
-    candidate.set(files[0]!, currentVariant === "candidate" ? baseline.get(files[0]!)! : Buffer.from("unknown source"));
+    expect(currentVariant).toBe("opencodeFeedbackResponses");
+    candidate.set(files[0]!, baseline.get(files[0]!)!);
     expect(() => nativeInstructionVariant(file => candidate.get(file)!)).toThrow("Mixed or unknown");
     baseline.set(files[0]!, Buffer.from("unknown source"));
     expect(() => nativeInstructionVariant(file => baseline.get(file)!)).toThrow("Mixed or unknown");

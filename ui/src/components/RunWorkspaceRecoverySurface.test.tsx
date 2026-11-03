@@ -15,6 +15,7 @@ const issueCreateMock = vi.hoisted(() => vi.fn());
 const resolveRecoveryMock = vi.hoisted(() => vi.fn());
 const reconcileMock = vi.hoisted(() => vi.fn());
 const boardAccessMock = vi.hoisted(() => vi.fn());
+const recoveryActionsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => navigateMock,
@@ -28,6 +29,7 @@ vi.mock("../api/issues", () => ({
     get: issueGetMock,
     create: issueCreateMock,
     resolveRecoveryAction: resolveRecoveryMock,
+    recoveryActions: recoveryActionsMock,
   },
 }));
 
@@ -68,7 +70,7 @@ afterEach(() => {
   root = null;
   container?.remove();
   container = null;
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 function buildRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
@@ -178,6 +180,104 @@ function click(element: Element | null) {
 }
 
 describe("RunWorkspaceRecoverySurface", () => {
+  it("inspects a selected resolved source only on request and separates current identity from the recorded failure", async () => {
+    const action = { ...buildRecoveryAction(), status: "resolved", cause: "native_workspace_sync_out_retry_exhausted",
+      evidence: { systemRecovery: { failure: { code: "source_binding_invalid" } } } };
+    recoveryActionsMock.mockResolvedValueOnce({ active: null, actions: [action] }).mockResolvedValueOnce({ active: null,
+      actions: [action], sourceInspection: { actionId: action.id, runId: "run-aaaa1111", scope: "recorded_source_identity",
+        observedAt: "2026-10-26T17:00:00.000Z", status: "blocked", failureCode: "source_binding_invalid",
+        sourceVerification: { reason: "lease_policy_not_retained", observedLeasePolicy: "reuse_by_environment" } } });
+    const node = await renderSurface(buildRun({ errorCode: "native_workspace_sync_out_retry_exhausted" }));
+    expect(recoveryActionsMock).not.toHaveBeenCalled();
+    expect(issueGetMock).not.toHaveBeenCalled();
+    click(node.querySelector("button"));
+    await flush();
+    expect(recoveryActionsMock).toHaveBeenLastCalledWith("issue-1", { runId: "run-aaaa1111" });
+    expect(node.textContent).toContain("Recorded failure: source_binding_invalid");
+    const inspect = [...node.querySelectorAll("button")].find(button => button.textContent === "Inspect current source");
+    click(inspect ?? null);
+    await flush();
+    expect(recoveryActionsMock).toHaveBeenLastCalledWith("issue-1", { runId: "run-aaaa1111", actionId: "action-1" });
+    expect(node.textContent).toContain("Current recorded-source identity");
+    expect(node.textContent).toContain("lease_policy_not_retained");
+    expect(node.textContent).toContain("reuse_by_environment");
+    expect(node.textContent).toContain("does not confirm provider termination, local files, or successful preservation");
+    expect(issueCreateMock).not.toHaveBeenCalled();
+    expect(resolveRecoveryMock).not.toHaveBeenCalled();
+    expect(reconcileMock).not.toHaveBeenCalled();
+  });
+
+  it("shows verified identity without claiming preservation and reports an inspection error inline", async () => {
+    const action = buildRecoveryAction();
+    recoveryActionsMock.mockResolvedValueOnce({ active: null, actions: [action] })
+      .mockResolvedValueOnce({ active: null, actions: [action], sourceInspection: {
+        actionId: action.id, status: "verified", observedAt: "2026-10-26T17:00:00.000Z" } })
+      .mockRejectedValueOnce(new Error("Source inspection unavailable"));
+    const node = await renderSurface(buildRun({ errorCode: "native_workspace_sync_out_unrecoverable" }));
+    click(node.querySelector("button"));
+    await flush();
+    click([...node.querySelectorAll("button")].find(button => button.textContent === "Inspect current source") ?? null);
+    await flush();
+    expect(recoveryActionsMock).toHaveBeenLastCalledWith("issue-1", { runId: "run-aaaa1111", actionId: action.id });
+    expect(node.textContent).toContain("Recorded-source identity verified.");
+    expect(node.textContent).toContain("does not confirm provider termination");
+    click([...node.querySelectorAll("button")].find(button => button.textContent === "Inspect current source") ?? null);
+    await flush();
+    expect(node.querySelector("[role='alert']")?.textContent).toContain("Source inspection unavailable");
+  });
+
+  it("keeps inspection pending and explains a bounded source limit", async () => {
+    const action = buildRecoveryAction();
+    let complete!: (value: unknown) => void;
+    recoveryActionsMock.mockResolvedValueOnce({ active: null, actions: [action] })
+      .mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const node = await renderSurface(buildRun({ errorCode: "native_workspace_sync_out_retry_exhausted" }));
+    click(node.querySelector("button"));
+    await flush();
+    click([...node.querySelectorAll("button")].find(button => button.textContent === "Inspect current source") ?? null);
+    await flush();
+    expect(node.querySelector("button")?.disabled).toBe(true);
+    expect(recoveryActionsMock).toHaveBeenLastCalledWith("issue-1", { runId: "run-aaaa1111", actionId: action.id });
+    complete({ active: null, actions: [action], sourceInspection: { actionId: action.id,
+      observedAt: "2026-10-26T17:00:00.000Z", status: "not_inspected", reason: "source_limit" } });
+    await flush();
+    expect(node.textContent).toContain("exceeds the inspection limit");
+    expect(node.querySelector("button")?.disabled).toBe(false);
+  });
+
+  it("keeps saved reasons separate from changed observations and preserves other source selections", async () => {
+    const first = { ...buildRecoveryAction(), evidence: { systemRecovery: { failure: {
+      code: "source_binding_invalid", sourceVerification: { reason: "lease_policy_not_retained", observedLeasePolicy: "reuse_by_environment" },
+    } } } };
+    const second = { ...first, id: "action-2", evidence: { systemRecovery: { failure: { code: "source_binding_invalid",
+      sourceVerification: { reason: "secret-reason", observedLeasePolicy: "secret-policy" } } } } };
+    recoveryActionsMock.mockResolvedValueOnce({ active: null, actions: [first, second] })
+      .mockResolvedValueOnce({ active: null, actions: [first], sourceInspection: { actionId: first.id,
+        status: "blocked", observedAt: "2026-10-26T17:00:00.000Z", failureCode: "source_binding_invalid",
+        sourceVerification: { reason: "source_lease_not_bound" } } })
+      .mockResolvedValueOnce({ active: null, actions: [second], sourceInspection: { actionId: second.id,
+        status: "verified", observedAt: "2026-10-26T17:01:00.000Z" } });
+    const node = await renderSurface(buildRun({ errorCode: "native_workspace_sync_out_retry_exhausted" }));
+    click(node.querySelector("button"));
+    await flush();
+    expect(node.textContent).toContain("Recorded failure: source_binding_invalid · lease_policy_not_retained · lease policy reuse_by_environment");
+    expect(node.textContent).not.toContain("secret-reason");
+    expect(node.textContent).not.toContain("secret-policy");
+    const choices = () => [...node.querySelectorAll("button")].filter(button => button.textContent === "Inspect current source");
+    click(choices()[0]);
+    await flush();
+    expect(node.textContent).toContain("source_lease_not_bound");
+    expect(node.textContent).toContain("Action action-1");
+    expect(node.textContent).toContain("lease_policy_not_retained");
+    expect(choices()).toHaveLength(2);
+    click(choices()[1]);
+    await flush();
+    expect(recoveryActionsMock).toHaveBeenLastCalledWith("issue-1", { runId: "run-aaaa1111", actionId: "action-2" });
+    expect(node.textContent).toContain("Action action-2");
+    expect(node.textContent).toContain("Recorded-source identity verified.");
+    expect(choices()).toHaveLength(2);
+  });
+
   it("renders nothing for a run that is not a workspace-validation failure", async () => {
     issueGetMock.mockResolvedValue(buildIssue(buildRecoveryAction()));
     boardAccessMock.mockResolvedValue(undefined);

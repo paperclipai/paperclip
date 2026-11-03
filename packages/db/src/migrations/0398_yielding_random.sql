@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_actions_confirmation_recovery_idx" ON "chat_actions" USING btree ("company_id","id") WHERE "chat_actions"."kind" = 'confirmation_response' AND "chat_actions"."status" = 'processing';

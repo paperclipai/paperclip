@@ -7,16 +7,19 @@ import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
 import { StatusIcon } from "./StatusIcon";
+import { TooltipProvider } from "./ui/tooltip";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
     children,
     className,
+    to,
     disableIssueQuicklook: _disableIssueQuicklook,
     issuePrefetch,
     ...props
-  }: React.ComponentProps<"a"> & { disableIssueQuicklook?: boolean; issuePrefetch?: Issue | null }) => (
+  }: React.ComponentProps<"a"> & { to?: string; disableIssueQuicklook?: boolean; issuePrefetch?: Issue | null }) => (
     <a
+      href={to}
       className={className}
       data-disable-issue-quicklook={_disableIssueQuicklook ? "true" : undefined}
       data-issue-prefetch-id={issuePrefetch?.id}
@@ -95,6 +98,7 @@ describe("IssueRow", () => {
 
   afterEach(() => {
     container.remove();
+    vi.unstubAllGlobals();
   });
 
   it("renders the list status glyph at md (16px)", () => {
@@ -183,6 +187,75 @@ describe("IssueRow", () => {
     expect(archiveButton?.className).not.toContain("py-1");
 
     act(() => root.unmount());
+  });
+
+  it("starts a truncated title reveal on link focus and keeps actions independent", async () => {
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 16));
+    const createRange = document.createRange.bind(document);
+    const rangeBounds = vi.spyOn(document, "createRange").mockImplementation(() => Object.assign(createRange(), {
+      getBoundingClientRect: () => new DOMRect(0, 0, 400, 16),
+    }));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const root = createRoot(container);
+    const title = "Define connector health states, failure recovery, and escalation ownership across teams";
+    const onExpand = vi.fn();
+    const onArchive = vi.fn();
+    const onMarkRead = vi.fn();
+
+    act(() => {
+      root.render(
+        <TooltipProvider>
+          <IssueRow
+            issue={createIssue({ title })}
+            presentation="task"
+            appearance="refreshed"
+            unreadState="visible"
+            onMarkRead={onMarkRead}
+            leadingControl={<button type="button" onClick={onExpand}>Expand subtasks</button>}
+            onArchive={onArchive}
+          />
+        </TooltipProvider>,
+      );
+    });
+
+    const link = container.querySelector<HTMLAnchorElement>("[data-inbox-issue-link]");
+    const expand = container.querySelector<HTMLButtonElement>('button:not([aria-label])');
+    const archive = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    expect(link?.href).toContain("/issues/PAP-1");
+    expect(link?.contains(expand)).toBe(false);
+    expect(link?.contains(archive)).toBe(false);
+    // An inbox callback must not restore the old unread dot or its reserved slot.
+    expect(container.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    expect(container.querySelector('[data-testid="issue-row-unread-slot"]')).toBeNull();
+
+    await reactAct(async () => link?.focus());
+    expect(document.activeElement).toBe(link);
+    expect(container.querySelector('[data-slot="task-row-title"]')?.getAttribute("data-revealing")).toBe("true");
+    expect(container.querySelector('[data-slot="task-row-title-text"]')?.textContent).toBe(title);
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+
+    act(() => link?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })));
+    expect(container.querySelector('[data-slot="task-row-title"]')?.getAttribute("data-revealing")).toBeNull();
+    await reactAct(async () => { link?.blur(); link?.focus(); });
+    expect(container.querySelector('[data-slot="task-row-title"]')?.getAttribute("data-revealing")).toBe("true");
+
+    act(() => {
+      link?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expand?.click();
+      archive?.click();
+    });
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    expect(container.querySelector('[data-slot="task-row-title"]')?.getAttribute("data-revealing")).toBeNull();
+    expect(onExpand).toHaveBeenCalledTimes(1);
+    expect(onArchive).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    bounds.mockRestore();
+    rangeBounds.mockRestore();
   });
 
   it("preserves the legacy archive action density", () => {
@@ -770,6 +843,31 @@ describe("IssueRow", () => {
       });
       return snapshot;
     }
+
+    it.each(["working", "retry_scheduled", "failed"] as const)(
+      "omits %s system interruption feedback without exposing legacy recovery in list rows",
+      (state) => {
+        const root = createRoot(container);
+        const issue = recoveryIssue(at(3 * 60_000));
+        issue.interruption = {
+          intentId: "saved-input", responsibility: "system", state,
+          nextRetryAt: state === "retry_scheduled" ? at(3 * 60_000) : null,
+          canRetry: state === "failed", userAction: null,
+          sourceRunIds: ["run-1"], observedRunId: "run-1",
+        };
+        try {
+          for (const presentation of ["task", "legacy"] as const) {
+            act(() => root.render(<IssueRow issue={issue} presentation={presentation} />));
+            expect(container.textContent).toContain(issue.title);
+            expect(container.querySelector("[data-inbox-issue-link]")?.getAttribute("href")).toBe("/issues/PAP-1");
+            expect(container.textContent).not.toMatch(/Retry available|Thinking|Trying again soon|Recovery in progress/);
+            expect(container.querySelector("[data-testid='issue-row-recovery-indicator']")).toBeNull();
+          }
+        } finally {
+          act(() => root.unmount());
+        }
+      },
+    );
 
     it("shows native export activity from the action even without a scheduled retry", () => {
       const issue = recoveryIssue(at(-5 * 60_000));

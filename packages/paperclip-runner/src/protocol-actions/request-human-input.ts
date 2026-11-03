@@ -86,7 +86,9 @@ export const requestHumanInputAction = {
         "skill_test"
       ],
       "inputSchema": {
-        "allOf": [questionsPayloadRequirement],
+        // The pinned Claude client drops a tool with this conditional in root allOf.
+        // Keep the equivalent direct condition on the concrete object root.
+        ...questionsPayloadRequirement,
         "type": "object",
         "properties": {
           "idempotencyKey": {
@@ -117,6 +119,10 @@ export const requestHumanInputAction = {
             "maxLength": 10000
           },
           "payload": questionPayloadSchema,
+          "resolverPolicy": {
+            "const": "human_only",
+            "description": "Optionally require an authenticated human response. Required output-quality bindings also enforce this server-side."
+          },
           "targetRevisionId": {
             "type": [
               "string",
@@ -216,7 +222,7 @@ export const requestHumanInputAction = {
       "title": "Request human input",
       "description": "Create a typed confirmation, checkbox, question, task suggestion, or item-verdict request.",
       "inputSchema": {
-        "allOf": [questionsPayloadRequirement],
+        ...questionsPayloadRequirement,
         "type": "object",
         "properties": {
           "interactionKind": {

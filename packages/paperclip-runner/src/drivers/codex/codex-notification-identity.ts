@@ -40,7 +40,7 @@ export function classifyCodexNotification(input: {
   const { params, method } = input;
   const isInformation = informational.has(method) ||
     (method === "paperclip/canonicalProviderEvent" &&
-      ["provider.notice.recorded", "harness.diagnostic"].includes(String(params.eventType)));
+      ["provider.notice.recorded", "harness.diagnostic", "auth.credentials.updated"].includes(String(params.eventType)));
   const threads = [
     params.threadId,
     record(params.thread).id,

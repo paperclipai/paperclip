@@ -19,10 +19,17 @@ import { expandedMcpCapabilities } from "./expanded-capabilities.js";
 /** Internal HTTP dispatch reuses domain authorization, validation, audit and scheduling.
  * Neither an arbitrary path nor an actor is accepted from the MCP client.
  * Each invocation has its own Express request and verified actor.
+ * `parentLocals` is the main app's locals; the orderly-shutdown flag is read
+ * through it so a call that outlives the database pool is recognized.
  */
-export function createMcpApiDispatch(api: Router): ApiDispatch {
+export function createMcpApiDispatch(api: Router, parentLocals?: Record<string, unknown>): ApiDispatch {
   return async (principal, method, path, body) => {
     const app = express();
+    if (parentLocals) {
+      Object.defineProperty(app.locals, "paperclipDatabaseClosing", {
+        get: () => parentLocals.paperclipDatabaseClosing === true,
+      });
+    }
     // light-my-request adapts the parent prototypes of app.request/response.
     // Clone Express's shared parents so injection cannot alter real HTTP traffic.
     for (const target of [app.request, app.response]) {

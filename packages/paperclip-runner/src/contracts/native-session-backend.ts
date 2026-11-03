@@ -1,3 +1,5 @@
+import type { ProviderFailure } from "./provider-failure.generated.js";
+import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   NativeRunIdentity,
   NativeSessionCapabilities,
@@ -40,6 +42,7 @@ export interface OpenNativeSessionInput {
 }
 
 export interface NativeSessionRecoveryOptions {
+  normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   /** Abort provider recovery and release any not-yet-returned provider state. */
   signal: AbortSignal;
 }
@@ -141,7 +144,11 @@ export function isSemanticToolOutcomeUnknownError(error: unknown): error is Sema
 export class NativeSessionCloseUnrecoverableError extends Error {
   readonly code = "native_session_close_unrecoverable";
 
-  constructor(readonly settlement?: Record<string, unknown>) {
+  constructor(
+    readonly settlement?: Record<string, unknown>,
+    /** Exact durable results exist for every admitted Core tool callback. */
+    readonly semanticToolsSettled = false,
+  ) {
     super(
       "provider_transport_failed: runner did not durably suspend before checkpoint",
     );
@@ -184,7 +191,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
-  attachRun?(input: { identity: NativeRunIdentity }): Promise<void>;
+  attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void>;
   /** Relinquish controller authority without suspending provider execution. */
   detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
@@ -215,6 +222,7 @@ export interface NativeSession {
     signal: AbortSignal;
   }): NativeSessionCancellation;
   resolveRuntimeRequest?(input: {
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;
@@ -272,8 +280,11 @@ export interface NativeSessionBackend {
 /** A provider failed terminal is not a missing completion proposal. */
 export class NativeProviderTerminalFailure extends Error {
   readonly code = "native_provider_terminal_failed";
-  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal") {
+  declare readonly providerFailure?: ProviderFailure;
+  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal",
+    providerFailure?: ProviderFailure | null) {
     super(message);
     this.name = "NativeProviderTerminalFailure";
+    if (providerFailure) Object.defineProperty(this, "providerFailure", { value: providerFailure, enumerable: false });
   }
 }

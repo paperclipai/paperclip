@@ -1,4 +1,5 @@
 import type { AgentAppearance } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
@@ -22,6 +23,8 @@ export interface ActiveRunForIssue {
   execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -55,6 +58,8 @@ export interface LiveRunForIssue {
   execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -107,6 +112,7 @@ export type RuntimeRequestResolution =
   | { action: "submit"; response: import("@paperclipai/adapter-utils").PaperclipQuestionResponse };
 
 export interface HeartbeatRunListOptions {
+  latestFailuresOnly?: boolean;
   summary?: boolean;
 }
 
@@ -120,25 +126,33 @@ export const heartbeatsApi = {
   list: (
     companyId: string,
     agentId?: string,
-    limit?: number,
+    limit = HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
     options: HeartbeatRunListOptions = {},
   ) => {
     const searchParams = new URLSearchParams();
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
     if (options.summary) searchParams.set("summary", "true");
+    if (options.latestFailuresOnly) searchParams.set("latestFailuresOnly", "true");
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(
       `/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`,
     );
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
+  conversationEvents: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>
+    api.get<HeartbeatRunEvent[]>(
+      `/heartbeat-runs/${runId}/events?view=conversation&afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
+      options,
+    ),
+  taskPanelActivations: (runId: string, options?: RequestOptions) =>
+    api.get<Array<{ pluginKey: string; slotId: string }>>(`/heartbeat-runs/${encodeURIComponent(runId)}/events?view=plugin-panels`, options),
   events: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
       options,
     ),
-  log: (runId: string, offset = 0, limitBytes = 256000, options?: RequestOptions) =>
+  log: (runId: string, offset = 0, limitBytes = 256000, options?: RequestOptions & { alignStartToRecord?: boolean }) =>
     api.get<{
       runId: string;
       store: string;
@@ -146,7 +160,7 @@ export const heartbeatsApi = {
       content: string;
       nextOffset?: number;
     }>(
-      `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
+      `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}${options?.alignStartToRecord ? "&alignStartToRecord=true" : ""}`,
       options,
     ),
   workspaceOperations: (runId: string) =>

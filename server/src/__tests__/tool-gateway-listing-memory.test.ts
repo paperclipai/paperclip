@@ -18,7 +18,7 @@ import {
   toolProfiles,
   toolMcpGatewayTokens,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { ToolAccessDecisionInput } from "@paperclipai/shared";
 import {
   createToolAccessDecisionCache,
@@ -177,6 +177,48 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     expect(largeListing.statements.length).toBe(smallListing.statements.length);
     expect(largeListing.statements.length).toBeLessThan(100);
   });
+
+  it("does not construct a condition clock for unmatched entries in a decision batch", async () => {
+    const fixture = await createListingFixture(db, 6);
+    const [binding] = await db.select().from(toolProfileBindings)
+      .where(and(eq(toolProfileBindings.companyId, fixture.company.id), eq(toolProfileBindings.targetId, fixture.namedGateway.id)));
+    expect(binding).toBeDefined();
+    for (let start = 0; start < 47_930; start += 1000) {
+      await db.insert(toolProfileEntries).values(Array.from({ length: Math.min(1000, 47_930 - start) }, (_, offset) => ({
+        companyId: fixture.company.id, profileId: binding!.profileId,
+        selectorType: "tool_name" as const, toolName: `not_selected_${start + offset}`, effect: "exclude" as const,
+      })));
+    }
+    const policy = toolAccessPolicyService(db);
+    const cache = createToolAccessDecisionCache();
+    const originalDate = Date;
+    let clocks = 0;
+    vi.stubGlobal("Date", new Proxy(originalDate, {
+      construct(target, args, constructor) {
+        if (args.length === 0) clocks++;
+        return Reflect.construct(target, args, constructor);
+      },
+    }));
+    const decisions = [];
+    try {
+      for (let index = 0; index < 10; index++) {
+        const entry = fixture.entries[4 + index % 2]!;
+        decisions.push(await policy.decide({
+          companyId: fixture.company.id,
+          actor: { actorType: "agent", actorId: fixture.agent.id, agentId: fixture.agent.id },
+          runContext: { heartbeatRunId: fixture.run.id, issueId: fixture.issue.id, projectId: fixture.project.id, gatewayId: fixture.namedGateway.id },
+          request: { toolName: entry.toolName!, applicationId: fixture.application.id, connectionId: fixture.connection.id,
+            catalogEntryId: entry.id, upstreamToolName: entry.toolName!, riskLevel: entry.riskLevel, arguments: {} },
+          consumeRateLimit: false,
+        }, { cache }));
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(decisions).toHaveLength(10);
+    expect(decisions.every(decision => decision.allowed && decision.reasonCode === "allow_profile")).toBe(true);
+    expect(clocks).toBeLessThan(5000);
+  }, 30_000);
 
   it("reads the catalog without repeating the connection row for each tool", async () => {
     const fixture = await createListingFixture(db, 20);

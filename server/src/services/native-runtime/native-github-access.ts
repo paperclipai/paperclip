@@ -2,6 +2,8 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import {
   cleanupGitHubOperationLaunchers,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
+  adapterExecutionTargetDuplexObservabilityRecorder,
   githubOperationLauncherDirectory,
   prepareGitHubOperationLaunchers,
   startAdapterExecutionTargetPaperclipBridge,
@@ -24,6 +26,7 @@ export async function createNativeGitHubAccess(input: {
   resolveCredentials: (binding: Binding) => Promise<unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }, startBridge = startAdapterExecutionTargetPaperclipBridge) {
+  const duplexRequested = adapterExecutionTargetEnablesSandboxDuplexBridge(input.target);
   const token = randomBytes(32).toString("hex");
   const location = { runId: `native-session-${randomUUID()}`, target: input.target };
   let active: Binding | null = null;
@@ -76,6 +79,7 @@ export async function createNativeGitHubAccess(input: {
   const stop = () => stopping ??= (async () => {
     stopped = true;
     active = null;
+    bridge?.markOrderlyCompletion?.();
     server.closeAllConnections();
     const results = await Promise.allSettled([
       bridge?.stop(),
@@ -103,6 +107,8 @@ export async function createNativeGitHubAccess(input: {
         adapterKey: "native-github",
         hostApiToken: token,
         hostApiUrl: url,
+        enableSandboxDuplexBridge: duplexRequested,
+        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(input.target),
         onLog: input.onLog,
       });
       if (input.target?.kind === "remote" && !bridge) {
@@ -128,7 +134,8 @@ export async function createNativeGitHubAccess(input: {
     });
     return {
       env,
-      ready,
+      get ready() { return ready && !stopped && bridge?.readRunDisposition?.().failed !== true; },
+      duplexRequested,
       activate(binding: Binding) {
         if (stopped || active) throw new Error("GitHub session is closed or busy");
         if (binding.companyId !== input.scope.companyId || binding.agentId !== input.scope.agentId ||

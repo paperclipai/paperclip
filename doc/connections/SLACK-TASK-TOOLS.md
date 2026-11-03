@@ -44,6 +44,13 @@ signed approvals. Removing a tool profile binding does not get undone by resolvi
 a retained session. Disconnecting an identity or disabling a connection revokes
 access for retained runs too.
 
+Assignment and tool discovery prepare at most two endpoints at a time. Each
+endpoint still resolves live authority. Preparation waits for the active pair
+before it returns or fails, keeps candidate order, and stops before the next
+pair if either check fails. Tool authority resolves only the current bot token;
+webhook signing and app tokens stay on their existing transport paths. No
+credential or authorization cache is introduced.
+
 ## Tools and scope upgrades
 
 The reviewed, strict method/scope/argument matrix is
@@ -198,16 +205,20 @@ people's bot DMs remain inaccessible. Scheduling uses ordinary Paperclip routine
 not a Slack-specific timer. Routine results are sent explicitly through the tool;
 ordinary task finals are not automatically broadcast to Slack.
 
-## Require an at-mention for inbound messages
+## Require an at-mention for inbound channel messages
 
 Slack app settings include **Require at-mention** directly below **Allow direct
 messages**. It defaults to on for new Slack connections. Existing connections
-keep their saved setting and thread and DM behavior.
-When enabled, each inbound message must explicitly @mention the connected bot,
-including replies in existing channel threads and direct messages. DMs must also
-be enabled with **Allow direct messages**. Unmentioned messages do not create
-or continue a task. Queued messages are checked again before starting agent work.
-If a queued run combines several messages, an unmentioned input cancels that
-queued run when this setting is enabled. Send a new mention to start it again.
+keep their saved setting; the setting applies only to channels.
+When enabled, each inbound channel message must explicitly @mention the connected
+bot, including replies in existing channel threads. Direct messages never require
+an @mention, but must be enabled with **Allow direct messages** and pass the usual
+sender authorization checks. Top-level DMs remain a linear conversation with
+top-level replies; use a private channel for conversations organized into threads.
+Unmentioned channel messages do not create or continue a task. Queued messages
+are checked again before starting agent work. If a queued run combines several
+channel messages, an unmentioned input cancels that queued run when this setting
+is enabled. Send a new mention to start it again. Unmentioned DM inputs do not
+trigger this cancellation.
 This setting does not cancel work that has already started or revoke its Slack
 tool access.

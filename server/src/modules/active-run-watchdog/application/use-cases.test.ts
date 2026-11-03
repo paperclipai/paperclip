@@ -38,6 +38,7 @@ describe("application", () => {
     return {
       findCandidateSilentRuns: async () => [],
       findRunForCompany: async () => null,
+      isRuntimeSettlementPending: async () => false,
       findLatestDecision: async () => ({ quietUntilDecision: null, dismissedFalsePositive: false }),
       findOpenStaleRunEvaluation: async () => null,
       findLatestSameRunTerminalEvidence: async () => null,
@@ -134,6 +135,27 @@ describe("application", () => {
   };
 
   describe("createFoldSourceResolvedRun", () => {
+    it("does not terminate a process or settle the run while its runtime owns finalization", async () => {
+      const calls: string[] = [];
+      const fold = createFoldSourceResolvedRun({
+        reader: makeReader({ isRuntimeSettlementPending: async (companyId, runId) => {
+          expect([companyId, runId]).toEqual(["company-1", "run-1"]);
+          return true;
+        } }),
+        processController: { cleanupRunProcess: async () => {
+          calls.push("cleanup");
+          return { attempted: false, outcome: "no_process_metadata", adapterType: "grok_local" };
+        } },
+        writer: { recordDecision: async () => { throw new Error("unexpected decision"); },
+          foldSourceResolvedRun: async () => { calls.push("fold"); return { kind: "folded", evaluationIssueId: null }; } },
+      });
+      expect(await fold({ run: makeRun({ processPid: 4242 }), runningAgentAdapterType: "grok_local",
+        sourceIssue: foldSourceIssue, evidence: foldEvidence, existingEvaluation: null,
+        silenceStartedAt: null, silenceAgeMs: null, now: new Date("2026-01-01T05:00:00Z") }))
+        .toEqual({ kind: "stale" });
+      expect(calls).toEqual([]);
+    });
+
     it("cleans up the process before the folding persistence call", async () => {
       const calls: string[] = [];
       const processController: RunProcessController = {
@@ -154,7 +176,7 @@ describe("application", () => {
           return { kind: "folded", evaluationIssueId: null };
         },
       };
-      const foldSourceResolvedRun = createFoldSourceResolvedRun({ writer, processController });
+      const foldSourceResolvedRun = createFoldSourceResolvedRun({ reader: makeReader(), writer, processController });
 
       const outcome = await foldSourceResolvedRun({
         run: makeRun({ processPid: 4242 }),
@@ -187,7 +209,7 @@ describe("application", () => {
         },
         foldSourceResolvedRun: async () => ({ kind: "stale" }),
       };
-      const foldSourceResolvedRun = createFoldSourceResolvedRun({ writer, processController });
+      const foldSourceResolvedRun = createFoldSourceResolvedRun({ reader: makeReader(), writer, processController });
 
       const outcome = await foldSourceResolvedRun({
         run: makeRun({ processPid: 4242 }),
@@ -396,7 +418,7 @@ describe("application", () => {
       foldSourceResolvedRun: async () => ({ kind: "folded", evaluationIssueId: null }),
       ...writerOverrides,
     };
-    return createFoldSourceResolvedRun({ writer, processController });
+    return createFoldSourceResolvedRun({ reader: makeReader(), writer, processController });
   }
 
   describe("createScanSilentActiveRuns", () => {

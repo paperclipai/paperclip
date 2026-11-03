@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900"><defs><radialGradient id="sp" cx="0.5" cy="0.38" r="0.6"><stop offset="0" stop-color="#5a3a22"/><stop offset="0.55" stop-color="#22160f"/><stop offset="1" stop-color="#0b0807"/></radialGradient><filter id="sh" x="-30%" y="-80%" width="160%" height="260%"><feGaussianBlur stdDeviation="18"/></filter></defs>
+  <rect width="1600" height="900" fill="url(#sp)"/>
+  <ellipse cx="800" cy="676" rx="470" ry="62" fill="#2b1c12"/><ellipse cx="800" cy="664" rx="470" ry="62" fill="#3c2819"/><ellipse cx="800" cy="664" rx="400" ry="50" fill="none" stroke="#6b4a2f" stroke-width="2" opacity="0.6"/>
+  <ellipse cx="810" cy="662" rx="330" ry="26" fill="#000" opacity="0.55" filter="url(#sh)"/>
+  <g transform="translate(420 250) scale(3.9)">
+    
+    <path d="M56 90 C34 90 10 99 4 110 C2 115 8 118 16 116 C44 108 74 104 108 103 Z" fill="#c44f1d"/>
+    <path d="M56 90 C34 90 10 99 4 110 C22 100 44 97 62 96 Z" fill="rgba(0,0,0,0.18)"/>
+    <path d="M48 98 C46 52 76 22 116 22 C156 22 184 52 186 98 C140 104 94 104 48 98 Z" fill="#e2632d"/>
+    <path d="M116 22 C100 44 95 70 95 101 M116 22 C140 44 150 70 151 101" fill="none" stroke="rgba(0,0,0,0.25)" stroke-width="1.6"/>
+    <path d="M48 98 C94 104 140 104 186 98" fill="none" stroke="rgba(0,0,0,0.25)" stroke-width="2.4"/>
+    <circle cx="116" cy="21" r="4.5" fill="#e2632d" stroke="rgba(0,0,0,0.25)" stroke-width="1"/>
+    <rect x="60" y="60" width="30" height="19" rx="2.5" fill="#f6ead8" transform="rotate(-6 75 70)"/>
+  </g>
+  <text x="70" y="820" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="34" font-weight="700" fill="#f6ead8" opacity="0.85" letter-spacing="3">ACMEHATS — SIGNAL ORANGE, 360°</text></svg>

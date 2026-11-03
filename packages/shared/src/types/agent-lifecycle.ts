@@ -13,6 +13,10 @@ export interface AgentLifecycleOperation {
   leaseOwner?: string;
   leaseUntil?: string;
   retryAt?: string;
+  /** A failed configuration check waits for configuration repair or an explicit retry. */
+  retryRequired?: boolean;
+  /** Failed generic host verification tests for this saved configuration. */
+  verificationFailures?: number;
   attempts: number;
   responsibleUserId?: string | null;
 }
@@ -23,9 +27,11 @@ export interface AgentLifecycleRequest {
   operationId: string;
   version: number;
   phase: AgentLifecycleState;
+  instanceSecrets?: Record<string, string>;
 }
 export interface AgentLifecycleResult {
   operationId: string;
   version: number;
   status: "complete" | "pending";
+  instanceSecrets?: Record<string, string | null>;
 }
