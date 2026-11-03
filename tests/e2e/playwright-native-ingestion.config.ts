@@ -6,6 +6,8 @@ import base from "./playwright.config";
 
 const server = base.webServer as Exclude<typeof base.webServer, unknown[]>;
 const evidence = process.env.PAPERCLIP_INGESTION_EVIDENCE_DIR;
+const browserRecording = Boolean(process.env.PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR) || process.env.PAPERCLIP_INGESTION_BROWSER_CAPTURE === "1";
+process.env.PAPERCLIP_INGESTION_BROWSER_RECORDING = browserRecording ? "on" : "off";
 const appRoot = path.resolve(process.env.PAPERCLIP_INGESTION_APP_ROOT ?? path.resolve(import.meta.dirname, "../.."));
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const bootstrap = path.resolve(import.meta.dirname, "fixtures/native-ingestion-bootstrap.mjs");
@@ -27,7 +29,7 @@ export default defineConfig({
   timeout: 600_000,
   ...(evidence ? { outputDir: path.join(evidence, "test-results"),
     reporter: [["list"], ["json", { outputFile: path.join(evidence, "playwright.json") }]] as ReporterDescription[] } : {}),
-  use: { ...base.use, trace: "retain-on-failure", actionTimeout: 20_000 },
+  use: { ...base.use, trace: browserRecording ? "on" : "off", video: "off", actionTimeout: 20_000 },
   webServer: {
     ...server,
     cwd: appRoot,

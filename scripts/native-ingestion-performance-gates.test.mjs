@@ -75,15 +75,18 @@ const workloads = [
   { name: "operator-stop", runs: 1, events: 512, intervalMs: 100, prelude: 0, stop: true },
 ];
 function browserReport(revision, latency) {
-  return { complete: true, qualificationOnly: false, diagnosticOnly: false, performanceAcceptanceEligible: true,
+  return { protocolVersion: "v2-compact-markers-original-clock-stream", admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch", setupReadinessPollingMs: 50, complete: true, cleanup: { complete: true, errors: [] }, qualificationOnly: false, diagnosticOnly: false, performanceAcceptanceEligible: true, browserRecording: { trace: "off", video: "off", screencast: false },
     sourceRevision: revision, compiledBuildRevision: revision, serverArtifact: "compiled", serverEntrySha256: `${revision}-compiled`,
     measurementSha256: "synthetic-fixed-fixture", compiledHotPathHashes: { append: "append", port: "port", runtime: "runtime" },
     cases: workloads.map(workload => ({ ...workload, stop: Boolean(workload.stop), persistedAfterReload: true,
+      epochMs: 1000, preludeProof: workload.prelude ? { individualDeltas: workload.prelude, uniqueSourceIdentities: workload.prelude, verifiedAtMs: 999 } : undefined,
+      visible: Array(workload.stop ? 3 : workload.events).fill({}), matchedVisibleClocks: workload.stop ? 3 : workload.events,
       firstVisibleAfterEmissionMs: latency, emissionToVisible: { medianMs: latency, p95Ms: latency },
+      interChunkGaps: { paintCount: workload.events, count: workload.events - 1, medianMs: latency, maxMs: latency },
       intendedToVisible: { p95Ms: latency }, drainThroughTerminalMs: latency,
       stopThroughTerminalMs: latency, stopThroughAcknowledgementMs: latency,
       durable: Array.from({ length: workload.runs }, (_, index) => ({ token: String(index), ordered: true,
-        uniqueSourceIdentities: workload.events, individualDeltas: workload.events })),
+        uniqueSourceIdentities: workload.events, individualDeltas: workload.events, matchedSourceClocks: workload.events })),
     })) };
 }
 
@@ -119,6 +122,18 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["source", report => { report.serverArtifact = "source-qualification"; }, /compiled server/],
       ["profile", report => { report.diagnosticOnly = true; }, /Diagnostic profiles/],
       ["profile-ineligible", report => { report.performanceAcceptanceEligible = false; }, /Profile-only evidence/],
+      ["missing-retained-prelude", report => { report.cases.find(row => row.prelude).preludeProof.individualDeltas--; }, /stored prelude deltas/],
+      ["legacy-protocol", report => { delete report.protocolVersion; }, /v2 clock protocol/],
+      ["unqualified-admission", report => { delete report.admissionProtocol; }, /admission protocol/],
+      ["unqualified-readiness-observation", report => { delete report.setupReadinessPollingMs; }, /readiness observation interval/],
+      ["unfinished-cleanup", report => { report.cleanup.complete = false; }, /completed fixture cleanup/],
+      ["cleanup-error", report => { report.cleanup.errors.push({ step: "restore", message: "timeout" }); }, /cleanup errors/],
+      ["missing-paced-gaps", report => { delete report.cases[0].interChunkGaps; }, /inter-chunk paint gaps/],
+      ["unmatched-visible-clock", report => { report.cases[0].matchedVisibleClocks--; }, /original provider clock/],
+      ["unmatched-durable-clock", report => { report.cases[0].durable[0].matchedSourceClocks--; }, /original provider clock/],
+      ["browser-trace", report => { report.browserRecording.trace = "on"; }, /trace capture off/],
+      ["browser-video", report => { report.browserRecording.video = "on"; }, /video capture off/],
+      ["browser-screencast", report => { report.browserRecording.screencast = true; }, /screencast capture off/],
     ]) {
       const rejected = run([`--pairs=${await manifest(name, Array(5).fill(0.30), false, change)}`, `--noise-report=${noise}`, "--require-acceptance"]);
       assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, message);

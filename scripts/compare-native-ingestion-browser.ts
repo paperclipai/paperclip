@@ -22,9 +22,17 @@ const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floo
 const first = pairs[0];
 for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) {
   const report = pair[arm];
+  assert.equal(report.protocolVersion, "v2-compact-markers-original-clock-stream", "Fresh browser acceptance requires the qualified v2 clock protocol");
+  assert.equal(report.admissionProtocol, "sequential-provider-and-clock-readiness-before-common-epoch", "Use the qualified pre-measurement admission protocol");
+  assert.equal(report.setupReadinessPollingMs, 50, "Keep the qualified setup readiness observation interval");
   assert.equal(report.complete, true); assert.equal(report.qualificationOnly, false, "Smoke cannot qualify performance");
+  assert.equal(report.cleanup?.complete, true, "Acceptance requires completed fixture cleanup");
+  assert.deepEqual(report.cleanup?.errors, [], "Acceptance rejects fixture cleanup errors");
   assert.notEqual(report.diagnosticOnly, true, "Diagnostic profiles cannot qualify unprofiled performance");
   assert.notEqual(report.performanceAcceptanceEligible, false, "Profile-only evidence cannot qualify performance");
+  assert.equal(report.browserRecording?.trace, "off", "Acceptance requires browser trace capture off");
+  assert.equal(report.browserRecording?.video, "off", "Acceptance requires browser video capture off");
+  assert.equal(report.browserRecording?.screencast, false, "Acceptance requires browser screencast capture off");
   assert.equal(report.serverArtifact, "compiled", "Performance acceptance requires the compiled server and shipped UI");
   assert.ok(report.serverEntrySha256 && report.measurementSha256);
   assert.equal(report.compiledBuildRevision, report.sourceRevision, "Compiled build stamp does not match the measured revision");
@@ -38,9 +46,21 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
     const result = report.cases.find((item: any) => item.name === name);
     assert.ok(result, `Missing fixed workload ${name}`);
     assert.equal(result.persistedAfterReload, true);
+    assert.equal(result.matchedVisibleClocks, result.visible?.length, "Every observed marker needs its original provider clock");
+    assert.ok(result.matchedVisibleClocks >= (result.stop ? 3 : result.events), "Missing foreground render/clock observations");
+    if (name === "paced") {
+      assert.ok(result.interChunkGaps?.count >= 1, "Paced streaming needs observed inter-chunk paint gaps");
+      assert.equal(result.interChunkGaps.paintCount, result.interChunkGaps.count + 1);
+    }
+    if (result.prelude) {
+      assert.equal(result.preludeProof?.individualDeltas, result.prelude, "Existing history requires independently stored prelude deltas");
+      assert.equal(result.preludeProof?.uniqueSourceIdentities, result.prelude);
+      assert.ok(result.preludeProof?.verifiedAtMs < result.epochMs, "Verify retained prelude before releasing measured emission");
+    }
     assert.equal(result.durable.length, result.runs, "Every background run needs independent delta persistence proof");
     for (const proof of result.durable) {
       assert.equal(proof.ordered, true); assert.equal(proof.uniqueSourceIdentities, proof.individualDeltas);
+      assert.equal(proof.matchedSourceClocks, proof.individualDeltas, "Every durable measured delta needs an original provider clock");
       if (!result.stop) assert.equal(proof.individualDeltas, result.events);
     }
     const reference = first.baseline.cases.find((item: any) => item.name === name);
@@ -51,6 +71,7 @@ const metric = (item: any, key: string): number => key.split(".").reduce((value,
 const measurements = names.flatMap(name => {
   const observed = first.baseline.cases.find((item: any) => item.name === name);
   const keys = ["firstVisibleAfterEmissionMs", "emissionToVisible.medianMs", "drainThroughTerminalMs",
+    ...(name === "paced" ? ["interChunkGaps.maxMs"] : []),
     ...(observed.emissionToVisible.p95Ms === undefined ? [] : ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms"]),
     ...(observed.stop ? ["stopThroughTerminalMs", "stopThroughAcknowledgementMs"] : [])];
   return keys.map(key => {
