@@ -36,9 +36,14 @@ argument JSON type and types for a fixed list of envelope fields. These are
 shape diagnostics, not a copy of the arguments. Arbitrary field names, argument
 values, nested payloads and full model request bodies are not captured.
 Authenticated schema rejections also produce failed tool spans without invoking
-the controller handler. Paperclip tool spans use authenticated dispatch IDs; provider SSE events for
-those declared tools do not create duplicate spans. Native tools retain their
-provider spans without submitted-argument diagnostics. OpenCode's performance-only OTLP sink stays separate.
+the controller handler. Conflicting request IDs produce separate failed items,
+so a rejection cannot overwrite a previous dispatch outcome.
+Paperclip tool spans use authenticated dispatch IDs and the name `tool <name>`.
+Provider SSE records for those declared tools use `opencode tool <name>` and
+remain available when failure occurs before dispatch, such as an oversized
+request. These are separate observations, not correlated calls. The
+`paperclip.tool.source` attribute distinguishes dispatch and provider records.
+Native tools retain their provider spans without submitted-argument diagnostics. OpenCode's performance-only OTLP sink stays separate.
 
 The exporter sends once at turn completion with a three-second deadline, at most
 four requests in flight and no idle polling or persistent queue. Closing drains

@@ -152,3 +152,17 @@ it("does not export dispatch spans when tool details are disabled", async () => 
   expect(bodies[0].resourceSpans[0].scopeSpans[0].spans).toHaveLength(1);
   expect(JSON.stringify(bodies)).not.toContain("private-name");
 });
+
+it("retains provider failures for declared tools even before any dispatch", async () => {
+  const bodies: any[] = [];
+  const observer = createOpenCodeCompanyObservability({ environment, model: "test", sensitiveValues: [], managedToolNames: ["paperclip_call_assigned_tool"],
+    fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response("{}"); } })!;
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("tool.execution.completed", { name: "paperclip_call_assigned_tool", status: "failed", output: "request exceeded limit" }, "run-one", "native-rejection"));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const spans = bodies[0].resourceSpans[0].scopeSpans[0].spans;
+  expect(spans[1].name).toBe("opencode tool paperclip_call_assigned_tool");
+  expect(spans[1].status.code).toBe(2);
+  expect(spanAttributes(spans[1])).toMatchObject({ "paperclip.tool.source": "provider", "braintrust.output": "request exceeded limit" });
+});

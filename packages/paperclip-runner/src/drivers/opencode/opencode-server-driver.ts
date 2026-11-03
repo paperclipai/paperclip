@@ -1113,12 +1113,13 @@ class OpenCodeHarnessSession implements HarnessSession {
   observeRejectedToolCall(call: { tool: string; callId: string; arguments: unknown }, error: string): void {
     const turnId = this.#activeTurnId;
     if (!turnId || this.#closed) return;
+    const itemId = `${call.callId}:rejected:${randomBytes(12).toString("hex")}`;
     this.#emit("item.started", {
-      kind: "dynamicToolCall", item: { type: "tool_call", id: call.callId, name: call.tool, arguments: call.arguments },
-    }, { turnId, itemId: call.callId });
+      kind: "dynamicToolCall", item: { type: "tool_call", id: itemId, name: call.tool, arguments: call.arguments },
+    }, { turnId, itemId });
     this.#emit("item.completed", {
-      kind: "dynamicToolCall", item: { type: "tool_result", id: call.callId, tool_use_id: call.callId, is_error: true, error },
-    }, { turnId, itemId: call.callId });
+      kind: "dynamicToolCall", item: { type: "tool_result", id: itemId, tool_use_id: itemId, is_error: true, error },
+    }, { turnId, itemId });
   }
 
   async dispatchTool(call: {

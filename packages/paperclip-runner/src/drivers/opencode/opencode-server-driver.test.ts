@@ -200,6 +200,12 @@ describe("OpenCodeServerDriver", () => {
         const attrs = (span: any) => Object.fromEntries(span.attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.boolValue]));
         const tools = spans.filter((span: any) => span.name === "tool paperclip_call_assigned_tool");
         expect(tools).toHaveLength(3);
+        const native = spans.filter((span: any) => span.name === "opencode tool paperclip_call_assigned_tool");
+        expect(native).toHaveLength(1);
+        expect(attrs(native[0])["paperclip.tool.source"]).toBe("provider");
+        expect(attrs(native[0])).not.toHaveProperty("braintrust.input");
+        expect(attrs(tools[0])["paperclip.tool.source"]).toBe("dispatch");
+
         expect(tools.map((span: any) => span.status.code)).toEqual([2, 2, 1]);
         expect(attrs(tools[0])["paperclip.run.id"]).toBe(index === 0 ? "first" : "second");
         if (capture === "1") {
@@ -208,7 +214,7 @@ describe("OpenCodeServerDriver", () => {
           expect(JSON.parse(attrs(tools[2])["braintrust.input"]).fields.name).toBe("string");
         } else for (const tool of tools) expect(attrs(tool)).not.toHaveProperty("braintrust.input");
       }
-      for (const excluded of ["private-argument-canary", "private-key-canary", "private-value-canary", "private-provider-copy", "benign-operation"]) expect(JSON.stringify(bodies)).not.toContain(excluded);
+      for (const excluded of ["private-argument-canary", "private-key-canary", "private-value-canary", "benign-operation"]) expect(JSON.stringify(bodies)).not.toContain(excluded);
     } finally {
       await session?.close({ reason: "test" });
       await new Promise<void>(resolve => { collector.close(() => resolve()); collector.closeAllConnections(); });

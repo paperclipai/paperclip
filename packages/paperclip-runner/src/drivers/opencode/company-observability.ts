@@ -145,14 +145,15 @@ export function createOpenCodeCompanyObservability(input: {
       }
       const dynamic = payload.kind === "dynamicToolCall" && ["item.started", "item.completed"].includes(event.eventType);
       const item = record(payload.item);
-      const canonicalTool = event.eventType.startsWith("tool.execution.") && !managedTools.has(String(payload.name));
+      const canonicalTool = event.eventType.startsWith("tool.execution.");
       if ((dynamic || canonicalTool) && event.itemId && capture("OTEL_LOG_TOOL_DETAILS")) {
         const key = `${dynamic ? "dispatch" : "native"}:${event.itemId}`;
         let span = turn.tools.get(key);
         if (!span && turn.tools.size < maxRows) {
           const name = clean(dynamic ? item.name : payload.name, 128);
-          span = makeSpan(`tool ${name || "execution"}`, time, {
-            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name });
+          span = makeSpan(`${!dynamic && managedTools.has(String(payload.name)) ? "opencode tool" : "tool"} ${name || "execution"}`, time, {
+            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name,
+            "paperclip.tool.source": dynamic ? "dispatch" : "provider" });
           turn.tools.set(key, span);
         }
         if (span) {

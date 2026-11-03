@@ -250,6 +250,7 @@ async function handleRequest(
   const fingerprint = canonicalJson({ tool, args });
   const existing = context.calls.get(callId);
   if (existing && existing.fingerprint !== fingerprint) {
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, "Duplicate call identity conflict."); } catch {}
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Duplicate call identity conflict." }] });
     return;
   }
