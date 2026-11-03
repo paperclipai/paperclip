@@ -1150,6 +1150,40 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
   });
 
+  it("leaves a just-due provider-quota monitor to the scheduler instead of pushing it back", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T21:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T21:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    expect(await recovery.reconcileStrandedAssignedIssues()).toMatchObject({ providerQuotaMonitored: 1 });
+
+    const dueAt = new Date(Date.now() - 1_000);
+    await db.update(issues).set({ monitorNextCheckAt: dueAt }).where(eq(issues.id, sourceIssueId));
+    expect(await recovery.reconcileStrandedAssignedIssues())
+      .toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    const [afterDueSweep] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(afterDueSweep?.monitorNextCheckAt?.toISOString()).toBe(dueAt.toISOString());
+
+    await db.update(issues).set({ monitorNextCheckAt: new Date(Date.now() - 60 * 60_000) })
+      .where(eq(issues.id, sourceIssueId));
+    expect(await recovery.reconcileStrandedAssignedIssues()).toMatchObject({ providerQuotaMonitored: 1 });
+    const [afterStaleSweep] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(afterStaleSweep?.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now());
+    expect(afterStaleSweep?.executionPolicy).toMatchObject({ monitor: { externalRef: runId } });
+  });
+
   it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ monitorAttemptCount: 1 }).where(eq(issues.id, sourceIssueId));
