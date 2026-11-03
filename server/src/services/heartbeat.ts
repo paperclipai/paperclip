@@ -189,6 +189,13 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import {
+  isProviderQuotaRateLimitMessage,
+  readHeartbeatRunErrorFamily as readHeartbeatRunErrorFamilyFromSharedModule,
+} from "./run-error-family.js";
+// Re-exported: `isProviderQuotaRateLimitMessage` is part of this module's
+// public surface (the classifier test imports it from here).
+export { isProviderQuotaRateLimitMessage };
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -412,40 +419,7 @@ function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallb
 export function readHeartbeatRunErrorFamily(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "error" | "resultJson">,
 ) {
-  const resultJson = parseObject(run.resultJson);
-  const persistedFamily = readNonEmptyString(resultJson.errorFamily);
-  if (persistedFamily) return persistedFamily;
-
-  if (run.errorCode === "provider_quota") {
-    return "provider_quota";
-  }
-  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
-    return "transient_upstream";
-  }
-  // ACPX turn failures caused by an upstream transport interruption (dropped
-  // SSE stream, reset socket) are transient, not deterministic protocol
-  // faults. Without this the bounded retry ladder never engages and one
-  // dropped connection kills the run outright (TON-639).
-  if (run.errorCode === "acpx_transient_upstream") {
-    return "transient_upstream";
-  }
-  // A context-window overflow carries its own code (`acpx_transient_upsert`)
-  // but stays in the transient_upstream FAMILY: the request was refused
-  // upstream and a retry CAN recover - but only if the retry re-seeds the
-  // prompt with a bounded context. The family keeps the bounded retry ladder
-  // engaged; the CODE is what selects the re-seed path (TON-868).
-  if (run.errorCode === CONTEXT_OVERFLOW_ERROR_CODE) {
-    return "transient_upstream";
-  }
-  // Generic adapter failures that are actually an upstream rate-limit refusal
-  // (the adapter returned `adapter_failed` with "Rate limit exceeded" text and
-  // no structured family). Classifying them here lets the quota-backoff enqueue
-  // gate and the scheduled-retry ladder engage, which is what actually breaks
-  // the self-amplifying 429 storm (TON-458).
-  if (isProviderQuotaRateLimitRun(run)) {
-    return "provider_quota";
-  }
-  return null;
+  return readHeartbeatRunErrorFamilyFromSharedModule(run);
 }
 
 /**
@@ -533,47 +507,12 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
-// Rate-limit (429) detection for generic adapter failures. Local adapters
-// surface an upstream provider throttle as a plain `adapter_failed` run whose
-// only evidence is the human-readable error text (e.g. OpenCode Zen free-tier
-// returns "Rate limit exceeded. Please try again later." / a FreeUsageLimit
-// error). Those runs carry no structured `errorFamily`, so without this
-// classifier the quota-backoff enqueue gate never engages and every automatic
-// wake is a doomed probe that re-amplifies the failure storm (the ~150
-// adapter_failed/day we saw in TON-458). Only tight, unambiguous throttle
-// signals are treated as `provider_quota`; a broad pattern would wrongly
-// quarantine a genuinely broken adapter for hours.
-const RATE_LIMIT_ERROR_PATTERNS: ReadonlyArray<RegExp> = [
-  /rate[\s_-]*limit/i,
-  /too many requests/i,
-  /\b429\b/,
-  /quota\s+(?:exceeded|exhausted|hit)/i,
-  /usage\s+limit/i,
-  /free\s+usage\s+limit/i,
-  /exceeded\s+(?:your\s+)?(?:daily\s+)?(?:usage|quota)/i,
-];
-
-export function isProviderQuotaRateLimitMessage(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  const text = value.trim();
-  if (!text) return false;
-  return RATE_LIMIT_ERROR_PATTERNS.some((pattern) => pattern.test(text));
-}
-
-function isProviderQuotaRateLimitRun(run: {
-  errorCode: string | null;
-  error: string | null;
-  resultJson: unknown;
-}): boolean {
-  if (run.errorCode === "provider_quota") return true;
-  if (isProviderQuotaRateLimitMessage(run.errorCode)) return true;
-  if (isProviderQuotaRateLimitMessage(run.error)) return true;
-  const resultJson = parseObject(run.resultJson);
-  return (
-    isProviderQuotaRateLimitMessage(resultJson.errorMessage) ||
-    isProviderQuotaRateLimitMessage(resultJson.message)
-  );
-}
+// Rate-limit (429) detection for generic adapter failures lives in
+// `./run-error-family.ts` so that control-plane services (the productivity
+// review detector) can classify a run without importing this module. The
+// import cycle matters: `heartbeat.ts` imports the productivity-review
+// service, so the detector importing `heartbeat.ts` back would resolve only by
+// luck of ESM module evaluation order (TON-981).
 
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,

@@ -164,6 +164,45 @@ describeEmbeddedPostgres("productivity review service", () => {
     return runs;
   }
 
+  /**
+   * Inserts runs that died on a provider-quota refusal (HTTP 429 / token-plan
+   * exhaustion). These runs never started, so they cannot have commented on
+   * anything - they must not count toward the no-comment streak (TON-981).
+   */
+  async function insertQuotaFailedRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    count: number;
+    now: Date;
+    /** "structured" carries the explicit error code, "text" only the 429 message. */
+    shape?: "structured" | "text";
+  }) {
+    const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
+    for (let index = 0; index < input.count; index += 1) {
+      const createdAt = new Date(input.now.getTime() - index * 60_000);
+      const structured = (input.shape ?? "structured") === "structured";
+      runs.push({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "failed",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 5_000),
+        error: "429 Token Plan usage limit reached",
+        errorCode: structured ? "provider_quota" : "adapter_failed",
+        resultJson: structured ? { errorFamily: "provider_quota" } : {},
+        contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
+    await db.insert(heartbeatRuns).values(runs);
+    return runs;
+  }
+
   async function listProductivityReviews(companyId: string) {
     return db
       .select()
@@ -212,6 +251,83 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("does not fire a no-comment streak when every sampled run died on a provider quota", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertQuotaFailedRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS * 2,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    // The runs never started, so they cannot be counted as agent silence.
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not fire a no-comment streak when quota failures only carry the 429 error text", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertQuotaFailedRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS * 2,
+      now,
+      shape: "text",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not let quota-failed runs break a real no-comment streak", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // Real, completed runs that produced no comment - these DO count.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: new Date(now.getTime() - 60 * 60 * 1000),
+    });
+    // Quota failures are newer than the real runs; they must be skipped
+    // entirely rather than terminating the streak.
+    await insertQuotaFailedRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 5,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+    expect(reviews[0]?.description).toContain(
+      "Provider-quota-failed runs excluded from the sample: 5",
+    );
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {

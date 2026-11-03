@@ -22,6 +22,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { isFlattenedProviderQuotaFailedRun, isProviderQuotaFailedRun } from "./run-error-family.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -44,6 +45,16 @@ const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
+// How many runs are SCANNED before provider-quota failures are removed. The
+// streak sample is capped at MAX_RUNS_FOR_STREAK *eligible* runs, so the scan
+// has to look further back than that cap: during a quota outage the newest
+// rows are exactly the runs that must be excluded (TON-981).
+const MAX_RUNS_FOR_STREAK_SCAN = 500;
+// Upper bound on the rows fetched for the rolling run-window counts. The
+// counts are computed in-process (rather than with `count(*)`) so that
+// provider-quota failures can be excluded with the same classifier the streak
+// uses; a truncated window is logged rather than silently under-counted.
+const MAX_RUNS_FOR_WINDOW_COUNT = 5000;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
 
@@ -72,6 +83,7 @@ type ProductivityReviewEvidence = {
   noCommentStreak: number;
   totalRunCount: number;
   terminalRunCount: number;
+  providerQuotaExcludedRunCount: number;
   activeRunCount: number;
   runCountLastHour: number;
   runCountLastSixHours: number;
@@ -383,9 +395,30 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return comment;
   }
 
-  async function countIssueRunsSince(companyId: string, agentId: string, issueId: string, since: Date) {
-    return db
-      .select({ count: sql<number>`count(*)::int` })
+  /**
+   * Counts the runs in a rolling window, EXCLUDING the runs that died on a
+   * provider-quota refusal.
+   *
+   * A quota-failed run never started: it produced no output, no comment and no
+   * next action. Counting it as agent activity measures the outage, not the
+   * seat - the same false positive the no-comment streak used to produce
+   * (TON-981). The classification is done in-process (rather than with
+   * `count(*)`) so that it uses the exact same classifier as the streak.
+   */
+  async function countEligibleIssueRunsSince(
+    companyId: string,
+    agentId: string,
+    issueId: string,
+    since: Date,
+  ) {
+    const rows = await db
+      .select({
+        errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
+        errorFamily: sql<string | null>`${heartbeatRuns.resultJson}->>'errorFamily'`,
+        errorMessage: sql<string | null>`${heartbeatRuns.resultJson}->>'errorMessage'`,
+        resultMessage: sql<string | null>`${heartbeatRuns.resultJson}->>'message'`,
+      })
       .from(heartbeatRuns)
       .where(
         and(
@@ -395,7 +428,22 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         ),
       )
-      .then((rows) => rows[0]?.count ?? 0);
+      .limit(MAX_RUNS_FOR_WINDOW_COUNT);
+
+    if (rows.length >= MAX_RUNS_FOR_WINDOW_COUNT) {
+      // A truncated window under-counts the run activity, so it is reported
+      // rather than silently used as a lower bound.
+      logger.warn(
+        { limit: MAX_RUNS_FOR_WINDOW_COUNT, companyId, issueId },
+        "productivity review run window truncated; run counts may be under-counted",
+      );
+    }
+
+    let excluded = 0;
+    for (const row of rows) {
+      if (isFlattenedProviderQuotaFailedRun(row)) excluded += 1;
+    }
+    return { count: rows.length - excluded, excluded };
   }
 
   async function countIssueCommentsSince(companyId: string, issueId: string, agentId: string, since?: Date) {
@@ -513,7 +561,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
-    const latestRuns = await db
+    const scannedRuns = await db
       .select()
       .from(heartbeatRuns)
       .where(
@@ -524,7 +572,18 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-      .limit(MAX_RUNS_FOR_STREAK);
+      .limit(MAX_RUNS_FOR_STREAK_SCAN);
+
+    // A run that died on a provider-quota refusal (HTTP 429 / token-plan
+    // exhaustion) NEVER STARTED: it produced no output, no comment and no next
+    // action. Such a run is not evidence of agent behaviour, so it is removed
+    // from the sample entirely rather than counted as a "completed run the
+    // agent stayed silent on". Feeding quota-failed runs into the streak
+    // measured the outage instead of the seat, and generated 30+ bogus
+    // "Review productivity for ..." cards (TON-981).
+    const quotaFailedRuns = scannedRuns.filter((run) => isProviderQuotaFailedRun(run));
+    const eligibleRuns = scannedRuns.filter((run) => !isProviderQuotaFailedRun(run));
+    const latestRuns = eligibleRuns.slice(0, MAX_RUNS_FOR_STREAK);
 
     const runIds = latestRuns.map((run) => run.id);
     const commentRunIds = new Set<string>();
@@ -554,16 +613,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     }
 
     const [
-      runCountLastHour,
-      runCountLastSixHours,
+      runWindowLastHour,
+      runWindowLastSixHours,
       assigneeRunCommentCount,
       assigneeRunCommentCountLastHour,
       assigneeRunCommentCountLastSixHours,
       latestComments,
       costRow,
     ] = await Promise.all([
-      countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, oneHourAgo),
-      countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, sixHoursAgo),
+      countEligibleIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, oneHourAgo),
+      countEligibleIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, sixHoursAgo),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, oneHourAgo),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, sixHoursAgo),
@@ -606,6 +665,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     // progress. An issue that is being advanced by a live continuation path is healthy,
     // so the age-based trigger must not fire on it.
     const longActive = longActiveByAge && !continuationPath.live;
+    const runCountLastHour = runWindowLastHour.count;
+    const runCountLastSixHours = runWindowLastSixHours.count;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
@@ -636,6 +697,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       noCommentStreak,
       totalRunCount: latestRuns.length,
       terminalRunCount: terminalRuns.length,
+      providerQuotaExcludedRunCount: quotaFailedRuns.length,
       activeRunCount,
       runCountLastHour,
       runCountLastSixHours,
@@ -719,6 +781,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
       `- Terminal sampled runs: ${evidence.terminalRunCount}`,
+      `- Provider-quota-failed runs excluded from the sample: ${evidence.providerQuotaExcludedRunCount} (these runs never started, so they cannot count as silence)`,
       `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
       `- No-comment completed-run streak: ${evidence.noCommentStreak}`,
       `- Current active elapsed time: ${msToHuman(evidence.elapsedMs)}`,
