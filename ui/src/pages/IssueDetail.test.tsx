@@ -1573,6 +1573,31 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
   });
 
+  it("keeps a restored title draft when a fresh task read finds a newer title", async () => {
+    inlineEditorFixture.real = true;
+    coordinatorPreference.loaded = false;
+    const issue = createIssue({ title: "Cached title A" });
+    const fresh = { ...issue, title: "New title C" };
+    const owner = "title-draft-user";
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: owner } });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: owner } });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getCore.mockImplementation(async (_id, options) => options?.cache === "no-store" ? fresh : issue);
+    mockIssuesApi.update.mockClear();
+    const key = `paperclip:inline-draft:v2:${owner}:issue:${issue.id}:title`;
+    localStorage.setItem(key, JSON.stringify({ version: 1, draft: "Restored title B", base: issue.title }));
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssuesApi.getCore).toHaveBeenCalledWith(issue.id, { cache: "no-store" }));
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.issues.detail(issue.identifier!), fresh);
+      queryClient.setQueryData([...queryKeys.issues.detail(issue.identifier!), "core"], fresh);
+    });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="issue-detail-header"] textarea')?.value).toBe("Restored title B");
+    expect(localStorage.getItem(key)).toContain("Restored title B");
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+  });
+
   it.each(["save", "failure", "escape", "unchanged", "navigate"])("retains the early title through preference readiness until %s", async (exit) => {
     inlineEditorFixture.real = true;
     coordinatorPreference.loaded = false;

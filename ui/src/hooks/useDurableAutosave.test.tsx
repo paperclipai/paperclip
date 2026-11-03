@@ -67,6 +67,32 @@ describe("useDurableAutosave", () => {
     await vi.advanceTimersByTimeAsync(ms);
   });
 
+  it("cancels a restored write if the account changes during its fresh-base check", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let finish!: () => void;
+    const beforeSave = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const save = vi.fn().mockResolvedValue(undefined);
+    act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}><Harness sourceId="base-check" save={save} /></ConnectivityProvider></QueryClientProvider>));
+    let pending!: ReturnType<typeof current.run>;
+    act(() => { pending = current.run("Old account draft", { beforeSave }); });
+    expect(beforeSave).toHaveBeenCalledOnce();
+    await act(async () => { client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }); finish(); await pending; });
+    expect(save).not.toHaveBeenCalled();
+    client.clear();
+  });
+
+  it("rechecks the saved base before retrying a restored write", async () => {
+    const beforeSave = vi.fn<() => Promise<void>>().mockResolvedValueOnce(undefined).mockRejectedValue(conflict());
+    const save = vi.fn().mockRejectedValue(outage());
+    render({ save });
+    await act(async () => { expect(await current.run("Restored draft", { beforeSave })).toEqual({ kind: "waiting" }); });
+    await advance(1_000);
+    expect(beforeSave).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledOnce();
+    expect(current.status).toBe("error");
+  });
+
   it("blocks background reload during debounce and until the newest edit is saved", async () => {
     let complete!: () => void;
     const save = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; })).mockResolvedValue(undefined);
