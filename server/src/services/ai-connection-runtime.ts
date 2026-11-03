@@ -437,7 +437,6 @@ export async function prepareManagedAiRuntime(
       const cleanup = async () => {
         if (removalOnly) {
           await removeHome();
-          if (deferredWriteback) throw new RetiredCredentialRecoveryError(deferredWriteback.cause);
           return;
         }
         let googleRecovery: ReturnType<typeof quotaCredentialRecovery> | undefined;
