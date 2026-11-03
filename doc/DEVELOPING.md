@@ -1098,7 +1098,10 @@ For normal issue work, start with the smallest targeted check that proves the ch
 The Runner transport suite keeps attachment recovery, warm attachment, live
 adoption, and suspension in separate test files. Vitest can schedule these
 independent fixtures on its existing file workers; cases within each file stay
-serial. Real lease/deadline waits and assertions are unchanged. Run the complete
+serial. The package sequencer schedules the main transport, deadline, and
+settlement files first so their long waits overlap the remaining tests, including
+on fresh CI runners without timing history. Vitest's file selection and shard
+membership are unchanged. Real lease/deadline waits and assertions are unchanged. Run the complete
 family, including the separate deadline and settlement regressions, with:
 
 ```sh

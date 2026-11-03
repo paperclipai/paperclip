@@ -42,6 +42,21 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      - name: Select changed server test work
+        id: test_scope
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD -- \
+            scripts/benchmark-ci-work.mjs \
+            scripts/run-vitest-stable.mjs \
+            server/src/__tests__/setup-supertest.ts \
+            server/src/__tests__/workspace-runtime.test.ts \
+            server/src/services/workspace-git-snapshot-streaming.test.ts)
+          if [ -n "$changed" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -126,6 +141,7 @@ jobs:
           echo "Materialized dependency reuse is disabled by an unmodelled install hook. Retaining cold setup and comparing test commands only." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare unchanged baseline
+        if: steps.test_scope.outputs.run == 'true'
         run: |
           base_sha=$(git rev-parse HEAD^1)
           git worktree add --detach ../baseline "$base_sha"
@@ -138,11 +154,16 @@ jobs:
           pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
 
       - name: Compare complete commands and executed case inventories
+        if: steps.test_scope.outputs.run == 'true'
         env:
           BENCHMARK_OUTPUT: ${{ runner.temp }}/ci-work-benchmark
         run: |
           node scripts/benchmark-ci-work.mjs ../baseline "$BENCHMARK_OUTPUT"
           cat "$BENCHMARK_OUTPUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Exercise restored dependencies for cache-only changes
+        if: steps.test_scope.outputs.run != 'true' && steps.qualification.outputs.cacheable == 'true'
+        run: pnpm exec vitest run --project @paperclipai/shared
 
       - name: Retain timings, inventories and failure logs
         if: always()

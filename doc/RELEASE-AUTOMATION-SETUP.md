@@ -413,7 +413,10 @@ Provider assets are not included in the dependency cache. Any unrecognized
 workspace lifecycle hook still disables materialized reuse. Only a frozen install
 from the canonical master push can publish the shared entries.
 
-For CI cache changes, the `profile-ci` label runs the paired setup benchmark.
+For CI cache changes, the `profile-ci` label runs the paired setup benchmark
+and exercises restored dependencies with the shared-package tests. The longer
+server test comparison runs when its measured scripts or fixtures change;
+cache-only changes do not require unchanged test commands to run faster.
 It also builds Rust units on one GitHub-hosted runner and restores the dependency
 and workspace caches on a second runner with a fresh checkout. Both restores
 must be exact, and Cargo must report every unit as fresh. These qualification

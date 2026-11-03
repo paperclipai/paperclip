@@ -127,6 +127,15 @@ test('paired test timings remain available when lifecycle hooks disable material
     assert.match(step(name), /if: steps.qualification.outputs.cacheable == 'true'/);
   }
   assert.match(step('Explain disabled materialized reuse'), /cacheable != 'true'/);
-  assert.doesNotMatch(step('Prepare unchanged baseline'), /if:/);
-  assert.doesNotMatch(step('Compare complete commands and executed case inventories'), /if:/);
+  for (const name of ['Prepare unchanged baseline', 'Compare complete commands and executed case inventories']) {
+    assert.match(step(name), /if: steps\.test_scope\.outputs\.run == 'true'/);
+    assert.doesNotMatch(step(name), /if:.*cacheable/);
+  }
+  const scope = step('Select changed server test work');
+  assert.match(scope, /git diff --name-only HEAD\^1 HEAD --/);
+  for (const file of ['scripts/benchmark-ci-work.mjs', 'scripts/run-vitest-stable.mjs',
+    'server/src/__tests__/setup-supertest.ts', 'server/src/__tests__/workspace-runtime.test.ts',
+    'server/src/services/workspace-git-snapshot-streaming.test.ts']) assert.ok(scope.includes(file));
+  assert.doesNotMatch(scope, /scripts\/ci-dependency-cache|\.github\/actions\/setup-ci-dependencies/);
+  assert.match(step('Exercise restored dependencies for cache-only changes'), /pnpm exec vitest run --project @paperclipai\/shared/);
 });

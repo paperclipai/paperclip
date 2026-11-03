@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { configDefaults, defineConfig } from "vitest/config";
+import { RunnerSequencer } from "./scripts/vitest-sequencer.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 
@@ -17,6 +18,7 @@ export default defineConfig({
       ? { reporters: [...configDefaults.reporters, resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] }
       : {}),
     environment: "node",
+    sequence: { sequencer: RunnerSequencer },
     include: [
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
