@@ -201,4 +201,34 @@ export function registerTimelineReceiptBoundaryCases(f: Fixture) {
     expect(response.body.events.every((row: any) => actorIds.has(row.actorId))).toBe(true);
     expect(response.body.edges.every((row: any) => actorIds.has(row.fromActorId) && actorIds.has(row.toActorId))).toBe(true);
   });
+
+  it.each(["foreign-actor", "missing-actor", "foreign-target", "missing-target", "resolver"] as const)("does not expose out-of-bound agent identity through %s", async kind => {
+    const db = f.getDb(); const { companyId, userId, agentAId, agentBId } = await f.seedBase();
+    const foreignCompanyId = randomUUID(), privateAgentId = randomUUID(), id = randomUUID(), at = new Date("2026-03-01T11:00:00Z");
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign agent company", issuePrefix: "FA" });
+    if (!kind.startsWith("missing")) await db.insert(agents).values({ id: privateAgentId, companyId: foreignCompanyId, name: "Foreign private agent", adapterType: "codex_local", status: "paused" });
+    await db.insert(issues).values({ id, companyId, title: "Scoped agent facts", status: "done", createdByAgentId: kind === "resolver" ? privateAgentId : agentAId, createdAt: at });
+    if (kind === "resolver") {
+      await db.insert(issueComments).values({ companyId, issueId: id, authorAgentId: privateAgentId, body: "Recorded comment", createdAt: at });
+      await db.insert(heartbeatRuns).values({ companyId, agentId: privateAgentId, status: "succeeded", invocationSource: "assignment", contextSnapshot: { issueId: id }, createdAt: at, startedAt: at, finishedAt: at });
+    } else {
+      await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: kind.endsWith("actor") ? privateAgentId : agentAId,
+        action: "issue.updated", entityType: "issue", entityId: id, createdAt: at,
+        details: { assigneeAgentId: kind.endsWith("target") ? privateAgentId : agentBId } });
+    }
+    // Valid company-local assignment/run remains visible beside rejected facts.
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId, action: "issue.updated", entityType: "issue", entityId: id, createdAt: at, details: { assigneeAgentId: agentBId } });
+    const [validRun] = await db.insert(heartbeatRuns).values({ companyId, agentId: agentBId, status: "succeeded", invocationSource: "assignment", contextSnapshot: { issueId: id }, createdAt: at, startedAt: at, finishedAt: at }).returning();
+    const response = await request(f.createApp(userId)).get(`/api/companies/${companyId}/timeline`).query({ from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const json = JSON.stringify(response.body);
+    for (const secret of [privateAgentId, "Foreign private agent"]) expect(json).not.toContain(secret);
+    expect(response.body.edges).toContainEqual(expect.objectContaining({ fromActorId: `agent:${agentAId}`, toActorId: `agent:${agentBId}`, kind: "assignment" }));
+    expect(response.body.spans).toContainEqual(expect.objectContaining({ runId: validRun!.id, actorId: `agent:${agentBId}` }));
+    const actorIds = new Set(response.body.actors.map((row: any) => row.id));
+    expect(response.body.events.every((row: any) => actorIds.has(row.actorId))).toBe(true);
+    expect(response.body.spans.every((row: any) => actorIds.has(row.actorId))).toBe(true);
+    expect(response.body.edges.every((row: any) => actorIds.has(row.fromActorId) && actorIds.has(row.toActorId))).toBe(true);
+  });
+
 }
