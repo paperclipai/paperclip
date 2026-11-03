@@ -52,6 +52,11 @@ vi.mock("../services/workspace-runtime.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/activity-log.js", async () => ({
+    ...await vi.importActual<typeof import("../services/activity-log.js")>("../services/activity-log.js"),
+    persistActivity: async (db: unknown, input: unknown) => { await mockLogActivity(db, input); return { activity: { id: "activity" }, publication: null }; },
+    publishActivity: vi.fn(),
+  }));
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
@@ -92,7 +97,7 @@ async function createApp(routeType: "project" | "goal") {
     const { projectRoutes } = await vi.importActual<typeof import("../routes/projects.js")>(
       "../routes/projects.js",
     );
-    app.use("/api", projectRoutes({} as any));
+    app.use("/api", projectRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any));
   } else {
     const { goalRoutes } = await vi.importActual<typeof import("../routes/goals.js")>(
       "../routes/goals.js",

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "announcement": {
+    "id": "staging-announcement-2026-09-14",
+    "eyebrow": "Staging preview",
+    "title": "Your next idea starts here",
+    "description": "Bring your agents and work together in one place. Explore your projects, or learn more about Paperclip.",
+    "image": {
+      "path": "assets/6ac073cb3447e26f856b15ec058bb9d4d036b0babff60af88ee0dd49cabfa124.png",
+      "alt": "Paperclip. Ideas become work."
+    },
+    "secondaryLink": {
+      "kind": "external",
+      "label": "Learn more",
+      "url": "https://paperclip.ing"
+    },
+    "primaryAction": {
+      "kind": "route",
+      "label": "Explore your projects",
+      "path": "/projects"
+    }
+  }
+}

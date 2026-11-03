@@ -1,11 +1,9 @@
 ---
 name: doc-maintenance
 description: >
-  Audit top-level documentation (README, SPEC, PRODUCT) against recent git
-  history to find drift — shipped features missing from docs or features
-  listed as upcoming that already landed. Proposes minimal edits, creates
-  a branch, and opens a PR. Use when asked to review docs for accuracy,
-  after major feature merges, or on a periodic schedule.
+  Audit README, SPEC, and PRODUCT docs against recent git history for drift and
+  make minimal PR-ready edits. Use when asked to review docs for accuracy, after
+  major feature merges, or on a schedule.
 ---
 
 # Doc Maintenance Skill

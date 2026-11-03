@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "slug": "composio",
+  "name": "Composio",
+  "description": "Discover and use connected apps through Composio Connect.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/composio.svg",
+    "darkLogoUrl": "/brands/apps/composio-dark.svg"
+  },
+  "urlPatterns": [
+    "https://backend.composio.dev/*",
+    "https://connect.composio.dev/*",
+    "https://mcp.composio.dev/*",
+    "https://*.composio.dev/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "dcr",
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://connect.composio.dev/mcp"
+      },
+      "guidanceMd": "Sign in to Composio Connect, or paste an externally configured MCP session URL and headers.",
+      "riskTier": "S3",
+      "label": "Composio Connect"
+    }
+  ],
+  "docsUrl": "https://docs.composio.dev/docs/composio-connect"
+}

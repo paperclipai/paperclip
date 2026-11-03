@@ -10,11 +10,17 @@ export const agentMemberships = pgTable(
     agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
     userId: text("user_id").notNull(),
     state: text("state").notNull().default("joined"),
+    starredAt: timestamp("starred_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyUserIdx: index("agent_memberships_company_user_idx").on(table.companyId, table.userId),
+    companyUserStarredIdx: index("agent_memberships_company_user_starred_idx").on(
+      table.companyId,
+      table.userId,
+      table.starredAt,
+    ),
     agentIdx: index("agent_memberships_agent_idx").on(table.agentId),
     companyUserAgentUq: uniqueIndex("agent_memberships_company_user_agent_uq").on(
       table.companyId,

@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkspaceOverviewItem, WorkspaceOverviewResponse } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { Workspaces } from "./Workspaces";
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockSummarySlotCard = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
@@ -35,6 +37,12 @@ vi.mock("@/lib/router", () => ({
 }));
 vi.mock("../components/IssuesQuicklook", () => ({
   IssuesQuicklook: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+vi.mock("../components/SummarySlotCard", () => ({
+  SummarySlotCard: (props: unknown) => {
+    mockSummarySlotCard(props);
+    return <div data-testid="summary-slot-card">Workspaces summary card</div>;
+  },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -129,6 +137,18 @@ describe("Workspaces", () => {
     vi.clearAllMocks();
   });
 
+  it("links projectless task folders to workspace details without a project route", async () => {
+    mockExecutionWorkspacesApi.listOverview.mockResolvedValue(overviewResponse({ items: [{ ...overviewItem(), projectId: null, projectName: null, projectUrlKey: null }] }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(() => root!.render(<QueryClientProvider client={client}><Workspaces /></QueryClientProvider>));
+    await flushQueries();
+    await vi.waitFor(() => expect(container.textContent).toContain("Task workspaces"));
+    expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull();
+    expect(container.querySelector('a[href^="/projects/"]')).toBeNull();
+    client.clear();
+  });
+
   it("uses the bounded overview endpoint and renders grouped workspace cards with linked task summaries", async () => {
     mockExecutionWorkspacesApi.listOverview
       .mockResolvedValueOnce(overviewResponse({
@@ -176,6 +196,15 @@ describe("Workspaces", () => {
     expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
     expect(mockExecutionWorkspacesApi.listOverview).toHaveBeenCalledWith("company-1", { offset: 0 });
     expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Workspaces summary card");
+    expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      scopeKind: "workspaces_overview",
+      title: "Workspace summary",
+    }));
+    const heading = Array.from(container.querySelectorAll("h2")).find((node) => node.textContent === "Workspaces");
+    const summaryCard = container.querySelector('[data-testid="summary-slot-card"]');
+    expect(heading && summaryCard ? Boolean(heading.compareDocumentPosition(summaryCard) & Node.DOCUMENT_POSITION_FOLLOWING) : false).toBe(true);
     expect(container.textContent).toContain("Paperclip App");
     expect(container.textContent).toContain("Workspace Alpha");
     expect(container.textContent).toContain("PAP-11916");
@@ -211,6 +240,30 @@ describe("Workspaces", () => {
     await flushQueries();
 
     expect(container.textContent).toContain("/issues");
+    expect(mockExecutionWorkspacesApi.listOverview).not.toHaveBeenCalled();
+  });
+
+  it("shows readable copy with Retry instead of redirecting when the feature flag cannot be read", async () => {
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(
+      new ApiError("Too many requests", 429, { error: "rate_limited" }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Workspaces />
+        </QueryClientProvider>,
+      );
+    });
+    await flushQueries();
+
+    expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+    const alert = container.querySelector('[data-query-view="error"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).not.toContain("rate_limited");
+    expect(alert?.querySelector("button")?.textContent).toContain("Retry");
     expect(mockExecutionWorkspacesApi.listOverview).not.toHaveBeenCalled();
   });
 });

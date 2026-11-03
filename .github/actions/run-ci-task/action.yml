@@ -1,0 +1,38 @@
+name: Run incremental CI task
+description: Restore PR-scoped Turbo results and run a task with its complete input hash.
+inputs:
+  task:
+    required: true
+    description: Root task from turbo.json.
+  args:
+    default: '[]'
+    description: JSON array of command arguments.
+  partition:
+    default: '0'
+    description: Matrix partition for independent cache uploads.
+  force:
+    default: 'false'
+    description: Execute tasks even when cached, including prerequisite builds.
+runs:
+  using: composite
+  steps:
+    - name: Restore task results
+      if: inputs.force != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: .turbo/cache
+        key: turbo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ inputs.partition }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: turbo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ inputs.partition }}-
+    - name: Run task
+      shell: bash
+      env:
+        CI_TASK: ${{ inputs.task }}
+        CI_TASK_ARGS: ${{ inputs.args }}
+        CI_FORCE_TASKS: ${{ inputs.force }}
+      run: node scripts/ci/run-task.mjs
+    - name: Save successful task results
+      if: success() && inputs.force != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: .turbo/cache
+        key: turbo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ inputs.partition }}-${{ github.run_id }}-${{ github.run_attempt }}

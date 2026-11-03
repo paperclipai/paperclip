@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { FolderOpen, Loader2, LogOut, MoreHorizontal, Plus } from "lucide-react";
+import { FolderOpen, Lock, Loader2, LogOut, MoreHorizontal, Plus } from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -138,14 +138,15 @@ function ProjectItem({
         if (isMobile) setSidebarOpen(false);
       }}
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pr-8 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
+        "flex min-w-0 flex-1 items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pr-8 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
         activeProjectRef === routeRef || activeProjectRef === project.id
-          ? "bg-accent text-foreground"
-          : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+          : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
       )}
     >
       <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
       <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
+            {!rail && project.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
       {!rail ? <ExternalObjectStatusSummary summary={externalObjectsSummary} compact /> : null}
       {!rail && project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
     </NavLink>
@@ -177,7 +178,7 @@ function ProjectItem({
               variant="ghost"
               size="icon-xs"
               className={cn(
-                "absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
+                "absolute right-3 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
                 isMobile
                   ? "opacity-100"
                   : "pointer-events-none opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:opacity-100",
@@ -291,7 +292,6 @@ export function SidebarProjects() {
 
   const visibleProjects = useMemo(
     () => (projects ?? []).filter((project: Project) => {
-      if (project.archivedAt) return false;
       if (!membershipsQuery.isSuccess) return true;
       return resourceMembershipState(membershipsQuery.data, "project", project.id) !== "left";
     }),

@@ -5,6 +5,11 @@ import {
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
+import { redactUrlSecrets } from "@/lib/redact-url-secrets";
+import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { apiFetch } from "./client";
+import { apiErrorMessage, isRawErrorCode } from "./errors";
+import { readApiJson } from "./response";
 
 type AuthErrorBody =
   | {
@@ -13,6 +18,11 @@ type AuthErrorBody =
     error?: string | { code?: string; message?: string };
   }
   | null;
+
+export interface SignOutResult {
+  success?: boolean;
+  redirectTo?: string;
+}
 
 export class AuthApiError extends Error {
   status: number;
@@ -37,6 +47,17 @@ function toSession(value: unknown): AuthSession | null {
   return nested.success ? nested.data : null;
 }
 
+/** The server's own explanation on an auth error body, if it sent one. */
+export function authErrorServerMessage(payload: unknown): string | null {
+  const body = payload && typeof payload === "object" ? payload as Exclude<AuthErrorBody, null> : null;
+  const nested = body?.error && typeof body.error === "object" ? body.error : null;
+  const candidates = [nested?.message, body?.message, typeof body?.error === "string" ? body.error : undefined];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
+  }
+  return null;
+}
+
 function extractAuthError(payload: AuthErrorBody, status: number) {
   const nested =
     payload?.error && typeof payload.error === "object"
@@ -48,27 +69,75 @@ function extractAuthError(payload: AuthErrorBody, status: number) {
       : typeof payload?.code === "string"
         ? payload.code
         : null;
-  const message =
-    typeof nested?.message === "string" && nested.message.trim().length > 0
-      ? nested.message
-      : typeof payload?.message === "string" && payload.message.trim().length > 0
-        ? payload.message
-        : typeof payload?.error === "string" && payload.error.trim().length > 0
-          ? payload.error
-          : `Request failed: ${status}`;
+  const message = authErrorServerMessage(payload);
 
-  return new AuthApiError(message, status, payload, code);
+  // Never surface a raw gateway code ("tenant_app_unavailable") as the message.
+  const readable = message && !isRawErrorCode(message) ? message : apiErrorMessage(status, payload);
+  return new AuthApiError(readable, status, payload, code);
 }
 
-async function authPost(path: string, body: Record<string, unknown>) {
-  const res = await fetch(`/api/auth${path}`, {
-    method: "POST",
+// Rich diagnostics for auth requests. Network-layer failures (Safari
+// "Load failed" / Chrome "Failed to fetch") throw a TypeError *before* any
+// HTTP response, so they are indistinguishable from a bad password in the UI
+// unless we log the resolved request URL + origin here. See PAP-13466.
+function resolveAuthUrl(path: string) {
+  const relative = `/api/auth${path}`;
+  try {
+    return new URL(relative, window.location.origin).href;
+  } catch {
+    return relative;
+  }
+}
+
+function logAuthNetworkFailure(method: string, path: string, error: unknown) {
+  // eslint-disable-next-line no-console
+  console.error("[auth] request failed at the network layer (no HTTP response)", {
+    method,
+    requestUrl: resolveAuthUrl(path),
+    pageOrigin: typeof window !== "undefined" ? window.location.origin : "(no window)",
+    pageHref: typeof window !== "undefined" ? redactUrlSecrets(window.location.href) : "(no window)",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    online: typeof navigator !== "undefined" ? navigator.onLine : "(no navigator)",
+    errorName: error instanceof Error ? error.name : typeof error,
+    errorMessage: error instanceof Error ? error.message : String(error),
+    error,
+    hint:
+      "This means the browser never got a response from the server. Common causes: " +
+      "the page origin differs from the API host (mixed http/https, wrong hostname/port, " +
+      "or a proxy/tunnel that only forwards the page but not /api), an SSL error, or the " +
+      "connection was reset. A wrong password would instead return HTTP 401, not this.",
   });
+}
+
+function logAuthHttpError(method: string, path: string, status: number, statusText: string, body: unknown) {
+  // eslint-disable-next-line no-console
+  console.error("[auth] request returned an error status", {
+    method,
+    requestUrl: resolveAuthUrl(path),
+    status,
+    statusText,
+    body,
+  });
+}
+
+async function authPost(path: string, body: Record<string, unknown>): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/auth${path}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (networkError) {
+    logAuthNetworkFailure("POST", path, networkError);
+    throw networkError;
+  }
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
+    const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+    if (recovery) return recovery;
+    logAuthHttpError("POST", path, res.status, res.statusText, payload);
     throw extractAuthError(payload as AuthErrorBody, res.status);
   }
   return payload;
@@ -83,6 +152,8 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
   });
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
+    const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+    if (recovery) return recovery;
     throw extractAuthError(payload as AuthErrorBody, res.status);
   }
   return parse(payload);
@@ -90,14 +161,17 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
 
 export const authApi = {
   getSession: async (): Promise<AuthSession | null> => {
-    const res = await fetch("/api/auth/get-session", {
+    const res = await apiFetch("/api/auth/get-session", {
       credentials: "include",
       headers: { Accept: "application/json" },
+      cache: "no-store",
     });
-    if (res.status === 401) return null;
-    const payload = await res.json().catch(() => null);
+    const payload = await readApiJson(res);
     if (!res.ok) {
-      throw new Error(`Failed to load session (${res.status})`);
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
+      if (res.status === 401) return null;
+      throw extractAuthError(payload as AuthErrorBody, res.status);
     }
     const direct = toSession(payload);
     if (direct) return direct;
@@ -120,6 +194,8 @@ export const authApi = {
     });
     const payload = await res.json().catch(() => null);
     if (!res.ok) {
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
       throw new Error((payload as { error?: string } | null)?.error ?? `Failed to load profile (${res.status})`);
     }
     return currentUserProfileSchema.parse(payload);
@@ -128,7 +204,14 @@ export const authApi = {
   updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
 
-  signOut: async () => {
-    await authPost("/sign-out", {});
+  signOut: async (): Promise<SignOutResult | null> => {
+    const payload = await authPost("/sign-out", {});
+    if (!payload || typeof payload !== "object") return null;
+
+    const result = payload as Record<string, unknown>;
+    return {
+      ...(typeof result.success === "boolean" ? { success: result.success } : {}),
+      ...(typeof result.redirectTo === "string" ? { redirectTo: result.redirectTo } : {}),
+    };
   },
 };

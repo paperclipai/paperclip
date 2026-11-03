@@ -99,6 +99,9 @@ describe("environment customImage redaction", () => {
       metadata: {
         safeLabel: "codex template",
         apiToken: "token-value",
+        userMetadata: {
+          safe: "kept",
+        },
         nested: {
           host: "203.0.113.10",
           safe: "kept",
@@ -111,6 +114,9 @@ describe("environment customImage redaction", () => {
     expect(redacted.metadata).toEqual({
       safeLabel: "codex template",
       apiToken: REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE,
+      userMetadata: {
+        safe: "kept",
+      },
       nested: {
         host: REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE,
         safe: "kept",
@@ -140,7 +146,7 @@ describe("environment customImage redaction", () => {
     expect(redacted.connectionSecretRef).toBe(REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE);
     expect(redacted.connectionSummary).toEqual({
       type: "ssh",
-      username: "sandbox",
+      username: REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE,
       hostRedacted: true,
       portRedacted: true,
       instructions: REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE,

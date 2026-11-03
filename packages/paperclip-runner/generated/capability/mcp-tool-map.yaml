@@ -1,0 +1,383 @@
+{
+  "schemaVersion": 1,
+  "rows": [
+    {
+      "id": "mcp:paperclipMe",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipMe",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L290:paperclipme",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "injected_actor_context",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "mcp:paperclipInboxLite",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipInboxLite",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L296:paperclipinboxlite",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runner_work_selection",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "mcp:paperclipListAgents",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListAgents",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L302:papercliplistagents",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "list_agents",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListSkills",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListSkills",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L308:papercliplistskills",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "list_company_skills",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetAgent",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetAgent",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L314:paperclipgetagent",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "get_agent",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListIssues",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListIssues",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L323:papercliplistissues",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "search_tasks",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetIssue",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetIssue",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L338:paperclipgetissue",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "get_task_context",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetHeartbeatContext",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetHeartbeatContext",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L344:paperclipgetheartbeatcontext",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "get_task_context",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListComments",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListComments",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L353:papercliplistcomments",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "get_task_history",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetComment",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetComment",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L366:paperclipgetcomment",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "get_task_history",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListIssueApprovals",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListIssueApprovals",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L373:papercliplistissueapprovals",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "get_task_context",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListDocuments",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListDocuments",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L379:papercliplistdocuments",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "list_documents",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetDocument",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetDocument",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L385:paperclipgetdocument",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "read_document",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListDocumentRevisions",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListDocumentRevisions",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L392:papercliplistdocumentrevisions",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "list_document_revisions",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListProjects",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListProjects",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L402:papercliplistprojects",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "list_projects",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetProject",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetProject",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L408:paperclipgetproject",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "get_project",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetIssueWorkspaceRuntime",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetIssueWorkspaceRuntime",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L417:paperclipgetissueworkspaceruntime",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "get_workspace_runtime",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipControlIssueWorkspaceServices",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipControlIssueWorkspaceServices",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L423:paperclipcontrolissueworkspaceservices",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "control_workspace_service",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipWaitForIssueWorkspaceService",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipWaitForIssueWorkspaceService",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L440:paperclipwaitforissueworkspaceservice",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "wait_for_workspace_service",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListGoals",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListGoals",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L466:papercliplistgoals",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "list_goals",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetGoal",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetGoal",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L472:paperclipgetgoal",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "get_goal",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListApprovals",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListApprovals",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L478:papercliplistapprovals",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "list_approvals",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipCreateApproval",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipCreateApproval",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L487:paperclipcreateapproval",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "request_approval",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetApproval",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetApproval",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L496:paperclipgetapproval",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "get_approval",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipGetApprovalIssues",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipGetApprovalIssues",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L502:paperclipgetapprovalissues",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "get_approval_context",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipListApprovalComments",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipListApprovalComments",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L508:papercliplistapprovalcomments",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "get_approval_context",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipCreateIssue",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipCreateIssue",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L514:paperclipcreateissue",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "create_task",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipUpdateIssue",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipUpdateIssue",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L521:paperclipupdateissue",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "semantic_task_disposition",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipCheckoutIssue",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipCheckoutIssue",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L528:paperclipcheckoutissue",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "atomic_checkout",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "mcp:paperclipReleaseIssue",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipReleaseIssue",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L540:paperclipreleaseissue",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_release",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "mcp:paperclipAddComment",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipAddComment",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L546:paperclipaddcomment",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "report_progress",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipSuggestTasks",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipSuggestTasks",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L553:paperclipsuggesttasks",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "request_human_input",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipAskUserQuestions",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipAskUserQuestions",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L565:paperclipaskuserquestions",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "request_human_input",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipRequestConfirmation",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipRequestConfirmation",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L577:papercliprequestconfirmation",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "request_human_input",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipRequestCheckboxConfirmation",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipRequestCheckboxConfirmation",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L589:papercliprequestcheckboxconfirmation",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "request_human_input",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipUpsertIssueDocument",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipUpsertIssueDocument",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L601:paperclipupsertissuedocument",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "write_document",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipRestoreIssueDocumentRevision",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipRestoreIssueDocumentRevision",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L612:papercliprestoreissuedocumentrevision",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "restore_document_revision",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipLinkIssueApproval",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipLinkIssueApproval",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L627:papercliplinkissueapproval",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "link_approval",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipUnlinkIssueApproval",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipUnlinkIssueApproval",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L636:paperclipunlinkissueapproval",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "unlink_approval",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipApprovalDecision",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipApprovalDecision",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L646:paperclipapprovaldecision",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "decide_approval",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipAddApprovalComment",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipAddApprovalComment",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L668:paperclipaddapprovalcomment",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "comment_on_approval",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "mcp:paperclipApiRequest",
+      "kind": "legacy_mcp_tool",
+      "name": "paperclipApiRequest",
+      "sourceAnchor": "packages/mcp-server/src/tools.ts#L677:paperclipapirequest",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "test_only_api_escape_hatch",
+      "expectedMockState": "operation_result"
+    }
+  ]
+}

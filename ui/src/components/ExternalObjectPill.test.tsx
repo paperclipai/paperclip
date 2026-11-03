@@ -75,6 +75,24 @@ describe("ExternalObjectPill", () => {
     expect(auth).toContain("[border-style:dashed]");
   });
 
+  it("shows the liveness warning tone for a rate-limited object, not the last status tone", () => {
+    const html = renderToStaticMarkup(
+      <ExternalObjectPill
+        object={{
+          providerKey: "github",
+          objectType: "pull_request",
+          statusCategory: "open",
+          liveness: "rate_limited",
+          statusIconKey: "git-pull-request",
+          url: "https://github.com/acme/web/pull/243",
+        }}
+      />,
+    );
+    expect(html).toContain("text-amber-600");
+    expect(html).toContain("[border-style:dashed]");
+    expect(html).not.toContain("text-blue-600");
+  });
+
   it("does not show a source count when only a single mention is present", () => {
     const html = renderToStaticMarkup(
       <ExternalObjectPill
@@ -89,6 +107,25 @@ describe("ExternalObjectPill", () => {
       />,
     );
     expect(html).not.toContain("×");
+  });
+
+  it("labels detected GitHub pull requests without fetched status as not refreshed", () => {
+    const html = renderToStaticMarkup(
+      <ExternalObjectPill
+        object={{
+          providerKey: "github",
+          objectType: "pull_request",
+          statusCategory: "unknown",
+          liveness: "unknown",
+          displayTitle: "acme/web#241",
+          url: "https://github.com/acme/web/pull/241",
+        }}
+      />,
+    );
+
+    expect(html).toContain("PR 241 - Not yet refreshed");
+    expect(html).toContain('aria-label="GitHub pull request — Not yet refreshed: acme/web#241"');
+    expect(html).not.toContain("Not yet resolved");
   });
 
   it("uses the object link label, provider icon, and visible status when supplied", () => {

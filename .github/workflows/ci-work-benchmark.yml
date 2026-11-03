@@ -1,0 +1,139 @@
+name: CI work benchmark
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - .github/actions/setup-ci-dependencies/**
+      - .github/workflows/ci-work-benchmark.yml
+      - scripts/ci-dependency-cache.mjs
+      - scripts/benchmark-ci-work.mjs
+      - scripts/run-vitest-stable.mjs
+      - server/src/__tests__/setup-supertest.ts
+      - server/src/__tests__/workspace-runtime.test.ts
+      - server/src/services/workspace-git-snapshot-streaming.test.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-work-benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  paired:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'profile-ci') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'profile-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: candidate
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Start cold setup measurement
+        run: echo "CI_COLD_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Qualify candidate dependency setup
+        uses: ./candidate/.github/actions/setup-ci-dependencies
+        with:
+          working-directory: candidate
+          restore-cache: 'false'
+
+      - name: Record cold setup and compute qualification keys
+        id: qualification
+        run: |
+          echo "CI_COLD_SECONDS=$(($(date +%s) - CI_COLD_STARTED))" >> "$GITHUB_ENV"
+          node scripts/ci-dependency-cache.mjs
+
+      - name: Save PR-scoped qualification dependencies
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: ${{ steps.qualification.outputs.dependency-key }}
+          path: ${{ steps.qualification.outputs.dependency-paths }}
+
+      - name: Save PR-scoped qualification builds
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: ${{ steps.qualification.outputs.build-key }}
+          path: ${{ steps.qualification.outputs.build-paths }}
+
+      - name: Remove materialized outputs before restore
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { rmSync } from 'node:fs';
+          const plan = JSON.parse(execFileSync(process.execPath, ['scripts/ci-dependency-cache.mjs'], {
+            env: { ...process.env, GITHUB_OUTPUT: '' }, encoding: 'utf8',
+          }));
+          for (const directory of [...plan.dependencyPaths, 'packages/shared/dist', 'packages/plugins/sdk/dist']) {
+            rmSync(directory, { recursive: true, force: true });
+          }
+          NODE
+          echo "CI_WARM_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Qualify a real warm restore
+        id: warm
+        uses: ./candidate/.github/actions/setup-ci-dependencies
+        with:
+          working-directory: candidate
+
+      - name: Verify exact cache hits and record setup comparison
+        env:
+          DEPS_RESTORED: ${{ steps.warm.outputs.dependencies-restored }}
+          BUILDS_RESTORED: ${{ steps.warm.outputs.builds-restored }}
+          OUTPUT: ${{ runner.temp }}/ci-work-benchmark
+        run: |
+          test "$DEPS_RESTORED" = true
+          test "$BUILDS_RESTORED" = true
+          mkdir -p "$OUTPUT"
+          warm_seconds=$(($(date +%s) - CI_WARM_STARTED))
+          printf '{"coldSeconds":%s,"warmSeconds":%s}\n' "$CI_COLD_SECONDS" "$warm_seconds" > "$OUTPUT/dependency-setup.json"
+          echo "Dependency setup: ${CI_COLD_SECONDS}s cold, ${warm_seconds}s with exact materialized restores." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare unchanged baseline
+        run: |
+          base_sha=$(git rev-parse HEAD^1)
+          git worktree add --detach ../baseline "$base_sha"
+          cd ../baseline
+          if ! pnpm install --frozen-lockfile; then
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+          pnpm run preflight:workspace-links
+          pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Compare complete commands and executed case inventories
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/ci-work-benchmark
+        run: |
+          node scripts/benchmark-ci-work.mjs ../baseline "$BENCHMARK_OUTPUT"
+          cat "$BENCHMARK_OUTPUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain timings, inventories and failure logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-work-benchmark
+          path: ${{ runner.temp }}/ci-work-benchmark
+          retention-days: 14

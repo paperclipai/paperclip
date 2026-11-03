@@ -1,17 +1,19 @@
 import { Command } from "commander";
-import type {
-  Agent,
-  AgentSkillSnapshot,
-  CatalogSkill,
-  CompanySkill,
-  CompanySkillAuditResult,
-  CompanySkillDetail,
-  CompanySkillFileDetail,
-  CompanySkillImportResult,
-  CompanySkillInstallCatalogResult,
-  CompanySkillListItem,
-  CompanySkillProjectScanResult,
-  CompanySkillUpdateStatus,
+import {
+  agentSkillAssignmentModeSchema,
+  type AgentSkillAssignmentMode,
+  type Agent,
+  type AgentSkillSnapshot,
+  type CatalogSkill,
+  type CompanySkill,
+  type CompanySkillAuditResult,
+  type CompanySkillDetail,
+  type CompanySkillFileDetail,
+  type CompanySkillImportResult,
+  type CompanySkillInstallCatalogResult,
+  type CompanySkillListItem,
+  type CompanySkillProjectScanResult,
+  type CompanySkillUpdateStatus,
 } from "@paperclipai/shared";
 import { readFile } from "node:fs/promises";
 import { stdin as input, stdout as output } from "node:process";
@@ -69,6 +71,7 @@ interface ConfirmedSkillOptions extends SkillsOptions {
 
 interface AgentSkillSyncOptions extends SkillsOptions {
   skill?: string[];
+  mode: AgentSkillAssignmentMode;
 }
 
 type CompanySkillReferenceTarget = Pick<CompanySkillListItem, "id" | "key" | "slug" | "name">;
@@ -502,9 +505,13 @@ function registerAgentSkillCommands(skills: Command): void {
   addCommonClientOptions(
     agent
       .command("sync")
-      .description("Replace an agent's desired company skills and sync runtime state")
+      .description("Merge an agent's desired company skills and sync runtime state")
       .argument("<agentRef>", "Agent ID or shortname/url-key")
       .option("--skill <skillRef>", "Desired company skill ID, key, or slug; may be repeated", collectOptionValue, [] as string[])
+      .requiredOption(
+        "--mode <mode>",
+        "Merge mode: add keeps other skills; remove deletes only named skills; replace destructively overwrites the complete set",
+      )
       .action(async (agentRef: string, opts: AgentSkillSyncOptions) => {
         try {
           const desiredSkills = opts.skill ?? [];
@@ -513,16 +520,17 @@ function registerAgentSkillCommands(skills: Command): void {
           }
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const agentRow = await resolveAgent(ctx, agentRef);
+          const mode = agentSkillAssignmentModeSchema.parse(opts.mode);
           const snapshot = await ctx.api.post<AgentSkillSnapshot>(
             `/api/agents/${encodeURIComponent(agentRow.id)}/skills/sync`,
-            { desiredSkills },
+            { desiredSkills, mode },
           );
           if (ctx.json) {
             printOutput(snapshot, { json: true });
             return;
           }
           console.log(
-            `Desired company skills replaced for ${agentRow.name} (${agentRow.id}); runtime sync returned ${snapshot?.entries.length ?? 0} entrie(s).`,
+            `Desired company skills updated with ${mode} mode for ${agentRow.name} (${agentRow.id}); runtime sync returned ${snapshot?.entries.length ?? 0} entrie(s).`,
           );
           printAgentSkillSnapshot(snapshot, agentRow);
         } catch (err) {
@@ -548,7 +556,7 @@ function registerAgentSkillCommands(skills: Command): void {
           );
           const snapshot = await ctx.api.post<AgentSkillSnapshot>(
             `/api/agents/${encodeURIComponent(agentRow.id)}/skills/sync`,
-            { desiredSkills: [] },
+            { desiredSkills: [], mode: "replace" },
           );
           if (ctx.json) {
             printOutput(snapshot, { json: true });

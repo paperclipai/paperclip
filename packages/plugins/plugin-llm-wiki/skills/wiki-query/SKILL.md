@@ -1,6 +1,6 @@
 ---
 name: wiki-query
-description: Use when an operation issue asks you to answer a question from the LLM Wiki — `operationType: "query"` and a question in the issue body. Answer with citations to wiki pages and raw sources, and offer to file durable synthesis back into `wiki/synthesis/` so the work compounds instead of disappearing into a chat thread.
+description: Use when an LLM Wiki operation issue asks a question. Answer from wiki pages and raw sources with citations, name gaps plainly, and offer to file durable synthesis when the answer should compound.
 ---
 
 # Wiki Query

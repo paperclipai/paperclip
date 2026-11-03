@@ -25,15 +25,18 @@ function sentenceCaseStatus(status: string): string {
 /**
  * Generic status badge for runs / goals / approvals (not task status).
  */
-export function StatusBadge({ status }: { status: string }) {
+// design-allow(pill-pattern): DECISION-SHEET.md C8 - status badges keep the bespoke WCAG-tuned
+// .status-chip color-mix mechanic and do not wrap the Badge primitive.
+export function StatusBadge({ status, label, className }: { status: string; label?: string; className?: string }) {
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
-        statusBadge[status] ?? statusBadgeDefault
+        statusBadge[status] ?? statusBadgeDefault,
+        className
       )}
     >
-      {status.replace(/_/g, " ")}
+      {label ?? status.replace(/[_-]/g, " ")}
     </span>
   );
 }
@@ -67,7 +70,7 @@ export function AgentStatusCapsule({ status }: { status: string }) {
   return (
     <span
       aria-hidden
-      className={cn("status-fill inline-block h-4 w-2 rounded-[4px] shrink-0", motion)}
+      className={cn("status-fill inline-block h-4 w-2 rounded-(--rad-4) shrink-0", motion)}
       style={scStyle(cssVar)}
     />
   );
@@ -81,7 +84,8 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * Distinct from the generic {@link StatusBadge} so run/goal/approval badges are
  * unaffected.
  */
-export function IssueStatusBadge({ status }: { status: string }) {
+export function IssueStatusBadge({ status: taskStatus, displayStatus, externalConversationState }: { status: string; displayStatus?: string | null; externalConversationState?: "active" | "waiting" | null }) {
+  const status = taskStatus === "in_review" && externalConversationState === "waiting" ? "idle" : taskStatus === "in_progress" && displayStatus === "monitoring" ? "monitoring" : taskStatus;
   const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
   return (
     <span

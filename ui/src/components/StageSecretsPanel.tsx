@@ -2,8 +2,8 @@ import { KeyRound, Save } from "lucide-react";
 import type { CompanySecret, RoutineEnvConfig } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "./EmptyState";
-import { EnvVarEditor } from "./EnvVarEditor";
-import { AgentIcon } from "./AgentIconPicker";
+import { EnvironmentVariablesEditor } from "./environment-variables-editor";
+import { AgentAvatar, type AvatarAgent } from "./AgentAvatar";
 
 export interface StageSecretsPanelProps {
   /** Whether the stage has a backing automation routine with an assignee. */
@@ -11,6 +11,7 @@ export interface StageSecretsPanelProps {
   /** Display name + icon of the agent that runs this step (when automation exists). */
   agentName?: string | null;
   agentIcon?: string | null;
+  agent?: AvatarAgent;
   /** Company secret inventory (shared, not stage-scoped). */
   secrets: CompanySecret[];
   secretsLoading: boolean;
@@ -28,13 +29,14 @@ export interface StageSecretsPanelProps {
  * Stage Secrets tab body. Stage secrets are env bindings on the step's backing
  * automation routine — the same company-secret backbone used by routines,
  * agents, and projects. This panel is intentionally dense and reuses
- * `EnvVarEditor` for secret refs, inline secret creation, version selection,
- * and missing/disabled-secret warnings.
+ * `EnvironmentVariablesEditor` for secret refs, inline secret creation, version
+ * selection, and missing/disabled-secret warnings.
  */
 export function StageSecretsPanel({
   hasAutomation,
   agentName,
   agentIcon,
+  agent,
   secrets,
   secretsLoading,
   value,
@@ -59,13 +61,13 @@ export function StageSecretsPanel({
     );
   }
 
-  const displayName = agentName?.trim() || "the assigned agent";
+  const displayName = agentName?.trim() || "the responsible agent";
 
   return (
     <div className="space-y-5">
       <div className="flex items-start gap-2 rounded-md border border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
         {agentName ? (
-          <AgentIcon icon={agentIcon} className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <AgentAvatar agent={agent} name={displayName} size={16} />
         ) : (
           <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
         )}
@@ -80,7 +82,7 @@ export function StageSecretsPanel({
       {secretsLoading ? (
         <p className="text-sm text-muted-foreground">Loading secrets…</p>
       ) : (
-        <EnvVarEditor
+        <EnvironmentVariablesEditor
           value={value}
           secrets={secrets}
           onCreateSecret={onCreateSecret}

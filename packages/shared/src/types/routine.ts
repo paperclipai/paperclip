@@ -1,6 +1,8 @@
 import type {
   IssueOriginKind,
   IssuePriority,
+  RoutineActivityGatePolicy,
+  RoutineActivityGateScope,
   RoutineCatchUpPolicy,
   RoutineConcurrencyPolicy,
   RoutineStatus,
@@ -71,6 +73,7 @@ export interface Routine {
   id: string;
   companyId: string;
   projectId: string | null;
+  folderId?: string | null;
   goalId: string | null;
   parentIssueId: string | null;
   title: string;
@@ -80,6 +83,8 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  activityGatePolicy: string;
+  activityGateScope: string;
   originKind?: string;
   originId?: string | null;
   variables: RoutineVariable[];
@@ -88,6 +93,7 @@ export interface Routine {
   latestRevisionNumber: number;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId: string | null;
   updatedByAgentId: string | null;
   updatedByUserId: string | null;
   lastTriggeredAt: Date | null;
@@ -122,13 +128,17 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  activityGatePolicy: RoutineActivityGatePolicy;
+  activityGateScope: RoutineActivityGateScope;
   originKind?: string;
   originId?: string | null;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
+  responsibleUserId: string | null;
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {
+  setupPending?: boolean;
   id: string;
   kind: RoutineTriggerKind;
   label: string | null;
@@ -164,6 +174,12 @@ export interface RoutineRevision {
   createdAt: Date;
 }
 
+export interface RoutineWebhookDelivery {
+  status: "received" | "rejected";
+  receivedAt: string;
+  test: boolean;
+}
+
 export interface RoutineTrigger {
   id: string;
   companyId: string;
@@ -176,6 +192,10 @@ export interface RoutineTrigger {
   nextRunAt: Date | null;
   lastFiredAt: Date | null;
   publicId: string | null;
+  webhookUrl?: string | null;
+  setupPending?: boolean;
+  archived?: boolean;
+  lastWebhookDelivery?: RoutineWebhookDelivery | null;
   secretId: string | null;
   signingMode: string | null;
   replayWindowSec: number | null;

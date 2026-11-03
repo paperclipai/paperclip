@@ -6,6 +6,7 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { randomUUID } from "node:crypto";
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -28,6 +29,8 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /** Optional durability gate. A rejected archive must not prune history. */
+  verifyBeforePrune?: (backupFile: string) => Promise<void>;
 };
 
 export type RunDatabaseBackupResult = {
@@ -43,6 +46,7 @@ export type RunDatabaseRestoreOptions = {
 };
 
 type SequenceDefinition = {
+  is_identity: boolean;
   sequence_schema: string;
   sequence_name: string;
   data_type: string;
@@ -104,7 +108,13 @@ function isoWeekKey(date: Date): string {
 }
 
 function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
+  const months = Math.max(1, monthlyMonths);
+  const now = new Date(nowMs);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1);
 }
 
 /**
@@ -120,7 +130,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   const now = Date.now();
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
-  const monthlyCutoff = now - Math.max(1, retention.monthlyMonths) * 30 * 24 * 60 * 60 * 1000;
+  const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
 
   type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
   const entries: BackupEntry[] = [];
@@ -523,6 +533,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
+  let effectiveBackupEngine = backupEngine;
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
@@ -534,13 +545,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+  // Initial and final sleep checks can run within the same second. A failed
+  // second checkpoint must never overwrite the first verified recovery point.
+  const checkpointSuffix = opts.verifyBeforePrune ? `-${randomUUID()}` : "";
+  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql`);
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
+      let dumped = false;
       try {
         await closeSql();
         await runPgDumpBackup({
@@ -548,14 +563,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
-        return {
-          backupFile,
-          sizeBytes,
-          prunedCount,
-        };
+        dumped = true;
       } catch (error) {
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
@@ -563,8 +571,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (backupEngine === "pg_dump") {
           throw error;
         }
+        effectiveBackupEngine = "javascript";
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
+      }
+      if (dumped) {
+        // Only an engine failure can select the JavaScript fallback. Once
+        // pg_dump succeeds, archive verification or persistence failures
+        // must retain their original error and must not reuse a closed writer.
+        await writer.abort();
+        const sizeBytes = statSync(backupFile).size;
+        await opts.verifyBeforePrune?.(backupFile);
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        return { backupFile, sizeBytes, prunedCount };
       }
     }
 
@@ -585,6 +604,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("BEGIN;");
     emitStatement("SET LOCAL session_replication_role = replica;");
     emitStatement("SET LOCAL client_min_messages = warning;");
+    emitStatement("SET LOCAL check_function_bodies = false;");
     emit("");
 
     const allTables = await sql<TableDefinition[]>`
@@ -612,6 +632,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     const allSequences = await sql<SequenceDefinition[]>`
       SELECT
+        false AS is_identity,
         s.sequence_schema,
         s.sequence_name,
         s.data_type,
@@ -633,7 +654,26 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       WHERE ${sql.unsafe(nonSystemSchemaPredicate("s.sequence_schema"))}
       ORDER BY s.sequence_schema, s.sequence_name
     `;
-    const sequences = allSequences.filter(
+    const identitySequences = await sql<SequenceDefinition[]>`
+      SELECT true AS is_identity, n.nspname AS sequence_schema, seq.relname AS sequence_name,
+             format_type(options.seqtypid, NULL) AS data_type,
+             options.seqstart::text AS start_value, options.seqmin::text AS minimum_value,
+             options.seqmax::text AS maximum_value, options.seqincrement::text AS increment,
+             CASE WHEN options.seqcycle THEN 'YES' ELSE 'NO' END AS cycle_option,
+             owner_namespace.nspname AS owner_schema, owner.relname AS owner_table,
+             attribute.attname AS owner_column
+      FROM pg_sequence options
+      JOIN pg_class seq ON seq.oid = options.seqrelid
+      JOIN pg_namespace n ON n.oid = seq.relnamespace
+      JOIN pg_depend dependency ON dependency.objid = seq.oid AND dependency.deptype = 'i'
+        AND dependency.classid = 'pg_class'::regclass AND dependency.refclassid = 'pg_class'::regclass
+      JOIN pg_class owner ON owner.oid = dependency.refobjid
+      JOIN pg_namespace owner_namespace ON owner_namespace.oid = owner.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid = owner.oid AND attribute.attnum = dependency.refobjsubid
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, seq.relname
+    `;
+    const sequences = [...allSequences, ...identitySequences].filter(
       (seq) => !seq.owner_table || includedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table)),
     );
 
@@ -675,7 +715,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     if (sequences.length > 0) {
       emit("-- Sequences");
-      for (const seq of sequences) {
+      for (const seq of sequences.filter(seq => !seq.is_identity)) {
         const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
         emitStatement(`DROP SEQUENCE IF EXISTS ${qualifiedSequenceName} CASCADE;`);
         emitStatement(
@@ -695,11 +735,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         udt_name: string;
         is_nullable: string;
         column_default: string | null;
+        is_identity: string;
+        identity_generation: "ALWAYS" | "BY DEFAULT" | null;
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
       }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
+        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default, is_identity, identity_generation,
                character_maximum_length, numeric_precision, numeric_scale
         FROM information_schema.columns
         WHERE table_schema = ${schema_name} AND table_name = ${tablename}
@@ -733,7 +775,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         }
 
         let def = `  "${col.column_name}" ${typeStr}`;
-        if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
+        if (col.is_identity === "YES") {
+          const sequence = sequences.find(seq => seq.is_identity && seq.owner_schema === schema_name
+            && seq.owner_table === tablename && seq.owner_column === col.column_name);
+          if (!sequence || !col.identity_generation) throw new Error(`Missing identity sequence for ${schema_name}.${tablename}.${col.column_name}`);
+          def += ` GENERATED ${col.identity_generation} AS IDENTITY (SEQUENCE NAME ${quoteQualifiedName(sequence.sequence_schema, sequence.sequence_name)} START WITH ${sequence.start_value} INCREMENT BY ${sequence.increment} MINVALUE ${sequence.minimum_value} MAXVALUE ${sequence.maximum_value} ${sequence.cycle_option === "YES" ? "CYCLE" : "NO CYCLE"})`;
+        } else if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
         if (col.is_nullable === "NO") def += " NOT NULL";
         colDefs.push(def);
       }
@@ -761,7 +808,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    const ownedSequences = sequences.filter((seq) => seq.owner_table && seq.owner_column);
+    const ownedSequences = sequences.filter((seq) => !seq.is_identity && seq.owner_table && seq.owner_column);
     if (ownedSequences.length > 0) {
       emit("-- Sequence ownership");
       for (const seq of ownedSequences) {
@@ -803,7 +850,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    // Foreign keys (after all tables and referenced unique constraints are created)
+    // Collect foreign keys now. Emit them after routines and standalone indexes
+    // because PostgreSQL permits a non-constraint unique index to be the target
+    // of a foreign key.
     const allForeignKeys = await sql<{
       constraint_name: string;
       source_schema: string;
@@ -843,14 +892,29 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         && includedTableNames.has(tableKey(fk.target_schema, fk.target_table)),
     );
 
-    if (fks.length > 0) {
-      emit("-- Foreign keys");
-      for (const fk of fks) {
-        const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
-        const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
-        emitStatement(
-          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
-        );
+    // JavaScript backups are used when a worktree seed filters or transforms
+    // table data. Preserve user-defined routines before indexes because an
+    // expression index may depend on a user-defined function.
+    const routines = await sql<{ definition: string }[]>`
+      SELECT pg_get_functiondef(p.oid) AS definition
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        AND p.prokind IN ('f', 'p')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_depend d
+          WHERE d.classid = 'pg_proc'::regclass
+            AND d.objid = p.oid
+            AND d.deptype = 'e'
+        )
+      ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
+    `;
+    if (routines.length > 0) {
+      emit("-- Functions and procedures");
+      for (const routine of routines) {
+        const definition = routine.definition.trimEnd();
+        emitStatement(definition.endsWith(";") ? definition : `${definition};`);
       }
       emit("");
     }
@@ -877,10 +941,23 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    if (fks.length > 0) {
+      emit("-- Foreign keys");
+      for (const fk of fks) {
+        const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
+        const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
+        emitStatement(
+          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
+        );
+      }
+      emit("");
+    }
+
     // Dump data for each table
     for (const { schema_name, tablename } of tables) {
       const currentTableKey = tableKey(schema_name, tablename);
       const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
+      const overrideIdentity = identitySequences.some(seq => seq.owner_schema === schema_name && seq.owner_table === tablename);
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
       if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? 0) === 0) continue;
 
@@ -896,7 +973,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
-      if (backupEngine !== "javascript" && nullifiedColumns.size === 0) {
+      if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
         const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
@@ -925,9 +1002,36 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
           );
-          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames})${overrideIdentity ? " OVERRIDING SYSTEM VALUE" : ""} VALUES (${values.join(", ")});`);
         }
         await writer.drain();
+      }
+      emit("");
+    }
+
+    const allTriggers = await sql<{
+      schema_name: string;
+      tablename: string;
+      definition: string;
+    }[]>`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS tablename,
+        pg_get_triggerdef(t.oid, true) AS definition
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE NOT t.tgisinternal
+        AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, c.relname, t.tgname
+    `;
+    const triggers = allTriggers.filter((entry) => (
+      includedTableNames.has(tableKey(entry.schema_name, entry.tablename))
+    ));
+    if (triggers.length > 0) {
+      emit("-- Triggers");
+      for (const trigger of triggers) {
+        emitStatement(`${trigger.definition};`);
       }
       emit("");
     }
@@ -962,6 +1066,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
+    await opts.verifyBeforePrune?.(backupFile);
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
@@ -985,10 +1090,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
 export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promise<void> {
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  let psqlRestoreError: unknown = null;
   try {
     await restoreWithPsql(opts, connectTimeout);
     return;
   } catch (error) {
+    psqlRestoreError = error;
     if (!(await hasStatementBreakpoints(opts.backupFile))) {
       throw new Error(
         `Failed to restore ${basename(opts.backupFile)} with psql: ${sanitizeRestoreErrorMessage(error)}`,
@@ -1010,8 +1117,9 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
         .map((line) => line.trim())
         .find((line) => line.length > 0 && !line.startsWith("--"))
       : null;
+    const psqlMessage = psqlRestoreError === null ? "" : `; psql error: ${sanitizeRestoreErrorMessage(psqlRestoreError)}`;
     throw new Error(
-      `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}`,
+      `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}${psqlMessage}`,
     );
   } finally {
     await sql.end();

@@ -14,6 +14,7 @@ export function shouldResetScrollOnNavigation(params: {
   if (previousPathname === null) return false;
   if (previousPathname === pathname) return false;
   if (navigationType === "POP") return false;
+  if (isIssueIndexPath(pathname)) return true;
   if (isIssueDetailPathChange(previousPathname, pathname)) return true;
   return hasSidebarScrollResetState(state);
 }
@@ -73,6 +74,14 @@ function isIssueDetailPathChange(previousPathname: string, pathname: string): bo
   const previousIssueRef = readIssueDetailPathRef(previousPathname);
   const nextIssueRef = readIssueDetailPathRef(pathname);
   return previousIssueRef !== null && nextIssueRef !== null && previousIssueRef !== nextIssueRef;
+}
+
+function isIssueIndexPath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  return (
+    (segments.length === 1 && segments[0] === "issues")
+    || (segments.length === 2 && segments[1] === "issues")
+  );
 }
 
 function readIssueDetailPathRef(pathname: string): string | null {

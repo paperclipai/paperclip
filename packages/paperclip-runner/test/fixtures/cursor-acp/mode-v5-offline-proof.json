@@ -1,0 +1,32 @@
+{
+  "schema": "paperclip.cursor.native-mode-offline-proof.v1",
+  "sourceSha256": "c01657c111f65153d7a40a923f01a5a86d393d1cd6893eaa03f71b9604d2af0c",
+  "rows": [
+    {
+      "selected": "agent",
+      "nativeMetadata": "default",
+      "configAcknowledgement": "agent",
+      "currentModeNotification": "agent",
+      "reconstructedSessionAcknowledgement": "agent",
+      "userMessageModeInput": "default"
+    },
+    {
+      "selected": "plan",
+      "nativeMetadata": "plan",
+      "configAcknowledgement": "plan",
+      "currentModeNotification": "plan",
+      "reconstructedSessionAcknowledgement": "plan",
+      "userMessageModeInput": "plan"
+    },
+    {
+      "selected": "ask",
+      "nativeMetadata": "search",
+      "configAcknowledgement": "ask",
+      "currentModeNotification": "ask",
+      "reconstructedSessionAcknowledgement": "ask",
+      "userMessageModeInput": "search"
+    }
+  ],
+  "planHandlerHasModeMutation": false,
+  "boundary": "pinned native config/session/UserMessage methods; storage, mode enum converter and transport doubled; no inference"
+}

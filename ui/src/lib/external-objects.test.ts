@@ -8,11 +8,13 @@ import {
 import {
   dominantExternalObjectTone,
   externalObjectCategoryLabel,
+  externalObjectDisplayStatusLabel,
   externalObjectDisplayLabel,
   externalObjectDominantCount,
   externalObjectFallbackTone,
   externalObjectIconForCategory,
   externalObjectIconForKey,
+  externalObjectIconForLiveness,
   externalObjectLivenessLabel,
   externalObjectProviderLabel,
   externalObjectToneSeverity,
@@ -114,6 +116,42 @@ describe("external-objects helpers", () => {
     expect(externalObjectDisplayLabel("github", "pull_request")).toBe("GitHub pull request");
   });
 
+  it("labels unresolved known objects as not refreshed while preserving generic URL copy", () => {
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "github",
+        objectType: "pull_request",
+        statusCategory: "unknown",
+        liveness: "unknown",
+      }),
+    ).toBe("Not yet refreshed");
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "url",
+        objectType: "link",
+        statusCategory: "unknown",
+        liveness: "unknown",
+      }),
+    ).toBe("Not yet resolved");
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "github",
+        objectType: "pull_request",
+        statusCategory: "unknown",
+        liveness: "fresh",
+      }),
+    ).toBe("Status unavailable");
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "github",
+        objectType: "pull_request",
+        statusCategory: "open",
+        liveness: "fresh",
+        statusLabel: "Open",
+      }),
+    ).toBe("Open");
+  });
+
   it("orders tones from danger down to muted", () => {
     expect(externalObjectToneSeverity("danger")).toBeGreaterThan(externalObjectToneSeverity("warning"));
     expect(externalObjectToneSeverity("warning")).toBeGreaterThan(externalObjectToneSeverity("info"));
@@ -144,6 +182,15 @@ describe("external-objects helpers", () => {
     expect(externalObjectIconForKey("github")?.displayName ?? "").toMatch(/Github/i);
     expect(externalObjectIconForKey("git-pull-request")?.displayName ?? "").toMatch(/GitPullRequest/i);
     expect(externalObjectIconForKey("unknown-provider-icon")).toBeNull();
+  });
+
+  it("returns a liveness warning icon only for problem liveness states", () => {
+    expect(externalObjectIconForLiveness("rate_limited")?.displayName ?? "").toMatch(/AlertCircle|CircleAlert|Alert/);
+    expect(externalObjectIconForLiveness("unreachable")?.displayName ?? "").toMatch(/CloudOff|Cloud/);
+    expect(externalObjectIconForLiveness("auth_required")?.displayName ?? "").toMatch(/KeyRound|Key/);
+    expect(externalObjectIconForLiveness("fresh")).toBeNull();
+    expect(externalObjectIconForLiveness("unknown")).toBeNull();
+    expect(externalObjectIconForLiveness("stale")).toBeNull();
   });
 
   it("sorts items by severity first, preserving insertion order within a tone", () => {

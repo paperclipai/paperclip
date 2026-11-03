@@ -60,6 +60,7 @@ export interface DocumentAnnotationThread {
   companyId: string;
   issueId: string | null;
   routineId?: string | null;
+  caseId?: string | null;
   documentId: string;
   documentKey: string;
   status: DocumentAnnotationThreadStatus;
@@ -92,6 +93,7 @@ export interface DocumentAnnotationComment {
   threadId: string;
   issueId: string | null;
   routineId?: string | null;
+  caseId?: string | null;
   documentId: string;
   body: string;
   authorType: IssueCommentAuthorType;
@@ -228,5 +230,24 @@ export interface PlanReviewContext {
     maxTotalBodyChars: number;
     maxAnchorTextChars: number;
   };
+  truncated: boolean;
+}
+
+export interface DocumentReviewContextDocument {
+  documentKey: string;
+  documentId: string;
+  title: string | null;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  threads: PlanReviewContextThread[];
+  totals: PlanReviewContext["totals"];
+  truncated: boolean;
+}
+
+export interface DocumentReviewContext {
+  issueId: string;
+  documents: DocumentReviewContextDocument[];
+  totals: PlanReviewContext["totals"];
+  limits: PlanReviewContext["limits"];
   truncated: boolean;
 }

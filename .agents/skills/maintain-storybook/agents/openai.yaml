@@ -1,0 +1,3 @@
+interface:
+  display_name: "Maintain Storybook"
+  short_description: "Align stories with features and production UI"

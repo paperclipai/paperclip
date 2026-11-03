@@ -21,6 +21,13 @@ GET /api/routines/{routineId}
 
 Returns routine details including triggers.
 
+Routine and trigger resource IDs must be complete UUIDs from the API response.
+Short prefixes and malformed IDs return the same `404` as a missing resource.
+UUID lookup accepts PostgreSQL's existing input forms, including uppercase,
+compact and braced UUIDs; it does not trim whitespace or resolve prefixes.
+Company access and routine-assignee permissions still apply. Public trigger
+IDs in webhook URLs are separate opaque identifiers, not resource UUIDs.
+
 ## Create Routine
 
 ```
@@ -126,7 +133,11 @@ Three trigger kinds:
 }
 ```
 
-Signing modes: `bearer` (default), `hmac_sha256`. Replay window range: 30–86400 seconds (default 300).
+Signing modes: `bearer` (default), `hmac_sha256`, `github_hmac`, and `none`.
+The replay window applies to `hmac_sha256` only: 30–86400 seconds (default 300).
+Creating a webhook returns `trigger` and one-time `secretMaterial` containing
+`webhookUrl` and `webhookSecret`. Save the secret before closing the dialog.
+Routine details retain the URL; rotate the secret if its value is lost.
 
 **API** — fires only when called explicitly via [Manual Run](#manual-run):
 
@@ -184,7 +195,116 @@ Fires a run immediately, bypassing the schedule. Concurrency policy still applie
 POST /api/routine-triggers/public/{publicId}/fire
 ```
 
-Fires a webhook trigger from an external system. Requires a valid `Authorization` or `X-Paperclip-Signature` + `X-Paperclip-Timestamp` header pair matching the trigger's signing mode.
+Fires a webhook trigger from an external system without a Paperclip login. Send
+`Content-Type: application/json` and a JSON object. The trigger authenticates the
+request using its own secret; an agent or board API key is not a substitute.
+
+| Mode | Headers and signature |
+|------|-----------------------|
+| `bearer` | `Authorization: Bearer <webhookSecret>` |
+| `hmac_sha256` | `X-Paperclip-Timestamp` (Unix seconds or milliseconds) and `X-Paperclip-Signature: sha256=<hex>`; HMAC-SHA256 over the timestamp string, a dot, and the exact body bytes |
+| `github_hmac` | `X-Hub-Signature-256: sha256=<hex>`; HMAC-SHA256 over the exact body bytes, without a timestamp. `X-Paperclip-Signature` is also accepted. Configure GitHub to send JSON. |
+| `none` | No signature. Anyone with the generated URL can fire the trigger; keep it private. |
+
+For a bearer trigger:
+
+```sh
+curl --fail-with-body "$WEBHOOK_URL" \
+  -H "Authorization: Bearer $WEBHOOK_SECRET" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: deployment-123' \
+  --data-binary '{"event":"deployment","variables":{"environment":"staging"}}'
+```
+
+For a timestamped HMAC trigger, sign and send the same bytes:
+
+```js
+import { createHmac } from "node:crypto";
+const body = JSON.stringify({ variables: { environment: "staging" } });
+const timestamp = String(Math.floor(Date.now() / 1000));
+const signature = createHmac("sha256", process.env.WEBHOOK_SECRET)
+  .update(`${timestamp}.`).update(body).digest("hex");
+const response = await fetch(process.env.WEBHOOK_URL, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Paperclip-Timestamp": timestamp,
+    "X-Paperclip-Signature": `sha256=${signature}`,
+  },
+  body,
+});
+console.log(response.status, await response.json());
+```
+
+`202` returns the routine run, including its status and linked task. The task
+runs asynchronously, so acceptance does not mean the agent has finished.
+Concurrency policy can coalesce or skip a delivery while work is active.
+Payload fields or a nested `variables` object supply declared routine variables;
+nested values take precedence. The full payload is retained in run history.
+
+For bearer, GitHub HMAC, and unsigned triggers, send a stable `Idempotency-Key`
+when retrying a delivery to receive the original run without creating another
+task. Timestamped HMAC rejects an identical signed delivery with `409`, even
+inside the replay window; stale timestamps and invalid secrets/signatures return
+`401`. Disabled triggers and paused/archived routines return `409`. Missing
+required variables return `422`; non-JSON media types return `415` and invalid
+JSON objects return `400`. Rotating a secret immediately invalidates the old one.
+
+Cloud installations use their canonical public origin for generated URLs.
+Self-hosted installations should set `PAPERCLIP_PUBLIC_URL` to their HTTPS
+origin. The reverse proxy must forward this POST endpoint and its authorization,
+signature, timestamp, and idempotency headers without requiring a browser login.
+For local HTTPS testing, proxy an isolated test instance through Tailscale Serve;
+use Funnel only if the sender is outside the tailnet. Existing routine and agent
+execution controls still apply, including the isolated-worktree execution gate.
+
+### Sentry run-failure intake
+
+```
+POST /api/routine-triggers/public/{publicId}/sentry-run-failures
+```
+
+Use this endpoint for a routine that repairs failed Paperclip tasks. Create a
+`bearer` webhook trigger and replace `/fire` in its URL with
+`/sentry-run-failures`. Configure a Sentry custom integration to send the
+trigger's `Authorization: Bearer <webhookSecret>` header. Keep that credential
+private. This endpoint requires bearer authentication even if another signing
+mode is set on the trigger.
+
+In Sentry, select **An event is captured**, filter the `event_kind` tag to
+`run_failure`, and send notifications through the custom integration. Add
+environment, company, and instance URL filters to select the intended instance.
+Select notification delivery on every trigger to include repeated events in an
+existing Sentry issue. Issue-created or regression conditions do not cover every
+failed run.
+
+The receiver accepts Sentry event-alert payloads with `action: "triggered"` and
+`data.event.tags`. Tags can be pairs, key/value objects, or a dictionary. It
+validates the `task_id` and `run_id` against the receiving company's database and
+requires a terminal failed, timed-out, or cancelled run for that task. A supplied
+`company_id` must match. Unrelated or unavailable sources return `202` with
+`status: "ignored"` and create no work.
+
+Before dispatch, the server follows task parents and creation-run provenance.
+It ignores tasks created by the receiving repair routine, their descendants,
+and tasks from another Sentry run-failure repair routine. Missing or excessive
+provenance also stops dispatch. This check runs before a repair task or agent
+wakeup is created. Prompts alone do not provide this loop protection.
+
+Routine history is company-readable. Private tasks, tasks in private projects,
+and tasks the assigned repair agent cannot read are ignored to preserve source
+privacy. Accepted payloads contain only validated source identifiers, a bounded
+error code, and an optional Sentry event ID. Arbitrary webhook instructions and
+variables are discarded. The routine receives `task_identifier`, `task_id`, and
+`run_id` variables from the validated source.
+
+Retries and multiple Sentry events for one failed run share one routine receipt,
+including deliveries through different triggers on the same routine. A distinct
+failed run can create another task. Source-run variables form part of the
+execution fingerprint, so different failed runs do not coalesce into an active
+repair. Retry deduplication applies regardless of the concurrency policy.
+Setup-pending triggers accept authenticated connection checks without creating
+work.
 
 ## List Runs
 
@@ -216,3 +336,22 @@ active -> paused -> active
 ```
 
 Archived routines do not fire and cannot be reactivated.
+
+## Routine detail navigation
+
+The routine detail page keeps **Runs** and **Activity** in the routine sidebar. Runs lists the execution issues for that routine using the shared issue list, including issue status, priority, assignee, and search controls. Activity shows the routine, trigger, and run event timeline without leaving the routine page. The overview links to these same local tabs.
+
+
+## Webhook setup and connection checks
+
+Create a webhook trigger with `setupPending: true` to configure it safely. While setup is pending, authenticated deliveries return `202` with `{ "status": "test_received", "test": true, "routineStarted": false, "linkedIssueId": null }`. They never create a routine run, task, or agent wakeup. This state survives refreshes and server restarts, and connection checks also work while the routine is paused. Invalid authentication still returns `401`.
+
+Routine detail exposes `setupPending` and `lastWebhookDelivery` (`status`, `receivedAt`, and `test`) so the wizard can show live connection feedback. The secret is only returned at creation or rotation; it is never stored in browser draft storage or included in routine detail.
+
+Finish setup with `PATCH /api/routine-triggers/{id}` and `{ "setupPending": false }`. Future deliveries use normal routine dispatch and still respect the routine's enabled state. Test events are not dispatched on activation. Retries with the same `Idempotency-Key`, GitHub `X-GitHub-Delivery`, or timestamp-HMAC replay key remain test receipts after activation. Send a unique delivery ID per event so a sender's retries can be recognized. Requests without a delivery ID are new events after activation.
+
+For compatibility, API-created triggers without `setupPending: true` are immediately live. Completed triggers cannot be returned to setup mode. Checking a previously enabled webhook observes real deliveries and can start the routine; the management UI explains this difference.
+
+Trigger cards support removal with Undo. `PATCH` with `{ "archived": true }` excludes a trigger from routine detail and scheduling, and rejects its webhook deliveries. Setting `archived` back to `false` restores the same URL and credentials. `DELETE` remains the permanent deletion API.
+
+The webhook wizard and saved trigger editor warn about localhost, private-network addresses, Tailscale hostnames, and HTTP URLs without blocking setup. HTTPS does not imply public access: Tailscale Serve is private, while Funnel can expose the same hostname publicly. These warnings inspect the URL only; they do not resolve DNS or test internet reachability. Use [the HTTPS setup guide](https://docs.paperclip.ing/reference/deploy/https/) to configure public access when the sender is outside your network.

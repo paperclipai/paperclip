@@ -41,6 +41,29 @@ const BIFROST_PROVIDERS = {
 };
 
 describe("prepareCodexRuntimeConfig", () => {
+  it("attributes OpenRouter aliases without replacing credentials or unrelated providers", async () => {
+    const home = await makeCodexHome();
+    const prepared = await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: {
+        router: {
+          base_url: "https://openrouter.ai/api/v1", env_key: "ROUTER_KEY",
+          http_headers: { "http-referer": "https://harness.example", "X-Route": "selected" },
+          env_http_headers: { "x-title": "HARNESS_TITLE", "X-Tenant": "TENANT" },
+        },
+        other: { base_url: "https://other.example/v1", http_headers: { "X-Title": "Other" } },
+      } }) }, codexHome: home,
+    });
+    const content = await readConfigToml(home);
+    expect(content).toContain('HTTP-Referer = "https://paperclip.ing"');
+    expect(content).toContain('env_key = "ROUTER_KEY"');
+    expect(content).toContain('X-Route = "selected"');
+    expect(content).toContain('X-Tenant = "TENANT"');
+    expect(content).toContain('X-Title = "Other"');
+    expect(content).not.toContain("HARNESS_TITLE");
+    expect(content).not.toContain("harness.example");
+    await prepared.cleanup();
+  });
+
   it("is a no-op when PAPERCLIP_CODEX_PROVIDERS is unset", async () => {
     const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
     const prepared = await prepareCodexRuntimeConfig({ env: { FOO: "bar" }, codexHome: home });

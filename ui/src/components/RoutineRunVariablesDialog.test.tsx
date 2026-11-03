@@ -5,15 +5,17 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
 let issueWorkspaceDraftCalls = 0;
-let issueWorkspaceDraft = {
+let issueWorkspaceDraft: Record<string, unknown> | null = {
   executionWorkspaceId: null as string | null,
   executionWorkspacePreference: "shared_workspace",
   executionWorkspaceSettings: { mode: "shared_workspace" },
 };
 let issueWorkspaceBranchName: string | null = null;
+let issueWorkspaceCanSave = true;
 let latestWorkspaceIssue: Record<string, unknown> | null = null;
 
 vi.mock("../api/instanceSettings", () => ({
@@ -32,7 +34,7 @@ vi.mock("./IssueWorkspaceCard", async () => {
     }: {
       issue: Record<string, unknown>;
       onDraftChange?: (
-        data: Record<string, unknown>,
+        data: Record<string, unknown> | null,
         meta: { canSave: boolean; workspaceBranchName?: string | null },
       ) => void;
     }) => {
@@ -43,7 +45,7 @@ vi.mock("./IssueWorkspaceCard", async () => {
           throw new Error("IssueWorkspaceCard onDraftChange looped");
         }
         onDraftChange?.(issueWorkspaceDraft, {
-          canSave: true,
+          canSave: issueWorkspaceCanSave,
           workspaceBranchName: issueWorkspaceBranchName,
         });
       }, [onDraftChange]);
@@ -147,6 +149,7 @@ function createExecutionWorkspace(): ExecutionWorkspace {
     strategyType: "git_worktree",
     name: "PAP-1634",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/paperclip/PAP-1634",
     repoUrl: null,
     baseRef: "main",
@@ -173,14 +176,16 @@ function createExecutionWorkspace(): ExecutionWorkspace {
   };
 }
 
-function createQueryClient() {
-  return new QueryClient({
+function createQueryClient(hiddenSettings: string[] = []) {
+  const client = new QueryClient({
     defaultOptions: {
       queries: {
         retry: false,
       },
     },
   });
+  client.setQueryData(queryKeys.health, { hiddenSettings });
+  return client;
 }
 
 async function renderRoutineRunDialog(container: HTMLDivElement, props: {
@@ -236,6 +241,7 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspaceSettings: { mode: "shared_workspace" },
     };
     issueWorkspaceBranchName = null;
+    issueWorkspaceCanSave = true;
     latestWorkspaceIssue = null;
   });
 
@@ -246,13 +252,7 @@ describe("RoutineRunVariablesDialog", () => {
 
   it("does not loop when the workspace card reports the same draft repeatedly", async () => {
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(
@@ -283,15 +283,68 @@ describe("RoutineRunVariablesDialog", () => {
     });
   });
 
+  it("hides workspace overrides while retaining an automatic workspace branch", async () => {
+    const root = createRoot(container);
+    const queryClient = createQueryClient(["workspaces.isolation"]);
+    const onSubmit = vi.fn();
+    const workspace = createExecutionWorkspace();
+    await flushUi(() => root.render(
+      <QueryClientProvider client={queryClient}>
+        <RoutineRunVariablesDialog open onOpenChange={() => {}} companyId="company-1"
+          projects={[createProject()]} agents={[createAgent()]} defaultProjectId="project-1"
+          defaultAssigneeAgentId="agent-1" defaultExecutionWorkspace={workspace}
+          variables={[{ name: "workspaceBranch", required: true } as RoutineVariable]}
+          isPending={false} onSubmit={onSubmit} />
+      </QueryClientProvider>,
+    ));
+    await flushUi(() => {});
+    expect(document.body.textContent).not.toContain("Workspace card");
+    expect(findRunButton()?.disabled).toBe(false);
+    await flushUi(() => findRunButton()?.click());
+    expect(onSubmit).toHaveBeenCalledWith({
+      variables: { workspaceBranch: workspace.branchName }, assigneeAgentId: "agent-1", projectId: "project-1",
+    });
+    expect(issueWorkspaceDraftCalls).toBe(0);
+    await flushUi(() => root.unmount());
+  });
+
+  it("keeps the run disabled while a reusable workspace selection is incomplete", async () => {
+    issueWorkspaceDraft = null;
+    issueWorkspaceCanSave = false;
+    const root = createRoot(container);
+    const queryClient = createQueryClient();
+
+    await flushUi(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <RoutineRunVariablesDialog
+            open
+            onOpenChange={() => {}}
+            companyId="company-1"
+            projects={[createProject()]}
+            agents={[createAgent()]}
+            defaultProjectId="project-1"
+            defaultAssigneeAgentId="agent-1"
+            variables={[]}
+            isPending={false}
+            onSubmit={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushUi(() => {});
+
+    expect(document.body.textContent).toContain("Workspace card");
+    expect(findRunButton()?.disabled).toBe(true);
+
+    await flushUi(() => {
+      root.unmount();
+    });
+  });
+
   it("keeps the mobile dialog bounded with an internal form scroll region", async () => {
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(
@@ -322,9 +375,9 @@ describe("RoutineRunVariablesDialog", () => {
     });
 
     const dialogContent = Array.from(document.body.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+      typeof element.className === "string" && element.className.includes("max-h-(--sz-calc-18)"),
     );
-    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("h-(--sz-calc-18)");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
     const notesInput = document.querySelector("textarea");
@@ -337,7 +390,7 @@ describe("RoutineRunVariablesDialog", () => {
     expect(formScrollRegion?.contains(notesInput)).toBe(true);
 
     const footer = Array.from(document.body.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("pb-[calc(1rem+env(safe-area-inset-bottom))]"),
+      typeof element.className === "string" && element.className.includes("pb-(--sz-calc-19)"),
     );
     expect(footer?.className).toContain("shrink-0");
     expect(footer?.contains(formScrollRegion ?? null)).toBe(false);
@@ -357,13 +410,7 @@ describe("RoutineRunVariablesDialog", () => {
     issueWorkspaceBranchName = "pap-1634-routine-branch";
     const onSubmit = vi.fn();
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(
@@ -393,7 +440,15 @@ describe("RoutineRunVariablesDialog", () => {
       );
     });
 
-    for (let i = 0; i < 10 && !document.querySelector('[data-testid="workspace-card"]'); i += 1) {
+    // The workspace card mounts once experimental settings resolve, then reports its
+    // branch name through an effect callback. That callback triggers a follow-up render,
+    // so wait for the branch value itself to land — not merely for the card to appear —
+    // otherwise we assert against the intermediate render before the branch propagates.
+    const hasBranchInput = () =>
+      Array.from(document.querySelectorAll("input")).some(
+        (input) => input.value === "pap-1634-routine-branch",
+      );
+    for (let i = 0; i < 20 && !hasBranchInput(); i += 1) {
       await settleEffects();
     }
 
@@ -436,13 +491,7 @@ describe("RoutineRunVariablesDialog", () => {
     issueWorkspaceBranchName = workspace.branchName;
 
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(

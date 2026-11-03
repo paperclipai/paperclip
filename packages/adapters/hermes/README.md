@@ -237,6 +237,7 @@ Available toolsets: `terminal`, `file`, `web`, `browser`, `code_execution`, `vis
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `cwd` | string | *(assigned task workspace)* | Absolute working directory override. Without an override, use Paperclip's resolved task workspace. |
 | `persistSession` | boolean | `true` | Resume sessions across heartbeats |
 | `worktreeMode` | boolean | `false` | Git worktree isolation |
 | `checkpoints` | boolean | `false` | Enable filesystem checkpoints for rollback |
@@ -311,6 +312,43 @@ up where the last one left off, maintaining conversation context,
 memories, and tool state across heartbeats. The `sessionCodec` validates
 and migrates session state between runs.
 
+### Managed instructions and resumed turns
+
+The local adapter reads `instructionsFilePath` on every run. It sends that
+bundle, its relative-reference base directory, and the standard Paperclip API
+guidance through Hermes's native `HERMES_EPHEMERAL_SYSTEM_PROMPT` overlay.
+Hermes applies this overlay at each model request, including after context
+compression. It does not append the overlay to saved user turns. This requires
+a Hermes CLI that supports the [documented environment hook](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/environment-variables.md).
+
+Fresh sessions, resumed sessions, and session resets all receive the current
+bundle. Edits take effect on the next run; removing the bundle removes it from
+the next overlay. The server's session compatibility and conversation generation
+checks still control session reuse. A missing or failed resume remains a failed
+run and requires an explicit session reset; it does not automatically restart
+work. The next fresh run receives the complete current instruction overlay.
+
+The `-q` user turn contains current runtime identity, task/wake context, handoff
+content, and the rendered custom `promptTemplate`, if configured. Custom templates
+run on every normal wake. `quiet` changes CLI display only. Disabling persistence
+uses full fresh-session context even if old session parameters are supplied.
+
+An explicit `HERMES_EPHEMERAL_SYSTEM_PROMPT` in `env` is preserved before the
+Paperclip overlay. Hermes gives this environment hook precedence over its profile's
+configured personality/system prompt. Put required additional profile guidance in
+that explicit environment value or in the managed bundle. Paperclip does not write
+Hermes profile files or modify the parent process environment. Existing copies in
+old user turns remain in history until Hermes compresses them or the session resets.
+
+Run the credential-free capture-process regression tests with:
+
+```sh
+pnpm --filter @paperclipai/hermes-paperclip-adapter test -- src/server/execute.instructions.test.ts
+```
+
+These tests verify actual child-process arguments and environment, not provider
+billing, model behavior, or measured token savings.
+
 ### Skills Integration
 
 The adapter scans two skill sources and merges them:
@@ -339,4 +377,4 @@ MIT — see [LICENSE](LICENSE)
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) — The AI agent this adapter runs
 - [Paperclip](https://github.com/paperclipai/paperclip) — The orchestration platform
 - [Nous Research](https://nousresearch.com) — The team behind Hermes
-- [Paperclip Docs](https://paperclip.ing/docs) — Paperclip documentation
+- [Paperclip Docs](https://docs.paperclip.ing) — Paperclip documentation

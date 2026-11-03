@@ -298,7 +298,7 @@ export function RoutineVariablesHint() {
 
           <div className="space-y-5 text-sm">
             <section className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              <h3 className="text-xs font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
                 Custom variables
               </h3>
               <p className="text-muted-foreground">
@@ -319,7 +319,7 @@ export function RoutineVariablesHint() {
             </section>
 
             <section className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              <h3 className="text-xs font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
                 Built-in variables
               </h3>
               <p className="text-muted-foreground">

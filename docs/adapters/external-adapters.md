@@ -74,7 +74,7 @@ my-adapter/
     "picocolors": "^1.1.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.0.0",
     "typescript": "^5.7.0"
   }
 }

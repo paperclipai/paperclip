@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #b7d7f1;
+      }
+    </style>
+  </defs>
+  <circle class="cls-1" cx="72" cy="72" r="72"/>
+  <g>
+    <rect x="66.57" y="34.41" width="16.52" height="6.89"/>
+    <rect x="83.09" y="41.3" width="10.66" height="6.8"/>
+    <rect x="93.75" y="48.1" width="6.71" height="6.71"/>
+    <rect x="100.46" y="54.81" width="6.88" height="9.77"/>
+    <rect x="107.34" y="64.57" width="6.79" height="16.38"/>
+    <rect x="100.47" y="80.96" width="6.87" height="9.77"/>
+    <rect x="93.75" y="90.72" width="6.72" height="6.8"/>
+    <rect x="83.09" y="97.52" width="10.66" height="6.85"/>
+    <rect x="63.64" y="104.37" width="19.45" height="6.69"/>
+    <rect x="52.98" y="97.52" width="10.66" height="6.85"/>
+    <rect x="46.19" y="90.72" width="6.79" height="6.8"/>
+    <rect x="39.32" y="80.96" width="6.87" height="9.77"/>
+    <polygon points="32.67 68.38 32.67 54.81 27.8 54.81 27.8 75.21 32.67 75.21 32.67 80.96 39.32 80.96 39.32 68.38 32.67 68.38"/>
+    <rect x="39.32" y="61.58" width="6.79" height="6.79"/>
+    <rect x="46.19" y="41.3" width="20.38" height="6.8"/>
+    <rect x="66.59" y="48.1" width="6.71" height="6.71"/>
+    <polygon points="46.12 61.58 66.59 61.58 66.59 54.81 46.19 54.81 46.19 48.1 32.67 48.1 32.67 54.81 46.12 54.81 46.12 61.58"/>
+    <rect x="59.78" y="64.57" width="6.81" height="6.71"/>
+    <rect x="80.08" y="64.57" width="6.81" height="6.71"/>
+    <rect x="59.78" y="84.88" width="27.18" height="5.84"/>
+  </g>
+</svg>
