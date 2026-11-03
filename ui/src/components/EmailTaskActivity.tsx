@@ -22,8 +22,8 @@ export function EmailTaskActivity({
   const threadKey = ["email-thread", companyId, issueId];
   const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const thread = useEmailThread(companyId, issueId);
-  if (!queryEnabled) return null;
   const threadView = useQueryView(thread);
+  if (!queryEnabled) return null;
   if (threadView.kind === "stale" || threadView.kind === "ready") {
     const data = threadView.data;
     const messages = data?.messages.filter((m) => !m.commentId) ?? [];

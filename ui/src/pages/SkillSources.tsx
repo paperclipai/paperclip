@@ -104,10 +104,10 @@ export function SkillSources() {
     </header>
     <SkillsPageNavigation activeView="sources" />
     {(view.kind === 'loading' || view.kind === 'reconnecting') && <p role="status" className="text-sm text-muted-foreground">Loading sources…</p>}
-    {view.kind === 'error' && <p role="alert" className="text-sm text-destructive">{query.describeError(error).body} <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>Try again</Button></p>}
+    {view.kind === 'error' && <QueryErrorState error={query.error} action="load skill sources" onRetry={view.retry} retrying={view.isFetching} />}
     {query.data?.length === 0 && availableProjects.length === 0 && <div className="flex flex-col items-start gap-3 py-8"><p className="text-sm text-muted-foreground">No repositories added yet. Import your skills to make them available in {selectedCompany?.name ?? 'this company'}.</p><Button variant="outline" onClick={() => navigate('/skills/sources/new')}>Import from GitHub</Button></div>}
-    {projectsView.kind === 'error' && <p role="alert" className="text-sm text-destructive">{projectRepositories.describeError(error).body} <Button variant="ghost" size="sm" onClick={() => void projectRepositories.refetch()}>Try again</Button></p>}
-    {adopt.error && <p role="alert" className="text-sm text-destructive">{adopt.describeError(error).body}</p>}
+    {projectsView.kind === 'error' && <p role="alert" className="text-sm text-destructive">{describeError(projectRepositories.error).body} <Button variant="ghost" size="sm" onClick={() => void projectRepositories.refetch()}>Try again</Button></p>}
+    {adopt.error && <p role="alert" className="text-sm text-destructive">{describeError(adopt.error).body}</p>}
     {uninstalledProjects.length > 0 && <div className="divide-y divide-border" aria-label="Project repositories">
       {uninstalledProjects.map(group => <ProjectSkillRepositoryRow key={group.key} repository={group.repository} backgroundPending={group.hasPending} disabled={adopt.isPending}
         pending={adopt.isPending && adopt.variables?.key === group.key} onImport={() => adopt.mutate(group)} />)}

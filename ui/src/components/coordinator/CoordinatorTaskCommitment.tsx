@@ -143,8 +143,7 @@ function CreatedTaskLinks({ interaction }: { interaction: SuggestTasksInteractio
     queryKey: queryKeys.issues.summaryBatch(interaction.companyId, userId, ids),
     queryFn: ({ signal }) => issuesApi.summaries(interaction.companyId, ids, { signal }),
     enabled: ids.length > 0,
-    retry: false,
-  });
+    });
   if (tasks.length === 0) return <p className="p-4 text-sm text-muted-foreground">No tasks were created.</p>;
   return <div className="divide-y divide-border">
     {tasks.map(task => {

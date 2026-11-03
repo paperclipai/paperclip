@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CreateGrokInvitation, DotPairing, GrokInvitation } from "@paperclipai/shared";
@@ -20,7 +21,7 @@ export function GrokBotSetup({ companyId, companyName, onBack, onClose }: {
   const attemptedPairing = useRef(false);
   const restored = useRef(false);
   const verifyRequest = useRef<string | null>(null);
-  const resume = useQuery({ queryKey: ["grok-invitation", companyId], queryFn: () => grokBotApi.resume(companyId), retry: false, staleTime: 0 });
+  const resume = useQuery({ queryKey: ["grok-invitation", companyId], queryFn: () => grokBotApi.resume(companyId), staleTime: 0 });
   const managers = useQuery({ queryKey: queryKeys.agents.list(companyId), queryFn: () => agentsApi.list(companyId) });
   useEffect(() => {
     if (!resume.isFetchedAfterMount || !resume.isSuccess || restored.current) return;
@@ -34,7 +35,7 @@ export function GrokBotSetup({ companyId, companyName, onBack, onClose }: {
   const key = ["grok-binding", companyId, invitation?.agent.id];
   const connection = useQuery({ queryKey: key,
     queryFn: ({ signal }) => grokBotApi.connection(companyId, invitation!.agent.id, signal),
-    enabled: !!invitation, retry: false, staleTime: 0, refetchInterval: 2500 });
+    enabled: !!invitation, staleTime: 0, refetchInterval: 2500 });
   const create = useMutation({ mutationFn: async () => {
     const value = await grokBotApi.create(companyId, details); setInvitation(value);
     await cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) }); return value;
@@ -78,7 +79,7 @@ export function GrokBotSetup({ companyId, companyName, onBack, onClose }: {
   };
   return <GrokBotSetupContent step={step} companyName={companyName} details={details} created={!!invitation}
     managers={(managers.data ?? []).filter(agent => agent.status !== "terminated" && agent.id !== invitation?.agent.id)}
-    loading={resume.isPending} busy={busy} error={error?.message} connection={connection.data} pairing={binding?.connected ? null : pairing}
+    loading={resume.isPending} busy={busy} error={error ? describeError(error).body : undefined} connection={connection.data} pairing={binding?.connected ? null : pairing}
     approvalHref={invitation?.approvalId && (connection.data?.agentStatus ?? invitation.agent.status) === "pending_approval" ? `/approvals/${invitation.approvalId}` : undefined}
     webhookUrl={webhookUrl} webhookKey={webhookKey} editingCredentials={editingCredentials} onEditCredentials={() => setEditingCredentials(true)} onDetails={setDetails} onCredentials={(url, key) => { setWebhookUrl(url); setWebhookKey(key); }}
     onBack={() => step === 0 ? onBack() : setStep((step - 1) as GrokSetupStep)}

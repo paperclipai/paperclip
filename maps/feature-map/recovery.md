@@ -439,6 +439,8 @@ outcomes, inspect the provider before authorizing another operation.
 Automated: [live-update recovery](../../ui/src/context/LiveUpdatesProvider.recovery.test.tsx)
 covers client transport recovery with mocks. It does not prove runner restart.
 
+Automated read coverage: `QueryView.test.tsx`, `useResilientFetch.test.tsx`, and the migrated surface tests cover retained content during transient failures and genuine access errors. `pnpm check:query-errors` enforces shared error rendering across the UI. Browser viewer URLs and pairing previews stay in component memory and are cleared on definitive denial.
+
 Manual: go offline during a disposable run, let the server reach a new state,
 then reconnect. Confirm task/run/attention data refresh without duplicate
 comments or decisions; reload and compare. A healthy websocket proves transport

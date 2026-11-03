@@ -1,3 +1,4 @@
+import { queryViewKind } from "@/components/QueryView";
 import { useEffect, useMemo } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
@@ -128,7 +129,7 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
     retryDelay: 1000,
   })) });
-  const available = availability.map((result, index) => !activationsError && !result.isError && result.data?.available === true
+  const available = availability.map((result, index) => !activationsError && queryViewKind(result) !== "error" && result.data?.available === true
     && activations.some(panel => panel.pluginKey === slots[index]?.pluginKey && panel.slotId === slots[index]?.id));
   const availableKey = available.join(",");
   const agentId = (!runsError && run?.agentId) || issue?.assigneeAgentId;

@@ -1,3 +1,4 @@
+import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
 import { agentHarnessType } from "@paperclipai/shared";
@@ -1024,6 +1025,7 @@ function OnboardingWizardInner({
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
       && loginEnvironmentSettingsReady,
   });
+  const runnerDiscoveryView = useQueryView(runnerDiscovery);
   const {
     data: adapterModels,
     error: adapterModelsError,
@@ -1033,8 +1035,7 @@ function OnboardingWizardInner({
     queryKey: createdCompanyId ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null) : ["agents", "none", "adapter-models", adapterType, null],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && ONBOARDING_ADAPTER_TYPES.has(adapterType),
-    retry: false,
-  });
+    });
   // Automatic selection uses native Claude/Codex on qualified execution targets and
   // silently falls back to legacy on Windows, keeping the same onboarding UI.
   // When Windows native execution is qualified, enable it in
@@ -1048,7 +1049,7 @@ function OnboardingWizardInner({
       && runnerDiscovery.isSuccess && !runnerDiscovery.isFetching && resolvedRunner !== undefined);
   const runnerDiscoveryError = needsRunnerDiscovery && (loginEnvironmentsFailed || loginSettingsFailed || loginPolicyFailed)
     ? "Could not load execution environment settings. Retry setup."
-    : needsRunnerDiscovery && runnerDiscovery.isError
+    : needsRunnerDiscovery && (runnerDiscoveryView.kind === "error")
       ? "Could not load runner availability. Retry setup."
     : needsRunnerDiscovery && runnerDiscovery.isSuccess && resolvedRunner === undefined
       ? "Runner availability is missing for this harness. Retry setup."
@@ -3249,7 +3250,7 @@ function OnboardingWizardInner({
                   {sourceSelected && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
                     <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
                     <AgentRunnerSelect value={runner} disabled={loading || adapterEnvLoading}
-                      pending={runnerDiscovery.isFetching} error={runnerDiscovery.error?.message} onRetry={() => { void runnerDiscovery.refetch(); }}
+                      pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
                       defaultRunner={runnerDiscovery.data?.find(item => item.type === adapterType)?.defaultRunner}
                       supportedRunners={runnerDiscovery.data?.find(item => item.type === adapterType)?.supportedRunners}
                       onChange={setRunner} />

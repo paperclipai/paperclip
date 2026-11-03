@@ -303,8 +303,8 @@ function ChatSdkEndpointSetup() {
     queryKey: ["slack-setup-options", selectedCompanyId],
     queryFn: () => chatEndpointsApi.slackSetupOptions(selectedCompanyId!),
     enabled: provider === "slack" && Boolean(selectedCompanyId),
-    retry: false,
-  });
+    });
+  const slackChoicesView = useQueryView(slackChoices);
   const createEndpoint = useMutation({
     mutationFn: ({ ownApp = false }: { ownApp?: boolean; exit?: boolean }) => {
       if (provider === "slack" && !slackChoices.data) throw new Error("Slack setup is still loading. Try again.");
@@ -573,7 +573,7 @@ function ChatSdkEndpointSetup() {
                 onClick={() => useOwnSlackApp.mutate()}
               >Use your own app</Button>}
             </SlackSetupAdvanced>}
-            {isSlack && !endpoint && !slackChoices.data && (slackChoices.isError
+            {isSlack && !endpoint && !slackChoices.data && ((slackChoicesView.kind === "error")
               ? <div role="alert" className="text-sm text-destructive">Couldn&apos;t load Slack setup. <Button variant="link" disabled={slackChoices.isFetching} onClick={() => void slackChoices.refetch()}>Retry</Button></div>
               : <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading Slack…</p>)}
             {provider === "github" && <GitHubAgentTrustWarning agent={selectedAgent} />}

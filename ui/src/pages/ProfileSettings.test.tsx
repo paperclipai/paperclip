@@ -29,6 +29,8 @@ vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
+vi.mock("@/components/InboxAgentPolicyControl", () => ({ InboxAgentPolicyControl: () => null }));
+
 vi.mock("@/api/assets", () => ({
   assetsApi: mockAssetsApi,
 }));

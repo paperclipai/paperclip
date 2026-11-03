@@ -94,7 +94,9 @@
     "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs",
     "test:lifecycle-baseline": "node tests/lifecycle-baseline/run.mjs",
     "test:lifecycle-baseline:support": "node --test tests/lifecycle-baseline/report.test.mjs",
-    "test:lifecycle-baseline:typecheck": "tsc -p tests/lifecycle-baseline/tsconfig.json"
+    "test:lifecycle-baseline:typecheck": "tsc -p tests/lifecycle-baseline/tsconfig.json",
+    "check:query-errors": "node scripts/check-query-error-rendering.mjs --enforce",
+    "check": "pnpm check:query-errors"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

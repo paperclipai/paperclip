@@ -1,3 +1,4 @@
+import { AppReadError } from "./app-detail/AppReadError";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
 import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
 import { ConnectionInstructionsSettings } from "@/features/connections/ConnectionInstructions";
@@ -37,7 +38,7 @@ import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
-import { QueryErrorState, useQueryView, type QueryViewState } from "@/components/QueryView";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -547,15 +548,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     );
   }
   if (connectionView.kind === "error" && connectionView.errorKind !== "not_found") {
-    return (
-      <QueryErrorState
-        size="page"
-        error={connectionQuery.error}
-        action="load the connection"
-        onRetry={connectionView.retry}
-        retrying={connectionView.isFetching}
-      />
-    );
+    return <AppReadError size="page" action="load the connection" failure={connectionView} />;
   }
   if (!connection) {
     return (
@@ -656,7 +649,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
 
       {activeTab === "review" && (
         reviewFailure
-          ? <ToolsLoadError failure={reviewFailure} onRetry={() => {
+          ? <AppReadError failure={reviewFailure} onRetry={() => {
               void catalogQuery.refetch();
               void profilesQuery.refetch();
               void policiesQuery.refetch();
@@ -672,7 +665,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       )}
       {activeTab === "permissions" && (
         permissionsFailure
-          ? <ToolsLoadError failure={permissionsFailure} onRetry={() => {
+          ? <AppReadError failure={permissionsFailure} onRetry={() => {
               void catalogQuery.refetch();
               void profilesQuery.refetch();
               void policiesQuery.refetch();
@@ -891,21 +884,6 @@ function ToolsLoading({ mcpActions = false }: { mcpActions?: boolean }) {
   );
 }
 
-function ToolsLoadError({ failure, onRetry }: { failure: QueryViewState<unknown>; onRetry: () => void }) {
-  return (
-    <div className="py-8">
-      <QueryErrorState
-        error={failure.error}
-        action="load tools for this app"
-        onRetry={() => {
-          failure.retry();
-          onRetry();
-        }}
-        retrying={failure.isFetching}
-      />
-    </div>
-  );
-}
 
 function unverifiedRemoteHost(connection: ToolConnection): string | null {
   const sourceTemplateKey = connection.config?.sourceTemplateKey ?? connection.transportConfig.sourceTemplateKey;

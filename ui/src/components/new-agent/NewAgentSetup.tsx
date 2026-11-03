@@ -347,8 +347,7 @@ function Setup({
       : { provider: aiBinding?.provider, environmentId }),
     ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(brandType) && showModel && !connectionModels && (!accountBoundCatalog || requestAccountModels),
-    retry: false,
-  });
+    });
   const refreshAccountModels = models.refetch;
   useEffect(() => {
     if (requestAccountModels) void refreshAccountModels();
@@ -1120,7 +1119,7 @@ function Setup({
                     {["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="mt-5 space-y-3">
                       <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
                       <AgentRunnerSelect value={runner} disabled={busy}
-                        pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+                        pending={adapters.isFetching} error={adapters.error ? describeError(adapters.error).body : undefined} onRetry={() => { void adapters.refetch(); }}
                         defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
                         supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
                         onChange={value => { setRunner(value); resetTest(); }} />
@@ -1480,7 +1479,7 @@ function Setup({
                         {["codex_local", "claude_local", "opencode_local", "pi_local", "cursor_cloud"].includes(adapterType) && <details className="space-y-3">
                           <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
                           <AgentRunnerSelect value={runner} disabled={busy}
-                            pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+                            pending={adapters.isFetching} error={adapters.error ? describeError(adapters.error).body : undefined} onRetry={() => { void adapters.refetch(); }}
                             defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
                             supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
                             onChange={value => { setRunner(value); resetTest(); }} />

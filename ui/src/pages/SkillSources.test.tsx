@@ -7,7 +7,6 @@ import type { SkillSource } from '@paperclipai/shared';
 import { SkillSources } from './SkillSources';
 import { ApiError } from '@/api/client';
 import { skillSourcesApi } from '@/api/skillSources';
-import { ApiError } from '@/api/client';
 import { sourceFixture } from '../../storybook/fixtures/githubSkillSources';
 
 const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new', streamlinedEnabled: true }));

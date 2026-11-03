@@ -650,6 +650,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => adaptersApi.list({ companyId: selectedCompanyId!, environmentId: rawCurrentDefaultEnvironmentId || null }),
     enabled: Boolean(selectedCompanyId),
   });
+  const runnerDiscoveryView = useQueryView(runnerDiscovery);
   const runnerAvailability = runnerDiscovery.data?.find(item => item.type === harnessType);
   const runner: AgentRunnerChoice = isCreate ? props.values.runner ?? "auto" : overlay.runner ?? agentRunner(adapterType);
   const fieldsAdapterType = isRunnerHarness
@@ -935,7 +936,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showRunnerUpgrade = !isCreate
     && ["codex_local", "claude_local", "grok_local"].includes(props.agent.adapterType)
     && adapterType === props.agent.adapterType
-    && !runnerDiscovery.isError
+    && !(runnerDiscoveryView.kind === "error")
     && (runnerAvailability?.defaultRunner === "paperclip" || canQualifyRunnerUpgrade);
   const upgradeRunner = async () => {
     if (isCreate || runnerUpgradePending || upgradeEnvironmentChanged) return;
@@ -2080,7 +2081,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               >
                 <div className="space-y-3">
                   {isRunnerHarness && <AgentRunnerSelect value={runner}
-                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error?.message} onRetry={() => { void runnerDiscovery.refetch(); }}
+                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
                     defaultRunner={runnerAvailability?.defaultRunner}
                     supportedRunners={runnerAvailability?.supportedRunners}
                     onChange={next => isCreate ? set!({ runner: next }) : setOverlay(prev => ({ ...prev, runner: next }))} />}

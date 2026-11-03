@@ -339,7 +339,7 @@ it("shows the fixed Grok agent and authorizing person before granting a Cursor c
     expect(page.container.textContent).toContain("current task-bound session");
     expect(page.container.querySelector("h1")?.textContent).toBe("Connect Cursor to Paperclip");
     expect(api.post).toHaveBeenCalledTimes(1);
-    expect(api.post).toHaveBeenCalledWith("/dot-mcp/requests/request-one/dot-pairing/preview", { pairingCode: "g".repeat(32) });
+    expect(api.post).toHaveBeenCalledWith("/dot-mcp/requests/request-one/dot-pairing/preview", { pairingCode: "g".repeat(32) }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     flushSync(() => connect.click());
     await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/dot-mcp/requests/request-one/dot-pairing", { pairingCode: "g".repeat(32) }));
   } finally { page.cleanup(); }

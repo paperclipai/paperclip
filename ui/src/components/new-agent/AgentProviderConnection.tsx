@@ -419,7 +419,7 @@ export function AgentProviderConnection({
           </div>
         )}
       </motion.div>
-      {method === "subscription" && storedLoginView.kind === "error" && (
+      {!managedAccount && method === "subscription" && storedLoginView.kind === "error" && (
         <p role="alert" className="mt-4 text-sm text-destructive">
           Could not check your saved Claude subscription. Try again.
         </p>

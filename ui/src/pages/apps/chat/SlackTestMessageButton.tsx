@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Send } from "lucide-react";
@@ -43,8 +44,8 @@ export function SlackTestMessageButton({ endpointId }: { endpointId: string }) {
   });
   const confirmed = Boolean(pendingConnection && principals.data?.some(link => link.principalId === pendingConnection.principalId && link.status === "linked"));
   useEffect(() => {
-    if (confirmed && !send.isPending && !send.isError) send.mutate({ slackUserId: selected });
-  }, [confirmed, send.isPending, send.isError]);
+    if (confirmed && !send.isPending && !send.error) send.mutate({ slackUserId: selected });
+  }, [confirmed, send.isPending, send.error]);
   const reset = () => { setRequestId(crypto.randomUUID()); send.reset(); };
   const startTest = () => {
     if (invitationExpired) {
@@ -58,8 +59,8 @@ export function SlackTestMessageButton({ endpointId }: { endpointId: string }) {
         {send.isPending ? "Sending…" : sent ? "Test message sent" : invitationExpired ? "Request a new invitation" : pendingConnection ? "Waiting for Slack connection…" : "Send me a test message"}
       </Button>
     {pendingConnection && <p role="status" className="text-sm text-muted-foreground">{invitationExpired ? "The Slack invitation expired." : "Open the invitation in Slack to connect your account."}</p>}
-    {send.isError && <div role="alert" className="max-w-sm text-sm text-destructive">
-      {send.error.message} <button className="underline" onClick={reset}>Dismiss</button>
+    {send.error && <div role="alert" className="max-w-sm text-sm text-destructive">
+      {describeError(send.error).body} <button className="underline" onClick={reset}>Dismiss</button>
     </div>}
     <Dialog open={accounts !== null} onOpenChange={(open) => { if (!open && !send.isPending) setAccounts(null); }}>
       <DialogContent>
@@ -77,7 +78,7 @@ export function SlackTestMessageButton({ endpointId }: { endpointId: string }) {
           {accounts?.length === 0 && <p className="text-sm text-muted-foreground">No available accounts found in this Slack workspace.</p>}
         </div>
         {nextCursor && <Button variant="ghost" disabled={send.isPending} onClick={() => send.mutate({ accountCursor: nextCursor })}>Load more Slack accounts</Button>}
-        {send.isError && <p role="alert" className="text-sm text-destructive">{send.error.message}</p>}
+        {send.error && <p role="alert" className="text-sm text-destructive">{describeError(send.error).body}</p>}
         <div className="flex items-center justify-between gap-3">
           <Button variant="ghost" disabled={send.isPending} onClick={() => setAccounts(null)}>Cancel</Button>
           <Button disabled={!selected || send.isPending} onClick={() => send.mutate({ slackUserId: selected })}>{send.isPending ? "Sending invitation…" : "Send connection invitation"}</Button>

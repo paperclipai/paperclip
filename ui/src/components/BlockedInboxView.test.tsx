@@ -404,7 +404,7 @@ describe("BlockedInboxView", () => {
 
   it("keeps loaded rows visible when a refetch fails transiently", async () => {
     mockIssuesApi.list.mockResolvedValue([
-      makeIssue("issue-stalled-1", "PAP-9", "Stalled cached row", attention()),
+      makeIssue("issue-stalled-1", "TST-9", "Stalled cached row", attention()),
     ]);
 
     const { root, queryClient } = renderWithClient(

@@ -273,6 +273,12 @@ export function useResilientFetch<TData>(options: ResilientFetchOptions<TData>):
     return cancel;
   }, [begin, cancel, enabled, keyHash]);
 
+  useEffect(() => {
+    if (controllerRef.current || failureCountRef.current > 0) return;
+    clearTimer();
+    if (enabled) schedulePoll();
+  }, [enabled, refetchInterval, clearTimer, schedulePoll]);
+
   // The store recovered from an outage: refetch, as `bindConnectivity` does
   // for every active query.
   useEffect(

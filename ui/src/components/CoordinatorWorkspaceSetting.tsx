@@ -23,7 +23,6 @@ export function CoordinatorWorkspaceSetting() {
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: chatDisabled && !!workspace.userId,
-    retry: false,
     staleTime: 30_000,
   });
   const chatManaged = experimental.data?.managedKeys?.enableAgentChat?.managed === true;

@@ -81,13 +81,13 @@ export function CliAuthPage() {
     </div>;
   }
 
-  if (challengeView.kind === "error") {
+  if (challengeView.kind === "error" || (challengeQuery.error && isCliAuthRateLimit(challengeQuery.error))) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <Card className="block p-6">
           <QueryErrorState
             size="panel"
-            error={challengeView.error}
+            error={challengeQuery.error}
             action="load the CLI auth challenge"
             onRetry={challengeView.retry}
             retrying={challengeView.isFetching}

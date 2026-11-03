@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useQuery } from "@tanstack/react-query";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
@@ -31,7 +32,8 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
   const reconnectId = searchParams.get("reconnect");
   const aiLoginId = searchParams.get("aiLogin");
   const login = useQuery({ queryKey: ["ai-login-setup", selectedCompanyId, aiLoginId],
-    queryFn: () => aiConnectionsApi.loginSetup(selectedCompanyId!, aiLoginId!), enabled: Boolean(selectedCompanyId && aiLoginId), retry: false });
+    queryFn: () => aiConnectionsApi.loginSetup(selectedCompanyId!, aiLoginId!), enabled: Boolean(selectedCompanyId && aiLoginId) });
+  const loginView = useQueryView(login);
   const preset = aiProviderSetupPreset(source);
   const aiReconnectRequested = Boolean(reconnectId && (preset || ["openai", "anthropic", "xai"].includes(source ?? "")));
   const aiAccounts = useQuery({ queryKey: ["ai-connections", selectedCompanyId], queryFn: () => aiConnectionsApi.list(selectedCompanyId!), enabled: Boolean(selectedCompanyId && aiReconnectRequested) });
@@ -64,7 +66,7 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
     if (path) navigate(path);
   }
   if (aiLoginId && selectedCompanyId) {
-    if (login.isPending) return <p role="status">Loading saved sign-in…</p>;
+    if (loginView.kind === "loading" || loginView.kind === "reconnecting") return <p role="status">Loading saved sign-in…</p>;
     if (!login.data) return <p role="alert">{login.error ? describeError(login.error).body : "This sign-in is unavailable."}</p>;
     const { intent, environmentId, connectionId, grantId } = login.data;
     if (connectionId && grantId) return <div className="space-y-4"><p role="status">This account is connected.</p><Button onClick={() => navigate(`/apps/${connectionId}/permissions`)}>View connection</Button></div>;

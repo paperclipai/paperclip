@@ -1,3 +1,4 @@
+import { isTransientError } from "@/api/errors";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { describeError } from "../api/errors";
@@ -856,8 +857,7 @@ function StreamlinedInbox({
   const { data: experimentalSettings, isLoading: isSettingsLoading } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+    });
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = searchQuery.trim();
@@ -980,8 +980,7 @@ function StreamlinedInbox({
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
-  });
+    });
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -1911,7 +1910,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(describeError(err).body);
     },
   });
 
@@ -1924,7 +1923,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(describeError(err).body);
     },
   });
 
@@ -2044,7 +2043,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      setActionError(describeError(err).body);
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
@@ -2085,7 +2084,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      setActionError(describeError(err).body);
       if (context?.companyId) {
         beginLocalInboxArchive(context.companyId, id);
         boundLocalInboxArchive(context.companyId, id);
@@ -2519,6 +2518,7 @@ function StreamlinedInbox({
   ].filter((key): key is SectionKey => key !== null);
 
   const initialSourcesSettled =
+    ![sourceSearchError, mineIssuesError, touchedIssuesError].some(isTransientError) &&
     !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
@@ -2534,10 +2534,12 @@ function StreamlinedInbox({
   const sourceUpdatedAt = tab === "mine" ? mineIssuesUpdatedAt : touchedIssuesUpdatedAt;
   const canRetainSourceRows = sourceUpdatedAt > 0 && !(sourceError instanceof ApiError
     && (sourceError.status < 500 && sourceError.status !== 429));
-  const listError = sourceSearchError ?? (canRetainSourceRows ? null : sourceError)
+  const rawListError = sourceSearchError ?? (canRetainSourceRows ? null : sourceError)
     ?? (issueFilters.externalObjectStatuses.length > 0 ? externalObjectSummariesError : null);
-  const optionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
+  const listError = isTransientError(rawListError) ? null : rawListError;
+  const rawOptionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
     ?? (tab === "mine" ? mineIssuesError : touchedIssuesError);
+  const optionalSourceError = isTransientError(rawOptionalSourceError) ? null : rawOptionalSourceError;
   const retryFailedSources = () => {
     // Optional failures belong to the aggregate read, whose task rows stay usable.
     if (tab === "mine" && (mineSnapshot?.failureError || mineSnapshot?.contextError)) {
@@ -2886,7 +2888,7 @@ function StreamlinedInbox({
 
       {listError && (
         <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
-          <p>Unable to load the inbox: {listError.message}</p>
+          <p>Unable to load the inbox: {describeError(listError).body}</p>
           <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>Retry</Button>
         </div>
       )}
