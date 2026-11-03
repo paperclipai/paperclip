@@ -13,7 +13,7 @@ export function truthfulTimelineAccount(input: {
   const failureOutcome = /\b(?:fail(?:ed|ure|ing)?|exit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*1)\b/gi;
   const failures = clauses.flatMap(({ text, at }) => mentions(text, firstWorker)
     && /\b(?:verification|verify_launch_html|check|test|command)\b/i.test(text)
-    ? [...text.matchAll(failureOutcome)].map(match => ({ at: at + match.index })) : []);
+    ? [...text.matchAll(failureOutcome)].map(match => ({ at: at + match.index, clauseAt: at })) : []);
   const humanActors = ["you", "human operator", "board member", "human", "person", "user", "operator", "board", input.personName].filter(Boolean).map(name => escape(name!)).join("|");
   const humanActor = `\\b(?:${humanActors})\\b`;
   const assignment = "\\b(?:reassign(?:ed|ment)?|assign(?:ed|ment)?|hand(?:ed)?(?:\\s+\\w+){0,4}\\s+(?:off|over)|handed|handoff)\\b";
@@ -49,7 +49,7 @@ export function truthfulTimelineAccount(input: {
     .filter(match => repairSuccess.test(text.slice(match.index + match[0].length)))
     .map(match => ({ at: at + match.index })));
   const ordered = failures.some(failure => handoffs.some(handoff => handoff.at > failure.at
-    && /\b(?:paused|blocked|stopped)\b/i.test(body.slice(failure.at, handoff.at))
+    && /\b(?:paused|blocked|stopped)\b/i.test(body.slice(failure.clauseAt, handoff.at))
     && repairs.some(repair => repair.at > handoff.at)));
   const nativeFailure = /\b(?:native|runner|execution)\s+runs?\s+(?:(?:themselves|were|was|had|also|both)\s+){0,3}(?:failed|failures?|unsuccessful)\b|\b(?:native|runner|execution)\s+runs?\s+(?:ended|finished)\s+(?:in|with)\s+(?:a\s+)?failure\b|\bfailed\s+(?:native|runner|execution)\s+runs?\b/i;
   const falseNativeFailure = clauses.some(({ text }) => {
