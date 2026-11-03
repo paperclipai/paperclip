@@ -476,6 +476,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
     #[cfg(unix)]
     let mut notifications =
         crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
+    let mut task_memory = crate::task_memory::TaskMemoryMonitor::new();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
@@ -886,6 +887,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
             #[cfg(unix)]
             if let Some(notifications) = notifications.as_mut() {
                 notifications.poll(&config, &mut state, &store);
+            }
+            if let Some(task_memory) = task_memory.as_mut() {
+                task_memory.poll(&config, &mut state, &store);
             }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
