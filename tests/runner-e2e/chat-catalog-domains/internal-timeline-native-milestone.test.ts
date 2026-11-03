@@ -166,6 +166,8 @@ it.each([
   "Today UTC: Morgan verification failed and the task paused, you reassigned the task to Riley, and the check passed with exit code 0 after Riley added the missing label.",
   "Today UTC: Morgan verification failed and the task paused. You reassigned the task to Riley. Riley's check passed after Riley completed the repair.",
   "Today UTC: Morgan verification failed and the task paused. You reassigned the task to Riley. The check passed after the label was fixed by Riley.",
+  "Today UTC: Morgan paused the task after verification failed. Avery reassigned the task to Riley. The verification passed once Riley added the missing label in launch.html.",
+  "Today UTC: Morgan was blocked because verification failed. Avery reassigned the task to Riley. The verification passed once Riley added the missing label in launch.html.",
   "Today UTC: Morgan's verification of `launch.html` failed and the task paused. You reassigned the task to Riley. Riley added the missing label in `launch.html` and the verification passed.",
 ])("keeps bounded causal success and owned file tokens valid: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
