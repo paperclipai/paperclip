@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
+  "targetSha": "9ab0f951a5b5990c266ef4456610e0a0775aa334",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -167,7 +167,100 @@
       "snapshots/fixtures.json",
       "snapshots/api-state.json",
       "blob-report/*.zip"
-    ]
+    ],
+    "repairMetadata": {
+      "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
+      "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
+      "changedFields": [
+        {
+          "key": "companies.agent-observability",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-observability.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-observability.ts",
+            "chat-catalog-domains/identity-company-observer.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ]
+        },
+        {
+          "key": "companies.configure-decision-model",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-company-models.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-company-models.ts",
+            "chat-catalog-domains/identity-company-observer.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ]
+        },
+        {
+          "key": "companies.fast-responses",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-company-models.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-company-models.ts",
+            "chat-catalog-domains/identity-company-observer.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ]
+        },
+        {
+          "key": "companies.prompt-injection-guard",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-company-models.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-company-models.ts",
+            "chat-catalog-domains/identity-company-observer.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/companies.yaml"
+          ]
+        },
+        {
+          "key": "secrets.configure-company-secret",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v2"
+        }
+      ],
+      "conditions": [
+        "Initialize owned SDK evidence staging before retention.",
+        "Use real public scoped membership only for three incidental human fixtures.",
+        "Company settings observation uses the original setup-inclusive deadline; no larger case cap.",
+        "Company secret setup and v2 oracle permit only exact immutable controller-bootstrap secret references."
+      ],
+      "originalMeasurements": "Preserved. These are new candidate conditions, not retroactive passes."
+    }
   },
   "cases": [
     {
@@ -3828,6 +3921,7 @@
       "oracleVersion": "paperclip.chat-catalog.identity.v1",
       "sourceFiles": [
         "chat-catalog-domains/identity-observability.ts",
+        "chat-catalog-domains/identity-company-observer.ts",
         "chat-catalog-domains/identity-private-browser.ts",
         "chat-catalog-domains/identity-private-browser-worker.ts",
         "chat-catalog-domains/identity-wizard.ts",
@@ -3917,6 +4011,7 @@
       "oracleVersion": "paperclip.chat-catalog.identity.v1",
       "sourceFiles": [
         "chat-catalog-domains/identity-company-models.ts",
+        "chat-catalog-domains/identity-company-observer.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/internal-support.ts",
         "chat-scenarios/companies.yaml"
@@ -4003,6 +4098,7 @@
       "oracleVersion": "paperclip.chat-catalog.identity.v1",
       "sourceFiles": [
         "chat-catalog-domains/identity-company-models.ts",
+        "chat-catalog-domains/identity-company-observer.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/internal-support.ts",
         "chat-scenarios/companies.yaml"
@@ -4090,6 +4186,7 @@
       "oracleVersion": "paperclip.chat-catalog.identity.v1",
       "sourceFiles": [
         "chat-catalog-domains/identity-company-models.ts",
+        "chat-catalog-domains/identity-company-observer.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/internal-support.ts",
         "chat-scenarios/companies.yaml"
@@ -9469,7 +9566,7 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v2",
       "sourceFiles": [
         "chat-catalog-domains/external-company-secret.ts",
         "chat-catalog-domains/external-private-browser.ts",
