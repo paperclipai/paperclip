@@ -47,6 +47,10 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
     assert.equal(result.persistedAfterReload, true);
     assert.equal(result.matchedVisibleClocks, result.visible?.length, "Every observed marker needs its original provider clock");
     assert.ok(result.matchedVisibleClocks >= (result.stop ? 3 : result.events), "Missing foreground render/clock observations");
+    if (name === "paced") {
+      assert.ok(result.interChunkGaps?.count >= 1, "Paced streaming needs observed inter-chunk paint gaps");
+      assert.equal(result.interChunkGaps.paintCount, result.interChunkGaps.count + 1);
+    }
     if (result.prelude) {
       assert.equal(result.preludeProof?.individualDeltas, result.prelude, "Existing history requires independently stored prelude deltas");
       assert.equal(result.preludeProof?.uniqueSourceIdentities, result.prelude);
@@ -66,6 +70,7 @@ const metric = (item: any, key: string): number => key.split(".").reduce((value,
 const measurements = names.flatMap(name => {
   const observed = first.baseline.cases.find((item: any) => item.name === name);
   const keys = ["firstVisibleAfterEmissionMs", "emissionToVisible.medianMs", "drainThroughTerminalMs",
+    ...(name === "paced" ? ["interChunkGaps.maxMs"] : []),
     ...(observed.emissionToVisible.p95Ms === undefined ? [] : ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms"]),
     ...(observed.stop ? ["stopThroughTerminalMs", "stopThroughAcknowledgementMs"] : [])];
   return keys.map(key => {

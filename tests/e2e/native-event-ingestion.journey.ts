@@ -331,8 +331,13 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         return { ...original!, ...marker }; // Keep the original paint timestamp; never restamp after clock arrival.
       });
       if (!stop) expect(new Set(visible.map(item => item.index)).size).toBe(workload.events);
+      // Terminal drainage has finished. Derive paint gaps from the retained
+      // observer timestamps without adding work to the streaming observer.
+      const paintTimes = [...new Set(visible.map(item => item.visibleMs))].sort((a, b) => a - b);
+      const { count, medianMs, maxMs } = stats(paintTimes.slice(1).map((at, index) => at - paintTimes[index]));
+      const interChunkGaps = { paintCount: paintTimes.length, count, medianMs, maxMs };
       const clockEvidence: Array<Record<string, unknown>> = [];
-      const result = { ...workload, stop, nonce, markerCode, epochMs, preludeProof, clockEvidence, runIds: runs.map(run => run.id), participants: participants.length, visible, matchedVisibleClocks: visible.length,
+      const result = { ...workload, stop, nonce, markerCode, epochMs, preludeProof, clockEvidence, interChunkGaps, runIds: runs.map(run => run.id), participants: participants.length, visible, matchedVisibleClocks: visible.length,
         firstVisibleAfterEmissionMs: visible[0].visibleMs - visible[0].emittedMs,
         emissionToVisible: stats(visible.map(item => item.visibleMs - item.emittedMs)),
         intendedToVisible: stats(visible.map(item => item.visibleMs - item.intendedMs)),

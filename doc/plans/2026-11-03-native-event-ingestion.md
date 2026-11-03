@@ -350,7 +350,7 @@ Registered v2 browser protocol SHA256: `5498ed8dfc7139285aeda582c540eb572f07a1ad
 Comparator SHA256: `d8cf6f55339ad811ca1743f4bc73b74afa3a321b93e17ef913fc0339b47b4d7d`. Individual source hashes and
 H's exact committed revision are retained with each qualification/execution receipt.
 
-### V2 admission qualification correction, before fresh A/A
+### V2 admission qualification correction, before fresh browser A/A
 
 H `96b1a5f1a4497d1389c21b0cc52d55b86641690d` passed the compiled
 single-run smoke and completed paced 128, burst 16, and ten runs of 128 events.
@@ -372,7 +372,7 @@ pg_stat_activity capture exists. The product admission hazard remains separate
 from this ingestion change; increasing pool size or request timeouts is not
 part of the experiment.
 
-Before any fresh A/A, H now schedules each background using the same normal
+Before any fresh browser A/A, H now schedules each background using the same normal
 PATCH, then requires that exact participant's provider GET and original-clock
 hello before scheduling the next. All 100 providers remain live behind the
 closed common emission gate. A **shared 180-second readiness budget starts
@@ -385,8 +385,19 @@ rejects reports without it. Original exceptions, exact activation progress and
 separate cleanup errors are retained without accepting a cleanup failure.
 
 Registered corrected browser protocol SHA256:
-`b955ff1f84d82655e5e1d331b2494cb811f459f44aee0e29205a70636c07dc84`.
+`5430314c028c9e05ddf4e27e6e22a0191ee0d4a61ffc61649627fd93777acebc`.
 Comparator SHA256:
-`55eab8950528a6ec6a30728fb7614b5a9fb7aa210526cb8b7d3237a82db65672`.
+`c1b7249022a95ff2186e72784247ca83125550c02910d8ad2bf52e1389cf9afc`.
 The corrected H commit and source hashes are recorded before its full baseline
 qualification and new browser A/A. Earlier H96b samples never enter that series.
+
+The original sparse-stream acceptance also requires no regression in gaps between
+rendered chunks. After terminal drainage, H derives consecutive gaps between
+distinct observed paint timestamps from the existing retained `visibleMs` values.
+Reports include paint count, gap count, median gap and maximum observed gap;
+no tail quantile is inferred from a small gap sample. The comparator requires
+observed paced-stream gaps and gates the maximum observed gap against the same
+five-pair A/A noise envelope. This adds the previously missing acceptance check
+before browser A/A; it changes neither the streaming observer nor emitted work.
+The independent source-owner A/A may run during local H work because its workload,
+measurement code and gates remain unchanged.
