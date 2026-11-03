@@ -37,25 +37,35 @@ export async function isLegacyWorkspaceTaskRelated(db: Pick<Db, "select">, input
 /** This receipt changes where recovery may save files; it never certifies that
  * a provider stopped or that its files were recovered. The recovery owner must
  * still validate allocation provenance and termination before exporting. */
-export async function hasMigratedLegacyWorkspaceSource(db: Pick<Db, "select">, input: {
+export async function readMigratedLegacyWorkspaceSource(db: Pick<Db, "select">, input: {
   companyId: string; runId: string; reference: NativeWorkspaceSyncReference;
-}) {
-  if (input.reference.state !== "prepared") return false;
+}): Promise<LegacyWorkspaceRecoverySource | null> {
+  if (input.reference.state !== "prepared") return null;
   const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.reference.workspaceId),
   ));
-  if (!readRemoteWorkspaceAuthority(workspace?.metadata)) return false;
+  if (!readRemoteWorkspaceAuthority(workspace?.metadata)) return null;
   const marker = workspace?.metadata?.legacyWorkspaceRecoveryMigration as { schema?: unknown; operationId?: unknown } | undefined;
   if (marker?.schema !== LEGACY_WORKSPACE_RECOVERY_MIGRATION || typeof marker.operationId !== "string")
     throw new Error("legacy_workspace_migration_receipt_invalid");
+  const [run] = await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
+  ));
+  if (!isDeepStrictEqual(run?.profile?.legacyWorkspaceRecoveryMigration, {
+    schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION, operationId: marker.operationId, workspaceId: input.reference.workspaceId,
+  })) throw new Error("legacy_workspace_migration_receipt_invalid");
   const [operation] = await db.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.reference.workspaceId),
     eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration"),
     eq(workspaceOperations.status, "succeeded"),
   ));
   const sources = operation?.metadata?.legacyRecoverySources;
-  if (!Array.isArray(sources) || !sources.some(source => source && typeof source === "object"
-    && source.runId === input.runId && isDeepStrictEqual(source.reference, input.reference)))
-    throw new Error("legacy_workspace_migration_receipt_invalid");
-  return true;
+  const source = Array.isArray(sources) ? sources.find(source => source && typeof source === "object"
+    && source.runId === input.runId && typeof source.issueId === "string" && isDeepStrictEqual(source.reference, input.reference)) : null;
+  if (!source) throw new Error("legacy_workspace_migration_receipt_invalid");
+  return source as LegacyWorkspaceRecoverySource;
+}
+
+export async function hasMigratedLegacyWorkspaceSource(...args: Parameters<typeof readMigratedLegacyWorkspaceSource>) {
+  return Boolean(await readMigratedLegacyWorkspaceSource(...args));
 }

@@ -249,9 +249,21 @@ describe("automatic retained workspace recovery", () => {
         const nextRunId = randomUUID(), nextLeaseId = randomUUID(), sourceRun = await run(f.runId);
         const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
           authorType: "user", authorUserId: "operator", body: "/new" }).returning();
-        expect(await admitExplicitNativeContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+        const continuationInput = { db, companyId: f.companyId, issueId: f.issueId,
           agentId: sourceRun.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
-          commentId: comment.id, successorRunId: nextRunId })).toMatchObject({ previousRunId: f.runId, commentId: comment.id });
+          commentId: comment.id, successorRunId: nextRunId };
+        if (mode === "expired-owner") {
+          for (const changed of [{ phase: "retryable_failure", leaseOwner: null }, { phase: "observed", leaseOwner: "new-controller" }]) {
+            await db.update(nativeRunFinalizations).set(changed).where(eq(nativeRunFinalizations.runId, f.runId));
+            expect(await admitExplicitNativeContinuation({ ...continuationInput, dryRun: true })).toBeNull();
+          }
+          await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+          await db.update(heartbeatRuns).set({ runnerProfileJson: { ...sourceRun.runnerProfileJson,
+            legacyWorkspaceRecoveryMigration: { invalid: true } } }).where(eq(heartbeatRuns.id, f.runId));
+          expect(await admitExplicitNativeContinuation({ ...continuationInput, dryRun: true })).toBeNull();
+          await db.update(heartbeatRuns).set({ runnerProfileJson: sourceRun.runnerProfileJson }).where(eq(heartbeatRuns.id, f.runId));
+        }
+        expect(await admitExplicitNativeContinuation(continuationInput)).toMatchObject({ previousRunId: f.runId, commentId: comment.id });
         await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: sourceRun.agentId,
           nativeIssueId: f.issueId, runtimeMode: "native", status: "running" });
         const storage = { ...getStorageService(), provider: "s3" as const };
