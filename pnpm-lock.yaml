@@ -213,7 +213,7 @@ importers:
   packages/adapters/codex-local:
     dependencies:
       '@agentclientprotocol/codex-acp':
-        specifier: ^1.6.2
+        specifier: 1.6.2
         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
       '@paperclipai/adapter-utils':
         specifier: workspace:*

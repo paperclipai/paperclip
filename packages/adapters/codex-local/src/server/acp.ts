@@ -660,7 +660,7 @@ export async function testCodexAcpEnvironment(
 
   const codexCliCommand = firstNonEmptyString(
     envConfig.CODEX_PATH,
-    process.env.CODEX_PATH,
+    targetIsRemote ? null : process.env.CODEX_PATH,
   ) ?? (targetIsRemote ? "codex" : null);
 
   if (codexCliCommand && commandResolvable) {

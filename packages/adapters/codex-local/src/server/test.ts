@@ -277,17 +277,17 @@ export async function testEnvironment(
 
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const envConfig = parseObject(config.env);
   const configuredCodexPath =
     typeof envConfig.CODEX_PATH === "string" && envConfig.CODEX_PATH.trim().length > 0
       ? envConfig.CODEX_PATH.trim()
-      : typeof process.env.CODEX_PATH === "string" && process.env.CODEX_PATH.trim().length > 0
+      : !targetIsRemote && typeof process.env.CODEX_PATH === "string" && process.env.CODEX_PATH.trim().length > 0
         ? process.env.CODEX_PATH.trim()
         : null;
   const command = asString(config.command, configuredCodexPath ?? "codex");
-  const target = ctx.executionTarget ?? null;
-  const targetIsRemote = target?.kind === "remote";
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)

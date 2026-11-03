@@ -634,4 +634,29 @@ describe("codex remote environment diagnostics", () => {
       expect.anything(),
     );
   });
+
+  it("does not use host process.env.CODEX_PATH for remote targets", async () => {
+    vi.stubEnv("CODEX_PATH", "/host/opt/bin/codex");
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        env: {
+          OPENAI_API_KEY: "sk-test",
+        },
+      },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(ensureAdapterExecutionTargetCommandResolvable).toHaveBeenCalledWith(
+      "codex",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
 });
