@@ -57,12 +57,12 @@ export async function fixtureWorker(ctx: ChatCatalogContext) {
   return worker;
 }
 
-export function retryDefinition(scenarioId: string, grade: ChatCatalogCase["grade"], initialOutcome: (observation: InternalObservation) => boolean): ChatCatalogCase {
+export function retryDefinition(scenarioId: string, grade: ChatCatalogCase["grade"], initialOutcome: (observation: InternalObservation) => boolean, observeInitial = observeInternal): ChatCatalogCase {
   const definition = makeDefinition(scenarioId, async ctx => ({ retryQuery: ctx.scenario.query }), grade);
   return { ...definition, expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       const first = await pollUntil({ label: "Initial creation before explicit user retry", deadlineAt: Date.now() + 150_000,
-        load: () => observeInternal(ctx, state),
+        load: () => observeInitial(ctx, state),
         accept: o => {
           const rows = scenarioId === "projects.create-project" ? o.projects.filter(row => row.name === "Launch") : o.goals;
           return rows.length === (scenarioId === "projects.create-project" ? 1 : 2) && initialOutcome(o) && ctx.issue()?.conversationState === "waiting"

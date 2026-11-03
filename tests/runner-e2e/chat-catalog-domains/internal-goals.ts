@@ -1,5 +1,5 @@
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
-import { internalResultLink, project, task, goal, putDocument, entity, observation, checks, hasLink, sameTask, type Entity, type InternalObservation } from "./internal-support.js";
+import { project, task, goal, putDocument, entity, observation, checks, hasLink, sameTask, type Entity, type InternalObservation } from "./internal-support.js";
 import { makeDefinition, retryDefinition, fixtureWorker } from "./internal-definition.js";
 
 export function grade_goals(value: unknown) {
@@ -20,8 +20,13 @@ export function grade_goals(value: unknown) {
         && teamGoals[0]?.parentId === companyGoals[0]?.id && companyGoals[0]?.parentId == null
         && o.goals.every(row => row.companyId === o.companyId), "The two saved goals have exact levels, a valid parent and company scope.");
       c.add("attributed-goal-creation", o.goals.length === 2 && o.goals.every(row => authored("goal.created", row.id)), "Both requested goals were created by the CEO through the production path.");
-      c.add("ownership-or-question", o.goals.every(row => row.ownerAgentId === o.leadId) || /\b(?:who|which)\b[^\n]*\b(?:own|owner|responsib)/i.test(o.reply), "Goal ownership is valid or its consequential missing input is explicit.");
-      c.add("hierarchy-link", o.goals.length === 2 && hasHierarchyLink(o), "The reply links the saved hierarchy; its real tree exposes both levels.");
+      c.add("optional-goal-owner-valid", validGoalOwners(o), "Unrequested ownership may remain unassigned; every assigned owner must be an independently listed same-company agent.");
+      const inspection = o.state.hierarchyInspection as GoalHierarchyInspection | undefined;
+      const root = o.goals.find(row => row.level === "company"), child = o.goals.find(row => row.level === "team");
+      c.add("saved-hierarchy-inspectable", o.goals.length === 2 && inspection?.companyId === o.companyId
+        && inspection.rootId === root?.id && inspection.childId === child?.id && inspection.readbackMatched === true
+        && inspection.rootVisible === true && inspection.childVisible === true,
+        "Independent public readback and the ordinary Goals list, parent and child pages expose the actual saved hierarchy; a particular chat-link format is not required.");
       c.add("retry-reuses-first-tree", initialGoalTreeCreation(observation(o.state.firstCreation)) && Array.isArray(o.state.firstIds) && o.state.firstIds.length === 2
         && o.goals.every(row => (o.state.firstIds as string[]).includes(row.id))
         && o.humanQueries.filter(query => query === o.state.retryQuery).length === 2, "An explicit unchanged request reuses the initial goal tree.");
@@ -203,47 +208,62 @@ async function sourceReplies(ctx: ChatCatalogContext) {
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 
 function initialGoalTreeCreation(o: InternalObservation | undefined): boolean {
-  if (!o || o.goals.length !== 2 || o.goals.some(row => row.companyId !== o.companyId) || !hasHierarchyLink(o)) return false;
+  if (!o || o.goals.length !== 2 || o.goals.some(row => row.companyId !== o.companyId) || !validGoalOwners(o)) return false;
   const root = o.goals.find(row => row.level === "company" && /(?:1[,.]?000|1\s?k|thousand)\s+(?:(?:new|user|total|product)\s+){0,2}sign[- ]?ups?/i.test(`${row.title} ${row.description ?? ""}`));
   const team = o.goals.find(row => row.level === "team" && /\b(?:launch|launching)\b.*\bwebsite\b|\bwebsite\b.*\blaunch\b/i.test(`${row.title} ${row.description ?? ""}`));
   return !!root && !!team && root.parentId == null && team.parentId === root.id
     && o.goals.every(goal => o.activity.some(row => row.action === "goal.created" && row.entityId === goal.id && row.agentId === o.leadId))
-    && (o.goals.every(row => row.ownerAgentId === o.leadId) || /\b(?:who|which)\b[^\n]*\b(?:own|owner|responsib)/i.test(o.reply))
     && !/\b\d+\s*%\s*(?:complete|done|progress)|\balready\s+\d+\s+signups?/i.test(o.reply);
 }
 
-function hasHierarchyLink(o: InternalObservation): boolean {
-  const root = o.goals.find(row => row.level === "company");
-  return !!root && (hasLink(o, "goals", root) || o.links.some(href => {
-    try { const url = new URL(href, o.origin); return url.origin === new URL(o.origin).origin && /\/goals\/?$/.test(url.pathname); }
-    catch { return false; }
-  }));
+function validGoalOwners(o: InternalObservation): boolean {
+  return Array.isArray(o.agents) && o.goals.every(goal => goal.ownerAgentId == null
+    || typeof goal.ownerAgentId === "string" && o.agents!.some(agent => agent.id === goal.ownerAgentId && agent.companyId === o.companyId));
+}
+interface GoalHierarchyInspection {
+  companyId: string; rootId: string; childId: string; readbackMatched: true; rootVisible: true; childVisible: true;
+}
+/** Inspect the actual persisted tree through normal company Goals navigation. */
+export async function inspectGoalHierarchy(ctx: ChatCatalogContext, state: Record<string, unknown>, o: InternalObservation): Promise<void> {
+  const remaining = () => {
+    const deadline = ctx.observationDeadlineAt, now = Date.now();
+    if (!Number.isFinite(deadline) || deadline! <= now) throw new Error("Original goal inspection budget exhausted or missing");
+    return deadline! - now;
+  };
+  remaining();
+  if (!initialGoalTreeCreation(o)) throw new Error("No valid saved goal hierarchy is available to inspect");
+  const root = o.goals.find(row => row.level === "company")!, child = o.goals.find(row => row.level === "team")!;
+  const rootNow = await ctx.input.api.get<Entity>(`/api/goals/${encodeURIComponent(root.id)}`, { timeout: remaining() });
+  const childNow = await ctx.input.api.get<Entity>(`/api/goals/${encodeURIComponent(child.id)}`, { timeout: remaining() });
+  if (rootNow.id !== root.id || childNow.id !== child.id || rootNow.companyId !== o.companyId || childNow.companyId !== o.companyId
+    || rootNow.level !== "company" || rootNow.parentId != null || childNow.level !== "team" || childNow.parentId !== rootNow.id
+    || rootNow.title !== root.title || childNow.title !== child.title || !validGoalOwners({ ...o, goals: [rootNow, childNow] }))
+    throw new Error("Goal hierarchy public readback does not match the saved requested tree");
+  const sourceUrl = ctx.input.page.url();
+  await ctx.input.page.goto(new URL(`/${ctx.input.fixtures.company.issuePrefix}/goals`, ctx.input.api.baseURL).href, { waitUntil: "domcontentloaded", timeout: remaining() });
+  await ctx.input.page.locator(`a[href*=${JSON.stringify(`/goals/${root.id}`)}]`).first().click({ timeout: remaining() });
+  await expect(ctx.input.page.getByRole("heading", { name: root.title!, exact: true }).first()).toBeVisible({ timeout: remaining() });
+  await ctx.input.page.locator(`a[href*=${JSON.stringify(`/goals/${child.id}`)}]`).first().click({ timeout: remaining() });
+  await expect(ctx.input.page.getByRole("heading", { name: child.title!, exact: true }).first()).toBeVisible({ timeout: remaining() });
+  remaining();
+  state.hierarchyInspection = { companyId: o.companyId, rootId: root.id, childId: child.id,
+    readbackMatched: true, rootVisible: true, childVisible: true } satisfies GoalHierarchyInspection;
+  await ctx.input.evidence("chat-catalog-goal-hierarchy-opened.json", state.hierarchyInspection);
+  await ctx.input.page.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: remaining() });
+  await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: remaining() });
+  remaining();
 }
 function createGoalTree(): ChatCatalogCase {
-  const base = retryDefinition("goals.create-goal-tree", grade_goals, initialGoalTreeCreation);
-  return { ...base, async setup(ctx) {
+  const base = retryDefinition("goals.create-goal-tree", grade_goals, initialGoalTreeCreation, observeGoalPhases);
+  return { ...base, oracleVersion: "paperclip.chat-catalog.goal-hierarchy.v2", observe: observeGoalPhases, async setup(ctx) {
     await ctx.input.api.patch(`/api/companies/${ctx.input.fixtures.company.id}`, { description: "Our mission is to grow product adoption and help new teams sign up." });
     return base.setup(ctx);
-  }, async verifyResult(ctx, _state, value) {
-    const o = observation(value); if (!o || !hasHierarchyLink(o)) throw new Error("No saved goal hierarchy result is accessible");
-    const root = o.goals.find(row => row.level === "company")!; const child = o.goals.find(row => row.parentId === root.id)!;
-    const sourceUrl = ctx.input.page.url();
-    const href = o.links.find(link => {
-      try { const url = new URL(link, o.origin); return url.origin === new URL(o.origin).origin
-        && (hasLink({ ...o, links: [link] }, "goals", root) || /\/goals\/?$/.test(url.pathname)); } catch { return false; }
-    })!;
-    await internalResultLink(ctx, o, href).first().click();
-    if (/\/goals\/?$/.test(new URL(href, o.origin).pathname)) {
-      const rootLink = ctx.input.page.locator(`a[href*=${JSON.stringify(`/goals/${root.id}`)}]`).first();
-      await expect(rootLink).toBeVisible(); await rootLink.click();
-    }
-    await expect(ctx.input.page.getByRole("heading", { name: root.title!, exact: true }).first()).toBeVisible();
-    const childLink = ctx.input.page.locator(`a[href*=${JSON.stringify(`/goals/${child.id}`)}]`).first();
-    await expect(childLink).toBeVisible(); await childLink.click();
-    await expect(ctx.input.page.getByRole("heading", { name: child.title!, exact: true }).first()).toBeVisible();
-    await ctx.input.evidence("chat-catalog-goal-hierarchy-opened.json", { rootId: root.id, childId: child.id, childUrl: ctx.input.page.url() });
-    await ctx.input.page.goto(sourceUrl, { waitUntil: "domcontentloaded" });
-    await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
+  }, async act(ctx, state) {
+    await base.act!(ctx, state);
+    await inspectGoalHierarchy(ctx, state, await observeGoalPhases(ctx, state));
+  }, async verifyResult(ctx, state, value) {
+    const o = observation(value); if (!o) throw new Error("No saved goal hierarchy result is accessible");
+    await inspectGoalHierarchy(ctx, state, o);
   } };
 }
 import { expect } from "@playwright/test";
@@ -254,6 +274,8 @@ function finalPhaseReply(o: InternalObservation): string {
 }
 async function observeGoalPhases(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<GoalPhaseObservation> {
   const o = await observeInternal(ctx, state); const source = ctx.issue();
+  if (ctx.scenario.id === "goals.create-goal-tree") return { ...o,
+    agents: (await ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).map(agent => ({ id: agent.id, companyId: agent.companyId })), finalPhaseReplies: [] };
   if (!source || !Array.isArray(state.foreignBaselineCommentIds)) return { ...o, finalPhaseReplies: [] };
   const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments?order=asc`);
   const foreignHuman = comments.find(row => !row.authorAgentId && row.body === state.foreignRequest);

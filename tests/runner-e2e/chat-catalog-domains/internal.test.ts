@@ -258,7 +258,9 @@ function valid(scenario: string): InternalObservation {
       o.state.savedCommentReference = { commentId: "comment", taskId: "task", designId: "design", bodySha256: createHash("sha256").update(o.comments[0]!.body!).digest("hex"), href: "/ACORN/issues/design", visible: true, destinationMatched: true, publicReadMatched: true }; break;
     }
     case "goals.create-goal-tree": {
-      o.state = { firstIds: ["growth", "team"], retryQuery: "query" }; o.humanQueries = ["query", "query"]; o.tasks = []; o.projects = [];
+      o.agents = [{ id: "ceo", companyId: "company" }];
+      o.state = { firstIds: ["growth", "team"], retryQuery: "query", hierarchyInspection: {
+        companyId: "company", rootId: "growth", childId: "team", readbackMatched: true, rootVisible: true, childVisible: true } }; o.humanQueries = ["query", "query"]; o.tasks = []; o.projects = [];
       o.goals = [{ id: "growth", companyId: "company", title: "Reach a thousand signups", level: "company", parentId: null, ownerAgentId: "ceo" },
         { id: "team", companyId: "company", title: "Launch the website", level: "team", parentId: "growth", ownerAgentId: "ceo" }];
       o.activity = o.goals.map(row => event("goal.created", row.id)); o.links = ["/ACORN/goals/growth", "/ACORN/goals/team"]; break;
