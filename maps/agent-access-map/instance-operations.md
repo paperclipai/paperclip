@@ -168,6 +168,14 @@ API: `present` — representative operation IDs:
   status remains an in-memory read. [Route coverage](../../server/src/__tests__/instance-settings-routes.test.ts)
   and [PostgreSQL coverage](../../server/src/services/heartbeat/upgrade-readiness.test.ts)
   establish this local boundary; hosted active-run continuity requires separate proof.
+- `GET /api/instance/task-drain?idleSleepSafety=1` — the negotiated incoming-wake
+  extension requires a verified stack/action/owner-scoped Cloud control capability;
+  query parameters and tenant credentials cannot grant it. Its version-3 proof
+  permits only saved API keys and exactly bound brokered GitHub bot configuration.
+  Agent and board API requests authenticate under current tenant authority after
+  bounded host wake. Personal GitHub continuity remains blocked until the stacked
+  deadline proof is present. See [protocol scope](../../doc/idle-incoming-wake.md)
+  and [local auth/PostgreSQL evidence](../../server/src/__tests__/idle-incoming-wake.test.ts).
 - `GET /api/ready` and `HEAD /api/ready` — public deployment readiness only;
   200 after recovery, 503 while starting, recovering, or draining. No SQL,
   session resolution, company identity, or control authority.
