@@ -70,3 +70,129 @@ describe("bounded public metadata read and replay custody", () => {
     await expect(readHireModelChoice(fixture().catalog, fetcher)).rejects.toThrow("could not be read"); expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });
+
+// Official credential-free metadata retrieved 2026-11-03T03:51:08Z from
+// https://openrouter.ai/api/v1/models?q=deepseek-v4&output_modalities=text
+// Full response SHA256: c0164b41a523e3deab39b09d8387fc7a313f5cf723c8f4d70e4461fec789d45c.
+// This frozen regression is not a substitute for the case's fresh metadata GET.
+const officialRecords: Array<{id: string; pricing: Record<string, unknown>}> = [
+  {
+    "id": "deepseek/deepseek-v4-pro-0813",
+    "pricing": {
+      "prompt": "0.000000115",
+      "completion": "0.000004",
+      "input_cache_read": "0.00000011"
+    }
+  },
+  {
+    "id": "deepseek/deepseek-v4-pro",
+    "pricing": {
+      "prompt": "0.0000016",
+      "completion": "0.0000032",
+      "input_cache_read": "0.000000135"
+    }
+  },
+  {
+    "id": "deepseek/deepseek-v4.1-flash-1017",
+    "pricing": {
+      "prompt": "0.0000003",
+      "completion": "0.0000012",
+      "input_cache_read": "0.000000006",
+      "overrides": [
+        {
+          "utc_days": [
+            "saturday",
+            "sunday"
+          ],
+          "prompt": "0.00000015",
+          "completion": "0.0000006",
+          "input_cache_read": "0.000000003"
+        },
+        {
+          "utc_days": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday"
+          ],
+          "utc_start": 0,
+          "utc_end": 100,
+          "prompt": "0.00000015",
+          "completion": "0.0000006",
+          "input_cache_read": "0.000000003"
+        },
+        {
+          "utc_days": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday"
+          ],
+          "utc_start": 100,
+          "utc_end": 400,
+          "prompt": "0.0000003",
+          "completion": "0.0000012",
+          "input_cache_read": "0.000000006"
+        },
+        {
+          "utc_days": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday"
+          ],
+          "utc_start": 400,
+          "utc_end": 600,
+          "prompt": "0.00000015",
+          "completion": "0.0000006",
+          "input_cache_read": "0.000000003"
+        },
+        {
+          "utc_days": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday"
+          ],
+          "utc_start": 600,
+          "utc_end": 1000,
+          "prompt": "0.0000003",
+          "completion": "0.0000012",
+          "input_cache_read": "0.000000006"
+        },
+        {
+          "utc_days": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday"
+          ],
+          "utc_start": 1000,
+          "utc_end": 0,
+          "prompt": "0.00000015",
+          "completion": "0.0000006",
+          "input_cache_read": "0.000000003"
+        }
+      ]
+    }
+  }
+];
+it("the actual official rate records admit the genuine expensive starting model, not the dated counterpart", () => {
+  const proof = proveHireModelChoice({ data: officialRecords }, officialRecords.map(row => ({ id: `openrouter/${row.id}` })));
+  expect(proof.originalModel).toBe("openrouter/deepseek/deepseek-v4-pro");
+  expect(proof.cheaperModel).toBe(CHAT_OPENCODE_MODEL);
+  expect(proof.targetMaximumRates).toEqual({ prompt: "0.0000003", completion: "0.0000012", input_cache_read: "0.000000006" });
+  expect(proof.originalMinimumRates).toEqual({ prompt: "0.0000016", completion: "0.0000032", input_cache_read: "0.000000135" });
+  expect(proof.targetRateVariants).toBe(7);
+});
+it.each(["no longer cheaper", "unknown rate"])("the official-record comparison rejects %s instead of overriding price evidence", fault => {
+  const data = structuredClone(officialRecords);
+  if (fault === "no longer cheaper") data.find(row => row.id === "deepseek/deepseek-v4-pro")!.pricing.prompt = "0.00000001";
+  else data.find(row => row.id === "deepseek/deepseek-v4.1-flash-1017")!.pricing.request = "0";
+  expect(() => proveHireModelChoice({ data }, data.map(row => ({ id: `openrouter/${row.id}` })))).toThrow();
+});

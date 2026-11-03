@@ -52,7 +52,7 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
   return { originalApproval, originalHistoryCommentId: history.id, originalModel, cheaperModel, humanId: session.user.id,
     eligibleModels: models.map(row => row.id), modelChoice, beforeAgentCount: (await ctx.input.api.get<unknown[]>(`/api/companies/${fixtures.company.id}/agents`)).length };
 }, gradeHireRevision, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v2", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"],
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v3", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"],
   async act(ctx, state) {
     const originalDeadlineAt = ctx.observationDeadlineAt; remainingIdentityObservationBudget(ctx);
     await waitForReply(ctx, originalDeadlineAt); const id = entity(state, "originalApproval").id; const source = ctx.input.page.url();

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CHAT_OPENCODE_MODEL } from "../chat-runtime-profile.js";
 
-export const HIRE_ORIGINAL_MODEL = "openrouter/deepseek/deepseek-v4-pro-0813";
+export const HIRE_ORIGINAL_MODEL = "openrouter/deepseek/deepseek-v4-pro";
 export const HIRE_MODEL_METADATA_URL = "https://openrouter.ai/api/v1/models?q=deepseek-v4&output_modalities=text";
 const PRICE_FIELDS = ["prompt", "completion", "input_cache_read"] as const;
 type PriceField = typeof PRICE_FIELDS[number];
