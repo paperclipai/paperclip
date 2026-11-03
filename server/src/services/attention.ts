@@ -227,14 +227,25 @@ function activeDismissalState(
   };
 }
 
-function stripMarkdown(value: string) {
+/**
+ * Plain text for a card excerpt. Removes markdown syntax only, so characters
+ * inside words and numbers stay: "(#2)", "in-review", "snake_case", an email
+ * address (PAP-767).
+ */
+export function stripMarkdown(value: string) {
   return value
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[>*_~#-]+/g, " ")
+    // Block syntax at the start of a line: rules, quotes and list bullets.
+    .replace(/^\s*(?:[-*_]\s*){3,}$/gm, " ")
+    .replace(/^\s*>+\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    // Emphasis and strikethrough markers around text.
+    .replace(/(\*\*|__|~~)(?=\S)([\s\S]*?\S)\1/g, "$2")
+    .replace(/(^|[^\w*])[*_](?=\S)([^*_\n]*?\S)[*_](?=[^\w*]|$)/g, "$1$2")
     .replace(/\s+/g, " ")
     .trim();
 }
