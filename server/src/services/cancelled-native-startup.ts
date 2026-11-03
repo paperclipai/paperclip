@@ -1,6 +1,6 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -14,6 +14,25 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "sessionIdAfter" | "nativeIssueId" | "nativeSessionId" | "executionStage" |
   "controllerBootId" | "controllerLeaseExpiresAt">;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
+
+export async function isFailedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined) {
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt
+    || run.errorCode !== "setup_failed" || run.executionStage !== "preparing"
+    || claimedAdapterType(run) !== "paperclip_runner" || coordinator
+    || recovery?.kind !== "bootstrap" || recovery.providerWorkStarted !== false
+    || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
+    || run.nativeIssueId || run.nativeSessionId || run.runnerProfileJson?.nativeExecutionInput != null
+    || run.runnerProfileJson?.nativeWorkspaceSync != null || run.runnerProfileJson?.remoteWorkspace != null
+    || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  )).limit(1);
+  const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+    eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
+  )).limit(1);
+  return !lease && !result && !await nativeStartupHasExecutionEvidence(db, run);
+}
 
 /** Candidate for explicit user Retry only, never automatic replay after Stop. */
 export async function canRetryStoppedRun(db: Db, run: Run): Promise<boolean> {
@@ -66,6 +85,10 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
       : !hasRemoteTerminationReceipt(lease))) return false;
   // Reject contradictory retained evidence, including a crash after a launch
   // request but before the PID callback. Provider events never certify a stop.
+  return !await nativeStartupHasExecutionEvidence(db, run);
+}
+
+async function nativeStartupHasExecutionEvidence(db: Db, run: Run) {
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     or(isNotNull(heartbeatRunEvents.sourceEventId),
@@ -73,5 +96,5 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
         "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
         "provider.event", "provider.rpc_result", "tool.execution.started"])),
   )).limit(1);
-  return !execution;
+  return Boolean(execution);
 }

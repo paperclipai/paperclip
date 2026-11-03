@@ -49,6 +49,7 @@ const runnerHarnessOptions = [
   { value: "claude_managed", label: "Claude Managed", adapter: "claude_local" },
   { value: "aws_agentcore", label: "AWS AgentCore", adapter: "aws_agentcore" },
   { value: "acpx", label: "ACP agents", adapter: "acpx_local" },
+  { value: "cursor_cloud", label: "Cursor Cloud (experimental)", adapter: "cursor_cloud" },
   { value: "grok", label: "Grok Build", adapter: "grok_local" },
 ];
 
@@ -101,6 +102,7 @@ export function CodexLocalConfigFields({
       ? PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[runnerProvider]
       : { configurable: false, defaultMode: "provider-managed", options: [], description: "Unknown provider configuration is preserved." };
   const isMuse = runnerProvider === "muse";
+  const isCursorCloud = runnerProvider === "cursor_cloud";
   const isExternal = isMuse || runnerProvider === "openai_dot" || runnerProvider === "grok_bot";
   const configuredRunnerPermissionMode =
     runnerManaged && runnerPermissionCapability.configurable
@@ -239,6 +241,7 @@ export function CodexLocalConfigFields({
               const provider = grok ? "acpx" : isPaperclipRunnerProvider(value)
                 ? value
                 : "codex";
+              const cloudResetKeys = ["codexPermissionMode", "opencodePermissionMode", "acpxPermissionMode", "acpxAgent", "command", "extraArgs", "idleTimeoutMs", "modelReasoningEffort", "reasoningEffort", "effort", "modelParams", "homeMode"];
               const model =
                 provider === "openai_dot"
                   ? ""
@@ -250,15 +253,18 @@ export function CodexLocalConfigFields({
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
                         ? grok ? "grok-4.7" : defaultAcpxClaudeModel
+                        : provider === "cursor_cloud" ? ""
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
                 set!({
                   model,
+                  ...(provider === "cursor_cloud" ? { thinkingEffort: "" } : {}),
                   adapterSchemaValues: {
                     ...values!.adapterSchemaValues,
                     provider,
                     acpxSessionMode: undefined,
                     piThinkingLevel: undefined,
+                    ...(provider === "cursor_cloud" ? { ...Object.fromEntries(cloudResetKeys.map(key => [key, undefined])), lifecycleMode: "per_turn" } : {}),
                     ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
                   },
                 });
@@ -273,6 +279,10 @@ export function CodexLocalConfigFields({
                 }
                 if (provider === "acpx") {
                   mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
+                }
+                if (provider === "cursor_cloud") {
+                  mark("adapterConfig", "lifecycleMode", "per_turn");
+                  for (const key of cloudResetKeys) mark("adapterConfig", key, undefined);
                 }
               }
             }}
@@ -291,6 +301,27 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && runnerProvider === "grok_bot" && <GrokBotConnection companyId={companyId} agentId={agentId} />}
+      {runnerManaged && isCursorCloud && <>
+        <p className="text-sm text-muted-foreground">Experimental. Runs in Cursor Cloud and requires a local Paperclip computer. Cursor manages command permissions; effective model identity is unavailable. Agent environment settings support only CURSOR_API_KEY. Configure hosted secrets in your Cursor Cloud environment.</p>
+        {[
+          { key: "repoUrl", label: "GitHub repository", fallback: "", legacy: undefined, placeholder: "https://github.com/your-org/repo", hint: "Select a repository or a named Cursor cloud environment." },
+          { key: "repoRef", label: "Starting ref", fallback: config.repoStartingRef ?? "", legacy: "repoStartingRef", placeholder: "Repository default" },
+          { key: "prUrl", label: "Pull request URL", fallback: config.repoPullRequestUrl ?? "", legacy: "repoPullRequestUrl", placeholder: "Optional" },
+          { key: "cloudEnvName", label: "Cursor cloud environment", fallback: config.runtimeEnvName ?? "", legacy: "runtimeEnvName", placeholder: "Use instead of a repository" },
+        ].map(field => <Field key={field.key} configSection="adapter" label={field.label} hint={field.hint}>
+          <DraftInput value={String(runnerSchemaValue(field.key, field.fallback))} placeholder={field.placeholder} className={inputClass}
+            onCommit={value => {
+              if (isCreate) set!({ adapterSchemaValues: { ...values!.adapterSchemaValues, [field.key]: value, ...(field.legacy ? { [field.legacy]: undefined } : {}) } });
+              else { if (field.legacy) mark("adapterConfig", field.legacy, undefined); mark("adapterConfig", field.key, value); }
+            }} />
+        </Field>)}
+        {[
+          { key: "workOnCurrentBranch", label: "Work on current branch" },
+          { key: "autoCreatePR", label: "Auto-create pull request" },
+          { key: "skipReviewerRequest", label: "Skip reviewer request" },
+        ].map(field => <ToggleField key={field.key} label={field.label}
+          checked={runnerSchemaValue(field.key, false) === true} onChange={value => updateRunnerSchemaValue(field.key, value)} />)}
+      </>}
       {runnerManaged && runnerProvider === "openai_dot" && <>
         <Field configSection="adapter" label="Dot connection" hint="A verified event round trip is required before assigning work.">
           <DotRunnerConnection companyId={companyId} agentId={agentId} bindingId={String(runnerSchemaValue("dotBindingId", ""))} onBinding={id => updateRunnerSchemaValue("dotBindingId", id)} />
@@ -551,7 +582,7 @@ export function CodexLocalConfigFields({
           )}
         </Field>
       )}
-      {runnerManaged && !isExternal && (
+      {runnerManaged && !isExternal && !isCursorCloud && (
         <Field configSection="runPolicy"
           label="Runner lifecycle"
           hint="Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
@@ -572,7 +603,7 @@ export function CodexLocalConfigFields({
           />
         </Field>
       )}
-      {runnerManaged && !isExternal && runnerLifecycleMode === "warm" && (
+      {runnerManaged && !isExternal && !isCursorCloud && runnerLifecycleMode === "warm" && (
         <Field configSection="runPolicy"
           label="Warm idle timeout (ms)"
           hint="After this much inactivity, runnerd checkpoints and suspends the provider session. The maximum is 24 hours."

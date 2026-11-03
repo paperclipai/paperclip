@@ -110,9 +110,17 @@ test("Classic startup does not guess a chat layout while personal preferences ar
     await page.goto(fixture.route);
     await expect(page.getByTestId("shell-configuration-loading")).toBeVisible();
     await expect(page.locator("[data-task-chat-shell]")).toHaveCount(0);
-    await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
+    const preparedOutlet = page.getByTestId("shell-prepared-outlet");
+    await expect(preparedOutlet).toHaveAttribute("hidden", "");
+    await expect(preparedOutlet).toHaveAttribute("inert", "");
+    await expect(preparedOutlet).toHaveAttribute("aria-hidden", "true");
+    await expect(page.getByTestId("issue-detail-header")).toBeHidden();
+    await expect(page.getByRole("heading", { name: fixture.title, exact: true })).toHaveCount(0);
     release();
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
+    await expect(preparedOutlet).not.toHaveAttribute("hidden", "");
+    await expect(preparedOutlet).not.toHaveAttribute("inert", "");
+    await expect(preparedOutlet).not.toHaveAttribute("aria-hidden", "true");
     await expect(page.locator("[data-task-chat-shell]")).toHaveCount(0);
   } finally {
     release();

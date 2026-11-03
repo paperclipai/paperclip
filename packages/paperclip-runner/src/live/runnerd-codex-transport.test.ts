@@ -771,6 +771,16 @@ it("reopens Copilot with the current registered files after collecting the previ
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+it("refreshes Cloud instructions on cold rotation without replacing the pinned launch profile", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "next-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  const provider = { kind: "cursor_cloud", provider: "cursor_cloud", instructions: "Prior instructions.", command: "/pinned/node", args: ["/pinned/proxy.cjs"], model: "pinned-model", conversationMode: "task" };
+  const payload = runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } }, identity, null, undefined,
+    null, { text: "Current instructions.", context: null });
+  expect(payload.provider).toEqual({ ...provider, instructions: "Current instructions." });
+  expect(provider.instructions).toBe("Prior instructions.");
+  expect(runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } }, identity, null, undefined).provider).toEqual(provider);
+});
+
 it.each(["claude", "codex", "cursor", "pi", "copilot"])("keeps %s's pinned grants on same-run recovery", (agent) => {
   const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "same-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
   const provider = { kind: "acpx", agent, runId: identity.runId, instructions: "Pinned instructions.", runtimeContext: assignedRuntimeContext("/skills", "/pinned") };
@@ -8785,6 +8795,8 @@ async function verifyLiveRunnerAdoption(
   adoptionAuthorization: "allow" | "deny" | "legacy" | "legacy-missing" | "missing-binding" = "allow",
   toolHandlerOrder?: "before" | "after" | "completion-before" | "completion-after",
   uncertainAtClose = false,
+  semanticRecoveryMode?: "denied-before-cancel" | "cleanup-only",
+  stopExitProofFault?: "missing" | "false",
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const pendingCompletion = toolHandlerOrder?.startsWith("completion-") === true;
@@ -8814,7 +8826,7 @@ async function verifyLiveRunnerAdoption(
     authority = next;
     return {
       connectUrl: `ws://127.0.0.1:${address.port}/runner`,
-      ...(mismatchedArtifact || uncertainAtClose ? { checkpoint } : {}),
+      ...(mismatchedArtifact || uncertainAtClose || semanticRecoveryMode === "cleanup-only" ? { checkpoint } : {}),
       release: async () => {
         if (authority === next) authority = null;
       },
@@ -8857,7 +8869,19 @@ async function verifyLiveRunnerAdoption(
   const first = createCapabilityRunnerdCodexTransport(options);
   const pendingTool = vi.fn(() => new Promise<Record<string, unknown>>(() => undefined));
   if (toolHandlerOrder) first.transport.setServerRequestHandler(pendingTool);
-  const recoveredTool = vi.fn(async () => ({ result: { receipt: "known-outcome" }, isError: false }));
+  let releaseRecovery!: () => void;
+  const recoveryGate = new Promise<void>(resolve => { releaseRecovery = resolve; });
+  const recoveryDenied = new Error("execution authority revoked after Stop");
+  const recoveredTool = vi.fn(async () => {
+    if (semanticRecoveryMode) {
+      // Model server authority denying replay after Stop cleared the task lock.
+      // The gate holds that denial until reattachment has returned its session,
+      // before the caller invokes the eventual onSession cancellation callback.
+      await recoveryGate;
+      throw recoveryDenied;
+    }
+    return { result: { receipt: "known-outcome" }, isError: false };
+  });
   const redispatchedTool = vi.fn(async () => ({ success: true, contentItems: [] }));
   let runnerPid: number | null = null;
   let runnerStartedAt: string | null = null;
@@ -8959,6 +8983,7 @@ async function verifyLiveRunnerAdoption(
       ...options,
       ...(preparedTask && !adoptionAuthorization.startsWith("legacy") ? { authorizeRunnerAdoption } : {}),
       ...(uncertainAtClose ? { closeGraceMs: 2_000 } : {}),
+      ...(semanticRecoveryMode === "cleanup-only" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
       // Hash different stable bytes without replacing the real runner artifact
       // used by concurrent tests. Adoption must never execute this path.
       ...(mismatchedArtifact
@@ -9055,6 +9080,87 @@ async function verifyLiveRunnerAdoption(
       }),
     );
     if (toolHandlerOrder?.endsWith("after")) adopted.transport.setServerRequestHandler(redispatchedTool);
+    if (semanticRecoveryMode) {
+      const retained = authority as DurablePrpControlPlane | null;
+      expect(retained).not.toBeNull();
+      expect(retained!.store.state.committedEvents.some(event => event.eventType === "semantic_tool.input")).toBe(true);
+      expect(retained!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+      expect(retained!.store.state.commands.some(command => command.type === "turn.interrupt")).toBe(false);
+      if (semanticRecoveryMode === "denied-before-cancel") {
+        await vi.waitFor(() => expect(recoveredTool).toHaveBeenCalledOnce());
+        // This is a real Core replay callback, not an artificial transport error.
+        // Deliver its denial before giving the caller its cancellation turn.
+        releaseRecovery();
+        await vi.waitFor(async () => {
+          await expect(adopted!.transport.request("thread/read", {})).rejects.toBe(recoveryDenied);
+        });
+        await expect(adopted.transport.request("turn/interrupt", {})).rejects.toBe(recoveryDenied);
+        expect(retained!.store.state.commands.some(command => command.type === "turn.interrupt")).toBe(false);
+      } else {
+        // Let all startup/handler microtasks and a real reconciliation read run.
+        // Cleanup must not enter replay even while its authority would deny it.
+        await adopted.transport.request("thread/read", {});
+        expect(recoveredTool).not.toHaveBeenCalled();
+        expect(redispatchedTool).not.toHaveBeenCalled();
+        releaseRecovery();
+        await expect(adopted.transport.request("turn/interrupt", {})).resolves.toEqual({});
+        expect(retained!.store.state.commands.filter(command => command.type === "turn.interrupt")).toMatchObject([{ status: "completed" }]);
+      }
+      expect(redispatchedTool).not.toHaveBeenCalled();
+      expect(retained!.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(false);
+      expect(retained!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+      expect(duplicateLauncher).not.toHaveBeenCalled();
+      if (semanticRecoveryMode === "cleanup-only") {
+        const faultedStopProof = vi.fn();
+        if (stopExitProofFault) {
+          const queue = retained!.queueCommand.bind(retained!);
+          vi.spyOn(retained!, "queueCommand").mockImplementation((type, ...args) => {
+            const command = queue(type, ...args);
+            if (type === "turn.stop") {
+              let result = command.result;
+              Object.defineProperty(command, "result", {
+                enumerable: true,
+                configurable: true,
+                get: () => result,
+                set: value => {
+                  const receipt = value as { result?: Record<string, unknown> } | null;
+                  if (receipt?.result && typeof receipt.result === "object") {
+                    faultedStopProof(receipt.result.providerExitConfirmed);
+                    const stopped = { ...receipt.result };
+                    if (stopExitProofFault === "missing") delete stopped.providerExitConfirmed;
+                    else stopped.providerExitConfirmed = false;
+                    result = { ...receipt, result: stopped };
+                  } else result = value;
+                },
+              });
+            }
+            return command;
+          });
+          await expect(adopted.transport.close()).rejects.toBeInstanceOf(NativeSessionCloseUnrecoverableError);
+          expect(faultedStopProof).toHaveBeenCalledWith(true);
+          expect(checkpoint).toHaveBeenCalledExactlyOnceWith("unsettled");
+        } else {
+          await expect(adopted.transport.close()).resolves.toBeUndefined();
+          expect(checkpoint).toHaveBeenCalledExactlyOnceWith("settled");
+          expect(retained!.store.state.commands.filter(command => command.type === "turn.stop")).toMatchObject([{
+            status: "completed", result: { result: { providerExitConfirmed: true } },
+          }]);
+        }
+        expect(retained!.semanticToolResultsSettled()).toBe(false);
+        expect(retained!.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(false);
+        expect(retained!.store.state.committedEvents.some(event => event.eventType === "semantic_tool.input")).toBe(true);
+        if (!stopExitProofFault) {
+          expect(retained!.store.state.commands.filter(command => command.type === "runner.suspend")).toMatchObject([{ status: "completed" }]);
+          const runnerState = JSON.parse(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8"));
+          expect(runnerState).toMatchObject({ ...identity, lifecycle: "suspended" });
+        }
+        const providerState = JSON.parse(await readFile(join(stateDirectory, "runner", "codex-provider-state.json"), "utf8"));
+        expect(providerState).toMatchObject({ activeProviderTurnId: null, pendingEvents: [], queuedEvents: [] });
+        expect(recoveredTool).not.toHaveBeenCalled();
+        expect(redispatchedTool).not.toHaveBeenCalled();
+      }
+      return;
+    }
     if (toolHandlerOrder) {
       await vi.waitFor(() => {
         expect(pendingCompletion ? redispatchedTool : recoveredTool).toHaveBeenCalledOnce();
@@ -9143,6 +9249,7 @@ async function verifyLiveRunnerAdoption(
       expect(commandTypes).not.toContain("runner.suspend");
     }
   } finally {
+    releaseRecovery();
     await adopted?.transport.close().catch(() => undefined);
     if (uncertainAtClose) {
       const providerPid = adopted?.evidence().codexPid;
@@ -9788,6 +9895,22 @@ it("retains the authenticated command failure without implicitly logging its str
   expect(structured).toHaveProperty("result.message", "closed runtime failure");
 });
 
+it.each(["RPC failed: Private provider explanation.", "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)"])("keeps a provider explanation private and retains command diagnosis: %s", async message => {
+  const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+    category: "unknown", message: "Private provider explanation.", retryability: "unknown" };
+  const result = { result: { code: "command_execution_failed", message, providerFailure } };
+  let failure: unknown;
+  try {
+    await waitForRunnerCommand({ type: "session.open", deadline: Date.now() + 1000, abortOnClose: true,
+      isClosed: () => false, throwIfFailed: () => {}, command: () => ({ status: "failed", result }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed" });
+  } catch (error) { failure = error; }
+  expect(failure).toHaveProperty("runnerCommandResult.result.providerFailure", providerFailure);
+  expect(failure).toHaveProperty("runnerCommandResult.result.message", message);
+  expect((failure as Error).message).not.toContain(providerFailure.message);
+  expect(JSON.stringify(failure)).not.toContain(providerFailure.message);
+});
+
 
 it("shares Pi's absolute cold deadline across recovery barriers and rejects a late ACK", async () => {
   vi.useFakeTimers();
@@ -9871,3 +9994,12 @@ it.each(["before", "after"] as const)("settles a saved tool outcome with the han
 
 it.each(["completion-before", "completion-after"] as const)("recovers a pending finish without an ordinary-tool lookup (%s)", order =>
   verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", order), 30_000);
+
+it("exposes semantic recovery before cancellation when the authority has been revoked", () =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", "before", false, "denied-before-cancel"), 30_000);
+
+it.each(["before", "after", "completion-before", "completion-after"] as const)("allows cleanup-only adoption to cancel without replaying a pending semantic input (%s)", order =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", order, false, "cleanup-only"), 30_000);
+
+it.each(["missing", "false"] as const)("refuses cleanup settlement when the exact stop receipt has %s provider exit proof", fault =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", "before", false, "cleanup-only", fault), 30_000);

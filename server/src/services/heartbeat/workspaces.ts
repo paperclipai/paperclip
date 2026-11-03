@@ -1617,7 +1617,7 @@ export interface ReferencedProjectFailure {
 export interface ResolvedRunReferencedProjects {
   /** The anchor (primary) project — retains the existing git-worktree run path; never re-authorized here. */
   anchor: RunReferencedProject | null;
-  /** Additional read-only referenced projects that each passed per-project `project:read` authorization. */
+  /** Additional referenced projects that each passed per-project `project:read` authorization. */
   additional: RunReferencedProject[];
   /** Human-readable warnings for every referenced project that was dropped (unavailable, unauthorized, or capped). */
   warnings: string[];

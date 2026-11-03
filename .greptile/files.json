@@ -21,6 +21,13 @@
       "description": "Module ownership, justification of shared contract changes, delivery scope, and verification across affected consumers."
     },
     {
+      "path": "rules/feature-map-scope.mdc",
+      "description": "Limit feature-map additions to substantial new user capabilities; avoid minor-update churn and keep factual corrections minimal.",
+      "scope": [
+        "maps/**"
+      ]
+    },
+    {
       "path": "rules/runtime-dependency-boundaries.mdc",
       "description": "Dependency cost, responsiveness, and verification requirements for changed server, adapter, and runner execution paths.",
       "scope": [

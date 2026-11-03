@@ -37,6 +37,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   const errors: unknown[] = [];
   const statements: string[] = [];
   const parameterCounts: number[] = [];
+  const testBodies = new Set<Promise<void>>();
   let captureBlockerPlan = false;
   let blockerPlanQuery: { query: string; parameters: unknown[] } | undefined;
   beforeAll(async () => {
@@ -64,6 +65,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     vi.useFakeTimers({ now: Number(clock.now), toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
+    await Promise.allSettled([...testBodies]);
     await coordinator?.stop(); coordinator = undefined;
     vi.useRealTimers(); vi.restoreAllMocks();
     await db.transaction(async tx => {
@@ -76,6 +78,24 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   const old = () => new Date(Date.now() - delay - 600_000);
+  async function tracked(body: () => Promise<void>) {
+    const running = body(); testBodies.add(running);
+    try { await running; } finally { testBodies.delete(running); }
+  }
+  async function insertSharedWorkspaceHistory(workspaceId: string, query: SQL) {
+    await db.transaction(async tx => {
+      await tx.execute(sql`alter table issues disable trigger issues_record_workspace_privacy_source`);
+      await tx.execute(query);
+      await tx.execute(sql`update execution_workspaces set metadata = metadata
+        where id = ${workspaceId}::uuid and company_id = ${companyId}::uuid`);
+      await tx.execute(sql`alter table issues enable trigger issues_record_workspace_privacy_source`);
+      const [provenance] = await tx.execute<{ complete: boolean }>(sql`select
+        w.metadata->'_issuePrivacySources' = (select jsonb_object_agg(i.id::text, true) from issues i
+          where i.execution_workspace_id = w.id and i.company_id = w.company_id) as complete
+        from execution_workspaces w where w.id = ${workspaceId}::uuid and w.company_id = ${companyId}::uuid`);
+      expect(provenance?.complete).toBe(true);
+    });
+  }
   async function insertIssue(status = "todo", values: Partial<typeof issues.$inferInsert> = {}, database: Db = db) {
     const [row] = await database.insert(issues).values({ companyId, title: randomUUID(), status,
       createdByAgentId: agentId, createdAt: old(), updatedAt: old(), ...values }).returning();
@@ -114,6 +134,19 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   const mutation = (sourceKind: "review", sourceId: string) => ({ companyId, sourceKind, sourceId,
     authActor: { type: "board" as const, source: "local_implicit" as const, userId: "board", companyIds: [companyId], isInstanceAdmin: true },
     actor: { actorType: "user" as const, actorId: "board", userId: "board", agentId: null, runId: null, agentApiKeyId: null, responsibleUserId: "board" } });
+
+  it("restores ordinary workspace provenance recording after a failed bulk fixture", async () => {
+    const workspaceId = randomUUID();
+    await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type, metadata)
+      values (${workspaceId}::uuid, ${companyId}::uuid, 'Fixture rollback', 'shared', 'project_primary', '{"fixture":"retained"}'::jsonb)`);
+    await expect(insertSharedWorkspaceHistory(workspaceId, sql`select 1 / 0`)).rejects.toThrow();
+    const [trigger] = await db.execute<{ tgenabled: string }>(sql`select tgenabled from pg_trigger
+      where tgrelid = 'issues'::regclass and tgname = 'issues_record_workspace_privacy_source'`);
+    expect(trigger.tgenabled).toBe("O");
+    const issue = await insertIssue("done", { executionWorkspaceId: workspaceId });
+    const [workspace] = await db.execute<{ metadata: unknown }>(sql`select metadata from execution_workspaces where id = ${workspaceId}::uuid`);
+    expect(workspace.metadata).toEqual({ fixture: "retained", _issuePrivacySources: { [issue.id]: true } });
+  });
 
   it("records the aggregate baseline SQL across old ticks and eliminates it after settlement", async () => {
     await insertIssue("done");
@@ -442,13 +475,13 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
   });
 
-  it.each(["running", "run", "confirmation", "completed"] as const)("filters completed blocker history before bounded %s attention and archive checks", async kind => {
+  it.each(["running", "run", "confirmation", "completed"] as const)("filters completed blocker history before bounded %s attention and archive checks", kind => tracked(async () => {
     const root = await insertIssue("blocked"), workspaceId = randomUUID();
     await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type)
       values (${workspaceId}::uuid, ${companyId}::uuid, 'Finalized shared history', 'shared', 'project_primary')`);
     await db.execute(sql`insert into workspace_operations (company_id, execution_workspace_id, phase, status, started_at)
       values (${companyId}::uuid, ${workspaceId}::uuid, 'workspace_finalize', 'succeeded', ${old().toISOString()}::timestamptz)`);
-    await db.execute(sql`with history as (
+    await insertSharedWorkspaceHistory(workspaceId, sql`with history as (
       insert into issues (id, company_id, title, status, updated_at, execution_workspace_id)
       select ('00000000-0000-4000-8000-' || lpad(to_hex(n), 12, '0'))::uuid,
         ${companyId}::uuid, 'completed-blocker-' || n, 'done', ${old().toISOString()}::timestamptz, ${workspaceId}::uuid
@@ -503,7 +536,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(batch.deferredRootIds.size).toBe(0);
     expect(Boolean(batch.attention.get(root.id)?.blockingTreeLive)).toBe(kind !== "completed");
     expect(parameterCounts.length).toBeLessThanOrEqual(100);
-  });
+  }));
 
   it("does not archive an unknown truncated blocker tree during its fresh check", async () => {
     const root = await insertIssue("blocked");
@@ -569,7 +602,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
         values (${workspaceId}::uuid, ${companyId}::uuid, 'Pending shared export', 'shared', 'project_primary')`);
       await workspaceOperationService(db).createRecorder({ companyId, executionWorkspaceId: workspaceId })
         .recordOperation({ phase: "workspace_provision", run: async () => ({ status: "succeeded" }) });
-      await db.execute(sql`with history as (
+      await insertSharedWorkspaceHistory(workspaceId, sql`with history as (
         insert into issues (company_id, title, status, updated_at, execution_workspace_id)
         select ${companyId}::uuid, 'waiting-for-export-' || n, 'done', ${old().toISOString()}::timestamptz, ${workspaceId}::uuid
         from generate_series(1, 2100) n returning id)
@@ -1045,7 +1078,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await state("agent_error_alert", agentId)).toBeNull();
   });
 
-  it("drains a paged backlog with source-scoped self notifications and leaves completed history quiet", async () => {
+  it("drains a paged backlog with source-scoped self notifications and leaves completed history quiet", () => tracked(async () => {
     await db.insert(issues).values(Array.from({ length: 225 }, () => ({ companyId, title: randomUUID(), status: "in_review", assigneeUserId: "board", updatedAt: old() })));
     const service = attentionRetentionService(db);
     const load = vi.spyOn(service, "load");
@@ -1057,7 +1090,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(scopes.filter(scope => scope && !scope.sourceId)).toHaveLength(0);
     expect(scopes.filter(scope => scope?.sourceId).length).toBeLessThanOrEqual(225);
     expect(new Set((await db.select().from(decisionRetention)).map(row => row.sourceId)).size).toBe(225);
-  });
+  }), 45_000);
 
   it("retries a failed atomic archive across drain and preserves notifications during a scan", async () => {
     const row = await insertIssue("in_review", { assigneeUserId: "board" });

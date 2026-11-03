@@ -333,6 +333,14 @@ replacement semantics, secret preservation, and revision preconditions. It uses
 the existing configuration and resource APIs, retaining their authorization
 and approval gates. Agent lifecycle commands remain separate actions.
 
+`agents:read` permits redacted configuration, configured skills, instruction
+content and history reads without write authority. `agents:configure` remains
+read/write; `agents:suggest-changes` retains reads and consented changes. Own
+configuration/history reads require no peer-read grant. Target scopes, company
+boundaries and responsible-user authority still apply. Standard agents receive
+read access by default, with a one-time read-only rollout to eligible existing
+agents. See [agent permission defaults](agent-permission-defaults.md).
+
 ## 7.3 `agent_api_keys`
 
 - `id` uuid pk
@@ -2210,6 +2218,11 @@ Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
 
+AI connections support concurrent runs and account tests. Admission does not
+take an account execution lock or wait for another runtime's credential cleanup.
+Private runtime homes remain independent. Credential writeback still checks the
+active grant and saved generation before an atomic update.
+
 Missing personal AI credentials detected before adapter dispatch also produce
 the inline connection card. Every missing binding must belong to the same
 compatible AI provider. The responsible user connects their own account and
@@ -2637,8 +2650,17 @@ have stopped. Cleanup retains copies whose upload completion is unknown. This
 includes operations from older builds without save-attempt records. A final
 save alone does not prove that an older upload has stopped.
 
-V1 supports plain task folders, Git sources, and managed mutable repositories
-from the same project. It rejects read-only cross-project referenced folders,
+V1 supports plain task folders, Git sources, and managed mutable repositories.
+An authorized mentioned project's configured Git repositories become writable
+copies inside the task workspace, under `.paperclip-repositories/`. The copies
+retain their saved files, paths, refs and pins on subsequent turns. Preparation
+rechecks the access and trust policy of each retained source project. This does
+not grant permission to change a shared source folder or push to a repository.
+Repositories attached on a later turn are acquired before they become part of
+the next committed archive. Snapshot coverage is separate from the requested
+source recipe. New copies honor `repoRef`, then `defaultRef`, then the remote's
+default branch; an invalid ref cannot publish a partial secondary checkout.
+It rejects explicitly read-only sources,
 explicit concurrent shared writers, and custom cleanup/teardown commands on
 remote close. Manual workspace runtime commands, jobs, and services are also
 unsupported in V1 and must fail before local filesystem work. Agent tasks remain
@@ -2648,10 +2670,15 @@ must fail admission rather than fall back to a controller checkout.
 
 A reference to an authorized project with no configured workspace source does
 not attach a folder. It adds a resolution warning and preserves the task's
-workspace. A configured cross-project source remains subject to the read-only
-folder restriction. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
+workspace. A configured cross-project local folder must be imported before remote
+acquisition. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
 sources; a source-less project reference needs no folder and stays metadata-only
 when that switch is off.
+
+Task failure notices show the redacted workspace validation explanation when
+preparation fails. Existing retry permissions and execution gates still apply.
+This includes retained-folder access and trust denials. Low-trust project boundary
+denials retain their separate project-access action.
 
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new

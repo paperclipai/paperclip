@@ -210,6 +210,14 @@ finalize from the same company, workspace, issue, and run. A nested snapshot
 that finishes before that finalize finishes does not leave a permanent wait.
 Unfinished operations and work after the finalize still require a later save.
 
+Daytona file export can preserve an already captured workspace archive when the
+guarded download copy runs out of sandbox capacity. It removes partial copies,
+rechecks confinement in the sandbox-user process, and uses the existing bounded
+stream with a successful completion receipt before replacing host files. The
+writer and finalization holds remain until ordinary snapshot publication and
+cleanup complete. This fallback does not remove source files, rerun provider
+work, or solve capacity failure while creating the workspace archive itself.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed
@@ -272,6 +280,38 @@ so normal result and workspace finalization retain their existing ordering.
 The cancellation records the board user's identity. Its acknowledged operator
 Stop receipt keeps recovery from promoting old queued input or creating a retry
 while the task closure commits.
+
+A persisted run-only Stop can survive a controller restart before dispatch is
+acknowledged. Recovery can claim an interrupted run only for its unfinished,
+audited Stop and an authenticated existing remote session. A cleared task lock
+does not authorize new task work or replacement of another task owner. Cleanup
+reuses the run's original held budget reservation, including during a budget
+pause. It cannot create a reservation, bootstrap a runner, or submit a provider
+turn. The recovered session sends the existing Stop through the audited
+cancellation producer. Only its acknowledgement closes the execution owner.
+Cleanup skips attachment staging and warm-owner retirement. Its transport
+retains authenticated pending semantic inputs without dispatch, recovery, or a
+semantic reply. The server derives this purpose from current audited Stop,
+lease, and held-reservation authority. Closing with unanswered input requires a
+new exact provider-stop receipt confirming process exit, the durable event drain,
+and identity-checked runner suspension. The input stays unanswered; the cleanup
+purpose alone cannot certify termination. Ordinary execution retains its existing
+semantic dispatcher requirement. Missing usage remains pending accounting debt;
+a complete receipt settles the original reservation and charge once.
+
+A recovery setup failure does not establish that the original execution never
+started. A same-run, company- and issue-bound coordinator attempt proves that
+native execution or result finalization was entered; selected input alone does
+not. Setup-failure writes lock that coordinator before the run, so a concurrently
+committed claim cannot be missed. Current Stop metadata survives configuration
+failure, including an acknowledgement committed while the terminal write waits.
+Only the bounded run-Stop fields, including intentional handoff, are retained;
+stale result projections are replaced. Normal Stop writes can still advance
+delivery metadata. Missing usage keeps its existing hold and accounting debt. Fresh setup
+that genuinely never dispatched can still settle without a provider receipt.
+Account-identity checks continue to reject incompatible execution; preserving
+cleanup obligations does not authorize a new provider turn or repair historical
+state that was already overwritten.
 
 ## 4. Agent-Owned vs User-Owned Execution
 
@@ -1513,6 +1553,18 @@ does not prove that the provider stopped or that a retry is safe; it remains
 non-recoverable until the existing ownership and recovery checks establish the
 next permitted action.
 
+Provider rejections additionally use the versioned `ProviderFailure` cause.
+The provider adapter extracts and redacts the original explanation before the
+process boundary. Startup command receipts and failed turns retain the same
+contract through Runner, persistence, and restart finalization. The task's current
+interruption and the historical run detail show this explanation, including when
+its category is unknown. Later cleanup errors do not erase the saved cause.
+Task read projections reapply registered run-secret and current-user redaction
+before returning provider text to detail or list views.
+The category and retryability describe provider evidence; they do not grant
+retry authority, prove stopped execution, or change the existing recovery budget.
+An HTTP 429 alone does not establish a quota reset time or a safe retry.
+
 Local Codex crash replacement can use a complete interrupted-turn inventory,
 authenticated process-stop evidence, and unchanged retained-state fingerprints.
 Only text and an exactly receipted task-completion call qualify for this path;
@@ -1630,6 +1682,19 @@ indefinitely for an export that has no owner. A live executor or finalizer, acce
 remains protected. Cleanup never interprets this registration as a stop receipt
 or permission to replay provider work. Repeated cleanup visits register the source
 once; settled sources add no continuing discovery or new maintenance timer.
+
+Retry and authenticated new messages also inspect the task's bound remote
+workspace for its exact failed writer. A newer setup failure cannot hide that
+writer's file obligation. A released reusable source can register preservation
+when its prepared descriptor, current workspace authority, and dedicated stop
+receipts agree. Registration keeps the lease's policy, release state, and stop
+receipts. The existing worker verifies allocation ownership before file-only
+resume. It saves the files before ordinary continuation admission; repeated
+requests do not create another recovery generation or replay provider work.
+If Retry names a newer failed preparation, continuation separately verifies that
+it never reached provider dispatch. Contradictory execution evidence keeps the
+hold. After preservation, the accepted continuation selects the bound saved
+workspace through its verified repair receipt instead of discarding its files.
 
 Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
 
@@ -1996,10 +2061,54 @@ That is the execution contract Paperclip should present to operators.
 
 ### Cancellation during native startup
 
-Core supports verified cleanup for explicitly recorded startup obligations. This
-support does not create startup contexts, advertise transport support, or capture
-a transport binding. Existing callers retain their legacy payloads and startup
-budgets. This support alone makes no startup-latency claim.
+A retained Codex or Claude session uses the same Core-owned startup context
+for local execution and plugin execution. Core retains the selected native
+execution input. Provider, model, instructions, skills and tool selection remain
+in that input and its existing Runner launch requirements. Provider configuration defaults
+changed after selection apply to later runs. A configuration edit does not hold
+startup open or delay its commit.
+
+For a retained plugin task, this context starts inside the existing controller
+claim after its authority locks and checks. Its 30-second budget includes claim
+commit, retained cleanup, optional attachment staging and accounting setup before
+session inspection. The claim records its exact context, task lease, owner and
+deadline in the existing run profile update. Local retained sessions start the
+context after the claim; their deadline remains the smaller of the 30-second warm
+startup budget and the controller's remaining confirmed ownership budget. Fresh
+launches, checkpoint recovery, Pi and other providers retain their existing
+budgets. Inspection of a warm candidate can discover a stopped task and acquire
+a replacement within this bound. Once Core rejects reuse, the later cold launch
+uses its existing budget. Before an unsupported-plugin or incompatible warm
+candidate falls back, Core clears the matching durable context with an ownership
+check; a failed clear prevents fallback. This adds one database response only to
+that remote fallback, and none to compatible warm or local startup.
+
+A compatible plugin receives an optional transient transport projection. It
+contains an attempt ID, an absolute deadline, plugin-owned instance secrets and
+the company transport configuration. Core reads this transport once for the
+attempt. It does not put transport secrets in lease metadata, checkpoints or run
+results. The existing warm-identity update records only a run ID, context ID and
+deadline before the plugin receives a preparation request. The
+plugin uses the existing Core-selected Runner requirements, verifies its actual
+guest resources, and does not repeat Core's eligibility decision. Generic plugin
+runtime reads remain fresh. Older plugins receive no transport projection. Their initial capability lookup
+is still bounded by the Core startup context; after unsupported capability is
+detected and the matching context is cleared, subsequent startup uses the
+existing path and budgets.
+
+Cancellation aborts compatible plugin startup I/O and prevents later provider
+dispatch. The initial capability lookup retains its legacy read path and can
+finish after the caller stops waiting. Already accepted remote requests can still
+commit. A caller timeout or deadline
+does not prove that its worker or remote process stopped. Core retains its
+startup responsibility until the actual worker reply or the deadline. A worker
+that remains unsettled then requests audited cancellation and automatic cleanup
+through the existing control queues. Normal Stop joins this work. Cleanup must
+retire the exact physical task, verify that its process and preparation writes
+stopped, and drain accepted host handlers before releasing resources. A process
+stop alone is insufficient. The compatible backend fences later writes to a
+retired physical task; retries allocate a new task ID. Missing proof or an
+unreachable backend leaves visible cleanup pending and automatic retries.
 
 Restart recovery uses the claim breadcrumb only while the current run has no
 first session checkpoint and the prior controller and context deadlines have
@@ -2013,6 +2122,21 @@ the duration of remote cleanup. Existing Stop receipts and process cleanup still
 destructive lifecycle or binding changes. Operator plugin restarts and external
 machine changes can still interrupt startup.
 
+A contextual replacement task can retain creation recovery when its selected
+worker supports inspection and its driver declares `creationOperationVersion: 1`.
+Core saves that opt-in and the prior opaque binding in the existing creation
+journal before acquisition, and sends acquisition to that selected worker.
+An ambiguous failure makes existing recovery work due. The inspection result's
+optional `creationLease` recovers identity and binding for the requested
+`creationOperation`; it is not termination evidence. Contextual task recovery
+requires this field; a generic sandbox cleanup envelope is not a substitute.
+The existing exact-task Stop, status and completion receipts still gate ownership release. Older journal
+entries without the recorded opt-in do not infer a resource identity from the
+creation operation ID. Once recovered identity is durably queued for cleanup,
+Core can discharge that acquisition's missing-response placeholder. Accepted
+host handlers and received result observations still drain before verified
+retirement; a late reply re-enters observation tracking without restoring the
+worker's expired invocation authority.
 
 Cancellation records a preparation fence while holding the run row lock. Native
 runtime selection checks that fence, the running status, and the current startup
@@ -2202,12 +2326,21 @@ HTTP mutation or create another receipt. Missing, changed, pending or unknown
 outcomes remain unanswered for authoritative reconciliation; a stopped run or
 revoked authority cannot recover a result.
 
-The native Claude sidecar also sets its HTTP MCP client budget to one hour,
-matching the Runner connection lease budget. This prevents Claude's default
+The native Claude sidecar also sets its HTTP MCP client budget to one hour.
+This fixed client ceiling prevents Claude's default
 60-second HTTP deadline from aborting an otherwise pending durable request.
 The setting applies to that native Claude session's MCP client; other provider
 sessions and ordinary bridge deadlines remain unchanged. Explicit cancellation
 and Runner shutdown still take precedence over that client budget.
+The native OpenCode proxy uses the same one-hour MCP client budget and leaves
+its semantic bridge request pending under Runner ownership. A controller delay
+must not turn an in-flight write into a provider-visible timeout and retry.
+Ordinary OpenCode driver calls keep their 30-second deadline. Stop, bridge close
+and Runner lease expiry still end the native wait. Unanswered effects stay
+pending and continue to block a new run; a longer wait does not certify an outcome.
+The one-hour client deadline does not renew with the Runner lease. If the client
+deadline expires while Runner still owns a call, its effect remains unknown
+until authoritative reconciliation. Expiry permits neither replay nor attachment.
 An adopted transport can receive authenticated queued semantic calls before
 the driver publishes its recovered session and tool handler. It holds those
 calls until the handler is installed, then rechecks the original authority and
@@ -2270,6 +2403,15 @@ Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file
 size. Remote checkpoint archive and expanded-size limits remain 64 MiB.
+
+Remote provider checkpoints normally apply exclusions through a filtered copy
+inside the sandbox. If that copy fails with a full-disk diagnostic, the controller
+removes the partial copy and passes the exclusions to the provider's sync-out.
+That transfer can stream without another sandbox archive. Provider exclusions can
+also omit a nested entry with the same name; credentials remain excluded. Other
+copy failures and timeouts still fail. Workspace capture itself still needs free
+sandbox space. Its failed save operation names `remote_workspace_sandbox_disk_full`
+when that capacity is exhausted, without changing retry or ownership rules.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in
@@ -2343,6 +2485,14 @@ Saved process configuration must match before reuse. Old checkpoints, changed
 configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
+
+A fresh native session admitted for the current task may replace a terminal
+predecessor's goal source epoch when the saved goal is absent or complete.
+It must hold the task's execution lock and assignee. Its accepted terminal
+checkpoint can then publish the new session for later comments or monitors.
+An unfinished or unreadable goal retains its prior epoch. Delayed predecessor
+events, stale source sequences, conversation resets and unverified outcomes
+retain their existing guards. Source projection does not start provider work.
 
 Changing configuration can retire a completed warm runner during instruction
 preparation, before the next native coordinator is claimed. Its maintenance
@@ -2837,8 +2987,11 @@ loss. The marker may describe the first turn, so it cannot identify every later
 warm checkpoint. Legacy file-backed roots retain their existing checks. A
 restored checkpoint must match the normalized session before writing its local
 projection. This adds a scoped checkpoint read and local reconstruction only
-when warm admission encounters an external marker or an older projection; it
-adds no streaming checkpoint writes or recurring idle work.
+when warm admission encounters an external marker or a prior-run projection.
+A prior-run projection refreshes even when its run ID already matches the saved
+supervisor: the canonical checkpoint can have advanced after an earlier read.
+Current-run state and a retained in-memory warm owner keep their existing
+authority. This adds no streaming checkpoint writes or recurring idle work.
 
 Ordinary remote `per_turn` continuations restore a valid external controller
 marker from the referenced run's company/task-bound checkpoint before reading

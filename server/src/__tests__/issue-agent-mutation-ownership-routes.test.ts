@@ -6,6 +6,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import { inboxBlockedActivity } from "../../../tests/runner-e2e/product-journeys/inbox-triage-fixture.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -356,6 +357,7 @@ function createRunContextDb(
   runId: string = ownerRunId,
   chatBindings: Array<{ id: string; companyId: string; issueId: string; state: string }> = [],
   emptyWakeQueue = false,
+  humanInboxFixture?: { userId: string },
 ) {
   const chatBindingQueries: ReturnType<PgDialect["sqlToQuery"]>[] = [];
   const runRows = Array.isArray(runAgentOrRows)
@@ -413,6 +415,17 @@ function createRunContextDb(
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+        if (humanInboxFixture && getTableName(table) === "issue_approvals") {
+          // This disposable human task has no pending approval. A generic
+          // selected-ID row would invent one and bypass the real route guard.
+          return { innerJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })) };
+        }
+        if (humanInboxFixture && getTableName(table) === "company_memberships") {
+          return { where: vi.fn((condition: SQL) => ({ limit: vi.fn(async () =>
+            new PgDialect().sqlToQuery(condition).params.includes(humanInboxFixture.userId)
+              ? [{ id: "inbox-member" }] : []),
+          })) };
+        }
         if (getTableName(table) === "case_handoffs") return emptyCaseHandoffQuery();
         if (emptyWakeQueue && getTableName(table) === "agent_wakeup_requests") {
           return buildQuery({}, false, true);
@@ -1832,6 +1845,32 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     );
   });
+
+  it.each(["bare blocked update", "human-owned inbox fixture"] as const)(
+    "applies the production blocked contract to the %s", async kind => {
+      const actor = boardActor();
+      const existing = makeIssue({ status: "in_progress", assigneeAgentId: null, assigneeUserId: actor.userId });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...existing, ...patch }));
+      const db = createRunContextDb({}, ownerAgentId, ownerRunId, [], false, { userId: actor.userId });
+      const payload = kind === "bare blocked update" ? { status: "blocked" } : inboxBlockedActivity(actor.userId);
+
+      const res = await request(await createApp(actor, db)).patch(`/api/issues/${issueId}`).send(payload);
+
+      if (kind === "bare blocked update") {
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
+        expect(res.body.error).toBe("Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor");
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      } else {
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.body).toMatchObject({ status: "blocked", unblockDescriptor: {
+          owner: { userId: actor.userId }, action: "Review the QA inbox task before continuing.",
+        } });
+        expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining(payload));
+      }
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
     mockIssueService.getById.mockResolvedValue(

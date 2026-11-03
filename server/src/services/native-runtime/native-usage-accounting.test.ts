@@ -13,6 +13,7 @@ describe("native turn accounting", () => {
     expect(usesNativeUsageDelivery({ runnerd: false, remote: true, provider })).toBe(false);
     expect(usesNativeUsageDelivery({ runnerd: true, remote: false, provider })).toBe(false);
     expect(usesNativeUsageDelivery({ runnerd: true, remote: true })).toBe(false);
+    expect(usesNativeUsageDelivery({ runnerd: true, remote: true, provider: { kind: "cursor_cloud", model: "caller-model" } as never })).toBe(false);
     expect(usesNativeUsageDelivery({ runnerd: true, remote: true, provider: { kind: "muse", model: null } as never })).toBe(false);
   });
 
