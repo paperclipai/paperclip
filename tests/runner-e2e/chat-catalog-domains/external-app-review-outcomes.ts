@@ -1,5 +1,6 @@
 type ReviewKind = "rejected" | "failed" | "executed";
-const completion = /\b(?:added|saved|written|wrote|updated|applied|approved|completed|succeeded|done)\b/gi;
+const completedVerb = "(?:added|saved|written|wrote|updated|applied|approved|completed|succeeded|done)";
+const completion = new RegExp(`\\b${completedVerb}\\b`, "gi");
 const adverb = "(?:already|now|just|successfully|actually|indeed|definitely|yet)";
 const reviewSuffix = /^\s+(?:locally\s+)?for\s+(?:(?:your|our|the)\s+)?review(?:\s*$|\s*,\s*(?:please\s+)?(?:approve|review|confirm)\b)/i;
 
@@ -17,8 +18,12 @@ function claimsExternalCompletion(reply: string) {
   return normalized.split(/[.!?;\n]+/).some(sentence => {
     for (const match of sentence.matchAll(completion)) {
       const offset = match.index!, prior = sentence.slice(0, offset), after = sentence.slice(offset + match[0].length);
-      const boundary = [...prior.matchAll(/,|\b(?:but|and|because|although|however)\b/gi)].at(-1);
-      const before = boundary ? prior.slice(boundary.index! + boundary[0].length) : prior;
+      let scopePrior = prior;
+      const coordinated = new RegExp(`\\b${completedVerb}\\s+(?:and|or)\\s+(?:${adverb}\\s+)*$`, "i");
+      let previous: RegExpExecArray | null;
+      while ((previous = coordinated.exec(scopePrior))) scopePrior = scopePrior.slice(0, previous.index);
+      const boundary = [...scopePrior.matchAll(/,|\b(?:but|and|because|although|however)\b/gi)].at(-1);
+      const before = boundary ? scopePrior.slice(boundary.index! + boundary[0].length) : scopePrior;
       const negated = new RegExp(`\\b(?:not|never|nothing|cannot|can't|couldn't|wasn't|weren't|isn't|aren't|haven't|hasn't|hadn't|didn't)(?:\\s+(?:have|has|had|was|were|is|are|be|been|being|${adverb}))*\\s*$`, "i").test(before)
         || /\bno\s+(?:[a-z]+\s+){0,3}(?:was|were|is|are|has|have)(?:\s+been)?\s*$/i.test(before)
         || (/^\s+(?:no|zero)\s+(?:changes?|updates?|edits?|actions?|writes?)\b|^\s+nothing\b/i.test(after) && !/\bexcept\b/i.test(after));
@@ -27,7 +32,7 @@ function claimsExternalCompletion(reply: string) {
       const comma = sentence.indexOf(",");
       const counterfactual = comma > offset && /\b(?:would|could|might)\b/i.test(sentence.slice(comma + 1))
         && new RegExp(`^\\s*if\\s+(?:i|we|you|it)\\s+(?:(?:had|have|were|was)\\s+)?(?:${adverb}\\s+)*$`, "i").test(prior);
-      const conditionalPermission = /^\s*if\s*$/i.test(prior) && comma > offset
+      const conditionalPermission = /^\s*(?:if|once|when)\s*$/i.test(prior) && comma > offset
         && /\b(?:can|will|would|could|might|may)\b/i.test(sentence.slice(comma + 1));
       if (future || counterfactual || conditionalPermission) continue;
       const desires = [...before.matchAll(/\b(?:want|need|like)\b/gi)], desire = desires.at(-1);
