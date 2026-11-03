@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   HARNESS_MAX_FRAME_BYTES, HARNESS_PROTOCOL_SCHEMA,
@@ -40,6 +41,27 @@ test("frame boundary rejects unsupported versions, extra fields, malformed resul
   assert.throws(() => parseHarnessCommand({ ...command, payload: cyclic }));
   assert.throws(() => parseHarnessFrameText(" ".repeat(HARNESS_MAX_FRAME_BYTES + 1)));
   assert.throws(() => parseHarnessFrameText("{} garbage"));
+});
+
+test("error message schema and parser agree on bounded single-line text", () => {
+  const schema = JSON.parse(readFileSync(new URL("../protocol/harness.schema.json", import.meta.url), "utf8"));
+  const messageSchema = schema.$defs.response.properties.error.properties.message;
+  const pattern = new RegExp(messageSchema.pattern, "u");
+  for (const [message, accepted] of [
+    ["Native session failed", true], ["x".repeat(161), true], ["x".repeat(8192), true],
+    ["Native session failed\nRetry later", false], ["Native session failed\n", false],
+    ["Native session failed\r", false], ["Native\tsession failed", false],
+    ["Native session\u0000 failed", false], ["Native session\u007f failed", false],
+    ["", false], ["   ", false], ["x".repeat(8193), false],
+  ]) {
+    const schemaAccepted = typeof message === messageSchema.type && message.length >= messageSchema.minLength
+      && message.length <= messageSchema.maxLength && pattern.test(message);
+    assert.equal(schemaAccepted, accepted, JSON.stringify(message));
+    const response = { schema: HARNESS_PROTOCOL_SCHEMA, id: 1, ok: false,
+      error: { code: "session_failed", message, retryable: false } };
+    if (accepted) assert.equal(parseHarnessResponse(response).error.message, message);
+    else assert.throws(() => parseHarnessResponse(response), undefined, JSON.stringify(message));
+  }
 });
 
 test("declarations confine runtime entrypoints and credential environment", () => {
